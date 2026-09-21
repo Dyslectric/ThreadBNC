@@ -1,17 +1,36 @@
 # ThreadBNC — Threadiverse bouncer + private archive
 
-A private, feed-first reader for Lemmy and PieFed that never loses what it has seen.
+A private, feed-first reader for Lemmy and PieFed that keeps a history of what it observes. When a post or comment is edited, removed or deleted after the bouncer has seen it, the change is recorded alongside the earlier version instead of replacing it.
 
 **Following and reading:**
-- Follow communities. The **bouncer** saves every new post along with its comments.
+- Follow communities. The **bouncer** checks each one for new posts and saves them along with their comments. It reads up to 5 pages back per check, so only an unusually large burst between checks could slip past.
 - Your **feed** is built from that saved copy. Posts you haven't opened stand out, opened posts show "N new comments", and you can sort by New, Active, Top or Most comments.
 - The feed keeps working when an instance is down, and shows edits, removals and deletions as history instead of losing them.
 
 **Keeping:**
-- **☆ Keep** any post to hold it forever; unkept feed posts expire after the community's retention period.
+- **☆ Keep** a post to hold on to it with no expiry date, until you unkeep or delete it. Posts you haven't kept expire after the community's retention period.
 - You can also keep a single post by pasting its link on the **Kept** page, without following its community.
 
-> Remote state may change. Archived observations do not disappear.
+### What it does and doesn't capture
+
+Stored observations aren't overwritten: edits add a new version, and removals and deletions become history entries. The archive can only keep what the bouncer actually saw, though, and it deletes some things on purpose.
+
+**What it can miss**
+- **Anything between checks.** The bouncer polls; it isn't notified of changes.
+  - A comment posted and deleted between two checks is never seen.
+  - Several edits between checks show up as one change.
+  - Threads are checked less often as they age: at the community's check interval for the first day (15 minutes by default, 30 for threads kept by link), then hourly, then every 6 hours after day 3.
+  - When a post's comment count hasn't changed, the comment tree is re-read only every 6 hours. Edits to existing comments can take that long to show up.
+- **Content that was already gone.** If a comment was deleted or removed before the bouncer first saw it, only its placeholder is stored.
+- **Some media.** Images or videos over the size limit (25 MB by default), downloads that keep failing, and linked article pages are not saved. A link to the original is kept instead.
+- **Outages.** Nothing is lost while an instance is unreachable, but changes that happen and are reversed during the outage won't be seen.
+
+**What it deletes, by design**
+- Posts from followed communities that you haven't kept, once their retention period ends.
+- Threads in the trash, once the trash period ends, or straight away if you choose **Delete now**.
+- Images that nothing else references, when those threads are deleted.
+
+Everything else stays, but the archive is only as durable as the disk and database it runs on. Back up both; see [Backups](#deploy-on-a-server-docker-compose--postgres).
 
 ## Pages
 
@@ -24,7 +43,7 @@ A private, feed-first reader for Lemmy and PieFed that never loses what it has s
 | **Trash** | Hidden and unkept threads, restorable until the trash period ends. |
 
 **Keep and Hide:**
-- **☆ Keep** holds a post forever.
+- **☆ Keep** holds a post with no expiry date.
 - **★ Kept** unkeeps it. A post that came from a followed community goes back into the feed and expires normally. A post you kept by link goes to the trash.
 - **Hide** moves a feed post to the trash.
 
