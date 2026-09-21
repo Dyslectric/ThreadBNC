@@ -117,3 +117,9 @@ def test_comment_sorting(settings, bouncer, server):
     assert order("controversial")[0] == "NEWEST"
     assert order("old") == ["OLDEST", "MIDDLE", "NEWEST"]
     assert order() == ["OLDEST", "MIDDLE", "NEWEST"]  # remembered choice
+
+
+def test_healthz_is_public_and_reveals_nothing(settings, bouncer):
+    client = make_client(settings, bouncer)
+    r = client.get("/healthz")
+    assert r.status_code == 200 and r.json() == {"ok": True}

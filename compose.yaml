@@ -1,0 +1,50 @@
+# ThreadBNC + Postgres. Copy .env.example to .env, fill it in, then:
+#   docker compose up -d            (uses THREADBNC_IMAGE, building it if missing)
+#   docker compose pull && docker compose up -d   (update to the latest published image)
+name: threadbnc
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: threadbnc
+      POSTGRES_USER: threadbnc
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U threadbnc -d threadbnc"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  app:
+    image: ${THREADBNC_IMAGE:-threadbnc:local}
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      THREADBNC_DATABASE_URL: postgresql://threadbnc:${POSTGRES_PASSWORD}@db:5432/threadbnc
+      THREADBNC_PASSWORD: ${THREADBNC_PASSWORD:?set THREADBNC_PASSWORD in .env}
+      THREADBNC_SECRET_KEY: ${THREADBNC_SECRET_KEY:-}
+      THREADBNC_API_TOKEN: ${THREADBNC_API_TOKEN:-}
+      THREADBNC_HTTPS_ONLY: ${THREADBNC_HTTPS_ONLY:-1}
+      THREADBNC_MEDIA_MAX_MB: ${THREADBNC_MEDIA_MAX_MB:-25}
+      THREADBNC_TRASH_DAYS: ${THREADBNC_TRASH_DAYS:-30}
+      # Trust X-Forwarded-* from the reverse proxy. Safe because the port below
+      # is only bound to the host's loopback interface by default.
+      FORWARDED_ALLOW_IPS: "*"
+    ports:
+      # Private by default: reachable only from the server itself (put a TLS
+      # reverse proxy such as Caddy or nginx in front). Set THREADBNC_BIND=0.0.0.0
+      # only if you know what you're exposing.
+      - "${THREADBNC_BIND:-127.0.0.1}:${THREADBNC_PORT:-8080}:8080"
+    volumes:
+      - media:/data
+
+volumes:
+  db:
+  media:

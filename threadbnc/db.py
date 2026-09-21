@@ -8,6 +8,7 @@ import json
 import queue
 import re
 import sqlite3
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -370,11 +371,25 @@ class Database:
         self.is_postgres = target.startswith(("postgres://", "postgresql://"))
         self.path = target
         self._pool: queue.LifoQueue[Any] = queue.LifoQueue(maxsize=pool_size)
+        if self.is_postgres:
+            self._wait_for_postgres()
         # SQLite's executescript manages its own transaction; Postgres gets the
         # write lock so concurrent starters don't race on DDL.
         with (self.transaction() if self.is_postgres else self.connect()) as conn:
             conn.executescript(postgres_schema() if self.is_postgres else SCHEMA)
             self._migrate(conn)
+
+    def _wait_for_postgres(self, attempts: int = 30, delay: float = 2.0) -> None:
+        import psycopg
+
+        for attempt in range(1, attempts + 1):
+            try:
+                psycopg.connect(self.path, connect_timeout=5).close()
+                return
+            except psycopg.OperationalError:
+                if attempt == attempts:
+                    raise
+                time.sleep(delay)
 
     def _migrate(self, conn: Any) -> None:
         """Additive migrations for databases created by older versions."""

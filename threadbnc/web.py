@@ -203,7 +203,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                                  static_url=static_url, trash_count=trash_count)
     app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
 
-    PUBLIC = ("/login", "/static/", "/robots.txt")
+    PUBLIC = ("/login", "/static/", "/robots.txt", "/healthz")
 
     @app.middleware("http")
     async def guard(request: Request, call_next):
@@ -249,6 +249,17 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         request.session.setdefault("flash", []).append([kind, msg])
 
     # ---- auth ------------------------------------------------------------
+    @app.get("/healthz")
+    def healthz():
+        """Unauthenticated health check for containers/proxies. Reveals nothing
+        about the archive beyond whether the database answers."""
+        try:
+            with db.connect() as conn:
+                conn.execute("SELECT 1").fetchone()
+        except Exception:
+            return JSONResponse({"ok": False}, status_code=503)
+        return {"ok": True}
+
     @app.get("/robots.txt", response_class=PlainTextResponse)
     def robots() -> str:
         return "User-agent: *\nDisallow: /\n"
