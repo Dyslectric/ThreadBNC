@@ -142,10 +142,6 @@ class Lemmy1Adapter(LemmyAdapter):
         return [self._actor(m.get("moderator")) for m in data.get("moderators") or []]
 
     # -- low level -----------------------------------------------------------
-    def _call(self, method: str, path: str, token: str | None, body: dict[str, Any] | None = None,
-              **params: Any) -> Any:
-        return super()._call(method, path, token or self._read_token, body, **params)
-
     def _pages(self, path: str, token: str | None = None, max_pages: int = MAX_CURSOR_PAGES,
                **params: Any) -> Iterator[list[dict[str, Any]]]:
         """Each page of a cursor-paged list."""
@@ -271,7 +267,7 @@ class Lemmy1Adapter(LemmyAdapter):
             raise RemoteNotFound(f"{self.domain} couldn't find {ref}")
         return str(data["person"]["id"]), self._actor(data["person"])
 
-    def resolve_as(self, token: str, ap_id: str) -> dict[str, str]:
+    def _resolve_as(self, token: str, ap_id: str) -> dict[str, str]:
         data = self._resolve(token, ap_id)
         kind, out = data.get("type_"), {}
         if kind == "post":

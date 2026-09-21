@@ -51,11 +51,16 @@ class HttpClient:
         return self.request_json("GET", domain, path, params=params, token=token)
 
     def request_json(self, method: str, domain: str, path: str, *, params: dict[str, Any] | None = None,
-                     json: dict[str, Any] | None = None, token: str | None = None) -> Any:
+                     json: dict[str, Any] | None = None, token: str | None = None, throttle: bool = True) -> Any:
         """One API call. Reads raise RemoteUnavailable for anything retryable;
         writes (non-GET) raise RemoteRejected/RemoteAuthError with the server's
-        error code so the UI can say what went wrong."""
-        self._throttle(domain)
+        error code so the UI can say what went wrong.
+
+        `throttle=False` is for calls made as one of your accounts while you
+        wait for a page, like any Lemmy client would; background fetching
+        (archiving, polling) keeps the per-server spacing."""
+        if throttle:
+            self._throttle(domain)
         url = f"https://{domain}{path}"
         clean = {k: v for k, v in (params or {}).items() if v is not None}
         headers = {"Authorization": f"Bearer {token}"} if token else None

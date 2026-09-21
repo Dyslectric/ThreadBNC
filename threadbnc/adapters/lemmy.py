@@ -52,6 +52,7 @@ class LemmyAdapter(ThreadiverseAdapter):
         self.http = http
         self._admins: set[str] | None = None
         self._read_token: str | None = None  # see reading_as()
+        self._resolved: dict[str, dict[str, str]] = {}  # ap_id -> local ids; they never change
 
     def reading_as(self, token: str) -> "LemmyAdapter":
         """A copy whose reads are made as a logged-in account, for content only
@@ -66,8 +67,10 @@ class LemmyAdapter(ThreadiverseAdapter):
 
     def _call(self, method: str, path: str, token: str | None, body: dict[str, Any] | None = None,
               **params: Any) -> Any:
+        # An explicit token means acting as an account for you, right now: no
+        # politeness delay. Anonymous and read-as-member fetches are background.
         return self.http.request_json(method, self.domain, f"{self.api_base}{path}", params=params,
-                                      json=body, token=token)
+                                      json=body, token=token or self._read_token, throttle=token is None)
 
     # -- normalizers -----------------------------------------------------
     def _actor(self, person: dict[str, Any] | None) -> NActor:
@@ -340,7 +343,18 @@ class LemmyAdapter(ThreadiverseAdapter):
 
     def resolve_as(self, token: str, ap_id: str) -> dict[str, str]:
         """Local ids on this server for a post/comment/community ActivityPub id,
-        fetching it over federation if needed. Keys: post, comment, community."""
+        fetching it over federation if needed. Keys: post, comment, community.
+        Remembered: an object's local id on a server never changes."""
+        if ap_id not in self._resolved:
+            found = self._resolve_as(token, ap_id)
+            if not found:
+                return found
+            if len(self._resolved) > 10_000:
+                self._resolved.clear()
+            self._resolved[ap_id] = found
+        return dict(self._resolved[ap_id])
+
+    def _resolve_as(self, token: str, ap_id: str) -> dict[str, str]:
         data = self._call("GET", "/resolve_object", token, q=ap_id) or {}
         out: dict[str, str] = {}
         if data.get("post"):

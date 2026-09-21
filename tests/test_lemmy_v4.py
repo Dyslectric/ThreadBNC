@@ -42,11 +42,13 @@ class ReplayHttp:
         self.routes = routes
         self.throttle = HostThrottle(0)
         self.calls: list[tuple[str, str, str, dict[str, Any], dict[str, Any] | None, str | None]] = []
+        self.throttled: list[bool] = []
 
     def get_json(self, domain, path, params=None, token=None):
         return self.request_json("GET", domain, path, params=params, token=token)
 
-    def request_json(self, method, domain, path, *, params=None, json=None, token=None):
+    def request_json(self, method, domain, path, *, params=None, json=None, token=None, throttle=True):
+        self.throttled.append(throttle)
         # Same None-stripping as the real client, so tests see what goes on the wire.
         params = {k: v for k, v in (params or {}).items() if v is not None}
         body = {k: v for k, v in json.items() if v is not None} if json is not None else None
@@ -322,3 +324,28 @@ def test_reading_as_a_member_sends_the_session_on_reads_only(cls):
     tokens = [c[5] for c in http.calls]
     assert tokens == [None, "T"]
     assert base._read_token is None  # the shared adapter stays anonymous
+
+
+@pytest.mark.parametrize("cls", [LemmyAdapter, Lemmy1Adapter])
+def test_only_background_reads_wait_for_the_per_server_spacing(cls):
+    http = ReplayHttp({})
+    a = cls(DOMAIN, http)  # type: ignore[arg-type]
+    for call in (lambda: a.fetch_post("1"),                      # archiving: anonymous
+                 lambda: a.reading_as("T").fetch_post("1"),      # archiving a private community
+                 lambda: a.community_moderators("T", "3")):      # you, waiting for the Mod tab
+        with pytest.raises(RemoteNotFound):
+            call()
+    assert http.throttled == [True, True, False]
+
+
+def test_resolved_ids_are_remembered():
+    data = fixture("resolve")
+    a, http = adapter({("GET", "/resolve_object"): data})
+    ap = data["post"]["ap_id"]
+    first = a.resolve_as("tok", ap)
+    first["post"] = "changed by the caller"
+    assert a.resolve_as("tok", ap) == {"post": str(data["post"]["id"])}  # callers can't spoil the cache
+    assert len(http.called("GET", "/resolve_object")) == 1
+    a, http = adapter({("GET", "/resolve_object"): {}})  # not found: not remembered
+    assert a.resolve_as("tok", ap) == {} and a.resolve_as("tok", ap) == {}
+    assert len(http.called("GET", "/resolve_object")) == 2
