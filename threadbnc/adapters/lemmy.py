@@ -42,6 +42,7 @@ class LemmyAdapter(ThreadiverseAdapter):
     login_user_field = "username_or_email"
     post_title_field = "name"
     comment_body_field = "content"
+    mods_only_field = "posting_restricted_to_mods"
     supports_totp = True
 
     def __init__(self, domain: str, http: HttpClient):
@@ -230,6 +231,26 @@ class LemmyAdapter(ThreadiverseAdapter):
         if not person:
             raise RemoteAuthError(f"{self.domain}: session not accepted")
         return self._actor(person)
+
+    def my_roles(self, token: str) -> dict[str, bool]:
+        """Whether this account is an admin of its server. Uses the user's own
+        admin flag where the server has one (Lemmy) and the site's admin list
+        otherwise (PieFed)."""
+        data = self._call("GET", "/site", token) or {}
+        view = ((data.get("my_user") or {}).get("local_user_view") or {})
+        me = (view.get("person") or {})
+        my_id = me.get("actor_id") or me.get("ap_id")
+        admin_ids = {((a or {}).get("person") or {}).get("actor_id") for a in data.get("admins") or []}
+        admin = bool((view.get("local_user") or {}).get("admin") or me.get("admin") or (my_id and my_id in admin_ids))
+        return {"admin": admin}
+
+    def create_community(self, token: str, name: str, title: str, description: str | None = None,
+                         nsfw: bool = False, mods_only: bool = False) -> NCommunity:
+        data = self._call("POST", "/community", token, {
+            "name": name, "title": title, "description": description or None, "nsfw": nsfw,
+            self.mods_only_field: mods_only,
+        })
+        return self._community(data["community_view"]["community"])
 
     def logout(self, token: str) -> None:
         self._call("POST", "/user/logout", token, {})

@@ -2,7 +2,10 @@
 {% from "_macros.html" import when %}
 {% block title %}Communities{% endblock %}
 {% block content %}
-<h1>Communities</h1>
+<div class="feed-head">
+  <h1>Communities</h1>
+  {% if accounts | selectattr('is_admin') | list %}<a class="chip" href="/communities/new">＋ Start a community</a>{% endif %}
+</div>
 
 <section class="card">
   <h2>Follow a community</h2>

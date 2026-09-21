@@ -56,6 +56,12 @@ On the **Accounts** page, add any Lemmy or PieFed account: the server, username,
 | Thread page | Comment, reply to any comment, and upvote or downvote the post and each comment |
 | Your own posts and comments | Edit, and delete or restore |
 | Community page | **✎ New post** for a link and/or text post |
+| Communities page | **＋ Start a community** on a server where one of your accounts is an admin |
+
+**Starting a community**
+- Accounts that are admins of their server get an **admin** badge. The check runs at login; use **Refresh** on the Accounts page after a change.
+- A community you start is created on that server with you as moderator. You can make it NSFW, or let only moderators post.
+- ThreadBNC then follows it with no expiry, so everything posted there is kept. Post with **✎ New post**.
 
 **What's stored**
 - Your password is sent to the account's server once, to log in, and is never stored.

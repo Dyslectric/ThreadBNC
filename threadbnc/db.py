@@ -206,6 +206,7 @@ CREATE TABLE IF NOT EXISTS accounts (
     token_enc TEXT,
     status TEXT NOT NULL DEFAULT 'ok' CHECK (status IN ('ok', 'needs_login')),
     is_default INTEGER NOT NULL DEFAULT 0,
+    is_admin INTEGER NOT NULL DEFAULT 0,
     added_at TEXT NOT NULL,
     last_used_at TEXT,
     last_error TEXT
@@ -281,6 +282,7 @@ COLUMN_MIGRATIONS = [
     ("objects", "thumbnail_url", "TEXT"),
     ("objects", "upvotes", "INTEGER"),
     ("objects", "downvotes", "INTEGER"),
+    ("accounts", "is_admin", "INTEGER NOT NULL DEFAULT 0"),
 ]
 
 # Tables with an integer `id` key: inserts into these get `RETURNING id` on

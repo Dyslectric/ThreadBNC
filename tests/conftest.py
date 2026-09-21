@@ -9,6 +9,7 @@ import pytest
 
 from threadbnc.adapters import (
     CommunityRef, ModAction, NActor, NComment, NCommunity, NPost, RemoteAuthError, RemoteNotFound,
+    RemoteRejected,
     RemoteUnavailable,
     ThreadiverseAdapter, ThreadRef,
 )
@@ -55,6 +56,8 @@ class FakeServer:
         self.votes: dict[tuple[str, str], int] = {}
         self.next_id = 5000
         self.revoked = False
+        self.admins: set[str] = set()
+        self.communities: dict[str, NCommunity] = {}
 
     def federate(self) -> None:
         for post_id, c in self.outbox:
@@ -119,7 +122,7 @@ class FakeAdapter(ThreadiverseAdapter):
 
     def fetch_community(self, ref: CommunityRef) -> NCommunity:
         self._check()
-        return copy.deepcopy(COMMUNITY)
+        return copy.deepcopy(self.s.communities.get(ref.name, COMMUNITY))
 
     def list_community_posts(self, ref, sort="New", page=1, limit=20):
         self._check()
@@ -149,6 +152,22 @@ class FakeAdapter(ThreadiverseAdapter):
 
     def logout(self, token):
         self.s.sessions.pop(token, None)
+
+    def my_roles(self, token):
+        return {"admin": self._auth(token) in self.s.admins}
+
+    def create_community(self, token, name, title, description=None, nsfw=False, mods_only=False):
+        user = self._auth(token)
+        if user not in self.s.admins:
+            raise RemoteRejected("home.test refused: only_admins_can_create_communities",
+                                 "only_admins_can_create_communities")
+        if name in self.s.communities:
+            raise RemoteRejected("home.test refused: community_already_exists", "community_already_exists")
+        community = NCommunity(ap_id=f"https://{self.domain}/c/{name}", name=name, domain=self.domain,
+                               title=title, description=description,
+                               moderator_ap_ids=[f"https://{self.domain}/u/{user}"])
+        self.s.communities[name] = community
+        return copy.deepcopy(community)
 
     def resolve_as(self, token, ap_id):
         self._auth(token)

@@ -10,22 +10,42 @@ in the thread without waiting for it to federate to the community's server.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any, Callable, TypeVar
 from urllib.parse import urlparse
 
 from . import store
-from .adapters import RemoteAuthError, RemoteError, ThreadiverseAdapter
+from .adapters import RemoteAuthError, RemoteError, RemoteRejected, ThreadiverseAdapter
 from .bouncer import Bouncer
 from .db import utcnow
 from .vault import TokenVault, VaultError
 
 log = logging.getLogger("threadbnc.accounts")
+# Lemmy's default: lowercase letters, digits, underscore; 3 to 20 characters.
+_COMMUNITY_NAME = re.compile(r"[a-z0-9_]{3,20}")
 T = TypeVar("T")
 
 
 class AccountError(Exception):
     """Shown to the user as-is."""
+
+
+_FRIENDLY = {
+    "only_admins_can_create_communities": "Only admins of that server can create communities.",
+    "community_already_exists": "A community with that name already exists on that server.",
+    "invalid_name": "That name isn't allowed on that server.",
+    "rate_limit_error": "The server is rate-limiting this account; try again in a bit.",
+    "site_ban": "This account is banned on its server.",
+    "banned_from_community": "This account is banned from that community.",
+    "only_mods_can_post_in_community": "Only moderators can post in that community.",
+    "locked": "That thread is locked.",
+}
+
+
+def _friendly(code: str) -> str | None:
+    low = (code or "").lower()
+    return next((msg for key, msg in _FRIENDLY.items() if key in low), None)
 
 
 @dataclass
@@ -38,6 +58,7 @@ class Account:
     status: str
     is_default: bool
     last_error: str | None
+    is_admin: bool = False
 
     @property
     def handle(self) -> str:
@@ -46,7 +67,7 @@ class Account:
     @classmethod
     def from_row(cls, r: Any) -> "Account":
         return cls(r["id"], r["domain"], r["username"], r["actor_ap_id"], r["display_name"], r["status"],
-                   bool(r["is_default"]), r["last_error"])
+                   bool(r["is_default"]), r["last_error"], bool(r["is_admin"]))
 
 
 def _domain_from(text: str) -> str:
@@ -93,6 +114,7 @@ class Poster:
             adapter = self.bouncer.adapter_for(domain)
             token = adapter.login(username, password, (totp or "").strip() or None)
             me = adapter.whoami(token)
+            roles = adapter.my_roles(token)
         except RemoteAuthError as exc:
             raise AccountError(f"Login failed: {exc.code or exc}") from exc
         except RemoteError as exc:
@@ -102,14 +124,42 @@ class Poster:
             first = conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 0
             conn.execute(
                 "INSERT INTO accounts(domain, software, username, actor_ap_id, display_name, token_enc, status, "
-                "is_default, added_at) VALUES (?,?,?,?,?,?,'ok',?,?) "
+                "is_default, is_admin, added_at) VALUES (?,?,?,?,?,?,'ok',?,?,?) "
                 "ON CONFLICT(actor_ap_id) DO UPDATE SET token_enc=excluded.token_enc, status='ok', "
-                "last_error=NULL, display_name=excluded.display_name, username=excluded.username",
+                "last_error=NULL, display_name=excluded.display_name, username=excluded.username, "
+                "is_admin=excluded.is_admin",
                 (domain, adapter.software, me.username, me.ap_id, me.display_name, self.vault.encrypt(token),
-                 int(first), now),
+                 int(first), int(roles.get("admin", False)), now),
             )
             row = conn.execute("SELECT * FROM accounts WHERE actor_ap_id=?", (me.ap_id,)).fetchone()
         return Account.from_row(row)
+
+    def refresh_roles(self, account: Account) -> Account:
+        """Re-check whether the account is an admin of its server."""
+        roles = self._run(account, lambda adapter, token: adapter.my_roles(token))
+        with self.db.transaction() as conn:
+            conn.execute("UPDATE accounts SET is_admin=? WHERE id=?", (int(roles.get("admin", False)), account.id))
+        return self.get(account.id)  # type: ignore[return-value]
+
+    def create_community(self, account: Account, name: str, title: str, description: str | None = None,
+                         nsfw: bool = False, mods_only: bool = False) -> int:
+        """Start a community on the account's server (you become its moderator),
+        then follow it here with no expiry. Returns the community id."""
+        name = name.strip().lower()
+        if not _COMMUNITY_NAME.fullmatch(name):
+            raise AccountError("Community names are 3-20 lowercase letters, digits or underscores.")
+        if not title.strip():
+            raise AccountError("A community needs a display title.")
+        community = self._run(account, lambda adapter, token: adapter.create_community(
+            token, name, title.strip(), (description or "").strip() or None, nsfw, mods_only))
+        try:
+            cid = self.bouncer.follow_community(community.ap_id, None, None, backfill=True)
+        except RemoteError as exc:
+            raise AccountError(f"Created !{name}@{account.domain}, but following it failed: {exc}") from exc
+        with self.db.transaction() as conn:
+            store.add_event(conn, "community_created", utcnow(), community_id=cid,
+                            metadata={"via": "threadbnc", "account": account.handle})
+        return cid
 
     def set_default(self, account_id: int) -> None:
         with self.db.transaction() as conn:
@@ -151,6 +201,8 @@ class Poster:
         except RemoteAuthError as exc:
             self._mark(account, "needs_login", str(exc))
             raise AccountError(f"{account.handle} was logged out by its server; log in again.") from exc
+        except RemoteRejected as exc:
+            raise AccountError(_friendly(exc.code) or str(exc)) from exc
         except RemoteError as exc:
             raise AccountError(str(exc)) from exc
         with self.db.transaction() as conn:

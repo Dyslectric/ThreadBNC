@@ -14,6 +14,7 @@ class PieFedAdapter(LemmyAdapter):
     login_user_field = "username"
     post_title_field = "title"
     comment_body_field = "body"
+    mods_only_field = "restricted_to_mods"
     supports_totp = False
 
     def fetch_moderation_state(

@@ -164,3 +164,55 @@ def test_web_flow(settings, server, bouncer, thread):
     assert r.status_code == 303 and r.headers["location"].startswith(f"/t/{thread}#o")
     page = client.get(f"/t/{thread}").text
     assert "hello from the web" in page and ">Edit<" in page
+
+
+# ---- starting a community -----------------------------------------------------
+
+def test_admin_status_is_recorded_at_login(server, poster):
+    assert poster.add(HOME, "dave", "hunter2").is_admin is False
+    server.admins.add("dave")
+    account = poster.refresh_roles(poster.default())
+    assert account.is_admin is True
+
+
+def test_admin_creates_community_and_it_is_followed_without_expiry(server, bouncer, poster):
+    server.admins.add("dave")
+    account = poster.add(HOME, "dave", "hunter2")
+    cid = poster.create_community(account, "retrohacks", "Retro Hacks", "old stuff")
+    c = one(bouncer, "SELECT * FROM communities WHERE id=?", cid)
+    assert c["canonical_ap_id"] == f"https://{HOME}/c/retrohacks"
+    f = one(bouncer, "SELECT * FROM community_follows WHERE community_id=?", cid)
+    assert f["active"] == 1 and f["retention_days"] is None and f["source_domain"] == HOME
+    assert "community_created" in col(bouncer, "SELECT event_type FROM state_events WHERE community_id=?", cid)
+    # ...and you can post in it straight away
+    tid = poster.submit(account, cid, "Welcome", "first post")
+    assert one(bouncer, "SELECT retention FROM archived_threads WHERE id=?", tid)[0] == "manual"
+
+
+def test_non_admin_and_bad_names_are_refused(server, poster):
+    account = poster.add(HOME, "dave", "hunter2")
+    with pytest.raises(AccountError, match="Only admins"):
+        poster.create_community(account, "retrohacks", "Retro Hacks")
+    server.admins.add("dave")
+    with pytest.raises(AccountError, match="lowercase"):
+        poster.create_community(account, "Bad Name!", "x")
+    poster.create_community(account, "retrohacks", "Retro Hacks")
+    with pytest.raises(AccountError, match="already exists"):
+        poster.create_community(account, "retrohacks", "Again")
+
+
+def test_start_community_web_flow(settings, server, bouncer):
+    settings.credentials_key = "test-key"
+    server.admins.add("dave")
+    client = TestClient(create_app(settings, bouncer))
+    client.post("/login", data={"password": "pw"})
+    client.post("/accounts", data={"server": HOME, "username": "dave", "password": "hunter2"})
+    assert "Start a community" in client.get("/communities").text
+    form = client.get("/communities/new").text
+    assert f"{HOME} (as dave)" in form
+    aid = one(bouncer, "SELECT id FROM accounts")[0]
+    r = client.post("/communities/new", data={"account_id": aid, "name": "retrohacks", "title": "Retro Hacks"},
+                    follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"].startswith("/c/")
+    page = client.get(r.headers["location"]).text
+    assert "!retrohacks" in page and "New post" in page and "Following" in page

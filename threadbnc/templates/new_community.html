@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Start a community{% endblock %}
+{% block content %}
+<p class="small"><a href="/communities">← Communities</a></p>
+<h1>Start a community</h1>
+{% set admins = accounts | selectattr('is_admin') | list %}
+<section class="card narrow-form">
+  {% if not accounts %}
+    <p><a href="/accounts">Add an account</a> on a server you administer first.</p>
+  {% elif not admins %}
+    <p class="bad-text">None of your accounts is an admin of its server.</p>
+    <p class="small muted">If you became an admin recently, use <strong>Refresh</strong> on the <a href="/accounts">Accounts</a> page.</p>
+  {% else %}
+  <form method="post" action="/communities/new" class="stack">
+    <label>On server
+      <select name="account_id">
+        {% for a in admins %}<option value="{{ a.id }}" {{ 'selected' if acting and acting.id == a.id }}>{{ a.domain }} (as {{ a.username }})</option>{% endfor %}
+      </select>
+    </label>
+    <label>Name <span class="muted small">(in the address: !name@server)</span>
+      <input name="name" required pattern="[a-z0-9_]{3,20}" maxlength="20" placeholder="e.g. retrohacks"
+             title="3-20 lowercase letters, digits or underscores"></label>
+    <label>Title <input name="title" required maxlength="100" placeholder="Retro Hacks"></label>
+    <label>Description <span class="muted small">(optional, Markdown)</span>
+      <textarea name="description" rows="5"></textarea></label>
+    <label class="check"><input type="checkbox" name="mods_only" value="1"> Only moderators can post (others can still comment)</label>
+    <label class="check"><input type="checkbox" name="nsfw" value="1"> NSFW</label>
+    <button>Create community</button>
+  </form>
+  <p class="small muted">You'll be its moderator. ThreadBNC follows it with no expiry, so everything posted there is kept. Other servers find it once someone searches for or links <code>!name@server</code>.</p>
+  {% endif %}
+</section>
+{% endblock %}

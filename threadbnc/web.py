@@ -60,6 +60,7 @@ EVENT_LABELS = {
     "followed": "Followed",
     "unfollowed": "Unfollowed",
     "follow_settings_changed": "Follow settings changed",
+    "community_created": "Community created via ThreadBNC",
     "auto_capture_expired": "Auto-captured thread expired and purged",
     "trashed": "Moved to trash",
     "restored_from_trash": "Restored from trash",
@@ -654,6 +655,40 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             request.session.pop("acting_account", None)
         flash(request, "Account removed and its session ended.")
         return RedirectResponse("/accounts", status_code=303)
+
+    @app.post("/accounts/{aid}/refresh")
+    def refresh_account(request: Request, aid: int):
+        account = poster.get(aid)
+        if account:
+            try:
+                account = poster.refresh_roles(account)
+                flash(request, f"{account.handle}: {'admin' if account.is_admin else 'not an admin'} "
+                               f"on {account.domain}.")
+            except AccountError as exc:
+                flash(request, str(exc), "error")
+        return RedirectResponse("/accounts", status_code=303)
+
+    @app.get("/communities/new", response_class=HTMLResponse)
+    def new_community_form(request: Request):
+        return render(request, "new_community.html")
+
+    @app.post("/communities/new")
+    def new_community(request: Request, account_id: int = Form(...), name: str = Form(...),
+                      title: str = Form(...), description: str = Form(""), nsfw: str | None = Form(None),
+                      mods_only: str | None = Form(None)):
+        account = poster.get(account_id)
+        if account is None:
+            flash(request, "Pick one of your accounts.", "error")
+            return RedirectResponse("/communities/new", status_code=303)
+        try:
+            cid = poster.create_community(account, name, title, description, bool(nsfw), bool(mods_only))
+        except AccountError as exc:
+            flash(request, str(exc), "error")
+            return RedirectResponse("/communities/new", status_code=303)
+        request.session["acting_account"] = account.id
+        flash(request, f"Created !{name.strip().lower()}@{account.domain}. You're its moderator, and it's "
+                       "followed here with no expiry. Use ✎ New post to start it off.")
+        return RedirectResponse(f"/c/{cid}", status_code=303)
 
     @app.post("/accounts/act-as")
     def act_as(request: Request, account_id: int = Form(...)):

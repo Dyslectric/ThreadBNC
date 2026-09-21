@@ -236,6 +236,6 @@ class ThreadiverseAdapter(ABC):
     def _unsupported(self, *_a: Any, **_k: Any) -> Any:
         raise UnsupportedSoftware(f"{self.software} adapter can't act as an account")
 
-    login = whoami = logout = resolve_as = _unsupported
+    login = whoami = logout = resolve_as = my_roles = create_community = _unsupported
     create_post = edit_post = delete_post = vote_post = _unsupported
     create_comment = edit_comment = delete_comment = vote_comment = _unsupported

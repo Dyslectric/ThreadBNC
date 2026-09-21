@@ -16,6 +16,7 @@
         <strong>{{ a.handle }}</strong>
         {% if a.display_name %}<span class="muted">· {{ a.display_name }}</span>{% endif %}
         {% if a.is_default %}<span class="pill good">default</span>{% endif %}
+        {% if a.is_admin %}<span class="pill warn" title="Admin of {{ a.domain }}: can start communities there">admin</span>{% endif %}
         {% if acting and acting.id == a.id %}<span class="pill new">posting as</span>{% endif %}
         {% if a.status != 'ok' %}<span class="pill bad">needs login</span>{% endif %}
         <div class="small muted"><code>{{ a.actor_ap_id }}</code>
@@ -24,6 +25,7 @@
       {% if not a.is_default %}
         <form method="post" action="/accounts/{{ a.id }}/default" class="inline"><button class="small secondary">Make default</button></form>
       {% endif %}
+      <form method="post" action="/accounts/{{ a.id }}/refresh" class="inline"><button class="small secondary" title="Re-check admin status">Refresh</button></form>
       <details class="reply-box">
         <summary class="small">Remove…</summary>
         <form method="post" action="/accounts/{{ a.id }}/remove">
