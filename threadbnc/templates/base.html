@@ -17,6 +17,7 @@
       <a href="/communities" class="{{ 'on' if request.url.path.startswith('/communities') }}">Communities</a>
       <a href="/kept" class="{{ 'on' if request.url.path.startswith('/kept') }}">★ Kept</a>
       <a href="/accounts" class="{{ 'on' if request.url.path.startswith('/accounts') }}">Accounts</a>
+      {% if accounts and accounts | selectattr('is_admin') | list %}<a href="/admin" class="{{ 'on' if request.url.path.startswith('/admin') }}">Admin</a>{% endif %}
       {% set tc = trash_count() %}<a href="/trash" class="{{ 'on' if request.url.path.startswith('/trash') }}">Trash{% if tc %} ({{ tc }}){% endif %}</a>
       {% if accounts %}
         <form method="post" action="/accounts/act-as" class="act-as">

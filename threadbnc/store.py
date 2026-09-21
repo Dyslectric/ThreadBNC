@@ -129,6 +129,7 @@ def upsert_community(conn: Conn, c: NCommunity, now: str) -> int:
             (c.ap_id, c.name, c.title, iid, now, now, int(c.removed), int(c.deleted)),
         )
         cid = cur.lastrowid
+        observe_moderators(conn, cid, None, c.moderator_ap_ids, now)
         if c.removed:
             add_event(conn, "community_removed", now, community_id=cid, attribution="unknown",
                       metadata={"state_at_first_observation": True})
@@ -139,6 +140,7 @@ def upsert_community(conn: Conn, c: NCommunity, now: str) -> int:
     cid = row["id"]
     conn.execute("UPDATE communities SET last_seen_at=?, title=COALESCE(?, title) WHERE id=?",
                  (now, c.title, cid))
+    observe_moderators(conn, cid, row["moderators_json"], c.moderator_ap_ids, now)
     if bool(row["cur_removed"]) != c.removed:
         add_event(conn, "community_removed" if c.removed else "community_restored", now,
                   community_id=cid, attribution="unknown")
@@ -147,6 +149,22 @@ def upsert_community(conn: Conn, c: NCommunity, now: str) -> int:
     conn.execute("UPDATE communities SET cur_removed=?, cur_deleted=? WHERE id=?",
                  (int(c.removed), int(c.deleted), cid))
     return cid
+
+
+def observe_moderators(conn: Conn, community_id: int, stored_json: str | None,
+                        seen: list[str] | None, now: str) -> None:
+    """Keep the community's current moderator list, and record additions and
+    removals as history once we have a previous list to compare against."""
+    if seen is None:
+        return  # this response didn't include moderators
+    current = sorted({m for m in seen if m})
+    if stored_json is not None:
+        before = set(json.loads(stored_json))
+        for ap_id in sorted(set(current) - before):
+            add_event(conn, "moderator_added", now, community_id=community_id, metadata={"moderator": ap_id})
+        for ap_id in sorted(before - set(current)):
+            add_event(conn, "moderator_removed", now, community_id=community_id, metadata={"moderator": ap_id})
+    conn.execute("UPDATE communities SET moderators_json=? WHERE id=?", (json.dumps(current), community_id))
 
 
 # --- revisions -------------------------------------------------------------
@@ -214,6 +232,7 @@ _FLAG_EVENTS = {
     "deleted": ("author_deleted", "author_restored"),
     "removed": ("removed", "restored"),
     "locked": ("locked", "unlocked"),
+    "featured": ("pinned", "unpinned"),
 }
 
 
@@ -318,7 +337,8 @@ def apply_post(conn: Conn, thread_id: int, post: NPost, source_domain: str, now:
     )
     result.new_revisions += int(created)
     _apply_flags(conn, obj, oid, thread_id, "post", post.local_id,
-                 {"deleted": post.deleted, "removed": post.removed, "locked": post.locked},
+                 {"deleted": post.deleted, "removed": post.removed, "locked": post.locked,
+                  "featured": post.featured},
                  now, withheld, result)
     result.object_ids[post.ap_id] = oid
     return oid

@@ -237,5 +237,9 @@ class ThreadiverseAdapter(ABC):
         raise UnsupportedSoftware(f"{self.software} adapter can't act as an account")
 
     login = whoami = logout = resolve_as = my_roles = create_community = _unsupported
+    # moderation (community moderators / admins)
+    resolve_person = community_moderators = set_moderator = _unsupported
+    ban_from_community = community_bans = remove_post = remove_comment = _unsupported
+    lock_post = feature_post = site_ban = site_banned = admin_settings = update_site = _unsupported
     create_post = edit_post = delete_post = vote_post = _unsupported
     create_comment = edit_comment = delete_comment = vote_comment = _unsupported

@@ -83,6 +83,26 @@ On the **Accounts** page, add any Lemmy or PieFed account: the server, username,
   - A deletion you make is recorded as "deletion requested" until the community's server shows it deleted.
 - Edits and deletions of your own content follow the same rules as everyone else's: earlier versions stay in the archive's history.
 
+### Moderating and administering
+
+Moderation tools appear when the account you're posting as can use them. That means it's listed as a moderator of the community, or it's an admin of the community's home server. The moderator list is refreshed every time the bouncer checks a thread, and additions and removals are kept as community history.
+
+| Where | Tools |
+|---|---|
+| Thread page, **Mod** menu on each post and comment | Remove (with a reason) or restore. For posts, also lock or unlock comments and pin or unpin in the community. **Ban the author** from the community, for N days or permanently, optionally removing their content. |
+| Community page, **🛡 Moderation** tab | List moderators, add one (`user@instance`) or remove one. Ban and unban people. See a log of moderation done through ThreadBNC. |
+| **Admin** page (admin accounts only) | Sign-up mode: closed, application or open. Server-wide bans. **Blocked instances** (defederation). **Blocked link domains**. |
+
+**How these appear in the archive**
+- Removals, locks and pins show as "requested via ThreadBNC" until the bouncer sees the change on the community's server.
+- The observed removal then carries the modlog's reason and moderator.
+- Removed content stays readable in the archive.
+
+**Lemmy vs PieFed**
+- Lemmy has no API that lists a community's bans, so the Moderation tab shows the bans made through ThreadBNC, each with an unban button. PieFed can list them, so the tab shows its list.
+- Server-wide blocklists (instances and link domains) are Lemmy-only; PieFed's API doesn't expose them.
+- Server-wide bans can't be listed on PieFed, so the Admin page's log shows the bans made through ThreadBNC instead.
+
 ### Your own identity (e.g. `dave@dyslectric.dev`)
 
 To post under your own domain, run a single-user PieFed or Lemmy server for it, then add that account on the Accounts page like any other. Things to know before setting one up:

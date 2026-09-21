@@ -6,6 +6,7 @@ this and overrides the few differences.
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from ..db import fmt_ts, parse_ts
@@ -251,6 +252,79 @@ class LemmyAdapter(ThreadiverseAdapter):
             self.mods_only_field: mods_only,
         })
         return self._community(data["community_view"]["community"])
+
+    # -- moderation -------------------------------------------------------
+    def resolve_person(self, token: str, ref: str) -> tuple[str, NActor]:
+        """Local id + identity of a person on this server, from an actor URL or
+        user@host handle (fetched over federation if needed)."""
+        q = ref if ref.startswith(("http://", "https://")) else "@" + ref.lstrip("@")
+        data = self._call("GET", "/resolve_object", token, q=q) or {}
+        person = (data.get("person") or {}).get("person")
+        if not person:
+            raise RemoteNotFound(f"{self.domain} couldn't find {ref}")
+        return str(person["id"]), self._actor(person)
+
+    def community_moderators(self, token: str, community_id: str) -> list[NActor]:
+        data = self._call("GET", "/community", token, id=int(community_id)) or {}
+        return [self._actor(m.get("moderator")) for m in data.get("moderators") or []]
+
+    def set_moderator(self, token: str, community_id: str, person_id: str, added: bool) -> list[NActor]:
+        data = self._call("POST", "/community/mod", token, {
+            "community_id": int(community_id), "person_id": int(person_id), "added": added}) or {}
+        return [self._actor(m.get("moderator")) for m in data.get("moderators") or []]
+
+    def ban_from_community(self, token: str, community_id: str, person_id: str, ban: bool,
+                           reason: str | None = None, days: int | None = None, remove_data: bool = False) -> None:
+        body: dict[str, Any] = {"community_id": int(community_id), "person_id": int(person_id), "ban": ban,
+                                "remove_data": remove_data, "reason": reason or None}
+        if ban and days:
+            body["expires"] = int(time.time()) + days * 86400
+        self._call("POST", "/community/ban_user", token, body)
+
+    def community_bans(self, token: str, community_id: str) -> list[NActor] | None:
+        return None  # Lemmy 0.19 has no API to list a community's bans
+
+    def remove_post(self, token: str, post_id: str, removed: bool, reason: str | None = None) -> None:
+        self._call("POST", "/post/remove", token, {"post_id": int(post_id), "removed": removed,
+                                                   "reason": reason or None})
+
+    def remove_comment(self, token: str, comment_id: str, removed: bool, reason: str | None = None) -> None:
+        self._call("POST", "/comment/remove", token, {"comment_id": int(comment_id), "removed": removed,
+                                                      "reason": reason or None})
+
+    def lock_post(self, token: str, post_id: str, locked: bool) -> None:
+        self._call("POST", "/post/lock", token, {"post_id": int(post_id), "locked": locked})
+
+    def feature_post(self, token: str, post_id: str, featured: bool) -> None:
+        self._call("POST", "/post/feature", token, {"post_id": int(post_id), "featured": featured,
+                                                    "feature_type": "Community"})
+
+    def site_ban(self, token: str, person_id: str, ban: bool, reason: str | None = None,
+                 days: int | None = None, remove_data: bool = False) -> None:
+        body: dict[str, Any] = {"person_id": int(person_id), "ban": ban, "remove_data": remove_data,
+                                "reason": reason or None}
+        if ban and days:
+            body["expires"] = int(time.time()) + days * 86400
+        self._call("POST", "/user/ban", token, body)
+
+    def site_banned(self, token: str) -> list[NActor] | None:
+        data = self._call("GET", "/user/banned", token) or {}
+        return [self._actor(p.get("person")) for p in data.get("banned") or []]
+
+    def admin_settings(self, token: str) -> dict[str, Any]:
+        """Registration mode and the server-wide instance / link blocklists."""
+        site = self._call("GET", "/site", token) or {}
+        local = (site.get("site_view") or {}).get("local_site") or {}
+        fed = (self._call("GET", "/federated_instances", token) or {}).get("federated_instances") or {}
+        return {
+            "registration_mode": local.get("registration_mode"),
+            "blocked_instances": sorted(i.get("domain") for i in fed.get("blocked") or [] if i.get("domain")),
+            "blocked_urls": sorted(u.get("url") for u in site.get("blocked_urls") or [] if u.get("url")),
+            "supports_blocklists": True,
+        }
+
+    def update_site(self, token: str, **fields: Any) -> None:
+        self._call("PUT", "/site", token, fields)
 
     def logout(self, token: str) -> None:
         self._call("POST", "/user/logout", token, {})

@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}Admin{% endblock %}
+{% block content %}
+<h1>Server admin</h1>
+{% if not admins %}
+  <p class="muted">None of your accounts is an admin of its server. If that changed, use <strong>Refresh</strong> on the <a href="/accounts">Accounts</a> page.</p>
+{% else %}
+  {% if admins | length > 1 %}
+  <nav class="tabs">
+    {% for a in admins %}<a href="/admin?account={{ a.id }}" class="{{ 'on' if chosen and a.id == chosen.id }}">{{ a.domain }}</a>{% endfor %}
+  </nav>
+  {% endif %}
+  <p class="muted">Managing <strong>{{ chosen.domain }}</strong> as {{ chosen.handle }}. Changes apply to the whole server.</p>
+  {% if error %}<div class="flash error">{{ error }}</div>{% endif %}
+
+  {% if site %}
+  <div class="admin-grid">
+    <section class="card">
+      <h2>Sign-ups</h2>
+      <form method="post" action="/admin/{{ chosen.id }}/registration" class="row">
+        <select name="mode">
+          {% for key, label in registration_modes.items() %}<option value="{{ key }}" {{ 'selected' if site.registration_mode == key }}>{{ label }}</option>{% endfor %}
+        </select>
+        <button class="small">Save</button>
+      </form>
+      {% if site.registration_mode %}<p class="small muted">Currently: {{ registration_modes.get(site.registration_mode, site.registration_mode) }}</p>{% endif %}
+    </section>
+
+    <section class="card">
+      <h2>Banned from the server</h2>
+      {% if site.banned is not none %}
+        <ul class="plain">{% for p in site.banned %}
+          <li class="follow-row"><div>{{ p.username }}@{{ p.domain }}</div>
+            <form method="post" action="/admin/{{ chosen.id }}/ban" class="inline"><input type="hidden" name="who" value="{{ p.ap_id }}">
+              <input type="hidden" name="action" value="unban"><button class="small secondary">Unban</button></form></li>
+        {% else %}<li class="muted small">Nobody is banned.</li>{% endfor %}</ul>
+      {% else %}<p class="small muted">This server's API can't list bans; recent bans made here are in the log below.</p>{% endif %}
+      <form method="post" action="/admin/{{ chosen.id }}/ban" class="stack">
+        <input name="who" required placeholder="user@instance">
+        <input name="reason" required placeholder="Reason, shown in the modlog">
+        <div class="row">
+          <input name="days" class="num" inputmode="numeric" placeholder="days" title="Blank = permanent">
+          <label class="check small"><input type="checkbox" name="remove_content" value="1"> remove their posts and comments</label>
+        </div>
+        <input type="hidden" name="action" value="ban">
+        <button class="small danger">Ban from {{ chosen.domain }}</button>
+      </form>
+      <p class="small muted">Banning someone from another instance stops them interacting with {{ chosen.domain }}; it doesn't affect their home server.</p>
+    </section>
+
+    <section class="card">
+      <h2>Blocked instances</h2>
+      {% if site.supports_blocklists %}
+        <p class="small muted">Defederated: nothing from these servers is accepted, and nothing is sent to them.</p>
+        <ul class="plain">{% for d in site.blocked_instances %}
+          <li class="follow-row"><div><code>{{ d }}</code></div>
+            <form method="post" action="/admin/{{ chosen.id }}/block-instance" class="inline"><input type="hidden" name="domain" value="{{ d }}">
+              <input type="hidden" name="action" value="unblock"><button class="small secondary">Unblock</button></form></li>
+        {% else %}<li class="muted small">None.</li>{% endfor %}</ul>
+        <form method="post" action="/admin/{{ chosen.id }}/block-instance" class="row">
+          <input name="domain" required placeholder="bad.instance">
+          <input type="hidden" name="action" value="block">
+          <button class="small danger">Block instance</button>
+        </form>
+      {% else %}<p class="small muted">This server's software doesn't expose its blocklist through the API. Use its own admin pages.</p>{% endif %}
+    </section>
+
+    <section class="card">
+      <h2>Blocked link domains</h2>
+      {% if site.supports_blocklists %}
+        <p class="small muted">Posts and comments linking to these can't be made on {{ chosen.domain }}.</p>
+        <ul class="plain">{% for u in site.blocked_urls %}
+          <li class="follow-row"><div><code>{{ u }}</code></div>
+            <form method="post" action="/admin/{{ chosen.id }}/block-link" class="inline"><input type="hidden" name="domain" value="{{ u }}">
+              <input type="hidden" name="action" value="unblock"><button class="small secondary">Allow</button></form></li>
+        {% else %}<li class="muted small">None.</li>{% endfor %}</ul>
+        <form method="post" action="/admin/{{ chosen.id }}/block-link" class="row">
+          <input name="domain" required placeholder="spam.example">
+          <input type="hidden" name="action" value="block">
+          <button class="small danger">Block links</button>
+        </form>
+      {% else %}<p class="small muted">Not available through this server's API.</p>{% endif %}
+    </section>
+  </div>
+  {% endif %}
+
+  <section class="card spaced">
+    <h2>Admin actions via ThreadBNC</h2>
+    <ul class="plain small">{% for a in actions %}
+      <li>{{ a.created_at | ago }} · <strong>{{ a.action | replace('_', ' ') }}</strong> {{ a.target or '' }}
+        {% if a.reason %}· "{{ a.reason }}"{% endif %}{% if a.expires_days %} · {{ a.expires_days }} days{% endif %}</li>
+    {% else %}<li class="muted">Nothing yet.</li>{% endfor %}</ul>
+  </section>
+{% endif %}
+{% endblock %}

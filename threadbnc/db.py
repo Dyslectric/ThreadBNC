@@ -48,7 +48,8 @@ CREATE TABLE IF NOT EXISTS communities (
     first_seen_at TEXT NOT NULL,
     last_seen_at TEXT NOT NULL,
     cur_removed INTEGER NOT NULL DEFAULT 0,
-    cur_deleted INTEGER NOT NULL DEFAULT 0
+    cur_deleted INTEGER NOT NULL DEFAULT 0,
+    moderators_json TEXT      -- last observed moderator actor ids (JSON list)
 );
 
 -- A followed community: bouncer polls its new posts and auto-captures them
@@ -114,6 +115,7 @@ CREATE TABLE IF NOT EXISTS objects (
     cur_removed INTEGER NOT NULL DEFAULT 0,
     cur_locked INTEGER NOT NULL DEFAULT 0,
     cur_missing INTEGER NOT NULL DEFAULT 0,
+    cur_featured INTEGER NOT NULL DEFAULT 0,
     score INTEGER,
     reply_count INTEGER,
     thumbnail_url TEXT,  -- current preview image; archived via media
@@ -222,6 +224,21 @@ CREATE TABLE IF NOT EXISTS my_votes (
     PRIMARY KEY (account_id, object_ap_id)
 );
 
+-- Moderation/admin actions taken through ThreadBNC (bans, blocks, mod changes).
+-- Object-level actions (remove/lock/pin) are recorded as state_events instead.
+CREATE TABLE IF NOT EXISTS mod_actions (
+    id INTEGER PRIMARY KEY,
+    account_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
+    account_handle TEXT NOT NULL,
+    action TEXT NOT NULL,
+    community_id INTEGER REFERENCES communities(id),
+    target TEXT,
+    target_ap_id TEXT,
+    reason TEXT,
+    expires_days INTEGER,
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS app_settings (
     key TEXT PRIMARY KEY,
     value TEXT
@@ -283,12 +300,14 @@ COLUMN_MIGRATIONS = [
     ("objects", "upvotes", "INTEGER"),
     ("objects", "downvotes", "INTEGER"),
     ("accounts", "is_admin", "INTEGER NOT NULL DEFAULT 0"),
+    ("communities", "moderators_json", "TEXT"),
+    ("objects", "cur_featured", "INTEGER NOT NULL DEFAULT 0"),
 ]
 
 # Tables with an integer `id` key: inserts into these get `RETURNING id` on
 # Postgres so callers can keep using `cursor.lastrowid`.
 _ID_TABLES = {"instances", "actors", "communities", "archived_threads", "objects", "revisions",
-              "state_events", "media", "jobs", "accounts"}
+              "state_events", "media", "jobs", "accounts", "mod_actions"}
 _INSERT_RE = re.compile(r"^\s*INSERT\s+INTO\s+(\w+)", re.IGNORECASE)
 _PG_WRITE_LOCK = 727_001  # advisory lock id: one writer at a time, like SQLite's BEGIN IMMEDIATE
 

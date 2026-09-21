@@ -288,3 +288,11 @@ textarea { font: inherit; width: 100%; padding: 8px 10px; border-radius: 7px; bo
 .narrow-form input { width: 100%; }
 label { display: block; }
 .row label, label.check { display: inline-flex; }
+
+/* ---- moderation ---- */
+details.mod-box > summary { color: var(--warn); }
+.mod-panel { margin-top: 6px; padding: 8px 10px; border: 1px dashed var(--warn); border-radius: 8px; }
+.mod-panel input:not([type=checkbox]) { padding: 3px 8px; font-size: 0.9em; }
+.admin-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+.admin-grid > .card { margin-bottom: 0; }
+.card.spaced { margin-top: 16px; }

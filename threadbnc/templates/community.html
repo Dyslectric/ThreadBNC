@@ -47,6 +47,7 @@
       <a href="/c/{{ c.id }}?tab=kept" class="{{ 'on' if tab == 'kept' }}">★ Kept ({{ counts.get('manual', 0) }})</a>
       <a href="/c/{{ c.id }}?tab=live" class="{{ 'on' if tab == 'live' }}">Live on server</a>
       <a href="/c/{{ c.id }}?tab=log" class="{{ 'on' if tab == 'log' }}">Log</a>
+      {% if powers.any %}<a href="/c/{{ c.id }}?tab=mod" class="{{ 'on' if tab == 'mod' }}">🛡 Moderation</a>{% endif %}
       {% if counts.get('trash') %}<a href="/trash">Trash ({{ counts.get('trash') }})</a>{% endif %}
     </nav>
 
@@ -99,6 +100,73 @@
         <span class="muted small">page {{ page }}</span>
         {% if live %}<a href="/c/{{ c.id }}?tab=live&live_sort={{ live_sort }}&page={{ page + 1 }}">Next →</a>{% endif %}
       </nav>
+
+    {% elif tab == 'mod' %}
+      {% if not powers.any %}
+        <p class="muted">{{ acting.handle if acting else 'The account you post as' }} isn't a moderator here.</p>
+      {% else %}
+      <p class="small muted">Acting as <strong>{{ acting.handle }}</strong>
+        ({{ 'moderator' if powers.moderator else '' }}{{ ' and ' if powers.moderator and powers.admin }}{{ 'admin of ' ~ acting.domain if powers.admin }}).
+        Switch accounts in the header.</p>
+      {% if mod_data.error %}<div class="flash error">{{ mod_data.error }}</div>{% endif %}
+
+      <section class="card">
+        <h2>Moderators</h2>
+        <ul class="plain">
+        {% for m in mod_data.moderators or [] %}
+          <li class="follow-row"><div><strong>{{ m.username }}@{{ m.domain }}</strong>
+            {% if m.ap_id == acting.actor_ap_id %}<span class="pill new">you</span>{% endif %}
+            {% if loop.first %}<span class="pill muted" title="Listed first: usually the community's creator">top mod</span>{% endif %}</div>
+            {% if m.ap_id != acting.actor_ap_id %}
+            <form method="post" action="/c/{{ c.id }}/mods" class="inline">
+              <input type="hidden" name="who" value="{{ m.ap_id }}"><input type="hidden" name="action" value="remove">
+              <button class="small secondary">Remove as moderator</button></form>
+            {% endif %}</li>
+        {% endfor %}
+        </ul>
+        <form method="post" action="/c/{{ c.id }}/mods" class="row">
+          <input name="who" required placeholder="user@instance" aria-label="New moderator">
+          <input type="hidden" name="action" value="add">
+          <button class="small">Add moderator</button>
+        </form>
+      </section>
+
+      <section class="card">
+        <h2>Bans</h2>
+        {% if mod_data.server_bans is not none %}
+          <h3 class="small muted">Banned (as listed by the server)</h3>
+          <ul class="plain">{% for b in mod_data.server_bans %}
+            <li class="follow-row"><div>{{ b.username }}@{{ b.domain }}</div>
+              <form method="post" action="/c/{{ c.id }}/bans" class="inline"><input type="hidden" name="who" value="{{ b.ap_id }}">
+                <input type="hidden" name="action" value="unban"><button class="small secondary">Unban</button></form></li>
+          {% else %}<li class="muted small">Nobody is banned.</li>{% endfor %}</ul>
+        {% endif %}
+        {% if mod_data.our_bans %}
+          <h3 class="small muted">Banned via ThreadBNC{% if mod_data.server_bans is none %} (this server can't list its bans){% endif %}</h3>
+          <ul class="plain">{% for b in mod_data.our_bans %}
+            <li class="follow-row"><div>{{ b.target }} <span class="small muted">· {{ b.reason or '' }} · {{ 'for ' ~ b.expires_days ~ ' days' if b.expires_days else 'permanent' }} · by {{ b.account_handle }} {{ b.created_at | ago }}</span></div>
+              <form method="post" action="/c/{{ c.id }}/bans" class="inline"><input type="hidden" name="who" value="{{ b.target_ap_id }}">
+                <input type="hidden" name="action" value="unban"><button class="small secondary">Unban</button></form></li>
+          {% endfor %}</ul>
+        {% elif mod_data.server_bans is none %}<p class="small muted">No bans made via ThreadBNC. (This server's API can't list its community bans.)</p>{% endif %}
+        <form method="post" action="/c/{{ c.id }}/bans" class="row">
+          <input name="who" required placeholder="user@instance">
+          <input name="reason" required placeholder="Reason">
+          <input name="days" class="num" inputmode="numeric" placeholder="days" title="Blank = permanent">
+          <label class="check small"><input type="checkbox" name="remove_content" value="1"> remove their content</label>
+          <input type="hidden" name="action" value="ban">
+          <button class="small danger">Ban from community</button>
+        </form>
+      </section>
+
+      <section class="card">
+        <h2>Moderation via ThreadBNC</h2>
+        <ul class="plain small">{% for a in mod_data.actions or [] %}
+          <li>{{ a.created_at | ago }} · <strong>{{ a.action | replace('_', ' ') }}</strong> {{ a.target or '' }}
+            {% if a.reason %}· "{{ a.reason }}"{% endif %} <span class="muted">by {{ a.account_handle }}</span></li>
+        {% else %}<li class="muted">Nothing yet. Remove, lock and pin posts from their thread pages (Mod menu).</li>{% endfor %}</ul>
+      </section>
+      {% endif %}
 
     {% else %}
       <section class="card">

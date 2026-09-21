@@ -58,6 +58,11 @@ class FakeServer:
         self.revoked = False
         self.admins: set[str] = set()
         self.communities: dict[str, NCommunity] = {}
+        self.community_bans: list[tuple[str, str]] = []   # (community local id, person ap id)
+        self.site_bans: set[str] = set()
+        self.site = {"registration_mode": "RequireApplication", "blocked_instances": [], "blocked_urls": []}
+        self.people = {"https://other.test/u/bob": "901", "https://home.test/u/dave": "900",
+                       "https://home.test/u/carol": "902"}
 
     def federate(self) -> None:
         for post_id, c in self.outbox:
@@ -155,6 +160,90 @@ class FakeAdapter(ThreadiverseAdapter):
 
     def my_roles(self, token):
         return {"admin": self._auth(token) in self.s.admins}
+
+    # -- moderation ------------------------------------------------------------
+    def _actor_for(self, ap_id):
+        name = ap_id.rstrip("/").rsplit("/", 1)[-1]
+        return NActor(ap_id, name, ap_id.split("/")[2])
+
+    def resolve_person(self, token, ref):
+        self._auth(token)
+        if not ref.startswith("http"):
+            user, host = ref.lstrip("@").split("@")
+            ref = f"https://{host}/u/{user}"
+        if ref not in self.s.people:
+            raise RemoteNotFound(ref)
+        return self.s.people[ref], self._actor_for(ref)
+
+    def _mods(self):
+        for p in self.s.posts.values():
+            return p.community.moderator_ap_ids or []
+        return []
+
+    def community_moderators(self, token, community_id):
+        self._auth(token)
+        return [self._actor_for(a) for a in self._mods()]
+
+    def set_moderator(self, token, community_id, person_id, added):
+        self._auth(token)
+        ap = next(a for a, pid in self.s.people.items() if pid == person_id)
+        for p in self.s.posts.values():
+            mods = p.community.moderator_ap_ids
+            if added and ap not in mods:
+                mods.append(ap)
+            if not added and ap in mods:
+                mods.remove(ap)
+        return [self._actor_for(a) for a in self._mods()]
+
+    def ban_from_community(self, token, community_id, person_id, ban, reason=None, days=None, remove_data=False):
+        self._auth(token)
+        ap = next(a for a, pid in self.s.people.items() if pid == person_id)
+        if ban:
+            self.s.community_bans.append((community_id, ap))
+        else:
+            self.s.community_bans = [b for b in self.s.community_bans if b != (community_id, ap)]
+
+    def community_bans(self, token, community_id):
+        return None
+
+    def _mod_flag(self, token, post_id, **flags):
+        user = self._auth(token)
+        self.s.posts[post_id] = replace(self.s.posts[post_id], **flags)
+        return user
+
+    def remove_post(self, token, post_id, removed, reason=None):
+        user = self._mod_flag(token, post_id, removed=removed, body="" if removed else self.s.posts[post_id].body)
+        self.s.modlog.append(("post", post_id, ModAction("remove_post", removed, "2026-09-21T12:00:00.000000Z",
+                                                         reason, NActor(f"https://{self.domain}/u/{user}", user,
+                                                                        self.domain), "moderator")))
+
+    def remove_comment(self, token, comment_id, removed, reason=None):
+        self._auth(token)
+        pid, cs = self._find_comment(comment_id)
+        cs[comment_id] = replace(cs[comment_id], removed=removed)
+
+    def lock_post(self, token, post_id, locked):
+        self._mod_flag(token, post_id, locked=locked)
+
+    def feature_post(self, token, post_id, featured):
+        self._mod_flag(token, post_id, featured=featured)
+
+    def site_ban(self, token, person_id, ban, reason=None, days=None, remove_data=False):
+        self._auth(token)
+        ap = next(a for a, pid in self.s.people.items() if pid == person_id)
+        (self.s.site_bans.add if ban else self.s.site_bans.discard)(ap)
+
+    def site_banned(self, token):
+        self._auth(token)
+        return [self._actor_for(a) for a in sorted(self.s.site_bans)]
+
+    def admin_settings(self, token):
+        self._auth(token)
+        return {**copy.deepcopy(self.s.site), "supports_blocklists": True}
+
+    def update_site(self, token, **fields):
+        self._auth(token)
+        self.s.site.update(fields)
 
     def create_community(self, token, name, title, description=None, nsfw=False, mods_only=False):
         user = self._auth(token)

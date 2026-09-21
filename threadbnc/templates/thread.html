@@ -56,6 +56,37 @@
         </form>
       </details>
     {% endif %}
+    {% if powers and powers.any %}
+      <details class="reply-box mod-box">
+        <summary title="{{ 'Moderator' if powers.moderator else 'Server admin' }} tools">Mod</summary>
+        <div class="stack mod-panel">
+          <form method="post" action="/o/{{ o.id }}/mod" class="row">
+            {% if o.cur_removed %}
+              <button name="action" value="restore" class="small">Restore</button>
+              <input name="reason" placeholder="Reason (optional)">
+            {% else %}
+              <input name="reason" required placeholder="Reason, shown in the modlog">
+              <button name="action" value="remove" class="small danger">Remove {{ 'post' if is_post else 'comment' }}</button>
+            {% endif %}
+          </form>
+          {% if is_post %}
+          <form method="post" action="/o/{{ o.id }}/mod" class="row">
+            <button name="action" value="{{ 'unlock' if o.cur_locked else 'lock' }}" class="small secondary">{{ 'Unlock' if o.cur_locked else 'Lock' }} comments</button>
+            <button name="action" value="{{ 'unpin' if o.cur_featured else 'pin' }}" class="small secondary">{{ 'Unpin' if o.cur_featured else 'Pin' }} in community</button>
+          </form>
+          {% endif %}
+          {% if o.a_ap and o.a_ap != me.actor_ap_id %}
+          <form method="post" action="/o/{{ o.id }}/ban-author" class="row">
+            <span class="small">Ban {{ o.username }}@{{ o.a_instance }} from the community:</span>
+            <input name="reason" required placeholder="Reason">
+            <input name="days" class="num" inputmode="numeric" placeholder="days" title="Blank = permanent">
+            <label class="check small"><input type="checkbox" name="remove_content" value="1"> remove their content</label>
+            <button class="small danger">Ban</button>
+          </form>
+          {% endif %}
+        </div>
+      </details>
+    {% endif %}
   </div>
 {% endif %}
 {%- endmacro %}

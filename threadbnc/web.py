@@ -30,6 +30,7 @@ from . import media as media_mod
 from .adapters import RemoteError, host_of
 from .accounts import Account, AccountError, Poster
 from .bouncer import Bouncer
+from .moderation import REGISTRATION_MODES, Moderation
 from .config import Settings, load_settings
 from .db import open_database, parse_ts, utcnow
 from .render import MediaInfo, looks_like_media, render_markdown
@@ -61,6 +62,16 @@ EVENT_LABELS = {
     "unfollowed": "Unfollowed",
     "follow_settings_changed": "Follow settings changed",
     "community_created": "Community created via ThreadBNC",
+    "remove_requested": "You removed this via ThreadBNC (waiting to see it on the server)",
+    "restore_requested": "You restored this via ThreadBNC (waiting to see it on the server)",
+    "lock_requested": "You locked this via ThreadBNC",
+    "unlock_requested": "You unlocked this via ThreadBNC",
+    "pin_requested": "You pinned this via ThreadBNC",
+    "unpin_requested": "You unpinned this via ThreadBNC",
+    "pinned": "Pinned",
+    "unpinned": "Unpinned",
+    "moderator_added": "Moderator added",
+    "moderator_removed": "Moderator removed",
     "auto_capture_expired": "Auto-captured thread expired and purged",
     "trashed": "Moved to trash",
     "restored_from_trash": "Restored from trash",
@@ -128,6 +139,15 @@ def sort_tree(node: dict[str, Any], sort: str) -> None:
         stack.extend(n["children"])
 
 
+def _days(text: str) -> int | None:
+    """Ban length from a form field: blank/0 means permanent."""
+    try:
+        n = int((text or "").strip() or 0)
+    except ValueError:
+        return None
+    return n if n > 0 else None
+
+
 def event_label(e: Any) -> str:
     et = e["event_type"]
     label = EVENT_LABELS.get(et, et.replace("_", " ").capitalize())
@@ -185,6 +205,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     db = bouncer.db if bouncer else open_database(settings)
     bouncer = bouncer or Bouncer(db, settings)
     poster = Poster(bouncer, TokenVault(settings.credentials_key, settings.data_dir))
+    mod = Moderation(poster)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -480,6 +501,16 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             cevents = conn.execute("SELECT * FROM state_events WHERE community_id=? ORDER BY id DESC LIMIT 30",
                                    (cid,)).fetchall()
             follows = feed_mod.followed_communities(conn)
+        me = acting(request)
+        powers = mod.powers(me, cid)
+        mod_data: dict[str, Any] = {}
+        if tab == "mod" and powers.any and me:
+            try:
+                mod_data["moderators"] = mod.moderators(me, cid)
+            except AccountError as exc:
+                mod_data["error"] = str(exc)
+            mod_data["server_bans"], mod_data["our_bans"] = mod.community_bans(me, cid)
+            mod_data["actions"] = mod.recent_actions(community_id=cid)
         live, live_error = [], None
         if tab == "live":
             try:
@@ -499,7 +530,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         return render(request, "community.html", c=c, follow=follow_row, tab=tab, feed=fp, counts=counts,
                       events=cevents, live=live, live_error=live_error, sort=sort, window=t, unread=unread,
                       page=page, live_sort=live_sort, follows=follows, base_url=f"/c/{cid}",
-                      community=c)
+                      community=c, powers=powers, mod_data=mod_data)
 
     # ---- media ----------------------------------------------------------
     media_root = (bouncer.media_dir).resolve()
@@ -690,6 +721,97 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                        "followed here with no expiry. Use ✎ New post to start it off.")
         return RedirectResponse(f"/c/{cid}", status_code=303)
 
+    # ---- moderation ----------------------------------------------------------
+    @app.post("/c/{cid}/mods")
+    def community_mods(request: Request, cid: int, who: str = Form(...), action: str = Form("add")):
+        return account_action(request, f"/c/{cid}?tab=mod",
+                              lambda a: mod.set_moderator(a, cid, who, action == "add"),
+                              "Moderators updated." if action == "add" else "Moderator removed.")
+
+    @app.post("/c/{cid}/bans")
+    def community_bans(request: Request, cid: int, who: str = Form(...), action: str = Form("ban"),
+                       reason: str = Form(""), days: str = Form(""), remove_content: str | None = Form(None)):
+        ban = action == "ban"
+        return account_action(request, f"/c/{cid}?tab=mod",
+                              lambda a: mod.community_ban(a, cid, who, ban, reason, _days(days), bool(remove_content)),
+                              "Banned from the community." if ban else "Unbanned.")
+
+    @app.post("/o/{oid}/mod")
+    def moderate_object(request: Request, oid: int, action: str = Form(...), reason: str = Form("")):
+        actions = {
+            "remove": (lambda a: mod.remove(a, oid, reason, True), "Removed. The archive keeps what it saw."),
+            "restore": (lambda a: mod.remove(a, oid, reason, False), "Restored."),
+            "lock": (lambda a: mod.lock(a, oid, True), "Locked."),
+            "unlock": (lambda a: mod.lock(a, oid, False), "Unlocked."),
+            "pin": (lambda a: mod.pin(a, oid, True), "Pinned in the community."),
+            "unpin": (lambda a: mod.pin(a, oid, False), "Unpinned."),
+        }
+        if action not in actions:
+            raise HTTPException(400)
+        fn, ok = actions[action]
+        return account_action(request, "/", fn, ok)
+
+    @app.post("/o/{oid}/ban-author")
+    def ban_author(request: Request, oid: int, reason: str = Form(""), days: str = Form(""),
+                   remove_content: str | None = Form(None)):
+        return account_action(request, "/",
+                              lambda a: mod.ban_author(a, oid, reason, _days(days), bool(remove_content)),
+                              "Author banned from the community.")
+
+    # ---- admin -----------------------------------------------------------------
+    def admin_account(aid: int) -> Account:
+        account = poster.get(aid)
+        if account is None:
+            raise HTTPException(404)
+        return account
+
+    def admin_action(request: Request, aid: int, fn: Any, ok: str) -> RedirectResponse:
+        try:
+            fn(admin_account(aid))
+            flash(request, ok)
+        except AccountError as exc:
+            flash(request, str(exc), "error")
+        return RedirectResponse(f"/admin?account={aid}", status_code=303)
+
+    @app.get("/admin", response_class=HTMLResponse)
+    def admin_page(request: Request, account: int | None = None):
+        admins = [a for a in poster.list() if a.is_admin]
+        chosen = next((a for a in admins if a.id == account), admins[0] if admins else None)
+        site, error = None, None
+        if chosen:
+            try:
+                site = mod.site_settings(chosen)
+            except AccountError as exc:
+                error = str(exc)
+        return render(request, "admin.html", admins=admins, chosen=chosen, site=site, error=error,
+                      actions=mod.recent_actions(account_id=chosen.id) if chosen else [],
+                      registration_modes=REGISTRATION_MODES)
+
+    @app.post("/admin/{aid}/registration")
+    def admin_registration(request: Request, aid: int, mode: str = Form(...)):
+        return admin_action(request, aid, lambda a: mod.set_registration_mode(a, mode),
+                            f"Registration set to {REGISTRATION_MODES.get(mode, mode)}.")
+
+    @app.post("/admin/{aid}/ban")
+    def admin_ban(request: Request, aid: int, who: str = Form(...), action: str = Form("ban"),
+                  reason: str = Form(""), days: str = Form(""), remove_content: str | None = Form(None)):
+        ban = action == "ban"
+        return admin_action(request, aid,
+                            lambda a: mod.site_ban(a, who, ban, reason, _days(days), bool(remove_content)),
+                            "Banned from the server." if ban else "Unbanned from the server.")
+
+    @app.post("/admin/{aid}/block-instance")
+    def admin_block_instance(request: Request, aid: int, domain: str = Form(...), action: str = Form("block")):
+        block = action == "block"
+        return admin_action(request, aid, lambda a: mod.block_instance(a, domain, block),
+                            f"{'Blocked' if block else 'Unblocked'} {domain.strip()}.")
+
+    @app.post("/admin/{aid}/block-link")
+    def admin_block_link(request: Request, aid: int, domain: str = Form(...), action: str = Form("block")):
+        block = action == "block"
+        return admin_action(request, aid, lambda a: mod.block_link_domain(a, domain, block),
+                            f"Links to {domain.strip()} {'blocked' if block else 'allowed again'}.")
+
     @app.post("/accounts/act-as")
     def act_as(request: Request, account_id: int = Form(...)):
         if poster.get(account_id):
@@ -825,8 +947,9 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         md, media_for, preview = md_for(list(nodes))
         me = acting(request)
         my_votes = poster.my_votes(me, [o["canonical_ap_id"] for o in objs])
+        powers = mod.powers(me, t["cid"])
         return render(request, "thread.html", t=t, root=root, total_comments=total_comments, md=md,
-                      media_for=media_for, preview=preview, my_votes=my_votes, me=me,
+                      media_for=media_for, preview=preview, my_votes=my_votes, me=me, powers=powers,
                       new_count=new_count, changed_count=changed_count, comment_sort=sort,
                       comment_sorts=COMMENT_SORTS,
                       thread_events=thread_events, instance=instance, since=since)
