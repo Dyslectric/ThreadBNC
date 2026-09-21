@@ -76,24 +76,24 @@ class Bouncer:
             return self._adapter_factory(domain)
         now = utcnow()
         cached = self._adapters.get(domain)
-        # Re-pick now and then: a server upgraded to Lemmy 1.0 needs the v4 adapter.
+        # Ask the server what it runs on first use after starting, then daily: a
+        # server upgraded to Lemmy 1.0 needs the v4 adapter, and restarting
+        # ThreadBNC should be enough to notice. What we saw last time is only a
+        # fallback for when the server can't be reached.
         if cached and parse_ts(now) - parse_ts(cached[1]) <= SOFTWARE_RECHECK:  # type: ignore[operator]
             return cached[0]
-        with self.db.connect() as conn:
-            row = conn.execute("SELECT software, software_version, software_checked_at FROM instances "
-                               "WHERE domain=?", (domain,)).fetchone()
-        software = row["software"] if row else None
-        version = row["software_version"] if row else None
-        checked = parse_ts(row["software_checked_at"]) if row else None
-        if not software or not checked or parse_ts(now) - checked > SOFTWARE_RECHECK:  # type: ignore[operator]
-            try:
-                software, version = detect_software(self.http, domain)
-            except RemoteError:
-                if not software:
-                    raise
-            else:
-                with self.db.transaction() as conn:
-                    store.upsert_instance(conn, domain, now, software=software, version=version)
+        try:
+            software, version = detect_software(self.http, domain)
+        except RemoteError:
+            with self.db.connect() as conn:
+                row = conn.execute("SELECT software, software_version FROM instances WHERE domain=?",
+                                   (domain,)).fetchone()
+            if not row or not row["software"]:
+                raise
+            software, version = row["software"], row["software_version"]
+        else:
+            with self.db.transaction() as conn:
+                store.upsert_instance(conn, domain, now, software=software, version=version)
         cls = adapter_class(software, version)
         if cls is None:
             raise UnsupportedSoftware(f"{domain} runs '{software}', which is not supported yet")

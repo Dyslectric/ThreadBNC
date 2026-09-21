@@ -23,6 +23,7 @@ from threadbnc.adapters import (
     RemoteNotFound,
     adapter_class,
 )
+from threadbnc import store
 from threadbnc.bouncer import Bouncer
 from threadbnc.db import fmt_ts, open_database, parse_ts, utcnow
 
@@ -88,6 +89,32 @@ def paged(*pages: Any):
 ])
 def test_adapter_is_chosen_by_software_and_version(software, version, cls):
     assert adapter_class(software, version) is cls
+
+
+def test_restarting_picks_up_an_upgrade_the_database_does_not_know_about(settings):
+    """The stored software check is recent and says 0.19, but the server now runs
+    1.0: a freshly started bouncer must ask the server, not trust the database."""
+    routes = {
+        ("GET", "/.well-known/nodeinfo"): {"links": [{"rel": "http://nodeinfo.diaspora.software/ns/schema/2.1",
+                                                      "href": f"https://{DOMAIN}/nodeinfo/2.1"}]},
+        ("GET", "/nodeinfo/2.1"): {"software": {"name": "lemmy", "version": "1.0.0-beta.2"}},
+    }
+    db = open_database(settings)
+    with db.transaction() as conn:
+        store.upsert_instance(conn, DOMAIN, utcnow(), software="lemmy", version="0.19.20")
+    bouncer = Bouncer(db, settings, http=ReplayHttp(routes))  # type: ignore[arg-type]
+    assert type(bouncer.adapter_for(DOMAIN)) is Lemmy1Adapter
+    with db.connect() as conn:
+        assert conn.execute("SELECT software_version FROM instances WHERE domain=?",
+                            (DOMAIN,)).fetchone()[0] == "1.0.0-beta.2"
+
+
+def test_unreachable_server_falls_back_to_what_was_seen_last(settings):
+    db = open_database(settings)
+    with db.transaction() as conn:
+        store.upsert_instance(conn, DOMAIN, utcnow(), software="lemmy", version="1.0.0")
+    bouncer = Bouncer(db, settings, http=ReplayHttp({}))  # type: ignore[arg-type]  # nodeinfo: not found
+    assert type(bouncer.adapter_for(DOMAIN)) is Lemmy1Adapter
 
 
 def test_bouncer_switches_to_v4_after_the_server_upgrades(settings):
