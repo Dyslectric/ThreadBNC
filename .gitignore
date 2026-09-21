@@ -15,3 +15,6 @@ media/
 .env.*
 !.env.example
 .claude/
+
+# Server-specific compose overrides (domain, networks, proxy labels)
+compose.override.yaml
