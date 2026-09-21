@@ -70,6 +70,11 @@ class FakeServer:
         self.follows: list[list[str]] = []
         self.join_request_lists = 0
         self.members_only = False  # posts readable only with a session (a private community)
+        # Single sign-on (Lemmy 1.0): providers, (provider id, provider identity) -> username,
+        # and codes the fake identity provider handed out: code -> (identity, PKCE challenge).
+        self.oauth_providers: list[dict] = []
+        self.oauth_links: dict[tuple[int, str], str] = {}
+        self.oauth_codes: dict[str, tuple[str, str | None]] = {}
 
     def ask_to_join(self, person_ap_id: str, community_ap_id: str) -> None:
         self.follows = [f for f in self.follows if f[:2] != [person_ap_id, community_ap_id]]
@@ -126,6 +131,63 @@ class FakeAdapter(ThreadiverseAdapter):
     @property
     def supports_private_communities(self) -> bool:
         return self.s.v4
+
+    @property
+    def supports_sso(self) -> bool:
+        return self.s.v4
+
+    # -- single sign-on (Lemmy 1.0) ------------------------------------------------
+    def sign_in_options(self):
+        self._check()
+        keys = ("id", "display_name", "authorization_endpoint", "client_id", "scopes", "use_pkce")
+        return [{k: p[k] for k in keys} for p in self.s.oauth_providers if p["enabled"]]
+
+    def sso_settings(self, token):
+        self._auth(token)
+        return {"providers": [{k: v for k, v in p.items() if k != "client_secret"} for p in self.s.oauth_providers],
+                "signups": bool(self.s.site.get("oauth_registration"))}
+
+    def create_oauth_provider(self, token, **fields):
+        self._auth(token)
+        provider = {"id": len(self.s.oauth_providers) + 1, **fields}
+        self.s.oauth_providers.append(provider)
+        return provider
+
+    def edit_oauth_provider(self, token, provider_id, **fields):
+        self._auth(token)
+        next(p for p in self.s.oauth_providers if p["id"] == provider_id).update(fields)
+
+    def delete_oauth_provider(self, token, provider_id):
+        self._auth(token)
+        self.s.oauth_providers = [p for p in self.s.oauth_providers if p["id"] != provider_id]
+
+    def oauth_authenticate(self, code, provider_id, redirect_uri, verifier, username=None, answer=None):
+        import base64
+        import hashlib
+
+        def refuse(err):
+            raise RemoteRejected(f"{self.domain} refused: {err}", err)
+        provider = next((p for p in self.s.oauth_providers if p["id"] == provider_id and p["enabled"]), None)
+        if provider is None or redirect_uri != f"https://{self.domain}/oauth/callback" or code not in self.s.oauth_codes:
+            refuse("oauth_authorization_invalid")
+        identity, challenge = self.s.oauth_codes.pop(code)  # codes are single-use
+        if provider.get("use_pkce"):
+            digest = base64.urlsafe_b64encode(hashlib.sha256((verifier or "").encode()).digest()).rstrip(b"=")
+            if not verifier or digest.decode() != challenge:
+                refuse("oauth_authorization_invalid")
+        user = self.s.oauth_links.get((provider_id, identity))
+        if user is None:
+            if not self.s.site.get("oauth_registration"):
+                refuse("oauth_registration_closed")
+            if not username:
+                refuse("registration_username_required")
+            if username in self.s.users:
+                refuse("username_already_taken")
+            self.s.users[username] = None
+            self.s.oauth_links[(provider_id, identity)] = user = username
+        token = f"jwt-{user}-{len(self.s.sessions)}"
+        self.s.sessions[token] = user
+        return {"jwt": token}
 
     def _check(self) -> None:
         if self.s.down:

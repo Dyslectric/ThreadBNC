@@ -84,6 +84,78 @@
   </div>
   {% endif %}
 
+  {% if sso %}
+  <section class="card spaced" id="sso">
+    <h2>Single sign-on</h2>
+    {% if sso.error %}<div class="flash error">{{ sso.error }}</div>{% else %}
+    <p class="small muted">Let people sign in to {{ chosen.domain }} with an identity provider such as Authentik.
+      In the provider, create an OpenID Connect application with this return (redirect) address:
+      <code>{{ sso.return_address }}</code></p>
+    {% if sso.providers %}
+      {% if sso.forwards %}
+        <p class="small"><span class="pill good">ready</span> {{ sso.return_address }} leads back to ThreadBNC, so
+          "Sign in with …" appears on the Accounts page for {{ chosen.domain }}.</p>
+      {% else %}
+        <div class="flash error">{{ sso.return_address }} doesn't lead back to ThreadBNC yet. Have your reverse
+          proxy redirect it (keeping the query string) to <code>{{ our_callback }}</code>; until then ThreadBNC
+          won't offer single sign-on for {{ chosen.domain }}.</div>
+      {% endif %}
+    {% endif %}
+
+    <ul class="plain">
+    {% for p in sso.providers %}
+      <li class="follow-row"><div><strong>{{ p.display_name }}</strong>
+          {% if not p.enabled %}<span class="pill warn">off</span>{% endif %}
+          <div class="small muted"><code>{{ p.issuer }}</code> · client <code>{{ p.client_id }}</code> ·
+            identity from <code>{{ p.id_claim }}</code>{% if p.use_pkce %} · PKCE{% endif %}</div>
+          <details><summary class="small">Link an existing account</summary>
+            <p class="small muted">{{ chosen.domain }} can't link accounts through its API. Set the provider's
+              subject mode so <code>{{ p.id_claim }}</code> is the person's provider username (in Authentik:
+              Provider → Advanced protocol settings → Subject mode → "Based on the User's username"), then run
+              this once in {{ chosen.domain }}'s database, with their usernames filled in:</p>
+            <pre class="small">INSERT INTO oauth_account (local_user_id, oauth_provider_id, oauth_user_id)
+SELECT lu.id, {{ p.id }}, 'PROVIDER_USERNAME' FROM local_user lu JOIN person p ON p.id = lu.person_id
+WHERE p.local AND p.name = '{{ chosen.username }}';</pre>
+          </details></div>
+        <div class="row compact">
+          <form method="post" action="/admin/{{ chosen.id }}/sso/providers/{{ p.id }}" class="inline">
+            <input type="hidden" name="action" value="{{ 'disable' if p.enabled else 'enable' }}">
+            <button class="small secondary">{{ 'Turn off' if p.enabled else 'Turn on' }}</button></form>
+          <form method="post" action="/admin/{{ chosen.id }}/sso/providers/{{ p.id }}" class="inline">
+            <input type="hidden" name="action" value="delete"><button class="small danger">Remove</button></form>
+        </div></li>
+    {% else %}<li class="muted small">No sign-in providers yet.</li>{% endfor %}
+    </ul>
+
+    <form method="post" action="/admin/{{ chosen.id }}/sso/signups" class="row">
+      <label class="check small"><input type="checkbox" name="allowed" value="1" {{ 'checked' if sso.signups }}>
+        New people may create an account by signing in</label>
+      <button class="small secondary">Save</button>
+    </form>
+    <p class="small muted">Who can sign in at all is up to the provider: in Authentik, bind a group to the
+      application so only its members get through.</p>
+
+    <details {{ 'open' if not sso.providers }}><summary>Add a provider</summary>
+      <form method="post" action="/admin/{{ chosen.id }}/sso/providers" class="stack narrow-form" autocomplete="off">
+        <label>Name shown on the button <input name="name" required placeholder="Authentik"></label>
+        <label>Issuer URL <input name="issuer" type="url" required
+          placeholder="https://auth.example.com/application/o/lemmy/"></label>
+        <label>Client ID <input name="client_id" required></label>
+        <label>Client secret <input name="client_secret" type="password" required autocomplete="off"></label>
+        <details><summary class="small">Advanced</summary>
+          <label>Scopes <input name="scopes" value="openid email profile"></label>
+          <label>Identity claim <input name="id_claim" value="sub"></label>
+          <label class="check small"><input type="checkbox" name="use_pkce" value="1" checked> Use PKCE</label>
+        </details>
+        <p class="small muted">The endpoints are read from the issuer's OpenID configuration. The secret goes to
+          {{ chosen.domain }} and isn't kept by ThreadBNC.</p>
+        <button class="small">Add provider</button>
+      </form>
+    </details>
+    {% endif %}
+  </section>
+  {% endif %}
+
   <section class="card spaced">
     <h2>Admin actions via ThreadBNC</h2>
     <ul class="plain small">{% for a in actions %}

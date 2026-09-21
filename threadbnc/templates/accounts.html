@@ -41,7 +41,9 @@
 <section class="card narrow-form">
   <h2>{{ 'Add another account' if accounts else 'Add an account' }}</h2>
   <form method="post" action="/accounts" class="stack" autocomplete="off">
-    <label>Server <input name="server" placeholder="lemmy.world, dyslectric.dev…" required></label>
+    <label>Server <input name="server" id="server" placeholder="lemmy.world, dyslectric.dev…" required
+      value="{{ server or '' }}"></label>
+    <div id="sso" class="sso-options" aria-live="polite">{% if sign_in %}{% include "_sso_options.html" %}{% endif %}</div>
     <label>Username <input name="username" required autocomplete="username"></label>
     <label>Password <input type="password" name="password" required autocomplete="current-password"></label>
     <label>2FA code <span class="muted small">(Lemmy, if enabled)</span> <input name="totp" inputmode="numeric" autocomplete="one-time-code"></label>
@@ -49,4 +51,5 @@
   </form>
   <p class="small muted">To log in again after the server ends a session, add the account again. Your votes and settings are kept.</p>
 </section>
+<script src="{{ static_url('accounts.js') }}" defer></script>
 {% endblock %}

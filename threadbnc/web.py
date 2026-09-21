@@ -32,6 +32,7 @@ from .accounts import Account, AccountError, Poster
 from .bouncer import Bouncer
 from .moderation import REGISTRATION_MODES, Moderation
 from .private import PrivateCommunities
+from .sso import CALLBACK_PATH, SingleSignOn, callback_url
 from .config import Settings, load_settings
 from .db import open_database, parse_ts, utcnow
 from .render import MediaInfo, looks_like_media, render_markdown
@@ -210,6 +211,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     private = PrivateCommunities(mod)
     bouncer.hooks.append(private.sweep)
     bouncer.read_token = private.read_token
+    sso = SingleSignOn(poster)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -234,7 +236,9 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                                  static_url=static_url, trash_count=trash_count)
     app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
 
-    PUBLIC = ("/login", "/static/", "/robots.txt", "/healthz")
+    # The SSO return page comes from the identity provider's site, so the
+    # (SameSite=strict) session cookie isn't sent; it's authorised by its state.
+    PUBLIC = ("/login", "/static/", "/robots.txt", "/healthz", CALLBACK_PATH)
 
     @app.middleware("http")
     async def guard(request: Request, call_next):
@@ -680,8 +684,76 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
 
     # ---- accounts & acting as them -----------------------------------------
     @app.get("/accounts", response_class=HTMLResponse)
-    def accounts_page(request: Request):
-        return render(request, "accounts.html")
+    def accounts_page(request: Request, server: str = ""):
+        sign_in = None
+        if server.strip():
+            try:
+                sign_in = sso.options(server, callback_url(str(request.base_url)))
+            except AccountError:
+                pass
+        return render(request, "accounts.html", server=server, sign_in=sign_in)
+
+    # ---- single sign-on -------------------------------------------------------
+    def our_callback(request: Request) -> str:
+        return callback_url(str(request.base_url))
+
+    @app.get("/accounts/sign-in-options")
+    def sign_in_options(request: Request, server: str = ""):
+        if not server.strip():
+            return {"providers": [], "ready": False, "note": None}
+        try:
+            return sso.options(server, our_callback(request))
+        except AccountError as exc:
+            return {"providers": [], "ready": False, "note": str(exc)}
+
+    @app.get("/accounts/sso/start")
+    def sso_start(request: Request, server: str, provider: int):
+        try:
+            return RedirectResponse(sso.start(server, provider), status_code=303)
+        except AccountError as exc:
+            flash(request, str(exc), "error")
+            return RedirectResponse("/accounts", status_code=303)
+
+    @app.get(CALLBACK_PATH, response_class=HTMLResponse)
+    def sso_callback(request: Request, state: str = "", code: str | None = None, error: str | None = None):
+        row = sso.finish(state, code, error) if state else None
+        # A plain page that moves on by itself: the next request is same-site,
+        # so it carries the session cookie again.
+        return templates.TemplateResponse(request, "sso_return.html", {
+            "next": f"/accounts/sso/{state}" if row else "/accounts",
+            "message": None if row else "That sign-in link is unknown or was already used. Start again."},
+            status_code=200 if row else 400)
+
+    @app.get("/accounts/sso/go/{state}", response_class=HTMLResponse)
+    def sso_go(request: Request, state: str):
+        row = sso.pending(state)
+        if row is None or row["status"] != "started":
+            return RedirectResponse("/accounts", status_code=303)
+        return render(request, "sso_go.html", url=row["authorize_url"], provider=row["provider_name"])
+
+    @app.get("/accounts/sso/{state}", response_class=HTMLResponse)
+    def sso_outcome(request: Request, state: str):
+        row = sso.pending(state)
+        if row is None:
+            return RedirectResponse("/accounts", status_code=303)
+        if row["status"] in ("need_username", "need_answer"):
+            return render(request, "sso_more.html", row=row)
+        if row["status"] == "done" and row["account_id"]:
+            request.session["acting_account"] = row["account_id"]
+        flash(request, row["message"] or "Sign-in didn't finish; start again.",
+              "info" if row["status"] in ("done", "waiting") else "error")
+        return RedirectResponse("/accounts", status_code=303)
+
+    @app.post("/accounts/sso/{state}/retry")
+    def sso_retry(request: Request, state: str, username: str = Form(""), answer: str = Form("")):
+        try:
+            new_state = sso.retry(state, username, answer)
+        except AccountError as exc:
+            flash(request, str(exc), "error")
+            return RedirectResponse("/accounts", status_code=303)
+        # Via a page, not a redirect: form-action 'self' would block a form
+        # submission that ends up on the provider's site.
+        return RedirectResponse(f"/accounts/sso/go/{new_state}", status_code=303)
 
     @app.post("/accounts")
     def add_account(request: Request, server: str = Form(...), username: str = Form(...),
@@ -833,15 +905,43 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     def admin_page(request: Request, account: int | None = None):
         admins = [a for a in poster.list() if a.is_admin]
         chosen = next((a for a in admins if a.id == account), admins[0] if admins else None)
-        site, error = None, None
+        site, error, sso_info = None, None, None
         if chosen:
             try:
                 site = mod.site_settings(chosen)
             except AccountError as exc:
                 error = str(exc)
-        return render(request, "admin.html", admins=admins, chosen=chosen, site=site, error=error,
+            if getattr(bouncer.adapter_for(chosen.domain), "supports_sso", False):
+                try:
+                    sso_info = sso.settings(chosen, our_callback(request))
+                except AccountError as exc:
+                    sso_info = {"error": str(exc)}
+        return render(request, "admin.html", admins=admins, chosen=chosen, site=site, error=error, sso=sso_info,
+                      our_callback=our_callback(request),
                       actions=mod.recent_actions(account_id=chosen.id) if chosen else [],
                       registration_modes=REGISTRATION_MODES)
+
+    @app.post("/admin/{aid}/sso/providers")
+    def admin_sso_add(request: Request, aid: int, name: str = Form(...), issuer: str = Form(...),
+                      client_id: str = Form(...), client_secret: str = Form(...),
+                      scopes: str = Form("openid email profile"), id_claim: str = Form("sub"),
+                      use_pkce: str | None = Form(None)):
+        return admin_action(request, aid, lambda a: sso.add_provider(
+            a, name, issuer, client_id, client_secret, scopes, id_claim, bool(use_pkce)),
+            f"Added {name.strip()} as a sign-in option.")
+
+    @app.post("/admin/{aid}/sso/providers/{pid}")
+    def admin_sso_provider(request: Request, aid: int, pid: int, action: str = Form(...)):
+        return admin_action(request, aid, lambda a: sso.set_provider(a, pid, action),
+                            {"enable": "Sign-in option turned on.", "disable": "Sign-in option turned off.",
+                             "delete": "Sign-in option removed."}.get(action, "Done."))
+
+    @app.post("/admin/{aid}/sso/signups")
+    def admin_sso_signups(request: Request, aid: int, allowed: str = Form("0")):
+        on = allowed == "1"
+        return admin_action(request, aid, lambda a: sso.set_signups(a, on),
+                            "New accounts can now sign up with single sign-on." if on else
+                            "Single sign-on now only signs in to accounts that already exist.")
 
     @app.post("/admin/{aid}/registration")
     def admin_registration(request: Request, aid: int, mode: str = Form(...)):

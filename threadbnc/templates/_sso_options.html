@@ -1,0 +1,10 @@
+{% if sign_in.ready %}
+  <div class="sso-buttons">
+  {% for p in sign_in.providers %}
+    <a class="sso-button" href="/accounts/sso/start?server={{ sign_in.domain | urlencode }}&amp;provider={{ p.id }}">Sign in with {{ p.name }}</a>
+  {% endfor %}
+  </div>
+  <p class="small muted">Or log in with a password below.</p>
+{% elif sign_in.note %}
+  <p class="small muted">{{ sign_in.note }}</p>
+{% endif %}

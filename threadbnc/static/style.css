@@ -297,3 +297,8 @@ details.mod-box > summary { color: var(--warn); }
 .admin-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
 .admin-grid > .card { margin-bottom: 0; }
 .card.spaced { margin-top: 16px; }
+
+/* ---- single sign-on ---- */
+.sso-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+a.sso-button { flex: 1; display: block; text-align: center; padding: 8px 12px; border-radius: 7px; background: var(--accent); color: #fff; font-weight: 600; text-decoration: none; }
+#sso pre { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--bg); padding: 8px; border-radius: 7px; }

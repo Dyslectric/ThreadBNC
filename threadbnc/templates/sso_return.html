@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block head %}{% if not message %}<meta http-equiv="refresh" content="0;url={{ next }}">{% endif %}{% endblock %}
+{% block title %}Signing in{% endblock %}
+{% block content %}
+<section class="card narrow">
+  <h1>Single sign-on</h1>
+  {% if message %}<div class="flash error">{{ message }}</div>{% else %}<p class="muted">Finishing sign-in…</p>{% endif %}
+  <p><a href="{{ next }}">Continue</a></p>
+</section>
+{% endblock %}

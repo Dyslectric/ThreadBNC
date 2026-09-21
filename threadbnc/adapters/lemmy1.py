@@ -421,6 +421,41 @@ class Lemmy1Adapter(LemmyAdapter):
         actions.sort(key=lambda a: a.when or "")
         return actions
 
+    # -- single sign-on (OAuth / OpenID Connect providers) ------------------------
+    supports_sso = True
+
+    def sign_in_options(self) -> list[dict[str, Any]]:
+        """The server's enabled sign-in providers, as any visitor sees them."""
+        site = self.http.request_json("GET", self.domain, f"{self.api_base}/site", throttle=False) or {}
+        return [p for p in site.get("oauth_providers") or [] if p.get("id")]
+
+    def sso_settings(self, token: str) -> dict[str, Any]:
+        """Providers as an admin sees them (never the client secret), and whether
+        new accounts may sign up through them."""
+        site = self._call("GET", "/site", token) or {}
+        local = (site.get("site_view") or {}).get("local_site") or {}
+        return {"providers": site.get("admin_oauth_providers") or [],
+                "signups": bool(local.get("oauth_registration"))}
+
+    def create_oauth_provider(self, token: str, **fields: Any) -> dict[str, Any]:
+        return self._call("POST", "/oauth_provider", token, fields) or {}
+
+    def edit_oauth_provider(self, token: str, provider_id: int, **fields: Any) -> dict[str, Any]:
+        return self._call("PUT", "/oauth_provider", token, {"id": provider_id, **fields}) or {}
+
+    def delete_oauth_provider(self, token: str, provider_id: int) -> None:
+        self._call("DELETE", "/oauth_provider", token, {"id": provider_id})
+
+    def oauth_authenticate(self, code: str, provider_id: int, redirect_uri: str, verifier: str | None,
+                           username: str | None = None, answer: str | None = None) -> dict[str, Any]:
+        """Finish an SSO sign-in: the server swaps the code for the person's
+        identity and returns a session (or says what it still needs)."""
+        return self.http.request_json("POST", self.domain, f"{self.api_base}/oauth/authenticate", throttle=False,
+                                      json={"code": code, "oauth_provider_id": provider_id,
+                                            "redirect_uri": redirect_uri, "pkce_code_verifier": verifier,
+                                            "username": username, "answer": answer,
+                                            "stay_logged_in": True}) or {}
+
     # -- private communities ----------------------------------------------------
     def community_by_id(self, token: str, community_id: str) -> NCommunity:
         data = self._call("GET", "/community", token, id=int(community_id)) or {}

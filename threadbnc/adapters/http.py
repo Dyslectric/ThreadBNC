@@ -91,5 +91,13 @@ class HttpClient:
             raise RemoteUnavailable(f"{url}: HTTP {resp.status_code} {err}")
         return data
 
+    def redirect_target(self, domain: str, path: str) -> str | None:
+        """Where https://{domain}{path} redirects to (its Location), without following it."""
+        try:
+            resp = self._client.get(f"https://{domain}{path}", follow_redirects=False)
+        except httpx.HTTPError as exc:
+            raise RemoteUnavailable(f"{domain}: {type(exc).__name__}: {exc}") from exc
+        return resp.headers.get("location") if resp.is_redirect else None
+
     def close(self) -> None:
         self._client.close()

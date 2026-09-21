@@ -111,8 +111,18 @@ class Poster:
         if not username or not password:
             raise AccountError("Username and password are required.")
         try:
+            token = self.bouncer.adapter_for(domain).login(username, password, (totp or "").strip() or None)
+        except RemoteAuthError as exc:
+            raise AccountError(f"Login failed: {exc.code or exc}") from exc
+        except RemoteError as exc:
+            raise AccountError(f"Couldn't reach {domain}: {exc}") from exc
+        return self.add_session(domain, token)
+
+    def add_session(self, domain: str, token: str) -> Account:
+        """Keep a session the server gave us (after a password or single
+        sign-on login), encrypted, and learn who it belongs to."""
+        try:
             adapter = self.bouncer.adapter_for(domain)
-            token = adapter.login(username, password, (totp or "").strip() or None)
             me = adapter.whoami(token)
             roles = adapter.my_roles(token)
         except RemoteAuthError as exc:

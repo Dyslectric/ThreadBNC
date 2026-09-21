@@ -276,6 +276,23 @@ CREATE TABLE IF NOT EXISTS join_requests (
     UNIQUE (community_id, handle)
 );
 
+-- Single sign-on logins in progress (state is the OAuth state parameter), and
+-- how they ended. Rows are short-lived.
+CREATE TABLE IF NOT EXISTS sso_logins (
+    state TEXT PRIMARY KEY,
+    domain TEXT NOT NULL,
+    provider_id INTEGER NOT NULL,
+    provider_name TEXT,
+    verifier TEXT,
+    username TEXT,
+    answer TEXT,
+    authorize_url TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'started',
+    message TEXT,
+    account_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL
+);
+
 CREATE TABLE IF NOT EXISTS app_settings (
     key TEXT PRIMARY KEY,
     value TEXT

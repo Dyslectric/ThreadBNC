@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Choose a username{% endblock %}
+{% block content %}
+<section class="card narrow narrow-form">
+  <h1>New account on {{ row.domain }}</h1>
+  {% if row.message %}<div class="flash error">{{ row.message }}</div>{% endif %}
+  <p class="muted">You signed in with {{ row.provider_name or 'single sign-on' }}, but it isn't linked to an account on
+    {{ row.domain }} yet, so {{ row.domain }} will create one.
+    {% if row.status == 'need_answer' %}It asks new members a question first.{% endif %}
+    You'll go through the sign-in page once more to finish.</p>
+  <form method="post" action="/accounts/sso/{{ row.state }}/retry" class="stack">
+    <label>Username <input name="username" required value="{{ row.username or '' }}" autocomplete="username"
+      pattern="[A-Za-z0-9_]{3,}" title="Letters, numbers and underscores"></label>
+    {% if row.status == 'need_answer' %}
+    <label>Your answer to {{ row.domain }}'s sign-up question <textarea name="answer" required rows="4">{{ row.answer or '' }}</textarea></label>
+    {% endif %}
+    <button>Continue</button>
+  </form>
+  <p class="small muted">Meant to use an account you already have? It needs linking first: see
+    Admin → Single sign-on, then sign in again.</p>
+</section>
+{% endblock %}
