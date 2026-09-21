@@ -8,9 +8,11 @@ from typing import Any
 
 import httpx
 
-from .base import RemoteNotFound, RemoteUnavailable
+from .base import RemoteAuthError, RemoteNotFound, RemoteRejected, RemoteUnavailable
 
 _NOT_FOUND_CODES = ("couldnt_find", "not_found", "notfound", "unknown_post", "unknown_comment")
+_AUTH_CODES = ("not_logged_in", "incorrect_login", "missing_totp_token", "incorrect_totp_token",
+               "email_not_verified", "registration_application", "deleted", "invalid_token", "jwt")
 
 
 class HostThrottle:
@@ -44,26 +46,43 @@ class HttpClient:
     def _throttle(self, domain: str) -> None:
         self.throttle.wait(domain)
 
-    def get_json(self, domain: str, path: str, params: dict[str, Any] | None = None) -> Any:
+    def get_json(self, domain: str, path: str, params: dict[str, Any] | None = None,
+                 token: str | None = None) -> Any:
+        return self.request_json("GET", domain, path, params=params, token=token)
+
+    def request_json(self, method: str, domain: str, path: str, *, params: dict[str, Any] | None = None,
+                     json: dict[str, Any] | None = None, token: str | None = None) -> Any:
+        """One API call. Reads raise RemoteUnavailable for anything retryable;
+        writes (non-GET) raise RemoteRejected/RemoteAuthError with the server's
+        error code so the UI can say what went wrong."""
         self._throttle(domain)
         url = f"https://{domain}{path}"
         clean = {k: v for k, v in (params or {}).items() if v is not None}
+        headers = {"Authorization": f"Bearer {token}"} if token else None
+        body = {k: v for k, v in (json or {}).items() if v is not None} if json is not None else None
         try:
-            resp = self._client.get(url, params=clean)
+            resp = self._client.request(method, url, params=clean, json=body, headers=headers)
         except httpx.HTTPError as exc:
             raise RemoteUnavailable(f"{domain}: {type(exc).__name__}: {exc}") from exc
         if resp.status_code == 404:
             raise RemoteNotFound(f"{url}: 404")
-        if resp.status_code in (429,) or resp.status_code >= 500:
+        if resp.status_code == 429 or resp.status_code >= 500:
             raise RemoteUnavailable(f"{url}: HTTP {resp.status_code}")
         try:
             data = resp.json()
         except ValueError as exc:
             raise RemoteUnavailable(f"{url}: non-JSON response (HTTP {resp.status_code})") from exc
         if resp.status_code >= 400:
-            err = str(data.get("error", "")) if isinstance(data, dict) else ""
-            if any(code in err.lower() for code in _NOT_FOUND_CODES):
+            err = ""
+            if isinstance(data, dict):
+                err = str(data.get("error") or data.get("message") or data.get("detail") or "")
+            low = err.lower()
+            if any(code in low for code in _NOT_FOUND_CODES):
                 raise RemoteNotFound(f"{url}: {err}")
+            if resp.status_code in (401, 403) or any(code in low for code in _AUTH_CODES):
+                raise RemoteAuthError(f"{domain}: {err or 'HTTP %d' % resp.status_code}", err)
+            if method != "GET":
+                raise RemoteRejected(f"{domain} refused: {err or 'HTTP %d' % resp.status_code}", err)
             raise RemoteUnavailable(f"{url}: HTTP {resp.status_code} {err}")
         return data
 

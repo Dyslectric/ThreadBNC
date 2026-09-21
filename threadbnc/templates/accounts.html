@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% from "_macros.html" import when %}
+{% block title %}Accounts{% endblock %}
+{% block content %}
+<h1>Accounts</h1>
+<p class="muted">Lemmy or PieFed accounts ThreadBNC can comment, post and vote as. Your password is only used to
+  log in and is never stored. ThreadBNC keeps the server's session token, encrypted.</p>
+
+<section class="card">
+  <h2>Your accounts</h2>
+  {% if not accounts %}<p class="muted">None yet.</p>{% endif %}
+  <ul class="plain">
+  {% for a in accounts %}
+    <li class="follow-row">
+      <div>
+        <strong>{{ a.handle }}</strong>
+        {% if a.display_name %}<span class="muted">· {{ a.display_name }}</span>{% endif %}
+        {% if a.is_default %}<span class="pill good">default</span>{% endif %}
+        {% if acting and acting.id == a.id %}<span class="pill new">posting as</span>{% endif %}
+        {% if a.status != 'ok' %}<span class="pill bad">needs login</span>{% endif %}
+        <div class="small muted"><code>{{ a.actor_ap_id }}</code>
+          {% if a.last_error %}<div class="bad-text">{{ a.last_error }}</div>{% endif %}</div>
+      </div>
+      {% if not a.is_default %}
+        <form method="post" action="/accounts/{{ a.id }}/default" class="inline"><button class="small secondary">Make default</button></form>
+      {% endif %}
+      <details class="reply-box">
+        <summary class="small">Remove…</summary>
+        <form method="post" action="/accounts/{{ a.id }}/remove">
+          <p class="small muted">Ends the session on {{ a.domain }} and forgets the account here. Posts and comments you made stay on the server and in the archive.</p>
+          <button class="small danger">Remove {{ a.handle }}</button>
+        </form>
+      </details>
+    </li>
+  {% endfor %}
+  </ul>
+</section>
+
+<section class="card narrow-form">
+  <h2>{{ 'Add another account' if accounts else 'Add an account' }}</h2>
+  <form method="post" action="/accounts" class="stack" autocomplete="off">
+    <label>Server <input name="server" placeholder="lemmy.world, dyslectric.dev…" required></label>
+    <label>Username <input name="username" required autocomplete="username"></label>
+    <label>Password <input type="password" name="password" required autocomplete="current-password"></label>
+    <label>2FA code <span class="muted small">(Lemmy, if enabled)</span> <input name="totp" inputmode="numeric" autocomplete="one-time-code"></label>
+    <button>Log in</button>
+  </form>
+  <p class="small muted">To log in again after the server ends a session, add the account again. Your votes and settings are kept.</p>
+</section>
+{% endblock %}

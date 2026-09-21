@@ -16,6 +16,7 @@ from .base import (
     NComment,
     NCommunity,
     NPost,
+    RemoteAuthError,
     RemoteError,
     RemoteNotFound,
     ThreadiverseAdapter,
@@ -37,6 +38,11 @@ def _ts(value: Any) -> str | None:
 class LemmyAdapter(ThreadiverseAdapter):
     software = "lemmy"
     api_base = "/api/v3"
+    # Field names that differ between Lemmy and PieFed.
+    login_user_field = "username_or_email"
+    post_title_field = "name"
+    comment_body_field = "content"
+    supports_totp = True
 
     def __init__(self, domain: str, http: HttpClient):
         super().__init__(domain)
@@ -46,6 +52,11 @@ class LemmyAdapter(ThreadiverseAdapter):
     # -- low level -------------------------------------------------------
     def _get(self, path: str, **params: Any) -> Any:
         return self.http.get_json(self.domain, f"{self.api_base}{path}", params)
+
+    def _call(self, method: str, path: str, token: str | None, body: dict[str, Any] | None = None,
+              **params: Any) -> Any:
+        return self.http.request_json(method, self.domain, f"{self.api_base}{path}", params=params,
+                                      json=body, token=token)
 
     # -- normalizers -----------------------------------------------------
     def _actor(self, person: dict[str, Any] | None) -> NActor:
@@ -200,6 +211,79 @@ class LemmyAdapter(ThreadiverseAdapter):
             "/post/list", community_name=ref.qualified, sort=sort, page=page, limit=limit, type_="All"
         )
         return [self._post(pv) for pv in data.get("posts") or []]
+
+    # -- acting as an account ---------------------------------------------
+    def login(self, username: str, password: str, totp: str | None = None) -> str:
+        body: dict[str, Any] = {self.login_user_field: username, "password": password}
+        if totp and self.supports_totp:
+            body["totp_2fa_token"] = totp
+        data = self._call("POST", "/user/login", None, body)
+        token = (data or {}).get("jwt")
+        if not token:
+            raise RemoteAuthError(f"{self.domain}: login returned no session (email verification or "
+                                  "registration approval may be pending)")
+        return str(token)
+
+    def whoami(self, token: str) -> NActor:
+        data = self._call("GET", "/site", token)
+        person = (((data or {}).get("my_user") or {}).get("local_user_view") or {}).get("person")
+        if not person:
+            raise RemoteAuthError(f"{self.domain}: session not accepted")
+        return self._actor(person)
+
+    def logout(self, token: str) -> None:
+        self._call("POST", "/user/logout", token, {})
+
+    def resolve_as(self, token: str, ap_id: str) -> dict[str, str]:
+        """Local ids on this server for a post/comment/community ActivityPub id,
+        fetching it over federation if needed. Keys: post, comment, community."""
+        data = self._call("GET", "/resolve_object", token, q=ap_id) or {}
+        out: dict[str, str] = {}
+        if data.get("post"):
+            out["post"] = str(data["post"]["post"]["id"])
+        if data.get("comment"):
+            out["comment"] = str(data["comment"]["comment"]["id"])
+            out["post"] = str(data["comment"]["comment"]["post_id"])
+        if data.get("community"):
+            out["community"] = str(data["community"]["community"]["id"])
+        return out
+
+    def create_post(self, token: str, community_id: str, title: str, body: str | None = None,
+                    url: str | None = None) -> NPost:
+        data = self._call("POST", "/post", token, {self.post_title_field: title, "community_id": int(community_id),
+                                                   "body": body or None, "url": url or None})
+        return self._post(data["post_view"])
+
+    def edit_post(self, token: str, post_id: str, title: str, body: str | None = None,
+                  url: str | None = None) -> NPost:
+        data = self._call("PUT", "/post", token, {"post_id": int(post_id), self.post_title_field: title,
+                                                  "body": body or "", "url": url or None})
+        return self._post(data["post_view"])
+
+    def delete_post(self, token: str, post_id: str, deleted: bool = True) -> NPost:
+        data = self._call("POST", "/post/delete", token, {"post_id": int(post_id), "deleted": deleted})
+        return self._post(data["post_view"])
+
+    def vote_post(self, token: str, post_id: str, score: int) -> NPost:
+        data = self._call("POST", "/post/like", token, {"post_id": int(post_id), "score": score})
+        return self._post(data["post_view"])
+
+    def create_comment(self, token: str, post_id: str, body: str, parent_id: str | None = None) -> NComment:
+        data = self._call("POST", "/comment", token, {self.comment_body_field: body, "post_id": int(post_id),
+                                                      "parent_id": int(parent_id) if parent_id else None})
+        return self._comment(data["comment_view"])
+
+    def edit_comment(self, token: str, comment_id: str, body: str) -> NComment:
+        data = self._call("PUT", "/comment", token, {"comment_id": int(comment_id), self.comment_body_field: body})
+        return self._comment(data["comment_view"])
+
+    def delete_comment(self, token: str, comment_id: str, deleted: bool = True) -> NComment:
+        data = self._call("POST", "/comment/delete", token, {"comment_id": int(comment_id), "deleted": deleted})
+        return self._comment(data["comment_view"])
+
+    def vote_comment(self, token: str, comment_id: str, score: int) -> NComment:
+        data = self._call("POST", "/comment/like", token, {"comment_id": int(comment_id), "score": score})
+        return self._comment(data["comment_view"])
 
     # -- moderation ------------------------------------------------------
     def _site_admins(self) -> set[str]:

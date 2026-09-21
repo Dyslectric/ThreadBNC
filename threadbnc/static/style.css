@@ -266,3 +266,25 @@ details.settings > summary::-webkit-details-marker { display: none; }
 .comments-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px;
   margin-bottom: 6px; }
 .comments-head h2 { margin: 0; }
+
+/* ---- acting as accounts ---- */
+.act-as { display: inline-flex; gap: 6px; align-items: center; }
+.act-as select { padding: 3px 6px; font-size: 0.85em; }
+.obj-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; margin: 4px 0 2px; }
+.obj-actions > a { padding-top: 2px; }
+button.vote { background: transparent; border: 1px solid var(--line); color: var(--muted); padding: 1px 8px;
+  border-radius: 999px; font-size: 0.9em; font-variant-numeric: tabular-nums; }
+button.vote:hover { color: var(--text); border-color: var(--muted); }
+button.vote.up.on { color: var(--good); border-color: var(--good); background: var(--good-bg); }
+button.vote.down.on { color: var(--bad); border-color: var(--bad); background: var(--bad-bg); }
+details.reply-box > summary { cursor: pointer; color: var(--accent); list-style: none; padding-top: 2px; }
+details.reply-box > summary::-webkit-details-marker { display: none; }
+details.reply-box[open] { flex-basis: 100%; }
+details.reply-box form { margin-top: 6px; }
+textarea { font: inherit; width: 100%; padding: 8px 10px; border-radius: 7px; border: 1px solid var(--line);
+  background: var(--bg); color: var(--text); resize: vertical; }
+.compose { margin-top: 8px; }
+.narrow-form { max-width: 520px; }
+.narrow-form input { width: 100%; }
+label { display: block; }
+.row label, label.check { display: inline-flex; }

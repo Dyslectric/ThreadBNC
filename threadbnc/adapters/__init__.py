@@ -7,8 +7,10 @@ from .base import (
     NComment,
     NCommunity,
     NPost,
+    RemoteAuthError,
     RemoteError,
     RemoteNotFound,
+    RemoteRejected,
     RemoteUnavailable,
     ThreadiverseAdapter,
     ThreadRef,
@@ -45,7 +47,8 @@ def detect_software(http: HttpClient, domain: str) -> tuple[str, str | None]:
 
 __all__ = [
     "ADAPTERS", "CommunityRef", "HttpClient", "LemmyAdapter", "ModAction", "NActor", "NComment",
-    "NCommunity", "NPost", "PieFedAdapter", "RemoteError", "RemoteNotFound", "RemoteUnavailable",
+    "NCommunity", "NPost", "PieFedAdapter", "RemoteAuthError", "RemoteError", "RemoteNotFound",
+    "RemoteRejected", "RemoteUnavailable",
     "ThreadRef", "ThreadiverseAdapter", "UnsupportedSoftware", "detect_software", "host_of",
     "parse_community_ref", "parse_thread_url",
 ]

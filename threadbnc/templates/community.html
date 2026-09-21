@@ -12,6 +12,8 @@
         <h1>!{{ c.name }}<span class="muted">@{{ c.canonical_ap_id | host }}</span></h1>
         {% if c.title %}<p class="muted">{{ c.title }}</p>{% endif %}
       </div>
+      <div class="row">
+      {% if accounts %}<a class="chip" href="/c/{{ c.id }}/submit">✎ New post</a>{% endif %}
       {% if following %}
         <details class="settings">
           <summary class="pill good">✓ Following · every {{ follow.poll_interval_minutes }} min · keep {{ (follow.retention_days ~ 'd') if follow.retention_days is not none else 'forever' }}</summary>
@@ -37,6 +39,7 @@
           <button>Follow</button>
         </form>
       {% endif %}
+      </div>
     </header>
 
     <nav class="tabs">

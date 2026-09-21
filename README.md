@@ -47,6 +47,44 @@ Everything else stays, but the archive is only as durable as the disk and databa
 - **★ Kept** unkeeps it. A post that came from a followed community goes back into the feed and expires normally. A post you kept by link goes to the trash.
 - **Hide** moves a feed post to the trash.
 
+## Accounts and posting
+
+On the **Accounts** page, add any Lemmy or PieFed account: the server, username, password and, on Lemmy, a 2FA code if you use one. You can then act as that account from ThreadBNC. The header has a switcher for choosing which account to act as; the default is marked on the Accounts page.
+
+| Where | What you can do |
+|---|---|
+| Thread page | Comment, reply to any comment, and upvote or downvote the post and each comment |
+| Your own posts and comments | Edit, and delete or restore |
+| Community page | **✎ New post** for a link and/or text post |
+
+**What's stored**
+- Your password is sent to the account's server once, to log in, and is never stored.
+- ThreadBNC keeps the session token the server returns, encrypted with `THREADBNC_CREDENTIALS_KEY`.
+- If that setting is empty, a key is generated in the data directory, separate from the database. A database dump or backup on its own can't be used to post as you.
+- Removing an account ends its session on the server too. If a server ends a session, the account is marked **needs login**; add it again to refresh the token.
+
+**How writes work**
+- Every action happens on the account's own server, the only place its token is valid.
+- Targets are looked up there by their ActivityPub id. If that server hasn't seen them yet, it fetches them over federation first.
+
+**How your own activity is archived**
+- Posts you create are kept automatically.
+- Your comments appear in the archive straight away, without waiting for them to reach the community's server.
+- A post you create is first re-checked on your own server. Once it reaches the community's server, it's re-checked there instead, because that's where all its comments and moderation actions arrive.
+- Federation delay can't create false history:
+  - A comment only counts as missing if it was once seen on the server being checked.
+  - A copy older than the latest known edit is ignored, not recorded as a revert.
+  - A deletion you make is recorded as "deletion requested" until the community's server shows it deleted.
+- Edits and deletions of your own content follow the same rules as everyone else's: earlier versions stay in the archive's history.
+
+### Your own identity (e.g. `dave@dyslectric.dev`)
+
+To post under your own domain, run a single-user PieFed or Lemmy server for it, then add that account on the Accounts page like any other. Things to know before setting one up:
+
+- **The server has to be on the exact domain in the handle.** `dave@dyslectric.dev` means the server runs at `https://dyslectric.dev`, not on a subdomain. Neither Lemmy nor PieFed can use a different domain in the handle from the one it runs on. If the bare domain already hosts a website, one of the two has to move.
+- **One server per domain.** Lemmy and PieFed each serve one domain, so `dyslectric.dev` and `consort.chat` need a server each.
+- **Close registrations** once your account exists.
+
 ## Deploy on a server (Docker Compose + Postgres)
 
 You need a Linux server with Docker and a domain name pointing at it.
@@ -93,7 +131,7 @@ The schema migrates itself on startup.
 
 **Backups**
 
-Back up both the database and the media volume:
+Back up both the database and the media volume. The media volume also holds the generated keys; without the credentials key, you'd need to log in to each account again.
 
 ```bash
 docker compose exec -T db pg_dump -U threadbnc threadbnc | gzip > threadbnc-$(date +%F).sql.gz
@@ -144,6 +182,7 @@ API: `POST /archive` with `{"url": "..."}` and `Authorization: Bearer $THREADBNC
 | `THREADBNC_DATABASE_URL` | unset | `postgresql://user:pass@host/db`. Unset means SQLite in the data dir. |
 | `THREADBNC_DATA_DIR` | `./data` (`/data` in Docker) | SQLite DB (if used), archived media, generated session secret |
 | `THREADBNC_SECRET_KEY` | generated | Signs login sessions. If unset, a random key is created in the data dir. |
+| `THREADBNC_CREDENTIALS_KEY` | generated | Encrypts stored account tokens. If unset, a key is created in the data dir. Changing it means logging in to each account again. |
 | `THREADBNC_TRASH_DAYS` | `30` | Default days before trashed threads are permanently deleted (`forever` allowed) |
 | `THREADBNC_HTTPS_ONLY` | `0` (`1` in compose) | Only send login cookies over HTTPS |
 | `THREADBNC_SYNC_MINUTES` | `30` | Re-check interval for threads in communities you don't follow |

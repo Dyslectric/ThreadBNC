@@ -37,6 +37,7 @@ class Settings:
     media_dir: Path | None = None
     media_max_bytes: int = 25_000_000
     default_trash_days: int | None = 30
+    credentials_key: str | None = None
 
 
 def _load_secret(data_dir: Path) -> str:
@@ -76,4 +77,5 @@ def load_settings() -> Settings:
         media_dir=Path(os.environ.get("THREADBNC_MEDIA_DIR", str(data_dir / "media"))),
         media_max_bytes=_env_int("THREADBNC_MEDIA_MAX_MB", 25) * 1_000_000,
         default_trash_days=None if trash.lower() in ("", "none", "forever") else int(trash),
+        credentials_key=os.environ.get("THREADBNC_CREDENTIALS_KEY") or None,
     )

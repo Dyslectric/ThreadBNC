@@ -8,3 +8,4 @@ itsdangerous==2.2.0
 markdown-it-py==4.2.0
 nh3==0.3.7
 psycopg[binary]==3.3.6
+cryptography==50.0.1

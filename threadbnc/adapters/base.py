@@ -25,6 +25,22 @@ class UnsupportedSoftware(RemoteError):
     pass
 
 
+class RemoteAuthError(RemoteError):
+    """Login failed, or a stored session is no longer accepted."""
+
+    def __init__(self, message: str, code: str = ""):
+        super().__init__(message)
+        self.code = code
+
+
+class RemoteRejected(RemoteError):
+    """The server refused a write (banned, locked thread, rate limit, bad input...)."""
+
+    def __init__(self, message: str, code: str = ""):
+        super().__init__(message)
+        self.code = code
+
+
 @dataclass
 class NActor:
     ap_id: str
@@ -215,3 +231,11 @@ class ThreadiverseAdapter(ABC):
         community: NCommunity | None = None,
     ) -> list[ModAction]:
         return []
+
+    # -- acting as an account (all take the account's session token) --------
+    def _unsupported(self, *_a: Any, **_k: Any) -> Any:
+        raise UnsupportedSoftware(f"{self.software} adapter can't act as an account")
+
+    login = whoami = logout = resolve_as = _unsupported
+    create_post = edit_post = delete_post = vote_post = _unsupported
+    create_comment = edit_comment = delete_comment = vote_comment = _unsupported

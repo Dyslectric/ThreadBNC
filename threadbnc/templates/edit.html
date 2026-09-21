@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Edit{% endblock %}
+{% block content %}
+<p class="small"><a href="/t/{{ o.thread_id }}#o{{ o.id }}">← back to thread</a></p>
+<h1>Edit your {{ o.object_type }}</h1>
+<section class="card">
+  {% if not acting %}<p class="bad-text">Add an account first.</p>{% endif %}
+  <form method="post" action="/o/{{ o.id }}/edit" class="stack">
+    {% if o.object_type == 'post' %}
+      <label>Title <input name="title" value="{{ o.title or '' }}" required></label>
+      <label>Link <input type="url" name="url" value="{{ o.url or '' }}"></label>
+    {% endif %}
+    <label>Text (Markdown)
+      <textarea name="body" rows="10" {{ 'required' if o.object_type == 'comment' }}>{{ o.body or '' }}</textarea></label>
+    <div class="row">
+      <button>Save as {{ acting.handle if acting else '…' }}</button>
+      <span class="small muted">The archive keeps the previous version in the post's history.</span>
+    </div>
+  </form>
+</section>
+{% endblock %}

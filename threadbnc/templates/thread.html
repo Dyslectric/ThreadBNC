@@ -20,6 +20,46 @@
   {% else %}· <a href="/o/{{ o.id }}/history" class="muted">history</a>{% endif %}
 {%- endmacro %}
 
+{# Voting / replying / editing as the acting account (see header switcher). #}
+{% macro actions(o, is_post=False) -%}
+{% if me %}
+  {% set mine = my_votes.get(o.canonical_ap_id, 0) %}
+  {% set owned = o.a_ap == me.actor_ap_id %}
+  <div class="obj-actions small">
+    <form method="post" action="/o/{{ o.id }}/vote" class="inline">
+      <input type="hidden" name="score" value="{{ 0 if mine == 1 else 1 }}">
+      <button class="vote up {{ 'on' if mine == 1 }}" title="{{ 'Remove upvote' if mine == 1 else 'Upvote' }} as {{ me.handle }}">▲ {{ o.upvotes if o.upvotes is not none else '' }}</button>
+    </form>
+    <form method="post" action="/o/{{ o.id }}/vote" class="inline">
+      <input type="hidden" name="score" value="{{ 0 if mine == -1 else -1 }}">
+      <button class="vote down {{ 'on' if mine == -1 }}" title="{{ 'Remove downvote' if mine == -1 else 'Downvote' }} as {{ me.handle }}">▼ {{ o.downvotes if o.downvotes is not none else '' }}</button>
+    </form>
+    {% if not is_post %}
+      <details class="reply-box">
+        <summary>Reply</summary>
+        <form method="post" action="/t/{{ t.id }}/reply" class="stack">
+          <input type="hidden" name="parent_id" value="{{ o.id }}">
+          <textarea name="body" rows="4" required placeholder="Reply as {{ me.handle }} (Markdown)"></textarea>
+          <button class="small">Reply as {{ me.handle }}</button>
+        </form>
+      </details>
+    {% endif %}
+    {% if owned %}
+      <a href="/o/{{ o.id }}/edit">Edit</a>
+      <details class="reply-box">
+        <summary>{{ 'Restore' if o.cur_deleted else 'Delete' }}</summary>
+        <form method="post" action="/o/{{ o.id }}/delete">
+          {% if o.cur_deleted %}<input type="hidden" name="restore" value="1">
+            <button class="small">Restore on {{ me.domain }}</button>
+          {% else %}<p class="muted">Deletes it on the server. The archive keeps what it has seen.</p>
+            <button class="small danger">Delete on {{ me.domain }}</button>{% endif %}
+        </form>
+      </details>
+    {% endif %}
+  </div>
+{% endif %}
+{%- endmacro %}
+
 {% macro comment(n, depth) -%}
   {% set o = n.o %}
   <details open class="comment d{{ depth % 8 }} {{ 'is-new' if n.is_new }} {{ 'is-changed' if n.is_changed and not n.is_new }}" id="o{{ o.id }}">
@@ -33,6 +73,7 @@
     <div class="content">
       <div class="md {{ 'faded' if o.cur_deleted or o.cur_removed or o.cur_missing }}">{{ md(o.body) }}</div>
       {{ event_list(n.events) }}
+      {{ actions(o) }}
       {% if n.children %}<button type="button" class="replies-toggle" data-action="show-replies">Show {{ n.descendants }} repl{{ 'ies' if n.descendants != 1 else 'y' }}</button>
       <div class="replies">{% for child in n.children %}{{ comment(child, depth + 1) }}{% endfor %}</div>{% endif %}
     </div>
@@ -76,6 +117,7 @@
   {% endif %}
   {% if o.body %}<div class="md {{ 'faded' if o.cur_deleted or o.cur_removed }}">{{ md(o.body) }}</div>{% endif %}
   {{ event_list(root.events) }}
+  {{ actions(o, is_post=True) }}
   <div class="row small">
     <a href="{{ o.canonical_ap_id | safe_url }}" rel="noreferrer noopener nofollow" target="_blank">Original ↗</a>
     <span class="muted">source {{ t.source_domain }} · checked {{ when(t.last_checked_at) }} · next check {{ when(t.next_check_at) }}</span>
@@ -92,6 +134,18 @@
     {% endif %}
   </div>
 </article>
+
+{% if me and not t.trashed_at %}
+<section class="card compose">
+  <form method="post" action="/t/{{ t.id }}/reply" class="stack">
+    <textarea name="body" rows="4" required placeholder="Add a comment as {{ me.handle }} (Markdown)"></textarea>
+    <div class="row"><button>Comment as {{ me.handle }}</button>
+      {% if accounts | length > 1 %}<span class="small muted">Switch accounts in the header.</span>{% endif %}</div>
+  </form>
+</section>
+{% elif not accounts %}
+<p class="small muted"><a href="/accounts">Add an account</a> to comment, vote or post from here.</p>
+{% endif %}
 
 <section class="comments" id="comments">
   <div class="comments-head">

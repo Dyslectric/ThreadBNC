@@ -194,6 +194,33 @@ CREATE TABLE IF NOT EXISTS media_refs (
 );
 CREATE INDEX IF NOT EXISTS media_refs_media ON media_refs(media_id);
 
+-- Accounts ThreadBNC can act as. Only the server-issued session token is kept,
+-- encrypted (see vault.py); passwords are never stored.
+CREATE TABLE IF NOT EXISTS accounts (
+    id INTEGER PRIMARY KEY,
+    domain TEXT NOT NULL,
+    software TEXT,
+    username TEXT NOT NULL,
+    actor_ap_id TEXT NOT NULL UNIQUE,
+    display_name TEXT,
+    token_enc TEXT,
+    status TEXT NOT NULL DEFAULT 'ok' CHECK (status IN ('ok', 'needs_login')),
+    is_default INTEGER NOT NULL DEFAULT 0,
+    added_at TEXT NOT NULL,
+    last_used_at TEXT,
+    last_error TEXT
+);
+
+-- Votes cast through ThreadBNC, per account (remote APIs are read anonymously,
+-- so this is how the UI knows what you voted).
+CREATE TABLE IF NOT EXISTS my_votes (
+    account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    object_ap_id TEXT NOT NULL,
+    score INTEGER NOT NULL,
+    voted_at TEXT NOT NULL,
+    PRIMARY KEY (account_id, object_ap_id)
+);
+
 CREATE TABLE IF NOT EXISTS app_settings (
     key TEXT PRIMARY KEY,
     value TEXT
@@ -259,7 +286,7 @@ COLUMN_MIGRATIONS = [
 # Tables with an integer `id` key: inserts into these get `RETURNING id` on
 # Postgres so callers can keep using `cursor.lastrowid`.
 _ID_TABLES = {"instances", "actors", "communities", "archived_threads", "objects", "revisions",
-              "state_events", "media", "jobs"}
+              "state_events", "media", "jobs", "accounts"}
 _INSERT_RE = re.compile(r"^\s*INSERT\s+INTO\s+(\w+)", re.IGNORECASE)
 _PG_WRITE_LOCK = 727_001  # advisory lock id: one writer at a time, like SQLite's BEGIN IMMEDIATE
 

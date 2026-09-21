@@ -11,6 +11,10 @@ from .lemmy import LemmyAdapter
 class PieFedAdapter(LemmyAdapter):
     software = "piefed"
     api_base = "/api/alpha"
+    login_user_field = "username"
+    post_title_field = "title"
+    comment_body_field = "body"
+    supports_totp = False
 
     def fetch_moderation_state(
         self, *, post_local_id: str | None = None, comment_local_id: str | None = None,

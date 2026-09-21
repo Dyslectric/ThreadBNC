@@ -28,10 +28,12 @@ from starlette.middleware.sessions import SessionMiddleware
 from . import feed as feed_mod
 from . import media as media_mod
 from .adapters import RemoteError, host_of
+from .accounts import Account, AccountError, Poster
 from .bouncer import Bouncer
 from .config import Settings, load_settings
 from .db import open_database, parse_ts, utcnow
 from .render import MediaInfo, looks_like_media, render_markdown
+from .vault import TokenVault
 
 log = logging.getLogger("threadbnc.web")
 HERE = Path(__file__).parent
@@ -63,6 +65,8 @@ EVENT_LABELS = {
     "restored_from_trash": "Restored from trash",
     "trash_expired": "Trashed thread permanently deleted (trash period ended)",
     "deleted_from_trash": "Trashed thread permanently deleted",
+    "delete_requested": "You deleted this via ThreadBNC (waiting to see it on the server)",
+    "undelete_requested": "You restored this via ThreadBNC (waiting to see it on the server)",
 }
 ATTRIBUTION_LABELS = {
     "moderator": "by moderator",
@@ -179,6 +183,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         raise SystemExit("THREADBNC_PASSWORD must be set; the archive is never served unauthenticated.")
     db = bouncer.db if bouncer else open_database(settings)
     bouncer = bouncer or Bouncer(db, settings)
+    poster = Poster(bouncer, TokenVault(settings.credentials_key, settings.data_dir))
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -242,8 +247,22 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                        https_only=settings.https_only_cookies, max_age=60 * 60 * 24 * 14,
                        session_cookie="threadbnc_session")
 
+    def acting(request: Request) -> Account | None:
+        """The account forms act as: the one picked in the header, else the default."""
+        chosen = poster.get(request.session.get("acting_account"))
+        return chosen or poster.default()
+
     def render(request: Request, name: str, **ctx: Any) -> HTMLResponse:
+        if request.session.get("auth"):
+            ctx.setdefault("accounts", poster.list())
+            ctx.setdefault("acting", acting(request))
         return templates.TemplateResponse(request, name, ctx)
+
+    def require_acting(request: Request) -> Account:
+        account = acting(request)
+        if account is None:
+            raise AccountError("Add an account on the Accounts page first.")
+        return account
 
     def flash(request: Request, msg: str, kind: str = "info") -> None:
         request.session.setdefault("flash", []).append([kind, msg])
@@ -605,6 +624,107 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         flash(request, f"Permanently deleted {n} thread{'s' if n != 1 else ''}.")
         return RedirectResponse("/trash", status_code=303)
 
+    # ---- accounts & acting as them -----------------------------------------
+    @app.get("/accounts", response_class=HTMLResponse)
+    def accounts_page(request: Request):
+        return render(request, "accounts.html")
+
+    @app.post("/accounts")
+    def add_account(request: Request, server: str = Form(...), username: str = Form(...),
+                    password: str = Form(...), totp: str = Form("")):
+        try:
+            account = poster.add(server, username, password, totp)
+        except AccountError as exc:
+            flash(request, str(exc), "error")
+        else:
+            flash(request, f"Logged in as {account.handle}. Only an encrypted session token is stored, "
+                           "not your password.")
+        return RedirectResponse("/accounts", status_code=303)
+
+    @app.post("/accounts/{aid}/default")
+    def default_account(request: Request, aid: int):
+        poster.set_default(aid)
+        request.session.pop("acting_account", None)
+        return RedirectResponse(back(request, "/accounts"), status_code=303)
+
+    @app.post("/accounts/{aid}/remove")
+    def remove_account(request: Request, aid: int):
+        poster.remove(aid)
+        if request.session.get("acting_account") == aid:
+            request.session.pop("acting_account", None)
+        flash(request, "Account removed and its session ended.")
+        return RedirectResponse("/accounts", status_code=303)
+
+    @app.post("/accounts/act-as")
+    def act_as(request: Request, account_id: int = Form(...)):
+        if poster.get(account_id):
+            request.session["acting_account"] = account_id
+        return RedirectResponse(back(request, "/"), status_code=303)
+
+    def account_action(request: Request, fallback: str, fn: Any, ok: str | None = None) -> RedirectResponse:
+        """Run a write as the acting account; show errors instead of raising."""
+        try:
+            result = fn(require_acting(request))
+        except AccountError as exc:
+            flash(request, str(exc), "error")
+            return RedirectResponse(back(request, fallback), status_code=303)
+        if ok:
+            flash(request, ok)
+        return result if isinstance(result, RedirectResponse) else RedirectResponse(
+            back(request, fallback), status_code=303)
+
+    @app.post("/t/{tid}/reply")
+    def reply(request: Request, tid: int, body: str = Form(...), parent_id: int | None = Form(None)):
+        def act(account: Account) -> RedirectResponse:
+            oid = poster.reply(account, tid, body, parent_id)
+            return RedirectResponse(f"/t/{tid}#o{oid}", status_code=303)
+        return account_action(request, f"/t/{tid}", act, "Comment posted.")
+
+    @app.post("/o/{oid}/vote")
+    def vote(request: Request, oid: int, score: int = Form(...)):
+        return account_action(request, "/", lambda a: poster.vote(a, oid, score))
+
+    @app.get("/o/{oid}/edit", response_class=HTMLResponse)
+    def edit_form(request: Request, oid: int):
+        with db.connect() as conn:
+            o = conn.execute("SELECT o.*, r.title, r.body, r.url FROM objects o JOIN revisions r "
+                             "ON r.object_id=o.id AND r.seq=o.revision_count WHERE o.id=?", (oid,)).fetchone()
+        if not o:
+            raise HTTPException(404)
+        return render(request, "edit.html", o=o)
+
+    @app.post("/o/{oid}/edit")
+    def edit(request: Request, oid: int, body: str = Form(""), title: str | None = Form(None),
+             url: str | None = Form(None)):
+        with db.connect() as conn:
+            tid = conn.execute("SELECT thread_id FROM objects WHERE id=?", (oid,)).fetchone()
+        def act(account: Account) -> RedirectResponse:
+            poster.edit(account, oid, body, title, url)
+            return RedirectResponse(f"/t/{tid[0]}#o{oid}" if tid else "/", status_code=303)
+        return account_action(request, f"/o/{oid}/edit", act, "Edited.")
+
+    @app.post("/o/{oid}/delete")
+    def delete_own(request: Request, oid: int, restore: str | None = Form(None)):
+        undo = bool(restore)
+        return account_action(request, "/", lambda a: poster.delete(a, oid, deleted=not undo),
+                              "Restored on the server." if undo else
+                              "Deleted on the server. The archive keeps what it saw.")
+
+    @app.get("/c/{cid}/submit", response_class=HTMLResponse)
+    def submit_form(request: Request, cid: int):
+        with db.connect() as conn:
+            c = conn.execute("SELECT * FROM communities WHERE id=?", (cid,)).fetchone()
+        if not c:
+            raise HTTPException(404)
+        return render(request, "submit.html", c=c)
+
+    @app.post("/c/{cid}/submit")
+    def submit(request: Request, cid: int, title: str = Form(...), url: str = Form(""), body: str = Form("")):
+        def act(account: Account) -> RedirectResponse:
+            tid = poster.submit(account, cid, title, body, url)
+            return RedirectResponse(f"/t/{tid}", status_code=303)
+        return account_action(request, f"/c/{cid}/submit", act, "Posted. It's kept automatically.")
+
     @app.post("/t/{tid}/sync")
     def sync_now(request: Request, tid: int):
         bouncer.enqueue("sync", {"thread_id": tid})
@@ -668,8 +788,10 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         new_count = sum(1 for n in nodes.values() if n["is_new"])
         changed_count = sum(1 for n in nodes.values() if n["is_changed"] and not n["is_new"])
         md, media_for, preview = md_for(list(nodes))
+        me = acting(request)
+        my_votes = poster.my_votes(me, [o["canonical_ap_id"] for o in objs])
         return render(request, "thread.html", t=t, root=root, total_comments=total_comments, md=md,
-                      media_for=media_for, preview=preview,
+                      media_for=media_for, preview=preview, my_votes=my_votes, me=me,
                       new_count=new_count, changed_count=changed_count, comment_sort=sort,
                       comment_sorts=COMMENT_SORTS,
                       thread_events=thread_events, instance=instance, since=since)

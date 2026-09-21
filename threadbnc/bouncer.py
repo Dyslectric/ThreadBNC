@@ -383,7 +383,27 @@ class Bouncer:
             )
         if post is not None:
             self._enrich_moderation(adapter, result, post.community)
+            if full:
+                self._maybe_move_source(thread_id, post, domain, local)
         return result
+
+    def _maybe_move_source(self, thread_id: int, post: NPost, domain: str, local: str) -> None:
+        """A thread first seen on a secondary server (e.g. a post you just made
+        from your own instance) moves to the community's home server once the
+        post has federated there, since that's where every comment and
+        moderation action arrives."""
+        home = post.community.domain
+        if not home or home == domain:
+            return
+        try:
+            new_domain, new_local, _ = self._best_source(post, domain, local, self.adapter_for(domain))
+        except RemoteError:
+            return
+        if new_domain != domain:
+            with self.db.transaction() as conn:
+                conn.execute("UPDATE archived_threads SET source_domain=?, source_local_id=?, "
+                             "last_full_fetch_at=NULL WHERE id=?", (new_domain, new_local, thread_id))
+            log.info("thread %s now polled from %s (was %s)", thread_id, new_domain, domain)
 
     def _sync_failed(self, t: Any, error: str) -> None:
         now = utcnow()

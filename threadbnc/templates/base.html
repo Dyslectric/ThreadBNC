@@ -16,7 +16,17 @@
       <a href="/" class="{{ 'on' if request.url.path == '/' }}">Feed</a>
       <a href="/communities" class="{{ 'on' if request.url.path.startswith('/communities') }}">Communities</a>
       <a href="/kept" class="{{ 'on' if request.url.path.startswith('/kept') }}">★ Kept</a>
+      <a href="/accounts" class="{{ 'on' if request.url.path.startswith('/accounts') }}">Accounts</a>
       {% set tc = trash_count() %}<a href="/trash" class="{{ 'on' if request.url.path.startswith('/trash') }}">Trash{% if tc %} ({{ tc }}){% endif %}</a>
+      {% if accounts %}
+        <form method="post" action="/accounts/act-as" class="act-as">
+          <label class="small muted">as
+            <select name="account_id" aria-label="Posting as">
+              {% for a in accounts %}<option value="{{ a.id }}" {{ 'selected' if acting and a.id == acting.id }}>{{ a.handle }}{{ ' ⚠' if a.status != 'ok' }}</option>{% endfor %}
+            </select></label>
+          <button class="small secondary">Switch</button>
+        </form>
+      {% endif %}
       <form method="post" action="/logout" class="inline"><button class="link">Log out</button></form>
     </nav>
     {% endif %}

@@ -8,7 +8,8 @@ from pathlib import Path
 import pytest
 
 from threadbnc.adapters import (
-    CommunityRef, ModAction, NActor, NComment, NCommunity, NPost, RemoteNotFound, RemoteUnavailable,
+    CommunityRef, ModAction, NActor, NComment, NCommunity, NPost, RemoteAuthError, RemoteNotFound,
+    RemoteUnavailable,
     ThreadiverseAdapter, ThreadRef,
 )
 from threadbnc.bouncer import Bouncer
@@ -46,6 +47,19 @@ class FakeServer:
         self.comments: dict[str, dict[str, NComment]] = {}
         self.modlog: list[tuple[str, str, ModAction]] = []  # (kind, local_id, action)
         self.down = False
+        # Accounts on a separate "home" server, and writes not yet federated
+        # to the community's server (see federate()).
+        self.users = {"dave": "hunter2"}
+        self.sessions: dict[str, str] = {}
+        self.outbox: list[tuple[str, NComment]] = []
+        self.votes: dict[tuple[str, str], int] = {}
+        self.next_id = 5000
+        self.revoked = False
+
+    def federate(self) -> None:
+        for post_id, c in self.outbox:
+            self.comments[post_id][c.local_id] = c
+        self.outbox.clear()
 
     def add_post(self, local_id: str, title: str, body: str, created: str = "2026-09-01T00:00:00.000000Z") -> NPost:
         p = NPost(ap_id=f"https://{DOMAIN}/post/{local_id}", local_id=local_id, title=title, body=body,
@@ -115,6 +129,97 @@ class FakeAdapter(ThreadiverseAdapter):
     def fetch_moderation_state(self, *, post_local_id=None, comment_local_id=None, community=None):
         want = ("comment", comment_local_id) if comment_local_id else ("post", post_local_id)
         return [a for kind, lid, a in self.s.modlog if (kind, lid) == want]
+
+    # -- acting as an account on this (home) server --------------------------
+    def _auth(self, token: str) -> str:
+        if self.s.revoked or token not in self.s.sessions:
+            raise RemoteAuthError("not_logged_in", "not_logged_in")
+        return self.s.sessions[token]
+
+    def login(self, username, password, totp=None):
+        if self.s.users.get(username) != password:
+            raise RemoteAuthError("incorrect_login", "incorrect_login")
+        token = f"jwt-{username}-{len(self.s.sessions)}"
+        self.s.sessions[token] = username
+        return token
+
+    def whoami(self, token):
+        user = self._auth(token)
+        return NActor(f"https://{self.domain}/u/{user}", user, self.domain, "Dave")
+
+    def logout(self, token):
+        self.s.sessions.pop(token, None)
+
+    def resolve_as(self, token, ap_id):
+        self._auth(token)
+        if "/c/" in ap_id:
+            return {"community": "77"}
+        for pid, p in self.s.posts.items():
+            if p.ap_id == ap_id:
+                return {"post": pid}
+        for pid, cs in self.s.comments.items():
+            for cid, c in cs.items():
+                if c.ap_id == ap_id:
+                    return {"comment": cid, "post": pid}
+        for pid, c in self.s.outbox:
+            if c.ap_id == ap_id:
+                return {"comment": c.local_id, "post": pid}
+        return {}
+
+    def create_comment(self, token, post_id, body, parent_id=None):
+        user = self._auth(token)
+        self.s.next_id += 1
+        lid = str(self.s.next_id)
+        c = NComment(ap_id=f"https://{self.domain}/comment/{lid}", local_id=lid, parent_local_id=parent_id,
+                     body=body, created_at="2026-09-21T09:00:00.000000Z", updated_at=None, deleted=False,
+                     removed=False, author=NActor(f"https://{self.domain}/u/{user}", user, self.domain))
+        self.s.outbox.append((post_id, c))
+        return copy.deepcopy(c)
+
+    def _find_comment(self, cid):
+        for pid, cs in self.s.comments.items():
+            if cid in cs:
+                return pid, cs
+        for pid, c in self.s.outbox:
+            if c.local_id == cid:
+                return pid, None
+        raise RemoteNotFound(cid)
+
+    def edit_comment(self, token, comment_id, body):
+        self._auth(token)
+        pid, cs = self._find_comment(comment_id)
+        if cs is None:
+            raise RemoteNotFound("not federated in fake")
+        cs[comment_id] = replace(cs[comment_id], body=body, updated_at="2026-09-21T10:00:00.000000Z")
+        return copy.deepcopy(cs[comment_id])
+
+    def delete_comment(self, token, comment_id, deleted=True):
+        self._auth(token)
+        pid, cs = self._find_comment(comment_id)
+        return copy.deepcopy(cs[comment_id]) if cs else None
+
+    def vote_comment(self, token, comment_id, score):
+        user = self._auth(token)
+        self.s.votes[(user, comment_id)] = score
+        pid, cs = self._find_comment(comment_id)
+        return copy.deepcopy(cs[comment_id]) if cs else None
+
+    def vote_post(self, token, post_id, score):
+        user = self._auth(token)
+        self.s.votes[(user, "post:" + post_id)] = score
+        return copy.deepcopy(self.s.posts[post_id])
+
+    def create_post(self, token, community_id, title, body=None, url=None):
+        user = self._auth(token)
+        self.s.next_id += 1
+        lid = str(self.s.next_id)
+        p = NPost(ap_id=f"https://{self.domain}/post/{lid}", local_id=lid, title=title, body=body, url=url,
+                  created_at="2026-09-21T09:00:00.000000Z", updated_at=None, deleted=False, removed=False,
+                  locked=False, community=copy.deepcopy(COMMUNITY),
+                  author=NActor(f"https://{self.domain}/u/{user}", user, self.domain))
+        self.s.posts[lid] = p
+        self.s.comments[lid] = {}
+        return copy.deepcopy(p)
 
 
 @pytest.fixture

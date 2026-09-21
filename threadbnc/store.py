@@ -171,6 +171,12 @@ def record_revision(conn: Conn, object_id: int, now: str, *, title: str | None,
     prev = conn.execute(
         "SELECT * FROM revisions WHERE object_id=? ORDER BY seq DESC LIMIT 1", (object_id,)
     ).fetchone()
+    # A copy older than what we already have (e.g. a server that hasn't received
+    # an edit yet) is stale, not a revert: an edited object always carries an
+    # edit timestamp, so no timestamp or an earlier one means "not caught up".
+    if prev is not None and prev["remote_updated_at"] and (
+            not remote_updated_at or remote_updated_at < prev["remote_updated_at"]):
+        return False, []
     withheld: list[str] = []
     values = {"title": title, "body": body, "url": url}
     for name in ("title", "body", "url"):
@@ -285,6 +291,10 @@ def _upsert_object(conn: Conn, *, ap_id: str, object_type: str, thread_id: int,
     return oid, obj
 
 
+def set_local_id(conn: Conn, object_id: int, domain: str, local_id: str) -> None:
+    _set_local_id(conn, object_id, domain, local_id)
+
+
 def apply_post(conn: Conn, thread_id: int, post: NPost, source_domain: str, now: str,
                initial: bool, result: ApplyResult) -> int:
     cid = upsert_community(conn, post.community, now)
@@ -338,32 +348,44 @@ def apply_comments(conn: Conn, thread_id: int, root_id: int, community_id: int,
                     (source_domain, c.parent_local_id),
                 ).fetchone()
                 parent_id = row["object_id"] if row else None  # orphan: parent unknown so far
-        aid = upsert_actor(conn, c.author, now)
-        oid, obj = _upsert_object(
-            conn, ap_id=c.ap_id, object_type="comment", thread_id=thread_id, parent_id=parent_id,
-            root_post_id=root_id, author_id=aid, community_id=community_id, created_at=c.created_at,
-            updated_at=c.updated_at, score=c.score, reply_count=c.reply_count, now=now,
-            initial=initial, result=result, upvotes=c.upvotes, downvotes=c.downvotes,
-        )
-        local_to_oid[c.local_id] = oid
-        _set_local_id(conn, oid, source_domain, c.local_id)
-        created, withheld = record_revision(
-            conn, oid, now, title=None, body=c.body, url=None, meta=c.metadata,
-            remote_updated_at=c.updated_at, hidden=c.deleted or c.removed,
-        )
-        result.new_revisions += int(created)
-        _apply_flags(conn, obj, oid, thread_id, "comment", c.local_id,
-                     {"deleted": c.deleted, "removed": c.removed}, now, withheld, result)
-        result.object_ids[c.ap_id] = oid
+        local_to_oid[c.local_id] = apply_comment(conn, thread_id, root_id, community_id, c, parent_id,
+                                                 source_domain, now, initial, result)
 
     if complete:
+        # Only objects previously seen on *this* server can go missing from it.
+        # (Your own comment recorded from your account's server may simply not
+        # have federated here yet.)
         seen = set(result.object_ids.values())
         for row in conn.execute(
-            "SELECT id FROM objects WHERE thread_id=? AND object_type='comment' AND cur_missing=0",
-            (thread_id,),
+            "SELECT o.id FROM objects o JOIN object_local_ids l ON l.object_id=o.id AND l.domain=? "
+            "WHERE o.thread_id=? AND o.object_type='comment' AND o.cur_missing=0",
+            (source_domain, thread_id),
         ).fetchall():
             if row["id"] not in seen:
                 mark_missing(conn, row["id"], thread_id, now, result)
+
+
+def apply_comment(conn: Conn, thread_id: int, root_id: int, community_id: int, c: NComment,
+                  parent_id: int | None, source_domain: str, now: str, initial: bool,
+                  result: ApplyResult) -> int:
+    """Record one observed comment whose parent object is already known."""
+    aid = upsert_actor(conn, c.author, now)
+    oid, obj = _upsert_object(
+        conn, ap_id=c.ap_id, object_type="comment", thread_id=thread_id, parent_id=parent_id,
+        root_post_id=root_id, author_id=aid, community_id=community_id, created_at=c.created_at,
+        updated_at=c.updated_at, score=c.score, reply_count=c.reply_count, now=now,
+        initial=initial, result=result, upvotes=c.upvotes, downvotes=c.downvotes,
+    )
+    _set_local_id(conn, oid, source_domain, c.local_id)
+    created, withheld = record_revision(
+        conn, oid, now, title=None, body=c.body, url=None, meta=c.metadata,
+        remote_updated_at=c.updated_at, hidden=c.deleted or c.removed,
+    )
+    result.new_revisions += int(created)
+    _apply_flags(conn, obj, oid, thread_id, "comment", c.local_id,
+                 {"deleted": c.deleted, "removed": c.removed}, now, withheld, result)
+    result.object_ids[c.ap_id] = oid
+    return oid
 
 
 def mark_missing(conn: Conn, object_id: int, thread_id: int, now: str,
