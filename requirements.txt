@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+httpx
+jinja2
+python-multipart
+itsdangerous
+pytest
+markdown-it-py
+nh3

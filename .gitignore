@@ -1,0 +1,17 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Local data: archives contain other people's (possibly deleted) posts. Never commit.
+data/
+data-*/
+*.sqlite3*
+media/
+
+# Secrets and local tooling
+.env
+.env.*
+!.env.example
+.claude/
