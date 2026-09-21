@@ -28,14 +28,81 @@ A private, feed-first reader for Lemmy and PieFed that never loses what it has s
 - **★ Kept** unkeeps it. A post that came from a followed community goes back into the feed and expires normally. A post you kept by link goes to the trash.
 - **Hide** moves a feed post to the trash.
 
-## Run
+## Deploy on a server (Docker Compose + Postgres)
+
+You need a Linux server with Docker and a domain name pointing at it.
+
+```bash
+git clone https://github.com/<github-user>/threadbnc.git && cd threadbnc
+cp .env.example .env
+```
+
+Edit `.env`:
+
+- Set `THREADBNC_PASSWORD` and `POSTGRES_PASSWORD`. Generate each with `openssl rand -hex 32`.
+- To use the image CI publishes instead of building on the server, set `THREADBNC_IMAGE=ghcr.io/<github-user>/threadbnc:latest`.
+
+Then start it:
+
+```bash
+docker compose up -d
+```
+
+This starts two containers:
+
+| Container | What it holds |
+|---|---|
+| `db` | Postgres 17. Data lives in the `db` volume. |
+| `app` | The web UI with the bouncer built in. Archived images and the session secret live in the `media` volume. |
+
+The UI listens only on `127.0.0.1:8080`, so nothing is exposed until you put a TLS reverse proxy in front of it. For example, with [Caddy](https://caddyserver.com/):
+
+```
+archive.example.org {
+    reverse_proxy 127.0.0.1:8080
+}
+```
+
+`THREADBNC_HTTPS_ONLY` defaults to `1` in the compose file, so login cookies are only sent over HTTPS. Set it to `0` only when testing over plain HTTP.
+
+**Updating**
+
+- If you use the published image: `docker compose pull && docker compose up -d`
+- If you build on the server: `git pull && docker compose up -d --build`
+
+The schema migrates itself on startup.
+
+**Backups**
+
+Back up both the database and the media volume:
+
+```bash
+docker compose exec -T db pg_dump -U threadbnc threadbnc | gzip > threadbnc-$(date +%F).sql.gz
+docker run --rm -v threadbnc_media:/data -v "$PWD":/backup alpine tar czf /backup/media-$(date +%F).tgz -C /data .
+```
+
+## CI
+
+`.github/workflows/ci.yml` runs on every push and pull request:
+
+1. Runs the test suite twice, once on SQLite and once on Postgres.
+2. Builds the Docker image and starts the full compose stack. It checks that `/healthz` answers and that the archive pages require a login.
+3. On pushes to `main` and on `v*` tags, publishes the image to GitHub Container Registry as `ghcr.io/<owner>/<repo>`. The tags are `latest`, `<version>` and `sha-<commit>`.
+
+GHCR packages start out private. To let a server pull without logging in, make the package public under the repo's **Packages** settings. Otherwise run `docker login ghcr.io` on the server first.
+
+## Run locally (development)
 
 ```powershell
 py -3.14 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 $env:THREADBNC_PASSWORD = "choose-something-long"
 .\.venv\Scripts\python.exe -m threadbnc serve          # UI on http://127.0.0.1:8080, bouncer embedded
 ```
+
+- Without `THREADBNC_DATABASE_URL` set, it uses a local SQLite file in `./data`.
+- Point `THREADBNC_DATABASE_URL` at Postgres to use Postgres instead.
+- To run the tests against Postgres, set `THREADBNC_TEST_DATABASE_URL=postgresql://...` first. Each test gets a fresh schema in that database.
 
 Other commands:
 
@@ -55,8 +122,11 @@ API: `POST /archive` with `{"url": "..."}` and `Authorization: Bearer $THREADBNC
 |---|---|---|
 | `THREADBNC_PASSWORD` | *(required)* | UI login. The server refuses to start without it. |
 | `THREADBNC_API_TOKEN` | unset | Enables bearer-token API access |
-| `THREADBNC_DATA_DIR` | `./data` | SQLite DB and generated session secret |
-| `THREADBNC_HTTPS_ONLY` | `0` | Set `1` behind TLS so session cookies are Secure |
+| `THREADBNC_DATABASE_URL` | unset | `postgresql://user:pass@host/db`. Unset means SQLite in the data dir. |
+| `THREADBNC_DATA_DIR` | `./data` (`/data` in Docker) | SQLite DB (if used), archived media, generated session secret |
+| `THREADBNC_SECRET_KEY` | generated | Signs login sessions. If unset, a random key is created in the data dir. |
+| `THREADBNC_TRASH_DAYS` | `30` | Default days before trashed threads are permanently deleted (`forever` allowed) |
+| `THREADBNC_HTTPS_ONLY` | `0` (`1` in compose) | Only send login cookies over HTTPS |
 | `THREADBNC_SYNC_MINUTES` | `30` | Re-check interval for threads in communities you don't follow |
 | `THREADBNC_FOLLOW_POLL_MINUTES` | `15` | Default poll interval for followed communities |
 | `THREADBNC_FOLLOW_RETENTION_DAYS` | `30` | Default retention for auto-captured posts (`forever` allowed) |
