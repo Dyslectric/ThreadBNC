@@ -21,9 +21,17 @@ from .base import (
 )
 from .http import HttpClient
 from .lemmy import LemmyAdapter
+from .lemmy1 import JoinRequest, Lemmy1Adapter, speaks_v4
 from .piefed import PieFedAdapter
 
 ADAPTERS: dict[str, type[LemmyAdapter]] = {"lemmy": LemmyAdapter, "piefed": PieFedAdapter}
+
+
+def adapter_class(software: str | None, version: str | None) -> type[LemmyAdapter] | None:
+    """The adapter for a server, by NodeInfo software name and version."""
+    if software == "lemmy" and speaks_v4(version):
+        return Lemmy1Adapter
+    return ADAPTERS.get(software or "")
 
 
 def detect_software(http: HttpClient, domain: str) -> tuple[str, str | None]:
@@ -46,9 +54,10 @@ def detect_software(http: HttpClient, domain: str) -> tuple[str, str | None]:
 
 
 __all__ = [
-    "ADAPTERS", "CommunityRef", "HttpClient", "LemmyAdapter", "ModAction", "NActor", "NComment",
+    "ADAPTERS", "CommunityRef", "HttpClient", "JoinRequest", "Lemmy1Adapter", "LemmyAdapter", "ModAction",
+    "NActor", "NComment",
     "NCommunity", "NPost", "PieFedAdapter", "RemoteAuthError", "RemoteError", "RemoteNotFound",
     "RemoteRejected", "RemoteUnavailable",
-    "ThreadRef", "ThreadiverseAdapter", "UnsupportedSoftware", "detect_software", "host_of",
+    "ThreadRef", "ThreadiverseAdapter", "UnsupportedSoftware", "adapter_class", "detect_software", "host_of",
     "parse_community_ref", "parse_thread_url",
 ]

@@ -31,6 +31,7 @@ from .adapters import RemoteError, host_of
 from .accounts import Account, AccountError, Poster
 from .bouncer import Bouncer
 from .moderation import REGISTRATION_MODES, Moderation
+from .private import PrivateCommunities
 from .config import Settings, load_settings
 from .db import open_database, parse_ts, utcnow
 from .render import MediaInfo, looks_like_media, render_markdown
@@ -206,6 +207,9 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     bouncer = bouncer or Bouncer(db, settings)
     poster = Poster(bouncer, TokenVault(settings.credentials_key, settings.data_dir))
     mod = Moderation(poster)
+    private = PrivateCommunities(mod)
+    bouncer.hooks.append(private.sweep)
+    bouncer.read_token = private.read_token
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -308,14 +312,14 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     def robots() -> str:
         return "User-agent: *\nDisallow: /\n"
 
-    @app.get("/login", response_class=HTMLResponse)
-    def login_form(request: Request, next: str = "/"):
-        return render(request, "login.html", error=None, next=local_path(next))
-
     def local_path(url: str, default: str = "/") -> str:
         """`url` if it's a path on this site, else `default` (no open redirects)."""
         ok = url.startswith("/") and not url.startswith(("//", "/\\")) and not urlparse(url).netloc
         return url if ok else default
+
+    @app.get("/login", response_class=HTMLResponse)
+    def login_form(request: Request, next: str = "/"):
+        return render(request, "login.html", error=None, next=local_path(next))
 
     @app.post("/login")
     def login(request: Request, password: str = Form(...), next: str = Form("/")):
@@ -528,11 +532,12 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                 mod_data["error"] = str(exc)
             mod_data["server_bans"], mod_data["our_bans"] = mod.community_bans(me, cid)
             mod_data["actions"] = mod.recent_actions(community_id=cid)
+            mod_data["membership"] = private.overview(me, cid) if private.supported(cid) else None
         live, live_error = [], None
         if tab == "live":
             try:
                 ref = bouncer.community_ref(cid)
-                posts = bouncer.adapter_for(ref.domain).list_community_posts(ref, sort=live_sort, page=page,
+                posts = bouncer.reader(ref.domain, cid).list_community_posts(ref, sort=live_sort, page=page,
                                                                            limit=25)
                 with db.connect() as conn:
                     for p in posts:
@@ -752,6 +757,40 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         return account_action(request, f"/c/{cid}?tab=mod",
                               lambda a: mod.community_ban(a, cid, who, ban, reason, _days(days), bool(remove_content)),
                               "Banned from the community." if ban else "Unbanned.")
+
+    @app.post("/c/{cid}/visibility")
+    def community_visibility(request: Request, cid: int, visibility: str = Form(...)):
+        return account_action(request, f"/c/{cid}?tab=mod",
+                              lambda a: private.set_visibility(a, cid, visibility),
+                              "Now private: only approved members can see or post." if visibility == "private"
+                              else "Now public: anyone can see and join.")
+
+    @app.post("/c/{cid}/members")
+    def community_members(request: Request, cid: int, who: str = Form(...), action: str = Form("add"),
+                          revoke: str | None = Form(None)):
+        if action == "add":
+            def add(a: Account) -> None:
+                flash(request, f"{private.add_member(a, cid, who)} is on the list. If they've already asked to "
+                               "join they're in; otherwise they will be as soon as they ask.")
+            return account_action(request, f"/c/{cid}?tab=mod", add)
+
+        def remove(a: Account) -> None:
+            handle = private.remove_member(a, cid, who, bool(revoke))
+            flash(request, f"{handle} is off the list and banned from the community, so their access is revoked."
+                  if revoke else f"{handle} is off the list. They keep access if they're already a member.")
+        return account_action(request, f"/c/{cid}?tab=mod", remove)
+
+    @app.post("/c/{cid}/join-requests/{rid}")
+    def join_request(request: Request, cid: int, rid: int, action: str = Form(...)):
+        if action not in ("approve", "approve_add", "deny"):
+            raise HTTPException(400)
+
+        def answer(a: Account) -> None:
+            handle = private.answer(a, cid, rid, approve=action != "deny", add_to_list=action == "approve_add")
+            flash(request, {"approve": f"Let {handle} in.",
+                            "approve_add": f"Let {handle} in and added them to the list.",
+                            "deny": f"Turned {handle} away."}[action])
+        return account_action(request, f"/c/{cid}?tab=mod", answer)
 
     @app.post("/o/{oid}/mod")
     def moderate_object(request: Request, oid: int, action: str = Form(...), reason: str = Form("")):

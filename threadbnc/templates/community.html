@@ -110,6 +110,79 @@
         Switch accounts in the header.</p>
       {% if mod_data.error %}<div class="flash error">{{ mod_data.error }}</div>{% endif %}
 
+      {% set mem = mod_data.membership %}
+      {% if mem %}
+      <section class="card" id="membership">
+        <h2>Membership</h2>
+        {% if mem.error %}<div class="flash error">{{ mem.error }}</div>{% endif %}
+        <form method="post" action="/c/{{ c.id }}/visibility" class="row">
+          <label>Visibility&nbsp;
+            <select name="visibility">
+              {% for value, label in mem.choices.items() %}
+              <option value="{{ value }}" {{ 'selected' if value == mem.visibility }}>{{ label }}</option>
+              {% endfor %}
+              {% if mem.visibility and mem.visibility not in mem.choices %}
+              <option value="" selected disabled>{{ mem.visibility | replace('_', ' ') }} (set on the server)</option>
+              {% endif %}
+            </select></label>
+          <button class="small">Save</button>
+        </form>
+        {% if mem.visibility == 'private' %}
+          <p class="small muted">Only approved members can see or post. People on the list below are let in
+            automatically when they ask to join (checked about once a minute{% if mem.managed and mem.managed.account_handle %}, as
+            {{ mem.managed.account_handle }}{% endif %}); everyone else waits for you.
+            People whose server runs an older Lemmy may not be able to ask at all.</p>
+          {% if mem.managed and mem.managed.last_error %}<div class="flash error">Last check: {{ mem.managed.last_error }}</div>{% endif %}
+        {% elif mem.visibility == 'public' %}
+          <p class="small muted">Anyone can see and join. Make it private to let in only people you approve;
+            the list below is kept either way.</p>
+        {% endif %}
+
+        <h3>Waiting to join{% if mem.waiting %} <span class="pill new">{{ mem.waiting | length }}</span>{% endif %}</h3>
+        <ul class="plain">
+        {% for r in mem.waiting %}
+          <li class="follow-row"><div><strong>{{ r.handle }}</strong>
+            {% if r.display_name %}<span class="muted">{{ r.display_name }}</span>{% endif %}
+            <span class="small muted">· asked {{ r.first_seen_at | ago }}</span></div>
+            <div class="row compact">
+              {% for action, label, cls in [('approve_add', 'Approve and add to list', ''), ('approve', 'Approve', 'secondary'), ('deny', 'Deny', 'danger')] %}
+              <form method="post" action="/c/{{ c.id }}/join-requests/{{ r.id }}" class="inline">
+                <input type="hidden" name="action" value="{{ action }}"><button class="small {{ cls }}">{{ label }}</button></form>
+              {% endfor %}
+            </div></li>
+        {% else %}<li class="muted small">Nobody is waiting.</li>{% endfor %}
+        </ul>
+
+        <h3>Approved list</h3>
+        <ul class="plain">
+        {% for h in mem.members %}
+          <li class="follow-row"><div>{{ h }}</div>
+            <form method="post" action="/c/{{ c.id }}/members" class="row compact">
+              <input type="hidden" name="who" value="{{ h }}"><input type="hidden" name="action" value="remove">
+              <label class="check small" title="Lemmy can't take back an approval, so this bans them from the community">
+                <input type="checkbox" name="revoke" value="1"> also revoke access</label>
+              <button class="small secondary">Remove</button></form></li>
+        {% else %}<li class="muted small">No one yet. Add usernames to let them in without asking you.</li>{% endfor %}
+        </ul>
+        <form method="post" action="/c/{{ c.id }}/members" class="row">
+          <input name="who" required placeholder="user@instance" aria-label="Username to approve">
+          <input type="hidden" name="action" value="add">
+          <button class="small">Add to list</button>
+        </form>
+
+        {% if mem.decided %}
+        <details><summary class="small">Recent decisions</summary>
+          <ul class="plain small">{% for r in mem.decided %}
+            <li>{{ r.decided_at | ago }} · <strong>{{ r.handle }}</strong> ·
+              {{ {'approved': 'let in', 'denied': 'turned away', 'elsewhere': 'answered outside ThreadBNC',
+                  'revoked': 'access revoked (banned)', 'unbanned': 'ban lifted; must ask again'}.get(r.status, r.status) }}
+              {% if r.decided_by == 'list' %}<span class="muted">(on the list)</span>{% endif %}</li>
+          {% endfor %}</ul>
+        </details>
+        {% endif %}
+      </section>
+      {% endif %}
+
       <section class="card">
         <h2>Moderators</h2>
         <ul class="plain">

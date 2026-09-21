@@ -12,7 +12,6 @@ from typing import Any, Callable
 
 from . import media, store
 from .adapters import (
-    ADAPTERS,
     CommunityRef,
     HttpClient,
     NCommunity,
@@ -22,6 +21,7 @@ from .adapters import (
     RemoteUnavailable,
     ThreadiverseAdapter,
     UnsupportedSoftware,
+    adapter_class,
     detect_software,
     host_of,
     parse_community_ref,
@@ -57,7 +57,12 @@ class Bouncer:
         self.http = http or HttpClient(settings.user_agent, settings.http_timeout,
                                        settings.min_request_interval)
         self._adapter_factory = adapter_factory
-        self._adapters: dict[str, ThreadiverseAdapter] = {}
+        self._adapters: dict[str, tuple[ThreadiverseAdapter, str]] = {}  # domain -> (adapter, chosen at)
+        # Extra work for each pass that needs accounts (e.g. private community join requests).
+        self.hooks: list[Callable[[], Any]] = []
+        # (domain, community id) -> a member's session token, for communities only
+        # members can read (see private.py). None: read anonymously, as usual.
+        self.read_token: Callable[[str, int], str | None] | None = None
         self.media_dir = settings.media_dir or (settings.data_dir / "media")
         self.media = media.MediaFetcher(db, self.media_dir, settings.user_agent, settings.media_max_bytes,
                                         timeout=max(settings.http_timeout, 30.0), throttle=self.http.throttle)
@@ -69,13 +74,16 @@ class Bouncer:
     def adapter_for(self, domain: str) -> ThreadiverseAdapter:
         if self._adapter_factory:
             return self._adapter_factory(domain)
-        if domain in self._adapters:
-            return self._adapters[domain]
         now = utcnow()
+        cached = self._adapters.get(domain)
+        # Re-pick now and then: a server upgraded to Lemmy 1.0 needs the v4 adapter.
+        if cached and parse_ts(now) - parse_ts(cached[1]) <= SOFTWARE_RECHECK:  # type: ignore[operator]
+            return cached[0]
         with self.db.connect() as conn:
-            row = conn.execute("SELECT software, software_checked_at FROM instances WHERE domain=?",
-                               (domain,)).fetchone()
+            row = conn.execute("SELECT software, software_version, software_checked_at FROM instances "
+                               "WHERE domain=?", (domain,)).fetchone()
         software = row["software"] if row else None
+        version = row["software_version"] if row else None
         checked = parse_ts(row["software_checked_at"]) if row else None
         if not software or not checked or parse_ts(now) - checked > SOFTWARE_RECHECK:  # type: ignore[operator]
             try:
@@ -83,15 +91,32 @@ class Bouncer:
             except RemoteError:
                 if not software:
                     raise
-                version = None
-            with self.db.transaction() as conn:
-                store.upsert_instance(conn, domain, now, software=software, version=version)
-        cls = ADAPTERS.get(software or "")
+            else:
+                with self.db.transaction() as conn:
+                    store.upsert_instance(conn, domain, now, software=software, version=version)
+        cls = adapter_class(software, version)
         if cls is None:
             raise UnsupportedSoftware(f"{domain} runs '{software}', which is not supported yet")
-        adapter = cls(domain, self.http)
-        self._adapters[domain] = adapter
+        if cached and type(cached[0]) is cls:
+            adapter = cached[0]
+        else:
+            adapter = cls(domain, self.http)
+            if cached:
+                log.info("%s now runs %s %s; switching to %s", domain, software, version, cls.__name__)
+        self._adapters[domain] = (adapter, now)
         return adapter
+
+    def reader(self, domain: str, community_id: int | None) -> ThreadiverseAdapter:
+        """The adapter to read a community's posts with: logged in as a member
+        for private communities we manage, anonymous otherwise."""
+        adapter = self.adapter_for(domain)
+        token = self.read_token(domain, community_id) if self.read_token and community_id else None
+        return adapter.reading_as(token) if token and hasattr(adapter, "reading_as") else adapter
+
+    def _community_id(self, community_ap_id: str) -> int | None:
+        with self.db.connect() as conn:
+            row = conn.execute("SELECT id FROM communities WHERE canonical_ap_id=?", (community_ap_id,)).fetchone()
+        return row["id"] if row else None
 
     def _note_contact(self, domain: str, ok: bool, error: str | None = None) -> None:
         with self.db.transaction() as conn:
@@ -109,7 +134,7 @@ class Bouncer:
             if dom == seen_domain:
                 break  # already on the best available source
             try:
-                adapter = self.adapter_for(dom)
+                adapter = self.reader(dom, self._community_id(post.community.ap_id))
                 local = adapter.resolve_ap_id(post.ap_id)
                 if not local:
                     continue
@@ -151,7 +176,7 @@ class Bouncer:
             return existing["id"]
 
         src_domain, src_local, post = self._best_source(post, domain, local_id, adapter)
-        src_adapter = self.adapter_for(src_domain)
+        src_adapter = self.reader(src_domain, self._community_id(post.community.ap_id))
         comments = src_adapter.fetch_comments(src_local)
         now = utcnow()
         result = store.ApplyResult()
@@ -351,7 +376,7 @@ class Bouncer:
         result = store.ApplyResult()
         full = True
         try:
-            adapter = self.adapter_for(domain)
+            adapter = self.reader(domain, t["community_id"])
             try:
                 post = adapter.fetch_post(local)
             except RemoteNotFound:
@@ -556,7 +581,7 @@ class Bouncer:
         max_pages = MAX_POLL_PAGES if f["last_polled_at"] else 1
         posts = []
         try:
-            adapter = self.adapter_for(ref.domain)
+            adapter = self.reader(ref.domain, community_id)
             for page in range(1, max_pages + 1):
                 batch = adapter.list_community_posts(ref, sort="New", page=page, limit=AUTO_CAPTURE_PAGE)
                 posts.extend(batch)
@@ -679,6 +704,11 @@ class Bouncer:
     def tick(self) -> None:
         while self.run_one_job():
             pass
+        for hook in self.hooks:
+            try:
+                hook()
+            except Exception:  # keep the worker alive
+                log.error("bouncer hook %s crashed: %s", getattr(hook, "__qualname__", hook), traceback.format_exc())
         now = utcnow()
         with self.db.connect() as conn:
             follows = [r["community_id"] for r in conn.execute(

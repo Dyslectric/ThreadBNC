@@ -33,6 +33,7 @@ h3 { font-size: 1rem; margin: 6px 0; }
 .inline { display: inline; }
 input, select, button { font: inherit; padding: 7px 10px; border-radius: 7px; border: 1px solid var(--line);
   background: var(--bg); color: var(--text); }
+select { max-width: 100%; }
 input[type=url], input[name=community] { flex: 1; min-width: 0; width: 100%; }
 .row input[type=url] { width: auto; }
 input.num { width: 5.5em; }

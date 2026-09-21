@@ -6,6 +6,7 @@ this and overrides the few differences.
 
 from __future__ import annotations
 
+import copy
 import time
 from typing import Any
 
@@ -50,10 +51,18 @@ class LemmyAdapter(ThreadiverseAdapter):
         super().__init__(domain)
         self.http = http
         self._admins: set[str] | None = None
+        self._read_token: str | None = None  # see reading_as()
+
+    def reading_as(self, token: str) -> "LemmyAdapter":
+        """A copy whose reads are made as a logged-in account, for content only
+        members can see (private communities)."""
+        reader = copy.copy(self)
+        reader._read_token = token
+        return reader
 
     # -- low level -------------------------------------------------------
     def _get(self, path: str, **params: Any) -> Any:
-        return self.http.get_json(self.domain, f"{self.api_base}{path}", params)
+        return self.http.get_json(self.domain, f"{self.api_base}{path}", params, token=self._read_token)
 
     def _call(self, method: str, path: str, token: str | None, body: dict[str, Any] | None = None,
               **params: Any) -> Any:

@@ -239,6 +239,43 @@ CREATE TABLE IF NOT EXISTS mod_actions (
     created_at TEXT NOT NULL
 );
 
+-- Private communities (Lemmy 1.0) whose membership ThreadBNC manages, through
+-- one of your moderator accounts on the community's own server.
+CREATE TABLE IF NOT EXISTS private_communities (
+    community_id INTEGER PRIMARY KEY REFERENCES communities(id) ON DELETE CASCADE,
+    account_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
+    visibility TEXT,
+    active INTEGER NOT NULL DEFAULT 1,
+    last_swept_at TEXT,
+    last_error TEXT
+);
+
+-- The approved list: usernames (user@host, lowercase) let in automatically.
+CREATE TABLE IF NOT EXISTS private_members (
+    community_id INTEGER NOT NULL REFERENCES communities(id) ON DELETE CASCADE,
+    handle TEXT NOT NULL,
+    added_at TEXT NOT NULL,
+    PRIMARY KEY (community_id, handle)
+);
+
+-- Requests to join a private community and what became of them.
+-- status: waiting | approved | denied | elsewhere (answered outside ThreadBNC)
+--         | revoked (banned when taken off the list) | unbanned (put back; must ask again)
+CREATE TABLE IF NOT EXISTS join_requests (
+    id INTEGER PRIMARY KEY,
+    community_id INTEGER NOT NULL REFERENCES communities(id) ON DELETE CASCADE,
+    handle TEXT NOT NULL,
+    person_ap_id TEXT,
+    display_name TEXT,
+    person_local_id TEXT,
+    community_local_id TEXT,
+    status TEXT NOT NULL,
+    decided_by TEXT,
+    first_seen_at TEXT NOT NULL,
+    decided_at TEXT,
+    UNIQUE (community_id, handle)
+);
+
 CREATE TABLE IF NOT EXISTS app_settings (
     key TEXT PRIMARY KEY,
     value TEXT
@@ -307,7 +344,7 @@ COLUMN_MIGRATIONS = [
 # Tables with an integer `id` key: inserts into these get `RETURNING id` on
 # Postgres so callers can keep using `cursor.lastrowid`.
 _ID_TABLES = {"instances", "actors", "communities", "archived_threads", "objects", "revisions",
-              "state_events", "media", "jobs", "accounts", "mod_actions"}
+              "state_events", "media", "jobs", "accounts", "mod_actions", "join_requests"}
 _INSERT_RE = re.compile(r"^\s*INSERT\s+INTO\s+(\w+)", re.IGNORECASE)
 _PG_WRITE_LOCK = 727_001  # advisory lock id: one writer at a time, like SQLite's BEGIN IMMEDIATE
 

@@ -60,6 +60,7 @@ class NCommunity:
     deleted: bool = False
     description: str | None = None
     moderator_ap_ids: list[str] | None = None
+    visibility: str | None = None  # Lemmy 1.0: public | unlisted | local_only_* | private
 
 
 @dataclass

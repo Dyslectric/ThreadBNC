@@ -40,6 +40,10 @@ def main() -> None:
         return
 
     bouncer = Bouncer(open_database(settings), settings)
+    if args.cmd in ("bouncer", "sync"):
+        from .private import attach
+
+        attach(bouncer, settings)
     if args.cmd == "bouncer":
         bouncer.run_forever()
     elif args.cmd == "archive":

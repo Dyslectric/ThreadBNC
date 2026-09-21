@@ -1,0 +1,92 @@
+{
+ "community_view": {
+  "community": {
+   "id": 3,
+   "name": "user4",
+   "title": "title text",
+   "removed": false,
+   "published_at": "2025-09-19T12:46:37.881225Z",
+   "deleted": false,
+   "nsfw": false,
+   "ap_id": "https://remote2.test/c/user4",
+   "local": false,
+   "last_refreshed_at": "2026-09-14T06:57:40.309702Z",
+   "posting_restricted_to_mods": false,
+   "instance_id": 3,
+   "visibility": "public",
+   "subscribers": 6,
+   "posts": 47,
+   "comments": 12,
+   "users_active_day": 0,
+   "users_active_week": 10,
+   "users_active_month": 20,
+   "users_active_half_year": 46,
+   "subscribers_local": 0,
+   "report_count": 0,
+   "unresolved_report_count": 0,
+   "local_removed": false
+  },
+  "can_mod": false,
+  "tags": []
+ },
+ "site": {
+  "id": 3,
+  "name": "name text",
+  "published_at": "2025-02-05T10:09:37.567639Z",
+  "updated_at": "2026-08-04T15:52:16.782231Z",
+  "ap_id": "https://remote2.test/",
+  "last_refreshed_at": "2026-09-14T06:57:40.259998Z",
+  "inbox_url": "https://remote2.test/inbox",
+  "instance_id": 3,
+  "content_warning": "content_warning text"
+ },
+ "moderators": [
+  {
+   "community": {
+    "id": 3,
+    "name": "user4",
+    "title": "title text",
+    "removed": false,
+    "published_at": "2025-09-19T12:46:37.881225Z",
+    "deleted": false,
+    "nsfw": false,
+    "ap_id": "https://remote2.test/c/user4",
+    "local": false,
+    "last_refreshed_at": "2026-09-14T06:57:40.309702Z",
+    "posting_restricted_to_mods": false,
+    "instance_id": 3,
+    "visibility": "public",
+    "subscribers": 6,
+    "posts": 47,
+    "comments": 12,
+    "users_active_day": 0,
+    "users_active_week": 10,
+    "users_active_month": 20,
+    "users_active_half_year": 46,
+    "subscribers_local": 0,
+    "report_count": 0,
+    "unresolved_report_count": 0,
+    "local_removed": false
+   },
+   "moderator": {
+    "id": 9,
+    "name": "user5",
+    "published_at": "2025-02-05T10:09:56.146375Z",
+    "ap_id": "https://remote2.test/u/user5",
+    "bio": "bio text",
+    "local": false,
+    "last_refreshed_at": "2026-09-14T06:57:42.059506Z",
+    "deleted": false,
+    "bot_account": false,
+    "instance_id": 3,
+    "post_count": 4,
+    "comment_count": 3
+   }
+  }
+ ],
+ "discussion_languages": [
+  0,
+  37,
+  39
+ ]
+}

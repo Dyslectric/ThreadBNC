@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from threadbnc.adapters import (
-    CommunityRef, ModAction, NActor, NComment, NCommunity, NPost, RemoteAuthError, RemoteNotFound,
+    CommunityRef, JoinRequest, ModAction, NActor, NComment, NCommunity, NPost, RemoteAuthError, RemoteNotFound,
     RemoteRejected,
     RemoteUnavailable,
     ThreadiverseAdapter, ThreadRef,
@@ -63,6 +63,20 @@ class FakeServer:
         self.site = {"registration_mode": "RequireApplication", "blocked_instances": [], "blocked_urls": []}
         self.people = {"https://other.test/u/bob": "901", "https://home.test/u/dave": "900",
                        "https://home.test/u/carol": "902"}
+        # Lemmy 1.0 private communities: visibility per community local id, and
+        # follow requests as [person ap id, community ap id, state].
+        self.v4 = True
+        self.visibility: dict[str, str] = {}
+        self.follows: list[list[str]] = []
+        self.join_request_lists = 0
+        self.members_only = False  # posts readable only with a session (a private community)
+
+    def ask_to_join(self, person_ap_id: str, community_ap_id: str) -> None:
+        self.follows = [f for f in self.follows if f[:2] != [person_ap_id, community_ap_id]]
+        self.follows.append([person_ap_id, community_ap_id, "approval_required"])
+
+    def follow_state(self, person_ap_id: str) -> str | None:
+        return next((f[2] for f in self.follows if f[0] == person_ap_id), None)
 
     def federate(self) -> None:
         for post_id, c in self.outbox:
@@ -98,6 +112,20 @@ class FakeAdapter(ThreadiverseAdapter):
     def __init__(self, domain: str, server: FakeServer):
         super().__init__(domain)
         self.s = server
+        self.token: str | None = None
+
+    def reading_as(self, token):
+        reader = copy.copy(self)
+        reader.token = token
+        return reader
+
+    def _check_reader(self) -> None:
+        if self.s.members_only and self.token not in self.s.sessions:
+            raise RemoteNotFound("couldnt_find_post")  # what Lemmy tells outsiders
+
+    @property
+    def supports_private_communities(self) -> bool:
+        return self.s.v4
 
     def _check(self) -> None:
         if self.s.down:
@@ -117,12 +145,14 @@ class FakeAdapter(ThreadiverseAdapter):
 
     def fetch_post(self, local_id: str) -> NPost:
         self._check()
+        self._check_reader()
         if local_id not in self.s.posts:
             raise RemoteNotFound(local_id)
         return copy.deepcopy(self.s.posts[local_id])
 
     def fetch_comments(self, post_local_id: str) -> list[NComment]:
         self._check()
+        self._check_reader()
         return copy.deepcopy(list(self.s.comments.get(post_local_id, {}).values()))
 
     def fetch_community(self, ref: CommunityRef) -> NCommunity:
@@ -131,6 +161,8 @@ class FakeAdapter(ThreadiverseAdapter):
 
     def list_community_posts(self, ref, sort="New", page=1, limit=20):
         self._check()
+        if self.s.members_only and self.token not in self.s.sessions:
+            return []
         return [copy.deepcopy(p) for p in sorted(self.s.posts.values(), key=lambda p: p.created_at or "",
                                                   reverse=True)][:limit]
 
@@ -273,6 +305,30 @@ class FakeAdapter(ThreadiverseAdapter):
             if c.ap_id == ap_id:
                 return {"comment": c.local_id, "post": pid}
         return {}
+
+    # -- private communities (Lemmy 1.0) -------------------------------------------
+    def community_by_id(self, token, community_id):
+        self._auth(token)
+        return replace(COMMUNITY, local_id=community_id, visibility=self.s.visibility.get(community_id, "public"))
+
+    def set_community_visibility(self, token, community_id, visibility):
+        self._auth(token)
+        self.s.visibility[community_id] = visibility
+        return self.community_by_id(token, community_id)
+
+    def join_requests(self, token, pending_only=True):
+        self._auth(token)
+        self.s.join_request_lists += 1
+        return [JoinRequest(self.s.people[p], self._actor_for(p), "77", c, state)
+                for p, c, state in self.s.follows if state == "approval_required" or not pending_only]
+
+    def answer_join_request(self, token, community_id, person_id, approve):
+        self._auth(token)
+        ap = next(a for a, pid in self.s.people.items() if pid == person_id)
+        follow = next((f for f in self.s.follows if f[0] == ap), None)
+        if follow is None or follow[2] != "approval_required":
+            raise RemoteRejected("home.test refused: couldnt_update", "couldnt_update")
+        follow[2] = "accepted" if approve else "denied"
 
     def create_comment(self, token, post_id, body, parent_id=None):
         user = self._auth(token)
