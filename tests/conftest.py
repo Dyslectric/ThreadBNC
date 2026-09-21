@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import os
 from dataclasses import replace
 from pathlib import Path
 
@@ -12,7 +13,22 @@ from threadbnc.adapters import (
 )
 from threadbnc.bouncer import Bouncer
 from threadbnc.config import Settings
-from threadbnc.db import Database
+from threadbnc.db import open_database
+
+# Set THREADBNC_TEST_DATABASE_URL=postgresql://... to run the suite against
+# Postgres (each test gets an empty schema). Otherwise tests use SQLite.
+TEST_PG_URL = os.environ.get("THREADBNC_TEST_DATABASE_URL")
+
+
+def _fresh_test_db() -> str | None:
+    if not TEST_PG_URL:
+        return None
+    import psycopg
+
+    with psycopg.connect(TEST_PG_URL, autocommit=True) as conn:
+        conn.execute("DROP SCHEMA IF EXISTS public CASCADE")
+        conn.execute("CREATE SCHEMA public")
+    return TEST_PG_URL
 
 DOMAIN = "lemmy.test"
 COMMUNITY = NCommunity(ap_id=f"https://{DOMAIN}/c/math", name="math", domain=DOMAIN, title="Math",
@@ -109,7 +125,8 @@ def server() -> FakeServer:
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
     return Settings(
-        data_dir=tmp_path, db_path=tmp_path / "t.sqlite3", password="pw", api_token="tok",
+        data_dir=tmp_path, db_path=tmp_path / "t.sqlite3", database_url=_fresh_test_db(),
+        password="pw", api_token="tok",
         secret_key="x" * 40, https_only_cookies=False, embedded_bouncer=False, default_sync_minutes=30,
         default_follow_poll_minutes=15, default_follow_retention_days=30, http_timeout=5,
         min_request_interval=0, user_agent="test",
@@ -118,4 +135,4 @@ def settings(tmp_path: Path) -> Settings:
 
 @pytest.fixture
 def bouncer(settings: Settings, server: FakeServer) -> Bouncer:
-    return Bouncer(Database(settings.db_path), settings, adapter_factory=lambda d: FakeAdapter(d, server))
+    return Bouncer(open_database(settings), settings, adapter_factory=lambda d: FakeAdapter(d, server))

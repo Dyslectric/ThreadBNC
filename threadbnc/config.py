@@ -22,6 +22,7 @@ def _env_bool(name: str, default: bool) -> bool:
 class Settings:
     data_dir: Path
     db_path: Path
+    database_url: str | None
     password: str | None
     api_token: str | None
     secret_key: str
@@ -58,6 +59,7 @@ def load_settings() -> Settings:
     return Settings(
         data_dir=data_dir,
         db_path=Path(os.environ.get("THREADBNC_DB", str(data_dir / "archive.sqlite3"))),
+        database_url=os.environ.get("THREADBNC_DATABASE_URL") or None,
         password=os.environ.get("THREADBNC_PASSWORD") or None,
         api_token=os.environ.get("THREADBNC_API_TOKEN") or None,
         secret_key=_load_secret(data_dir),

@@ -12,18 +12,17 @@ import hashlib
 import ipaddress
 import mimetypes
 import socket
-import sqlite3
 import tempfile
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 from urllib.parse import urljoin, urlparse
 
 import httpx
 
 from .adapters.http import HostThrottle
-from .db import Database, fmt_ts, parse_ts, utcnow
+from .db import Conn, Database, fmt_ts, parse_ts, utcnow
 from .render import MediaInfo, extract_media_urls, looks_like_media
 
 MAX_ATTEMPTS = 5
@@ -87,7 +86,7 @@ def media_candidates(title: str | None, body: str | None, url: str | None) -> li
     return urls
 
 
-def skip_unprobed_links(conn: sqlite3.Connection) -> int:
+def skip_unprobed_links(conn: Conn) -> int:
     """Stop pending downloads of post links registered before we stopped probing
     non-media links. Embedded images and thumbnails are left alone."""
     wanted: set[str] = set()
@@ -103,23 +102,23 @@ def skip_unprobed_links(conn: sqlite3.Connection) -> int:
     return n
 
 
-def register(conn: sqlite3.Connection, object_id: int, urls: Iterable[str], now: str) -> None:
+def register(conn: Conn, object_id: int, urls: Iterable[str], now: str) -> None:
     for url in urls:
-        conn.execute("INSERT OR IGNORE INTO media(url, first_seen_at, next_attempt_at) VALUES (?,?,?)",
-                     (url, now, now))
+        conn.execute("INSERT INTO media(url, first_seen_at, next_attempt_at) VALUES (?,?,?) "
+                     "ON CONFLICT(url) DO NOTHING", (url, now, now))
         mid = conn.execute("SELECT id FROM media WHERE url=?", (url,)).fetchone()[0]
-        conn.execute("INSERT OR IGNORE INTO media_refs(object_id, media_id, first_seen_at) VALUES (?,?,?)",
-                     (object_id, mid, now))
+        conn.execute("INSERT INTO media_refs(object_id, media_id, first_seen_at) VALUES (?,?,?) "
+                     "ON CONFLICT(object_id, media_id) DO NOTHING", (object_id, mid, now))
 
 
-def register_all_existing(conn: sqlite3.Connection) -> None:
+def register_all_existing(conn: Conn) -> None:
     """Backfill refs for revisions stored before media archiving existed."""
     now = utcnow()
     for r in conn.execute("SELECT object_id, title, body, url FROM revisions").fetchall():
         register(conn, r["object_id"], media_candidates(r["title"], r["body"], r["url"]), now)
 
 
-def lookup_for_objects(conn: sqlite3.Connection, object_ids: list[int]) -> dict[str, MediaInfo]:
+def lookup_for_objects(conn: Conn, object_ids: list[int]) -> dict[str, MediaInfo]:
     if not object_ids:
         return {}
     marks = ",".join("?" * len(object_ids))
@@ -219,7 +218,7 @@ class MediaFetcher:
             self.fetch_one(row)
         return len(rows)
 
-    def fetch_one(self, row: sqlite3.Row) -> None:
+    def fetch_one(self, row: Any) -> None:
         now = utcnow()
         try:
             dl = self._download(row["url"])
@@ -251,7 +250,7 @@ class MediaFetcher:
 
 # --- garbage collection (only after purging expired auto threads) ----------
 
-def collect_orphans(conn: sqlite3.Connection, media_dir: Path) -> list[Path]:
+def collect_orphans(conn: Conn, media_dir: Path) -> list[Path]:
     """Delete media rows no object references; return files no row uses any more.
     The caller unlinks those files after the transaction commits."""
     orphans = conn.execute(

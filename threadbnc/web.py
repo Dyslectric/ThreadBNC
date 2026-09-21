@@ -30,7 +30,7 @@ from . import media as media_mod
 from .adapters import RemoteError, host_of
 from .bouncer import Bouncer
 from .config import Settings, load_settings
-from .db import Database, parse_ts, utcnow
+from .db import open_database, parse_ts, utcnow
 from .render import MediaInfo, looks_like_media, render_markdown
 
 log = logging.getLogger("threadbnc.web")
@@ -177,7 +177,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     settings = settings or load_settings()
     if not settings.password:
         raise SystemExit("THREADBNC_PASSWORD must be set; the archive is never served unauthenticated.")
-    db = bouncer.db if bouncer else Database(settings.db_path)
+    db = bouncer.db if bouncer else open_database(settings)
     bouncer = bouncer or Bouncer(db, settings)
 
     @asynccontextmanager
@@ -337,7 +337,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
               SELECT r.observed_at, 'edited', NULL, '{{}}', NULL, o.id, o.object_type, o.thread_id, r.seq
               FROM revisions r JOIN objects o ON o.id=r.object_id
               JOIN archived_threads th ON th.id=o.thread_id AND th.trashed_at IS NULL WHERE r.seq>1 {where}
-            ) ORDER BY at DESC LIMIT ?""",
+            ) AS changes ORDER BY at DESC LIMIT ?""",
             [*args, *args, limit],
         ).fetchall()
         out = []

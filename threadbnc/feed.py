@@ -3,18 +3,17 @@
 from __future__ import annotations
 
 import re
-import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from .db import fmt_ts
+from .db import Conn, fmt_ts
 
-SORTS = {
-    "new": "created_at DESC",
-    "active": "last_activity DESC",
-    "top": "score DESC, created_at DESC",
-    "comments": "n_comments DESC, created_at DESC",
+SORTS = {  # NULLS LAST: Postgres otherwise puts NULLs first in DESC order
+    "new": "created_at DESC NULLS LAST, id DESC",
+    "active": "last_activity DESC NULLS LAST, id DESC",
+    "top": "score DESC NULLS LAST, created_at DESC NULLS LAST, id DESC",
+    "comments": "n_comments DESC, created_at DESC NULLS LAST, id DESC",
 }
 WINDOWS = {"day": timedelta(days=1), "week": timedelta(days=7), "month": timedelta(days=30), "all": None}
 
@@ -55,13 +54,13 @@ SELECT * FROM (
   JOIN communities c ON c.id=t.community_id
   LEFT JOIN actors a ON a.id=o.author_id
   WHERE t.trashed_at IS NULL {scope}
-) WHERE 1=1 {filters}
+) AS feed WHERE 1=1 {filters}
 ORDER BY {order}
 LIMIT ? OFFSET ?
 """
 
 
-def load_feed(conn: sqlite3.Connection, *, community_id: int | None = None, sort: str = "new",
+def load_feed(conn: Conn, *, community_id: int | None = None, sort: str = "new",
               window: str = "all", unread: bool = False, kept_only: bool = False, page: int = 1,
               per_page: int = 25) -> FeedPage:
     args: list[Any] = []
@@ -92,7 +91,7 @@ def load_feed(conn: sqlite3.Connection, *, community_id: int | None = None, sort
     return FeedPage(items, page, len(rows) > per_page)
 
 
-def _thumbnails(conn: sqlite3.Connection,
+def _thumbnails(conn: Conn,
                 roots: list[tuple[int, str | None, str | None]]) -> dict[int, dict[str, Any]]:
     """Archived image/video for each post: its link if that is media, else the
     server's preview image (article links), else the first embedded image."""
@@ -118,7 +117,7 @@ def _thumbnails(conn: sqlite3.Connection,
     return out
 
 
-def followed_communities(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+def followed_communities(conn: Conn) -> list[dict[str, Any]]:
     rows = conn.execute(
         """SELECT c.id, c.name, c.title, c.canonical_ap_id, f.poll_interval_minutes, f.retention_days,
                   f.last_polled_at, f.last_error, f.source_domain,
@@ -131,7 +130,7 @@ def followed_communities(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
-def mark_read(conn: sqlite3.Connection, now: str, community_id: int | None = None) -> None:
+def mark_read(conn: Conn, now: str, community_id: int | None = None) -> None:
     scope = ("community_id=?", [community_id]) if community_id is not None else (
         "community_id IN (SELECT community_id FROM community_follows WHERE active=1)", [])
     conn.execute(

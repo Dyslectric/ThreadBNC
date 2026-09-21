@@ -15,14 +15,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from . import media
 from .adapters import NActor, NComment, NCommunity, NPost, host_of
-from .db import dumps
+from .db import Conn, dumps
 
 # Placeholder strings some servers substitute for withheld content.
 REDACTION_MARKERS = {"", "*permanently deleted*", "*removed*", "*deleted*", "[deleted]", "[removed]"}
@@ -49,7 +48,7 @@ class ApplyResult:
 
 # --- basic upserts ---------------------------------------------------------
 
-def upsert_instance(conn: sqlite3.Connection, domain: str, now: str, *,
+def upsert_instance(conn: Conn, domain: str, now: str, *,
                     software: str | None = None, version: str | None = None) -> int:
     row = conn.execute("SELECT id FROM instances WHERE domain=?", (domain,)).fetchone()
     if row:
@@ -68,7 +67,7 @@ def upsert_instance(conn: sqlite3.Connection, domain: str, now: str, *,
     return cur.lastrowid
 
 
-def record_instance_contact(conn: sqlite3.Connection, domain: str, now: str, ok: bool,
+def record_instance_contact(conn: Conn, domain: str, now: str, ok: bool,
                             error: str | None = None) -> None:
     iid = upsert_instance(conn, domain, now)
     row = conn.execute("SELECT available FROM instances WHERE id=?", (iid,)).fetchone()
@@ -88,7 +87,7 @@ def record_instance_contact(conn: sqlite3.Connection, domain: str, now: str, ok:
             add_event(conn, "instance_unavailable", now, instance_id=iid, reason=error)
 
 
-def upsert_actor(conn: sqlite3.Connection, actor: NActor, now: str) -> int | None:
+def upsert_actor(conn: Conn, actor: NActor, now: str) -> int | None:
     if not actor.ap_id:
         return None
     row = conn.execute("SELECT id FROM actors WHERE canonical_ap_id=?", (actor.ap_id,)).fetchone()
@@ -106,7 +105,7 @@ def upsert_actor(conn: sqlite3.Connection, actor: NActor, now: str) -> int | Non
     return cur.lastrowid
 
 
-def add_event(conn: sqlite3.Connection, event_type: str, now: str, *, object_id: int | None = None,
+def add_event(conn: Conn, event_type: str, now: str, *, object_id: int | None = None,
               thread_id: int | None = None, community_id: int | None = None,
               instance_id: int | None = None, attribution: str | None = None,
               actor_id: int | None = None, remote_timestamp: str | None = None,
@@ -120,7 +119,7 @@ def add_event(conn: sqlite3.Connection, event_type: str, now: str, *, object_id:
     return cur.lastrowid
 
 
-def upsert_community(conn: sqlite3.Connection, c: NCommunity, now: str) -> int:
+def upsert_community(conn: Conn, c: NCommunity, now: str) -> int:
     row = conn.execute("SELECT * FROM communities WHERE canonical_ap_id=?", (c.ap_id,)).fetchone()
     iid = upsert_instance(conn, c.domain or host_of(c.ap_id), now)
     if not row:
@@ -165,7 +164,7 @@ def _is_redacted(value: str | None, hidden: bool) -> bool:
     return hidden and norm in REDACTION_MARKERS
 
 
-def record_revision(conn: sqlite3.Connection, object_id: int, now: str, *, title: str | None,
+def record_revision(conn: Conn, object_id: int, now: str, *, title: str | None,
                     body: str | None, url: str | None, meta: dict[str, Any],
                     remote_updated_at: str | None, hidden: bool) -> tuple[bool, list[str]]:
     """Append a revision if content changed. Returns (created, withheld_fields)."""
@@ -212,7 +211,7 @@ _FLAG_EVENTS = {
 }
 
 
-def _apply_flags(conn: sqlite3.Connection, obj: sqlite3.Row | None, object_id: int, thread_id: int,
+def _apply_flags(conn: Conn, obj: Any | None, object_id: int, thread_id: int,
                  object_type: str, local_id: str, flags: dict[str, bool], now: str,
                  withheld: list[str], result: ApplyResult) -> None:
     for flag, value in flags.items():
@@ -242,19 +241,20 @@ def _apply_flags(conn: sqlite3.Connection, obj: sqlite3.Row | None, object_id: i
                      (int(value), now, object_id))
 
 
-def _set_local_id(conn: sqlite3.Connection, object_id: int, domain: str, local_id: str) -> None:
+def _set_local_id(conn: Conn, object_id: int, domain: str, local_id: str) -> None:
     conn.execute(
-        "INSERT OR REPLACE INTO object_local_ids(object_id, domain, local_id) VALUES (?,?,?)",
+        "INSERT INTO object_local_ids(object_id, domain, local_id) VALUES (?,?,?) "
+        "ON CONFLICT(domain, local_id) DO UPDATE SET object_id=excluded.object_id",
         (object_id, domain, local_id),
     )
 
 
-def _upsert_object(conn: sqlite3.Connection, *, ap_id: str, object_type: str, thread_id: int,
+def _upsert_object(conn: Conn, *, ap_id: str, object_type: str, thread_id: int,
                    parent_id: int | None, root_post_id: int | None, author_id: int | None,
                    community_id: int, created_at: str | None, updated_at: str | None,
                    score: int | None, reply_count: int | None, now: str, initial: bool,
                    result: ApplyResult, upvotes: int | None = None,
-                   downvotes: int | None = None) -> tuple[int, sqlite3.Row | None]:
+                   downvotes: int | None = None) -> tuple[int, Any | None]:
     obj = conn.execute("SELECT * FROM objects WHERE canonical_ap_id=?", (ap_id,)).fetchone()
     if obj is None:
         cur = conn.execute(
@@ -285,7 +285,7 @@ def _upsert_object(conn: sqlite3.Connection, *, ap_id: str, object_type: str, th
     return oid, obj
 
 
-def apply_post(conn: sqlite3.Connection, thread_id: int, post: NPost, source_domain: str, now: str,
+def apply_post(conn: Conn, thread_id: int, post: NPost, source_domain: str, now: str,
                initial: bool, result: ApplyResult) -> int:
     cid = upsert_community(conn, post.community, now)
     aid = upsert_actor(conn, post.author, now)
@@ -314,7 +314,7 @@ def apply_post(conn: sqlite3.Connection, thread_id: int, post: NPost, source_dom
     return oid
 
 
-def apply_comments(conn: sqlite3.Connection, thread_id: int, root_id: int, community_id: int,
+def apply_comments(conn: Conn, thread_id: int, root_id: int, community_id: int,
                    comments: list[NComment], source_domain: str, now: str, initial: bool,
                    complete: bool, result: ApplyResult) -> None:
     by_local = {c.local_id: c for c in comments}
@@ -366,7 +366,7 @@ def apply_comments(conn: sqlite3.Connection, thread_id: int, root_id: int, commu
                 mark_missing(conn, row["id"], thread_id, now, result)
 
 
-def mark_missing(conn: sqlite3.Connection, object_id: int, thread_id: int, now: str,
+def mark_missing(conn: Conn, object_id: int, thread_id: int, now: str,
                  result: ApplyResult | None = None) -> None:
     row = conn.execute("SELECT cur_missing FROM objects WHERE id=?", (object_id,)).fetchone()
     if row is None or row["cur_missing"]:
@@ -381,7 +381,7 @@ def mark_missing(conn: sqlite3.Connection, object_id: int, thread_id: int, now: 
 
 # --- purge (the single destructive path) -----------------------------------
 
-def purge_thread(conn: sqlite3.Connection, thread_id: int, now: str, media_dir: Path | None = None,
+def purge_thread(conn: Conn, thread_id: int, now: str, media_dir: Path | None = None,
                  reason: str = "auto_capture_expired") -> list[Path]:
     """Delete an expired auto-captured thread. Returns media files that are no
     longer referenced by anything, for the caller to unlink after commit."""

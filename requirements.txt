@@ -7,3 +7,4 @@ itsdangerous
 pytest
 markdown-it-py
 nh3
+psycopg[binary]

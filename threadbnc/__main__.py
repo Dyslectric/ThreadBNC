@@ -8,7 +8,7 @@ import os
 
 from .bouncer import Bouncer
 from .config import load_settings
-from .db import Database
+from .db import open_database
 
 
 def main() -> None:
@@ -39,7 +39,7 @@ def main() -> None:
         uvicorn.run(create_app(settings), host=args.host, port=args.port, proxy_headers=True)
         return
 
-    bouncer = Bouncer(Database(settings.db_path), settings)
+    bouncer = Bouncer(open_database(settings), settings)
     if args.cmd == "bouncer":
         bouncer.run_forever()
     elif args.cmd == "archive":
