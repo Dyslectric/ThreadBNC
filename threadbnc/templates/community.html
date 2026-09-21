@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% from "_macros.html" import when, votes %}
+{% from "_feed.html" import controls, post_card, pager, sidebar %}
+{% block title %}!{{ c.name }}@{{ c.canonical_ap_id | host }}{% endblock %}
+{% block content %}
+{% set following = follow and follow.active %}
+{% set base = "/c/" ~ c.id ~ "?tab=" ~ tab ~ "&" %}
+<div class="layout">
+  <div class="main-col">
+    <header class="community-head">
+      <div>
+        <h1>!{{ c.name }}<span class="muted">@{{ c.canonical_ap_id | host }}</span></h1>
+        {% if c.title %}<p class="muted">{{ c.title }}</p>{% endif %}
+      </div>
+      {% if following %}
+        <details class="settings">
+          <summary class="pill good">✓ Following · every {{ follow.poll_interval_minutes }} min · keep {{ (follow.retention_days ~ 'd') if follow.retention_days is not none else 'forever' }}</summary>
+          <div class="card settings-card">
+            <form method="post" action="/c/{{ c.id }}/follow-settings" class="stack">
+              <label>Check every <input type="number" name="poll_interval_minutes" min="1" class="num" value="{{ follow.poll_interval_minutes }}"> minutes</label>
+              <label>Keep posts you haven't kept for
+                <input name="retention_days" class="num" value="{{ follow.retention_days if follow.retention_days is not none else 'forever' }}"> days</label>
+              <button class="small">Save</button>
+            </form>
+            <p class="small muted">New posts are checked for comments and edits at this interval for their first day,
+              then hourly until day 3, then every 6 hours.</p>
+            <p class="small muted">A number of days, or "forever". Posts you ★ keep never expire.
+              Checked via {{ follow.source_domain }}, last {{ when(follow.last_polled_at) if follow.last_polled_at else 'not yet' }}.
+              {% if follow.last_error %}<span class="bad-text">{{ follow.last_error }}</span>{% endif %}</p>
+            <form method="post" action="/c/{{ c.id }}/unfollow"><button class="small secondary">Unfollow</button></form>
+          </div>
+        </details>
+      {% else %}
+        <form method="post" action="/follow" class="inline">
+          <input type="hidden" name="community" value="{{ c.canonical_ap_id }}">
+          <input type="hidden" name="backfill" value="1">
+          <button>Follow</button>
+        </form>
+      {% endif %}
+    </header>
+
+    <nav class="tabs">
+      <a href="/c/{{ c.id }}" class="{{ 'on' if tab == 'feed' }}">Feed</a>
+      <a href="/c/{{ c.id }}?tab=kept" class="{{ 'on' if tab == 'kept' }}">★ Kept ({{ counts.get('manual', 0) }})</a>
+      <a href="/c/{{ c.id }}?tab=live" class="{{ 'on' if tab == 'live' }}">Live on server</a>
+      <a href="/c/{{ c.id }}?tab=log" class="{{ 'on' if tab == 'log' }}">Log</a>
+      {% if counts.get('trash') %}<a href="/trash">Trash ({{ counts.get('trash') }})</a>{% endif %}
+    </nav>
+
+    {% if tab in ('feed', 'kept') %}
+      {{ controls(base, sort, window, unread, c.id) }}
+      {% for i in feed.items %}{{ post_card(i, show_community=False) }}{% else %}
+        <section class="card empty"><p class="muted">
+          {% if tab == 'kept' %}Nothing kept from this community yet. Use ☆ Keep on a post.
+          {% elif not following %}You're not following this community. Follow it to fill this feed, or browse the Live tab.
+          {% elif unread %}You're all caught up.{% else %}No posts captured yet.{% endif %}
+        </p></section>
+      {% endfor %}
+      {{ pager(feed, base, sort, window, unread) }}
+
+    {% elif tab == 'live' %}
+      <div class="feed-controls">
+        <div class="seg">
+          {% for s in ['Hot', 'New', 'Active', 'TopDay', 'TopWeek', 'TopAll'] %}
+            <a href="/c/{{ c.id }}?tab=live&live_sort={{ s }}" class="{{ 'on' if s == live_sort }}">{{ s }}</a>
+          {% endfor %}
+        </div>
+      </div>
+      <p class="small muted">Fetched live from the community's server, including posts from before you followed it. Nothing here is stored until you keep it.</p>
+      {% if live_error %}<div class="flash error">Could not load: {{ live_error }}</div>{% endif %}
+      {% for item in live %}{% set p = item.post %}
+        <article class="post-card">
+          <div class="pc-main">
+            <div class="pc-meta small">{{ p.author.username }}@{{ p.author.domain }} · {{ when(p.created_at) }}
+              {% if p.deleted %}<span class="pill warn">deleted</span>{% endif %}{% if p.removed %}<span class="pill bad">removed</span>{% endif %}{% if p.locked %}<span class="pill warn">locked</span>{% endif %}</div>
+            <h3 class="pc-title">{% if item.thread %}<a href="/t/{{ item.thread.id }}">{{ p.title }}</a>{% else %}{{ p.title }}{% endif %}</h3>
+            {% if p.url | safe_url %}<div class="pc-link small"><a href="{{ p.url | safe_url }}" target="_blank" rel="noreferrer noopener nofollow">{{ p.url | host }} ↗</a></div>{% endif %}
+            <div class="pc-actions small">
+              <span>{{ p.comment_count or 0 }} comments</span> {{ votes(p.upvotes, p.downvotes, p.score) }}
+              {% if item.thread and item.thread.retention == 'manual' and not item.thread.trashed_at %}
+                <a class="chip on" href="/t/{{ item.thread.id }}">★ Kept</a>
+              {% else %}
+                {% if item.thread and item.thread.trashed_at %}<a class="pill warn" href="/t/{{ item.thread.id }}">in trash</a>
+                {% elif item.thread %}<a class="pill new" href="/t/{{ item.thread.id }}">in your feed</a>{% endif %}
+                <form method="post" action="/archive" class="inline">
+                  <input type="hidden" name="url" value="{{ item.retain_url }}">
+                  <button class="chip">☆ Keep</button>
+                </form>
+              {% endif %}
+            </div>
+          </div>
+        </article>
+      {% endfor %}
+      <nav class="pager">
+        {% if page > 1 %}<a href="/c/{{ c.id }}?tab=live&live_sort={{ live_sort }}&page={{ page - 1 }}">← Previous</a>{% else %}<span></span>{% endif %}
+        <span class="muted small">page {{ page }}</span>
+        {% if live %}<a href="/c/{{ c.id }}?tab=live&live_sort={{ live_sort }}&page={{ page + 1 }}">Next →</a>{% endif %}
+      </nav>
+
+    {% else %}
+      <section class="card">
+        <ul class="plain">
+        {% for e in events %}
+          <li><span class="pill {{ tone(e) }}">{{ event_label(e) }}</span> <span class="muted small">{{ when(e.observed_at) }}</span>
+            {% if e.metadata_json != '{}' %}<code class="small">{{ e.metadata_json }}</code>{% endif %}</li>
+        {% else %}<li class="muted">No community-level events.</li>{% endfor %}
+        </ul>
+      </section>
+    {% endif %}
+  </div>
+  {{ sidebar(follows, c.id) }}
+</div>
+{% endblock %}

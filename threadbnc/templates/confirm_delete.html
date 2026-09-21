@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Delete permanently{% endblock %}
+{% block content %}
+<section class="card narrow-wide">
+  <h1>Delete permanently?</h1>
+  <p>This removes {{ 'this thread' if threads | length == 1 else threads | length ~ ' threads' }} from the archive for good: every stored revision, comment, moderation event, and any archived images only {{ 'it uses' if threads | length == 1 else 'they use' }}. It can't be undone.</p>
+  <ul>
+    {% for t in threads %}<li>{{ t.title }} <span class="muted small">({{ t.n }} posts/comments)</span></li>{% endfor %}
+  </ul>
+  <form method="post" action="{{ action }}" class="row">
+    <label>Type <strong>delete</strong> to confirm <input name="confirm" autocomplete="off" required pattern="delete"></label>
+    <button class="danger">Delete permanently</button>
+    <a href="/trash">Cancel</a>
+  </form>
+</section>
+{% endblock %}

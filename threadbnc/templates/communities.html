@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% from "_macros.html" import when %}
+{% block title %}Communities{% endblock %}
+{% block content %}
+<h1>Communities</h1>
+
+<section class="card">
+  <h2>Follow a community</h2>
+  <form method="post" action="/follow" class="stack">
+    <input name="community" placeholder="!technology@lemmy.world  or  https://lemmy.world/c/technology" required>
+    <div class="row">
+      <label>Check every <input type="number" name="poll_interval_minutes" value="{{ default_poll }}" min="1" class="num"> min</label>
+      <label>Keep unkept posts for
+        <select name="retention_days">
+          {% for d in [7, 30, 90, 365] %}<option value="{{ d }}" {{ 'selected' if d == default_days }}>{{ d }} days</option>{% endfor %}
+          <option value="forever" {{ 'selected' if default_days is none }}>forever</option>
+        </select>
+      </label>
+      <label class="check"><input type="checkbox" name="backfill" value="1" checked> Start with the posts on the community's first page</label>
+    </div>
+    <button>Follow</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Following ({{ follows | length }})</h2>
+  {% if not follows %}<p class="muted">Nothing yet.</p>{% endif %}
+  <ul class="plain">
+  {% for f in follows %}
+    <li class="follow-row">
+      <div>
+        <a href="/c/{{ f.id }}"><strong>!{{ f.name }}</strong><span class="muted">@{{ f.canonical_ap_id | host }}</span></a>
+        {% if f.unread %}<span class="pill new">{{ f.unread }} unread</span>{% endif %}
+        <div class="small muted">{{ f.title or '' }} · {{ f.total }} posts saved · checked {{ when(f.last_polled_at) if f.last_polled_at else 'not yet' }}
+          {% if f.last_error %}· <span class="bad-text">{{ f.last_error }}</span>{% endif %}</div>
+      </div>
+      <form method="post" action="/c/{{ f.id }}/follow-settings" class="row compact">
+        <label>every <input type="number" name="poll_interval_minutes" min="1" class="num" value="{{ f.poll_interval_minutes }}"> min</label>
+        <label>keep <input name="retention_days" class="num" value="{{ f.retention_days if f.retention_days is not none else 'forever' }}"> days</label>
+        <button class="small secondary">Save</button>
+      </form>
+      <form method="post" action="/c/{{ f.id }}/unfollow" class="inline"><button class="small secondary">Unfollow</button></form>
+    </li>
+  {% endfor %}
+  </ul>
+</section>
+
+{% if others %}
+<section class="card">
+  <h2>Other communities with kept posts</h2>
+  <ul class="plain">
+  {% for c in others %}
+    <li><a href="/c/{{ c.id }}?tab=kept">!{{ c.name }}<span class="muted">@{{ c.canonical_ap_id | host }}</span></a>
+      <span class="small muted">· {{ c.kept }} kept</span></li>
+  {% endfor %}
+  </ul>
+</section>
+{% endif %}
+{% endblock %}

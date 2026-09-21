@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% from "_macros.html" import when, change_row, state_badges %}
+{% block head %}{% if pending %}<meta http-equiv="refresh" content="4">{% endif %}{% endblock %}
+{% block title %}Kept{% endblock %}
+{% block content %}
+<h1>★ Kept</h1>
+<p class="muted">Posts you've kept are never deleted. The bouncer keeps watching them for new comments, edits and removals, whether or not you follow their community.</p>
+
+<section class="card" id="archive">
+  <h2>Keep a post by link</h2>
+  <form method="post" action="/archive" class="row">
+    <input type="url" name="url" placeholder="https://lemmy.example/post/12345" required>
+    <button>Keep</button>
+  </form>
+  <p class="muted small">Any Lemmy or PieFed post or comment link. The whole thread is saved.</p>
+  {% if jobs %}
+  <ul class="plain small jobs">
+  {% for j in jobs %}
+    <li>
+      <span class="pill {{ {'done':'good','failed':'bad','running':'new'}.get(j.status, '') }}">{{ j.status }}</span>
+      <code>{{ j.payload.url or ('re-check thread ' ~ j.payload.thread_id) }}</code>
+      {% if j.result and j.result.thread_id %}→ <a href="/t/{{ j.result.thread_id }}">open</a>{% endif %}
+      {% if j.error %}<div class="bad-text">{{ j.error }}{% if j.status == 'queued' %} (will retry){% endif %}</div>{% endif %}
+    </li>
+  {% endfor %}
+  </ul>
+  {% endif %}
+</section>
+
+<div class="grid2">
+  <section class="card">
+    <h2>{{ total }} kept thread{{ 's' if total != 1 }}</h2>
+    {% if not groups %}<p class="muted">Nothing kept yet. Use ☆ Keep on a post in your feed, or paste a link above.</p>{% endif %}
+    {% for g in groups %}
+      <h3 class="group-head"><a href="/c/{{ g.cid }}?tab=kept">!{{ g.name }}<span class="muted">@{{ g.ap | host }}</span></a></h3>
+      <ul class="plain">
+      {% for t in g.threads %}
+        <li><a href="/t/{{ t.id }}">{{ t.title }}</a> {{ state_badges(t) }}
+          <div class="small muted">{{ t.n_comments }} comments · kept {{ when(t.promoted_at or t.retained_at) }}</div></li>
+      {% endfor %}
+      </ul>
+    {% endfor %}
+  </section>
+  <section class="card">
+    <h2>Recently changed</h2>
+    {% if not changes %}<p class="muted">No changes seen yet.</p>{% endif %}
+    <ul class="plain">{% for ch in changes %}{{ change_row(ch) }}{% endfor %}</ul>
+    {% if changes %}<a href="/changes" class="small">All changes →</a>{% endif %}
+  </section>
+</div>
+{% endblock %}

@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Sign in{% endblock %}
+{% block content %}
+<section class="card narrow">
+  <h1>Private archive</h1>
+  <p class="muted">This archive is private. Sign in to continue.</p>
+  {% if error %}<div class="flash error">{{ error }}</div>{% endif %}
+  <form method="post" action="/login" class="stack">
+    <label>Password <input type="password" name="password" autofocus required autocomplete="current-password"></label>
+    <button>Sign in</button>
+  </form>
+</section>
+{% endblock %}

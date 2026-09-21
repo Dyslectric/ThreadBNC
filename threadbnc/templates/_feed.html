@@ -1,0 +1,95 @@
+{% from "_macros.html" import when, state_badges, votes %}
+
+{# base: URL prefix ending in "?" or "&" that keeps any fixed params (e.g. tab) #}
+{% macro feed_url(base, sort, window, unread, page=1) -%}
+{{ base }}sort={{ sort }}&t={{ window }}{% if unread %}&unread=1{% endif %}{% if page > 1 %}&page={{ page }}{% endif %}
+{%- endmacro %}
+
+{% macro controls(base, sort, window, unread, community_id=none) %}
+<div class="feed-controls">
+  <div class="seg">
+    {% for key, label in [('new', 'New'), ('active', 'Active'), ('top', 'Top'), ('comments', 'Most comments')] %}
+      <a href="{{ feed_url(base, key, window, unread) }}" class="{{ 'on' if sort == key }}">{{ label }}</a>
+    {% endfor %}
+  </div>
+  <div class="seg">
+    {% for key, label in [('day', 'Day'), ('week', 'Week'), ('month', 'Month'), ('all', 'All')] %}
+      <a href="{{ feed_url(base, sort, key, unread) }}" class="{{ 'on' if window == key }}">{{ label }}</a>
+    {% endfor %}
+  </div>
+  <a href="{{ feed_url(base, sort, window, not unread) }}" class="pill {{ 'new' if unread }}">{{ '● Unread only' if unread else '○ Unread only' }}</a>
+  <form method="post" action="/feed/mark-read" class="inline">
+    {% if community_id %}<input type="hidden" name="community_id" value="{{ community_id }}">{% endif %}
+    <button class="small secondary">Mark all read</button>
+  </form>
+</div>
+{% endmacro %}
+
+{% macro post_card(i, show_community=True) %}
+<article class="post-card {{ 'unread' if i.unread }} {{ 'kept' if i.retention == 'manual' }}">
+  {% if i.thumb %}
+    <a class="thumb" href="/t/{{ i.id }}" tabindex="-1" aria-hidden="true">
+      {% if i.thumb.video %}<video src="/media/{{ i.thumb.id }}" muted preload="metadata"></video>
+      {% else %}<img src="/media/{{ i.thumb.id }}" alt="" loading="lazy">{% endif %}
+    </a>
+  {% endif %}
+  <div class="pc-main">
+    <div class="pc-meta small">
+      {% if show_community %}<a class="pc-community" href="/c/{{ i.community_id }}">!{{ i.cname }}<span class="muted">@{{ i.c_ap | host }}</span></a> ·{% endif %}
+      <span>{{ i.username }}@{{ i.a_instance }}</span> · {{ when(i.created_at) }}
+      {{ state_badges(i) }}
+    </div>
+    <h3 class="pc-title"><a href="/t/{{ i.id }}">{{ i.title }}</a></h3>
+    {% if i.url | safe_url and not (i.thumb and i.thumb.is_link) %}<div class="pc-link small"><a href="{{ i.url | safe_url }}" target="_blank" rel="noreferrer noopener nofollow">{{ i.url | host }} ↗</a></div>{% endif %}
+    {% if i.excerpt %}<p class="pc-excerpt">{{ i.excerpt }}</p>{% endif %}
+    <div class="pc-actions small">
+      <a href="/t/{{ i.id }}#comments">{{ i.n_comments }} comment{{ 's' if i.n_comments != 1 }}</a>
+      {% if i.n_new %}<a href="/t/{{ i.id }}#comments" class="pill new">{{ i.n_new }} new</a>{% endif %}
+      {{ votes(i.upvotes, i.downvotes, i.score) }}
+      {% if i.retention == 'manual' %}
+        <form method="post" action="/t/{{ i.id }}/unkeep" class="inline"><button class="chip on" title="Kept permanently. Click to unkeep.">★ Kept</button></form>
+      {% else %}
+        <form method="post" action="/t/{{ i.id }}/keep" class="inline"><button class="chip" title="Keep permanently">☆ Keep</button></form>
+        <form method="post" action="/t/{{ i.id }}/trash" class="inline"><button class="chip ghost" title="Hide from feed (moves to trash)">Hide</button></form>
+        {% if i.expires_at %}<span class="muted" title="Auto-captured; deleted {{ i.expires_at | absolute }} unless kept">expires {{ i.expires_at | ago }}</span>{% endif %}
+      {% endif %}
+    </div>
+  </div>
+</article>
+{% endmacro %}
+
+{% macro pager(feed, base, sort, window, unread) %}
+{% if feed.page > 1 or feed.has_more %}
+<nav class="pager">
+  {% if feed.page > 1 %}<a href="{{ feed_url(base, sort, window, unread, feed.page - 1) }}">← Newer page</a>{% else %}<span></span>{% endif %}
+  <span class="muted small">page {{ feed.page }}</span>
+  {% if feed.has_more %}<a href="{{ feed_url(base, sort, window, unread, feed.page + 1) }}">Next page →</a>{% else %}<span></span>{% endif %}
+</nav>
+{% endif %}
+{% endmacro %}
+
+{% macro sidebar(follows, current_id=none) %}
+<aside class="sidebar">
+  <section class="card">
+    <h2>Following</h2>
+    <ul class="follow-list">
+      <li><a href="/" class="{{ 'on' if current_id is none }}">All communities</a></li>
+      {% for f in follows %}
+        <li><a href="/c/{{ f.id }}" class="{{ 'on' if current_id == f.id }}" title="{{ f.title or '' }}">
+          <span class="fl-name">!{{ f.name }}<span class="muted">@{{ f.canonical_ap_id | host }}</span></span>
+          {% if f.unread %}<span class="count">{{ f.unread }}</span>{% endif %}
+          {% if f.last_error %}<span class="bad-text" title="{{ f.last_error }}">!</span>{% endif %}
+        </a></li>
+      {% else %}
+        <li class="muted small">Not following anything yet.</li>
+      {% endfor %}
+    </ul>
+    <form method="post" action="/follow" class="stack follow-quick">
+      <input name="community" placeholder="!community@instance" required aria-label="Community to follow">
+      <input type="hidden" name="backfill" value="1">
+      <button class="small">Follow</button>
+    </form>
+    <p class="small"><a href="/communities">Manage follows →</a></p>
+  </section>
+</aside>
+{% endmacro %}

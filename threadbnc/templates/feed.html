@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% from "_feed.html" import controls, post_card, pager, sidebar %}
+{% block title %}Feed{% endblock %}
+{% block content %}
+<div class="layout">
+  <div class="main-col">
+    {% if not follows %}
+      <section class="card hero">
+        <h1>Follow a community to start your feed</h1>
+        <p class="muted">The bouncer checks each community you follow and saves new posts, comments and edits. If something is later edited, removed or deleted, you still have what was there.</p>
+        <form method="post" action="/follow" class="row">
+          <input name="community" placeholder="!technology@lemmy.world" required aria-label="Community to follow">
+          <input type="hidden" name="backfill" value="1">
+          <button>Follow</button>
+        </form>
+        <p class="small muted">Accepts <code>!name@instance</code> or a community link on any Lemmy or PieFed server.</p>
+      </section>
+    {% else %}
+      <div class="feed-head">
+        <h1>Your feed</h1>
+        {{ controls("/?", sort, window, unread) }}
+      </div>
+      {% for i in feed.items %}{{ post_card(i) }}{% else %}
+        <section class="card empty"><p class="muted">
+          {% if unread %}You're all caught up.{% elif window != 'all' %}Nothing in this time range.{% else %}No posts captured yet. The bouncer checks followed communities every few minutes.{% endif %}
+        </p></section>
+      {% endfor %}
+      {{ pager(feed, "/?", sort, window, unread) }}
+    {% endif %}
+  </div>
+  {{ sidebar(follows) }}
+</div>
+{% endblock %}

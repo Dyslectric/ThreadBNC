@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow, noarchive">
+  {% block head %}{% endblock %}
+  <title>{% block title %}ThreadBNC{% endblock %} · ThreadBNC</title>
+  <link rel="stylesheet" href="{{ static_url('style.css') }}">
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="/">ThreadBNC</a>
+    {% if request.session.get('auth') %}
+    <nav>
+      <a href="/" class="{{ 'on' if request.url.path == '/' }}">Feed</a>
+      <a href="/communities" class="{{ 'on' if request.url.path.startswith('/communities') }}">Communities</a>
+      <a href="/kept" class="{{ 'on' if request.url.path.startswith('/kept') }}">★ Kept</a>
+      {% set tc = trash_count() %}<a href="/trash" class="{{ 'on' if request.url.path.startswith('/trash') }}">Trash{% if tc %} ({{ tc }}){% endif %}</a>
+      <form method="post" action="/logout" class="inline"><button class="link">Log out</button></form>
+    </nav>
+    {% endif %}
+  </header>
+  <main>
+    {% for kind, msg in request.session.pop('flash', []) %}
+      <div class="flash {{ kind }}">{{ msg }}</div>
+    {% endfor %}
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

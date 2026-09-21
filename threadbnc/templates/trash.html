@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% from "_macros.html" import when, community_handle %}
+{% block title %}Trash{% endblock %}
+{% block content %}
+<h1>Trash</h1>
+<section class="card">
+  <form method="post" action="/trash/settings" class="row">
+    <label>Keep trashed threads for
+      <select name="trash_days">
+        {% for d in [1, 7, 14, 30, 90, 365] %}
+          <option value="{{ d }}" {{ 'selected' if trash_days == d }}>{{ d }} day{{ 's' if d != 1 }}</option>
+        {% endfor %}
+        {% if trash_days is not none and trash_days not in [1, 7, 14, 30, 90, 365] %}
+          <option value="{{ trash_days }}" selected>{{ trash_days }} days</option>
+        {% endif %}
+        <option value="forever" {{ 'selected' if trash_days is none }}>until I empty it</option>
+      </select>
+    </label>
+    <button class="small">Save</button>
+  </form>
+  <p class="small muted">Trashed threads aren't monitored and don't appear in communities or changes. When their time is up they are permanently deleted, including any archived images that nothing else uses. Restore brings a thread back as it was.</p>
+</section>
+
+<section class="card">
+  {% if not threads %}<p class="muted">The trash is empty.</p>{% endif %}
+  <ul class="plain threads">
+  {% for t in threads %}
+    <li>
+      <a href="/t/{{ t.id }}"><strong>{{ t.title }}</strong></a>
+      <span class="pill {{ 'good' if t.retention == 'manual' else 'new' }}">{{ 'was kept' if t.retention == 'manual' else 'was auto-captured' }}</span>
+      <div class="small muted">{{ community_handle(t.cname, t.c_ap) }} · {{ t.n }} posts/comments · trashed {{ when(t.trashed_at) }} ·
+        {% if t.trash_expires_at %}deleted {{ when(t.trash_expires_at) }}{% else %}kept until emptied{% endif %}</div>
+      <div class="row small-gap">
+        <form method="post" action="/t/{{ t.id }}/restore" class="inline"><button class="small">Restore</button></form>
+        <a href="/t/{{ t.id }}/delete" class="small bad-text">Delete now…</a>
+      </div>
+    </li>
+  {% endfor %}
+  </ul>
+  {% if threads %}<p><a href="/trash/empty" class="bad-text">Empty trash…</a></p>{% endif %}
+</section>
+{% endblock %}

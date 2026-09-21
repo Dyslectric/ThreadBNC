@@ -1,0 +1,30 @@
+{% macro community_handle(name, ap_id) -%}
+!{{ name }}@{{ ap_id | host }}
+{%- endmacro %}
+
+{% macro when(ts) -%}
+<time datetime="{{ ts }}" title="{{ ts | absolute }}">{{ ts | ago }}</time>
+{%- endmacro %}
+
+{% macro change_row(ch) -%}
+<li class="change">
+  <span class="pill {{ ch.tone }}">{{ ch.label }}</span>
+  <span class="muted">{{ ch.object_type }} in</span>
+  <a href="/t/{{ ch.thread_id }}#o{{ ch.object_id }}">{{ ch.title }}</a>
+  <span class="muted">· observed {{ when(ch.at) }}</span>
+</li>
+{%- endmacro %}
+
+{# Up/down counts as last observed; falls back to score when a server omits them. #}
+{% macro votes(up, down, score=none) -%}
+{% if up is not none %}<span class="votes" title="{{ up }} upvotes, {{ down or 0 }} downvotes{{ (' · score ' ~ score) if score is not none }}"><span class="up">▲ {{ up }}</span>{% if down is not none %} <span class="down">▼ {{ down }}</span>{% endif %}</span>
+{%- elif score is not none %}<span class="votes muted">{{ score }} pts</span>{% endif %}
+{%- endmacro %}
+
+{% macro state_badges(o) -%}
+  {% if o.revision_count > 1 %}<span class="pill warn">edited</span>{% endif %}
+  {% if o.cur_deleted %}<span class="pill warn">deleted by author</span>{% endif %}
+  {% if o.cur_removed %}<span class="pill bad">removed</span>{% endif %}
+  {% if o.cur_locked %}<span class="pill warn">locked</span>{% endif %}
+  {% if o.cur_missing %}<span class="pill bad">gone from server</span>{% endif %}
+{%- endmacro %}

@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% from "_macros.html" import when %}
+{% block title %}History{% endblock %}
+{% block content %}
+<p class="small"><a href="/t/{{ o.thread_id }}#o{{ o.id }}">← back to thread</a></p>
+<h1>History of {{ o.object_type }} by {{ o.username }}@{{ o.a_instance }}</h1>
+<p class="small muted"><code>{{ o.canonical_ap_id }}</code></p>
+
+<section class="card">
+  <h2>Timeline</h2>
+  <table class="timeline">
+  {% for item in timeline %}
+    <tr>
+      <td class="nowrap">{{ item.at | absolute }}</td>
+      <td><span class="pill {{ item.tone }}">{{ item.label }}</span>
+        {% if item.actor %}<span class="small">by {{ item.actor }}</span>{% endif %}
+        {% if item.reason %}<div class="small">Reason: {{ item.reason }}</div>{% endif %}
+        {% if item.remote %}<div class="small muted">remote timestamp {{ item.remote | absolute }}</div>{% endif %}
+        {% if item.meta and item.meta.remote_content_withheld %}<div class="small muted">The server stopped returning {{ item.meta.remote_content_withheld | join(', ') }}; the last observed version is kept.</div>{% endif %}
+        {% if item.meta and item.meta.modlog == 'no_matching_entry' %}<div class="small muted">No matching modlog entry found; who did this is unknown.</div>{% endif %}
+        {% if item.meta and item.meta.modlog == 'unavailable' %}<div class="small muted">Modlog unavailable; who did this is unknown.</div>{% endif %}
+      </td>
+    </tr>
+  {% endfor %}
+  </table>
+  <p class="small muted">Times are when the bouncer observed each change, which may be later than when it happened.</p>
+</section>
+
+<h2>Versions</h2>
+{% for v in versions %}
+<section class="card">
+  <div class="meta small"><strong>Version {{ v.r.seq }}</strong> · observed {{ v.r.observed_at | absolute }}
+    {% if v.r.remote_updated_at %}· remote edit time {{ v.r.remote_updated_at | absolute }}{% endif %}</div>
+  {% if v.r.title %}<h3>{{ v.r.title }}</h3>{% endif %}
+  {% if v.title_diff %}<div class="diff small">Title change: {{ v.title_diff }}</div>{% endif %}
+  {% if v.r.url %}<p class="small">Link: {{ v.r.url }}{% if v.url_changed %} <span class="pill warn">changed</span>{% endif %}</p>{% endif %}
+  {% if v.body_diff %}
+    <details open><summary class="small">Changes from previous version</summary><div class="body diff">{{ v.body_diff }}</div></details>
+    <details><summary class="small">Rendered</summary><div class="md">{{ md(v.r.body) }}</div></details>
+    <details><summary class="small">Markdown source</summary><div class="body">{{ v.r.body or '' }}</div></details>
+  {% else %}
+    <div class="md">{{ md(v.r.body) }}</div>
+    {% if v.r.body %}<details><summary class="small">Markdown source</summary><div class="body">{{ v.r.body }}</div></details>{% endif %}
+  {% endif %}
+  {% if v.meta._first_observed_withheld %}<p class="small muted">Content was already withheld by the server when first observed.</p>{% endif %}
+</section>
+{% endfor %}
+{% endblock %}
