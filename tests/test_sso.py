@@ -211,6 +211,23 @@ def test_adding_and_managing_a_provider(server, admin):
     assert server.oauth_providers == []
 
 
+def test_identifying_people_by_a_custom_claim(server, admin):
+    """E.g. an Authentik scope mapping that sends dyslectric_dot_dev_username."""
+    client, aid = admin
+    client.post(f"/admin/{aid}/sso/providers", data={
+        "name": "Authentik", "issuer": "https://auth.test/application/o/lemmy/", "client_id": "lemmy",
+        "client_secret": "s3cret", "use_pkce": "1"})
+    r = client.post(f"/admin/{aid}/sso/providers/1/edit", data={
+        "name": "Authentik", "scopes": "openid  email profile dyslectric", "id_claim": "dyslectric_dot_dev_username"})
+    assert "identified by their dyslectric_dot_dev_username claim" in r.text
+    p = server.oauth_providers[0]
+    assert (p["id_claim"], p["scopes"]) == ("dyslectric_dot_dev_username", "openid email profile dyslectric")
+    assert "p.name FROM local_user" in r.text and "ON CONFLICT DO NOTHING" in r.text  # link everyone by name
+    assert "PROVIDER_USERNAME" not in r.text
+    r = client.post(f"/admin/{aid}/sso/providers/1/edit", data={"name": "A", "scopes": "email", "id_claim": "x"})
+    assert "must include openid" in r.text and server.oauth_providers[0]["id_claim"] == "dyslectric_dot_dev_username"
+
+
 def test_the_forwarding_check(settings, bouncer):
     from threadbnc.accounts import Poster
     from threadbnc.vault import TokenVault

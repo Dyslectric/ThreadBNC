@@ -930,6 +930,12 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             a, name, issuer, client_id, client_secret, scopes, id_claim, bool(use_pkce)),
             f"Added {name.strip()} as a sign-in option.")
 
+    @app.post("/admin/{aid}/sso/providers/{pid}/edit")
+    def admin_sso_edit(request: Request, aid: int, pid: int, name: str = Form(...), scopes: str = Form(""),
+                       id_claim: str = Form(...)):
+        return admin_action(request, aid, lambda a: sso.edit_provider(a, pid, name, scopes, id_claim),
+                            f"Saved. People are now identified by their {id_claim.strip()} claim.")
+
     @app.post("/admin/{aid}/sso/providers/{pid}")
     def admin_sso_provider(request: Request, aid: int, pid: int, action: str = Form(...)):
         return admin_action(request, aid, lambda a: sso.set_provider(a, pid, action),

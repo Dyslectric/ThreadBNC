@@ -259,5 +259,17 @@ class SingleSignOn:
             raise AccountError("Unknown action.")
         self.poster._run(account, act)
 
+    def edit_provider(self, account: Account, provider_id: int, name: str, scopes: str, id_claim: str) -> None:
+        """Change how a provider is shown and how people are identified. Lemmy
+        reads `id_claim` from the provider's userinfo response, so it can be a
+        custom claim (e.g. one an Authentik scope mapping adds)."""
+        if not (name.strip() and id_claim.strip()):
+            raise AccountError("Name and identity claim are required.")
+        scopes = " ".join(scopes.split()) or DEFAULT_SCOPES
+        if "openid" not in scopes.split():
+            raise AccountError("Scopes must include openid.")
+        self.poster._run(account, lambda adapter, token: self._adapter(account.domain).edit_oauth_provider(
+            token, provider_id, display_name=name.strip(), scopes=scopes, id_claim=id_claim.strip()))
+
     def set_signups(self, account: Account, allowed: bool) -> None:
         self.poster._run(account, lambda adapter, token: adapter.update_site(token, oauth_registration=allowed))

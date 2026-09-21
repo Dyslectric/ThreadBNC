@@ -108,14 +108,40 @@
           {% if not p.enabled %}<span class="pill warn">off</span>{% endif %}
           <div class="small muted"><code>{{ p.issuer }}</code> · client <code>{{ p.client_id }}</code> ·
             identity from <code>{{ p.id_claim }}</code>{% if p.use_pkce %} · PKCE{% endif %}</div>
-          <details><summary class="small">Link an existing account</summary>
+          <details><summary class="small">Link existing accounts</summary>
+            {% if p.id_claim == 'sub' %}
             <p class="small muted">{{ chosen.domain }} can't link accounts through its API. Set the provider's
-              subject mode so <code>{{ p.id_claim }}</code> is the person's provider username (in Authentik:
+              subject mode so <code>sub</code> is the person's provider username (in Authentik:
               Provider → Advanced protocol settings → Subject mode → "Based on the User's username"), then run
               this once in {{ chosen.domain }}'s database, with their usernames filled in:</p>
             <pre class="small">INSERT INTO oauth_account (local_user_id, oauth_provider_id, oauth_user_id)
 SELECT lu.id, {{ p.id }}, 'PROVIDER_USERNAME' FROM local_user lu JOIN person p ON p.id = lu.person_id
 WHERE p.local AND p.name = '{{ chosen.username }}';</pre>
+            {% else %}
+            <p class="small muted">People are identified by the <code>{{ p.id_claim }}</code> claim. If its
+              value is the {{ chosen.domain }} username (as with a mapping that sends each person's
+              {{ chosen.domain }} name), link every local account to its own name, once, in
+              {{ chosen.domain }}'s database. Accounts created later by signing in are linked automatically.</p>
+            <pre class="small">INSERT INTO oauth_account (local_user_id, oauth_provider_id, oauth_user_id)
+SELECT lu.id, {{ p.id }}, p.name FROM local_user lu JOIN person p ON p.id = lu.person_id
+WHERE p.local
+ON CONFLICT DO NOTHING;</pre>
+            <p class="small muted">Accounts already linked (for example under an earlier identity claim) keep
+              that link. To re-link everyone by name, first remove this provider's links:</p>
+            <pre class="small">DELETE FROM oauth_account WHERE oauth_provider_id = {{ p.id }};</pre>
+            <p class="small muted">Whoever the provider says is <em>name</em> signs in as {{ chosen.domain }}'s
+              <em>name</em>, so only people who should own those accounts may be given those values.</p>
+            {% endif %}
+          </details>
+          <details><summary class="small">Edit</summary>
+            <form method="post" action="/admin/{{ chosen.id }}/sso/providers/{{ p.id }}/edit" class="stack narrow-form">
+              <label>Name shown on the button <input name="name" required value="{{ p.display_name }}"></label>
+              <label>Scopes <input name="scopes" value="{{ p.scopes }}"></label>
+              <label>Identity claim <input name="id_claim" required value="{{ p.id_claim }}"></label>
+              <p class="small muted">The claim {{ chosen.domain }} reads from the provider's userinfo to recognise
+                a person; a custom claim needs its scope listed above.</p>
+              <button class="small">Save</button>
+            </form>
           </details></div>
         <div class="row compact">
           <form method="post" action="/admin/{{ chosen.id }}/sso/providers/{{ p.id }}" class="inline">
