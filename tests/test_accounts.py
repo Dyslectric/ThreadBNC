@@ -166,6 +166,21 @@ def test_web_flow(settings, server, bouncer, thread):
     assert "hello from the web" in page and ">Edit<" in page
 
 
+def test_vote_returns_to_the_voted_object(settings, server, bouncer, thread):
+    settings.credentials_key = "test-key"
+    client = TestClient(create_app(settings, bouncer))
+    client.post("/login", data={"password": "pw"})
+    client.post("/accounts", data={"server": HOME, "username": "dave", "password": "hunter2"})
+    post_oid = one(bouncer, "SELECT root_object_id FROM archived_threads WHERE id=?", thread)[0]
+    # From the thread page: back to it, at the post.
+    r = client.post(f"/o/{post_oid}/vote", data={"score": "1"},
+                    headers={"referer": f"http://testserver/t/{thread}?sort=new"}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == f"/t/{thread}?sort=new#o{post_oid}"
+    # No Referer (privacy extensions strip it): still the thread, never the start page.
+    r = client.post(f"/o/{post_oid}/vote", data={"score": "0"}, follow_redirects=False)
+    assert r.headers["location"] == f"/t/{thread}#o{post_oid}"
+
+
 # ---- starting a community -----------------------------------------------------
 
 def test_admin_status_is_recorded_at_login(server, poster):

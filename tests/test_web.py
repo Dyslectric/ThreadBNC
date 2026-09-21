@@ -20,7 +20,7 @@ def test_everything_requires_auth(settings, bouncer):
     client = make_client(settings, bouncer)
     for path in ["/", "/communities", "/t/1", "/o/1/history", "/changes", "/c/1"]:
         r = client.get(path, follow_redirects=False)
-        assert r.status_code == 303 and r.headers["location"] == "/login", path
+        assert r.status_code == 303 and r.headers["location"].startswith("/login"), path
     r = client.post("/archive", json={"url": "https://x/post/1"})
     assert r.status_code == 401
     assert client.get("/robots.txt").text.strip().endswith("Disallow: /")
@@ -123,3 +123,38 @@ def test_healthz_is_public_and_reveals_nothing(settings, bouncer):
     client = make_client(settings, bouncer)
     r = client.get("/healthz")
     assert r.status_code == 200 and r.json() == {"ok": True}
+
+
+def test_login_returns_to_the_page_you_asked_for(settings, bouncer):
+    client = make_client(settings, bouncer)
+    r = client.get("/communities?x=1", follow_redirects=False)
+    assert r.headers["location"] == "/login?next=%2Fcommunities%3Fx%3D1"
+    assert client.get("/", follow_redirects=False).headers["location"] == "/login"
+    assert 'name="next" value="/communities?x=1"' in client.get(r.headers["location"]).text
+    r = client.post("/login", data={"password": "pw", "next": "/communities?x=1"}, follow_redirects=False)
+    assert r.headers["location"] == "/communities?x=1"
+
+
+def test_login_next_cannot_leave_the_site(settings, bouncer):
+    for bad in ["https://evil.test/", "//evil.test/", "/\\evil.test/", "javascript:alert(1)"]:
+        client = make_client(settings, bouncer)
+        r = client.post("/login", data={"password": "pw", "next": bad}, follow_redirects=False)
+        assert r.headers["location"] == "/", bad
+
+
+def test_forms_return_to_the_page_they_were_on(settings, bouncer, server):
+    client = make_client(settings, bouncer)
+    login(client)
+    # Browsers only send Referer to us if the policy allows it; no-referrer broke every "go back".
+    assert client.get("/").headers["referrer-policy"] == "same-origin"
+    r = client.post("/follow", data={"community": f"!math@{DOMAIN}"}, follow_redirects=False)
+    cid = r.headers["location"].rsplit("/", 1)[1]
+    r = client.post(f"/c/{cid}/follow-settings", data={"poll_interval_minutes": "60", "retention_days": "9"},
+                    headers={"referer": "http://testserver/communities"}, follow_redirects=False)
+    assert r.headers["location"] == "/communities"
+    r = client.post(f"/c/{cid}/follow-settings", data={"poll_interval_minutes": "60", "retention_days": "9"},
+                    headers={"referer": f"http://testserver/c/{cid}?tab=about"}, follow_redirects=False)
+    assert r.headers["location"] == f"/c/{cid}?tab=about"
+    r = client.post(f"/c/{cid}/follow-settings", data={"poll_interval_minutes": "60", "retention_days": "9"},
+                    headers={"referer": "http://evil.test/communities"}, follow_redirects=False)
+    assert r.headers["location"] == f"/c/{cid}"

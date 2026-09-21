@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import (
@@ -245,11 +245,14 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             if path.startswith("/api/") or wants_json:
                 resp: Response = JSONResponse({"error": "authentication required"}, status_code=401)
             else:
-                resp = RedirectResponse("/login", status_code=303)
+                target = path + (f"?{request.url.query}" if request.url.query else "")
+                wanted = request.method == "GET" and target != "/"
+                resp = RedirectResponse(f"/login?{urlencode({'next': target})}" if wanted else "/login",
+                                        status_code=303)
         else:
             resp = await call_next(request)
         resp.headers["X-Robots-Tag"] = "noindex, nofollow, noarchive"
-        resp.headers["Referrer-Policy"] = "no-referrer"
+        resp.headers["Referrer-Policy"] = "same-origin"
         resp.headers["X-Frame-Options"] = "DENY"
         resp.headers["X-Content-Type-Options"] = "nosniff"
         resp.headers["Content-Security-Policy"] = (
@@ -306,17 +309,22 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         return "User-agent: *\nDisallow: /\n"
 
     @app.get("/login", response_class=HTMLResponse)
-    def login_form(request: Request):
-        return render(request, "login.html", error=None)
+    def login_form(request: Request, next: str = "/"):
+        return render(request, "login.html", error=None, next=local_path(next))
+
+    def local_path(url: str, default: str = "/") -> str:
+        """`url` if it's a path on this site, else `default` (no open redirects)."""
+        ok = url.startswith("/") and not url.startswith(("//", "/\\")) and not urlparse(url).netloc
+        return url if ok else default
 
     @app.post("/login")
-    def login(request: Request, password: str = Form(...)):
+    def login(request: Request, password: str = Form(...), next: str = Form("/")):
         if hmac.compare_digest(password.encode(), settings.password.encode()):  # type: ignore[union-attr]
             request.session.clear()
             request.session["auth"] = True
-            return RedirectResponse("/", status_code=303)
+            return RedirectResponse(local_path(next), status_code=303)
         time.sleep(1.0)
-        return render(request, "login.html", error="Wrong password.")
+        return render(request, "login.html", error="Wrong password.", next=local_path(next))
 
     @app.post("/logout")
     def logout(request: Request):
@@ -324,11 +332,20 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         return RedirectResponse("/login", status_code=303)
 
     # ---- feed (home) -----------------------------------------------------
-    def back(request: Request, default: str) -> str:
+    def back(request: Request, default: str, anchor: str | None = None) -> str:
+        """The page the form was on (from the same-origin Referer), else `default`."""
         ref = urlparse(request.headers.get("referer") or "")
         if ref.path.startswith("/") and ref.netloc in ("", request.url.netloc):
-            return ref.path + (f"?{ref.query}" if ref.query else "")
-        return default
+            url = ref.path + (f"?{ref.query}" if ref.query else "")
+        else:
+            url = default.split("#")[0]
+        return url + (f"#{anchor}" if anchor else "")
+
+    def object_page(oid: int) -> str:
+        """Where an object lives: its thread, scrolled to it."""
+        with db.connect() as conn:
+            row = conn.execute("SELECT thread_id FROM objects WHERE id=?", (oid,)).fetchone()
+        return f"/t/{row[0]}" if row and row[0] else "/"
 
     @app.get("/", response_class=HTMLResponse)
     def home(request: Request, sort: str = "new", t: str = "all", unread: int = 0, page: int = 1):
@@ -749,14 +766,14 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         if action not in actions:
             raise HTTPException(400)
         fn, ok = actions[action]
-        return account_action(request, "/", fn, ok)
+        return account_action(request, object_page(oid), fn, ok, anchor=f"o{oid}")
 
     @app.post("/o/{oid}/ban-author")
     def ban_author(request: Request, oid: int, reason: str = Form(""), days: str = Form(""),
                    remove_content: str | None = Form(None)):
-        return account_action(request, "/",
+        return account_action(request, object_page(oid),
                               lambda a: mod.ban_author(a, oid, reason, _days(days), bool(remove_content)),
-                              "Author banned from the community.")
+                              "Author banned from the community.", anchor=f"o{oid}")
 
     # ---- admin -----------------------------------------------------------------
     def admin_account(aid: int) -> Account:
@@ -818,17 +835,18 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             request.session["acting_account"] = account_id
         return RedirectResponse(back(request, "/"), status_code=303)
 
-    def account_action(request: Request, fallback: str, fn: Any, ok: str | None = None) -> RedirectResponse:
+    def account_action(request: Request, fallback: str, fn: Any, ok: str | None = None,
+                       anchor: str | None = None) -> RedirectResponse:
         """Run a write as the acting account; show errors instead of raising."""
         try:
             result = fn(require_acting(request))
         except AccountError as exc:
             flash(request, str(exc), "error")
-            return RedirectResponse(back(request, fallback), status_code=303)
+            return RedirectResponse(back(request, fallback, anchor), status_code=303)
         if ok:
             flash(request, ok)
         return result if isinstance(result, RedirectResponse) else RedirectResponse(
-            back(request, fallback), status_code=303)
+            back(request, fallback, anchor), status_code=303)
 
     @app.post("/t/{tid}/reply")
     def reply(request: Request, tid: int, body: str = Form(...), parent_id: int | None = Form(None)):
@@ -839,7 +857,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
 
     @app.post("/o/{oid}/vote")
     def vote(request: Request, oid: int, score: int = Form(...)):
-        return account_action(request, "/", lambda a: poster.vote(a, oid, score))
+        return account_action(request, object_page(oid), lambda a: poster.vote(a, oid, score), anchor=f"o{oid}")
 
     @app.get("/o/{oid}/edit", response_class=HTMLResponse)
     def edit_form(request: Request, oid: int):
@@ -863,9 +881,9 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     @app.post("/o/{oid}/delete")
     def delete_own(request: Request, oid: int, restore: str | None = Form(None)):
         undo = bool(restore)
-        return account_action(request, "/", lambda a: poster.delete(a, oid, deleted=not undo),
+        return account_action(request, object_page(oid), lambda a: poster.delete(a, oid, deleted=not undo),
                               "Restored on the server." if undo else
-                              "Deleted on the server. The archive keeps what it saw.")
+                              "Deleted on the server. The archive keeps what it saw.", anchor=f"o{oid}")
 
     @app.get("/c/{cid}/submit", response_class=HTMLResponse)
     def submit_form(request: Request, cid: int):

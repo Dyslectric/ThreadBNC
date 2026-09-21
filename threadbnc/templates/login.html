@@ -6,6 +6,7 @@
   <p class="muted">This archive is private. Sign in to continue.</p>
   {% if error %}<div class="flash error">{{ error }}</div>{% endif %}
   <form method="post" action="/login" class="stack">
+    <input type="hidden" name="next" value="{{ next or '/' }}">
     <label>Password <input type="password" name="password" autofocus required autocomplete="current-password"></label>
     <button>Sign in</button>
   </form>
