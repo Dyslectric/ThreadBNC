@@ -141,7 +141,7 @@ def test_article_preview_thumbnail(settings, server, mbouncer):
     client = TestClient(create_app(settings, mbouncer))
     client.post("/login", data={"password": "pw"})
     feed_html = client.get("/").text
-    assert f'<img src="/media/{mid}"' in feed_html and "img.test ↗" in feed_html
+    assert f'<img src="/media/{mid}"' in feed_html and 'img.test<svg class="i"' in feed_html
     tid = client.get("/").text.split('href="/t/')[1].split('"')[0]
     thread_html = client.get(f"/t/{tid}").text
     assert 'class="link-preview"' in thread_html and f'/media/{mid}' in thread_html
@@ -189,7 +189,7 @@ def test_image_communities_show_as_tiles_automatically(settings, server, mbounce
     client.post("/login", data={"password": "pw"})
     page = client.get(f"/c/{cid}").text
     assert 'class="tiles"' in page and page.count('class="tile ') == 4 and 'class="post-card' not in page
-    assert "▦ Tiles</a>" in page and '<span class="small muted" title="Chosen by' in page  # auto, not chosen
+    assert 'aria-label="Show as a list"' in page and 'view=auto"><span class="tick"><svg' in page  # auto, not chosen
     home = client.get("/").text
     assert 'class="tiles"' in home
 
@@ -222,4 +222,4 @@ def test_nsfw_tiles_are_veiled(settings, server, mbouncer):
     client = TestClient(create_app(settings, mbouncer))
     client.post("/login", data={"password": "pw"})
     page = client.get(f"/c/{cid}").text
-    assert page.count(" veiled") == 1 and '<span class="tile-veil">NSFW</span>' in page
+    assert page.count(" veiled") == 1 and '<span class="tile-veil">NSFW<span class="small">Tap to show</span></span>' in page

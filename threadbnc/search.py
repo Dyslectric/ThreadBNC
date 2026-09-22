@@ -16,6 +16,7 @@ word* (prefix), OR between two terms, and -word to exclude.
 
 from __future__ import annotations
 
+import difflib
 import html
 import re
 import sqlite3
@@ -294,12 +295,14 @@ def search(conn: Any, backend: str, text: str, filters: Filters | None = None, p
         d["title_html"] = mark(r["title"] or "", pattern) if r["object_type"] == "post" else None
         d["snippet"] = snippet(r["body"], pattern)
         d["url_matched"] = bool(r["url"] and pattern and pattern.search(r["url"]))
-        d["earlier"] = None
+        d["earlier"] = d["diff"] = None
         if not d["matched_current"]:  # show the version that matched, too
             old = conn.execute("SELECT title, body FROM revisions WHERE object_id=? AND seq=?",
                                (r["id"], r["best_seq"])).fetchone()
             if old:
-                d["earlier"] = snippet(" ".join(x for x in (old["title"], old["body"]) if x), pattern)
+                before = " ".join(x for x in (old["title"], old["body"]) if x)
+                d["earlier"] = snippet(before, pattern)
+                d["diff"] = diff_snippet(before, " ".join(x for x in (r["title"], r["body"]) if x), pattern)
         hits.append(d)
     return Results(q, hits, total, page)
 
@@ -362,3 +365,36 @@ def snippet(text: str | None, pattern: re.Pattern[str] | None, width: int = 240)
         end = space if space > start + width // 2 else end
     piece = flat[start:end]
     return Markup(("…" if start else "") + mark(piece, pattern) + ("…" if end < len(flat) else ""))
+
+
+def diff_snippet(old: str | None, new: str | None, pattern: re.Pattern[str] | None,
+                 before: int = 12, after: int = 28) -> Markup:
+    """How the text changed from the version that matched to the current one,
+    word by word, around the first removed match (else the first change)."""
+    a, b = plain(old).split(), plain(new).split()
+    words: list[tuple[str, str]] = []  # (op, word) with op in " -+"
+    for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+        if op == "equal":
+            words += [(" ", w) for w in a[i1:i2]]
+            continue
+        words += [("-", w) for w in a[i1:i2]] + [("+", w) for w in b[j1:j2]]
+    changed = [i for i, (op, _) in enumerate(words) if op != " "]
+    if not changed:
+        return Markup("")
+    hit = next((i for i in changed if words[i][0] == "-" and pattern and pattern.search(words[i][1])), changed[0])
+    start, end = max(0, hit - before), min(len(words), hit + after)
+    out, run_op, run = [], None, []
+
+    def flush() -> None:
+        if run:
+            text = mark(" ".join(run), pattern)
+            out.append(text if run_op == " " else Markup("<{0}>{1}</{0}>").format(
+                "del" if run_op == "-" else "ins", text))
+
+    for op, w in words[start:end]:
+        if op != run_op:
+            flush()
+            run_op, run = op, []
+        run.append(w)
+    flush()
+    return Markup(("… " if start else "") + Markup(" ").join(out) + (" …" if end < len(words) else ""))

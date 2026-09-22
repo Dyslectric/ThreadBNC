@@ -1,3 +1,8 @@
+{# An icon from static/icons.svg. Decorative: say what it means in text or a label next to it. #}
+{% macro icon(name, cls='') -%}
+<svg class="i{{ ' ' ~ cls if cls }}" aria-hidden="true" focusable="false"><use href="{{ static_url('icons.svg') }}#{{ name }}"></use></svg>
+{%- endmacro %}
+
 {% macro community_handle(name, ap_id) -%}
 {{ chandle(name, ap_id, True) }}
 {%- endmacro %}
@@ -19,8 +24,8 @@
    `breakdown` (one row per copy of a duplicated post or comment) adds a hover/focus
    popover with the counts each server reported. #}
 {% macro votes(up, down, score=none, breakdown=none) -%}
-{% if breakdown and breakdown | length > 1 %}<span class="votes has-breakdown" tabindex="0" aria-label="{{ up or 0 }} upvotes, {{ down or 0 }} downvotes in total across {{ breakdown | length }} copies">
-  {%- if up is not none %}<span class="up">▲ {{ up }}</span>{% if down is not none %} <span class="down">▼ {{ down }}</span>{% endif %}
+{% if breakdown and breakdown | length > 1 %}<span class="votes has-breakdown" tabindex="0" role="button" aria-expanded="false" aria-label="{{ up or 0 }} upvotes, {{ down or 0 }} downvotes in total across {{ breakdown | length }} copies. Show votes by server">
+  {%- if up is not none %}<span class="up" aria-hidden="true">▲ {{ up }}</span>{% if down is not none %} <span class="down" aria-hidden="true">▼ {{ down }}</span>{% endif %}
   {%- elif score is not none %}<span class="muted">{{ score }} pts</span>{% endif %}
   <span class="vote-breakdown" role="tooltip">
     <span class="vb-title">Votes by server</span>
@@ -35,7 +40,7 @@
         {% else %}<td colspan="2">{{ score if score is not none else '—' }}</td>{% endif %}</tr>
     </table>
   </span></span>
-{%- elif up is not none %}<span class="votes" title="{{ up }} upvotes, {{ down or 0 }} downvotes{{ (' · score ' ~ score) if score is not none }}"><span class="up">▲ {{ up }}</span>{% if down is not none %} <span class="down">▼ {{ down }}</span>{% endif %}</span>
+{%- elif up is not none %}<span class="votes" title="{{ up }} upvotes, {{ down or 0 }} downvotes{{ (' · score ' ~ score) if score is not none }}"><span class="sr-only">{{ up }} upvote{{ 's' if up != 1 }}{% if down is not none %}, {{ down }} downvote{{ 's' if down != 1 }}{% endif %}</span><span class="up" aria-hidden="true">▲ {{ up }}</span>{% if down is not none %} <span class="down" aria-hidden="true">▼ {{ down }}</span>{% endif %}</span>
 {%- elif score is not none %}<span class="votes muted">{{ score }} pts</span>{% endif %}
 {%- endmacro %}
 
@@ -51,4 +56,40 @@
   {% if o.cur_removed %}<span class="pill bad">removed</span>{% endif %}
   {% if o.cur_locked %}<span class="pill warn">locked</span>{% endif %}
   {% if o.cur_missing %}<span class="pill bad">gone from server</span>{% endif %}
+{%- endmacro %}
+
+
+{# "Load more": the next page's items are added below these (app.js); without
+   JavaScript it is a link to the next page. `newer`: link back to the first page. #}
+{% macro pager(next_url=none, newer_url=none, page=1) -%}
+{% if next_url or newer_url %}
+<nav class="pager" aria-label="More">
+  {% if next_url %}<a class="button secondary load-more" href="{{ next_url }}" data-load-more>Load more</a>{% endif %}
+  {% if newer_url %}<a class="small muted" href="{{ newer_url }}">Back to the newest</a>{% endif %}
+  {% if page > 1 %}<span class="small muted">page {{ page }}</span>{% endif %}
+</nav>
+{% endif %}
+{%- endmacro %}
+
+{# Keep / unkeep a thread (and its copies when `group`), as the same button everywhere.
+   `anchor`: the element to come back to after the page reloads (no JavaScript). #}
+{% macro keep_button(tid, kept, group=False, anchor='', short=False, refresh='') -%}
+<form method="post" action="/t/{{ tid }}/{{ 'unkeep' if kept else 'keep' }}" class="inline" data-inplace="{{ refresh }}">
+  {% if group %}<input type="hidden" name="group" value="1">{% endif %}
+  {% if anchor %}<input type="hidden" name="anchor" value="{{ anchor }}">{% endif %}
+  <button class="act {{ 'on' if kept }}" data-key="keep" aria-pressed="{{ 'true' if kept else 'false' }}"
+    title="{{ ('Kept permanently' ~ (' (every copy)' if group) ~ '. Click to unkeep.') if kept else ('Keep' ~ (' every copy' if group) ~ ' permanently') }} (s)">
+    {{ icon('star-fill' if kept else 'star') }}<span class="{{ 'sr-only' if short }}">{{ 'Kept' if kept else 'Keep' }}</span></button>
+</form>
+{%- endmacro %}
+
+{# Move a thread (and its copies when `group`) to the trash. `next_anchor`: the
+   element to come back to, since this one leaves the page. #}
+{% macro trash_button(tid, group=False, next_anchor='', short=False, refresh='') -%}
+<form method="post" action="/t/{{ tid }}/trash" class="inline" data-inplace="{{ refresh }}" data-gone="Moved to trash">
+  {% if group %}<input type="hidden" name="group" value="1">{% endif %}
+  {% if next_anchor %}<input type="hidden" name="anchor" value="{{ next_anchor }}">{% endif %}
+  <button class="act" data-key="trash" title="Move{{ ' every copy' if group }} to the trash (d)">
+    {{ icon('trash') }}<span class="{{ 'sr-only' if short }}">Trash</span></button>
+</form>
 {%- endmacro %}

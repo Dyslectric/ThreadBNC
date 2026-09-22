@@ -9,6 +9,7 @@ import html
 import json
 import logging
 import math
+import re
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -242,6 +243,26 @@ def chandle(name: str, ap_id: str | None, plain: bool = False) -> Markup | str:
     return Markup('!{}<span class="muted">@{}</span>').format(name, host)
 
 
+FETCH_HEADER = "X-ThreadBNC-Fetch"  # app.js sends this with forms it submits in the background
+THEMES = ("light", "dark")
+_ANCHOR = re.compile(r"[A-Za-z][\w-]{0,40}")
+
+
+def is_fetch(request: Request) -> bool:
+    return request.headers.get(FETCH_HEADER) == "1"
+
+
+def flash_json(f: list[Any]) -> dict[str, Any]:
+    extra = f[2] if len(f) > 2 and f[2] else {}
+    return {"kind": f[0], "text": f[1], "undo": extra if "action" in extra else None,
+            "link": extra if "href" in extra else None}
+
+
+def safe_anchor(anchor: str | None) -> str | None:
+    """An element id a form asked to return to, if it looks like one."""
+    return anchor if anchor and _ANCHOR.fullmatch(anchor) else None
+
+
 def word_diff(old: str | None, new: str | None) -> Markup:
     a, b = (old or "").split(" "), (new or "").split(" ")
     out = []
@@ -294,8 +315,12 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         with db.connect() as conn:
             return conn.execute("SELECT COUNT(*) FROM archived_threads WHERE trashed_at IS NOT NULL").fetchone()[0]
 
+    def mark_on_scroll() -> bool:
+        return db.get_setting("mark_read_on_scroll") == "1"
+
     templates.env.globals.update(event_label=event_label, tone=lambda e: TONE.get(e["event_type"], ""),
                                  static_url=static_url, trash_count=trash_count, inbox_count=inbox.unread_count,
+                                 mark_on_scroll=mark_on_scroll, themes=THEMES,
                                  password_login=bool(settings.password),
                                  proxy_login=bool(settings.proxy_auth_header), chandle=chandle,
                                  is_reddit=is_reddit, is_rss=is_rss)
@@ -355,6 +380,15 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                                         status_code=303)
         else:
             resp = await call_next(request)
+            if is_fetch(request) and resp.status_code in (302, 303):
+                # A form sent by app.js: answer with where it would have gone and
+                # its messages, so the page can update in place instead of reloading.
+                messages = [flash_json(f) for f in request.session.pop("flash", [])]
+                cookies = resp.headers.getlist("set-cookie")
+                resp = JSONResponse({"ok": not any(m["kind"] == "error" for m in messages),
+                                     "redirect": resp.headers.get("location", ""), "messages": messages})
+                for c in cookies:
+                    resp.headers.append("set-cookie", c)
         resp.headers["X-Robots-Tag"] = "noindex, nofollow, noarchive"
         resp.headers["Referrer-Policy"] = "same-origin"
         resp.headers["X-Frame-Options"] = "DENY"
@@ -396,8 +430,12 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             raise AccountError("Add an account on the Accounts page first.")
         return account
 
-    def flash(request: Request, msg: str, kind: str = "info") -> None:
-        request.session.setdefault("flash", []).append([kind, msg])
+    def flash(request: Request, msg: str, kind: str = "info", undo: dict[str, Any] | None = None,
+              link: dict[str, str] | None = None) -> None:
+        """A message for the next page. `undo` ({"action": url, "fields": {...}})
+        adds an Undo button that posts those fields there; `link` ({"href", "label"}) a link."""
+        extra = undo or link
+        request.session.setdefault("flash", []).append([kind, msg, extra] if extra else [kind, msg])
 
     # ---- auth ------------------------------------------------------------
     @app.get("/healthz")
@@ -490,10 +528,52 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
 
     @app.post("/feed/mark-read")
     def mark_read(request: Request, community_id: int | None = Form(None)):
+        stamp = utcnow()
         with db.transaction() as conn:
-            feed_mod.mark_read(conn, utcnow(), community_id)
-        flash(request, "Marked as read.")
+            n = feed_mod.mark_read(conn, stamp, community_id)
+        if n:
+            flash(request, f"Marked {n} post{'s' if n != 1 else ''} as read.",
+                  undo={"action": "/feed/mark-unread", "fields": {"stamp": stamp}})
+        else:
+            flash(request, "Nothing was unread.")
         return RedirectResponse(back(request, "/"), status_code=303)
+
+    @app.post("/feed/mark-unread")
+    def mark_unread(request: Request, stamp: str = Form(...)):
+        """Undo a Mark all read: whatever it marked goes back to how it was."""
+        with db.transaction() as conn:
+            feed_mod.unmark_read(conn, stamp)
+        flash(request, "Back to how it was.")
+        return RedirectResponse(back(request, "/"), status_code=303)
+
+    @app.post("/feed/seen")
+    def feed_seen(ids: list[int] = Form([])):
+        """Posts scrolled past in the feed (when that setting is on): read, as
+        if opened, but only if they were unread."""
+        with db.transaction() as conn:
+            n = feed_mod.mark_seen(conn, utcnow(), ids[:200])
+        return {"ok": True, "marked": n}
+
+    @app.post("/feed/settings")
+    def feed_settings(request: Request, mark_read_on_scroll: str = Form("")):
+        on = mark_read_on_scroll == "1"
+        with db.transaction() as conn:
+            conn.execute("INSERT INTO app_settings(key, value) VALUES ('mark_read_on_scroll', ?) "
+                         "ON CONFLICT(key) DO UPDATE SET value=excluded.value", ("1" if on else "0",))
+        flash(request, "Posts are marked read as you scroll past them." if on else
+              "Posts stay unread until you open them.")
+        return RedirectResponse(back(request, "/"), status_code=303)
+
+    @app.post("/theme")
+    def set_theme(request: Request, theme: str = Form("")):
+        """Light, dark, or (anything else) follow the device. Kept per browser."""
+        resp = RedirectResponse(back(request, "/"), status_code=303)
+        if theme in THEMES:
+            resp.set_cookie("theme", theme, max_age=60 * 60 * 24 * 400, samesite="lax",
+                            httponly=True, secure=settings.https_only_cookies)
+        else:
+            resp.delete_cookie("theme")
+        return resp
 
     # ---- kept (the archive) ---------------------------------------------
     @app.get("/kept", response_class=HTMLResponse)
@@ -734,16 +814,16 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         return [tid] + [c["id"] for c in copies if c["id"] != tid]
 
     @app.post("/t/{tid}/keep")
-    def keep(request: Request, tid: int, group: str | None = Form(None)):
+    def keep(request: Request, tid: int, group: str | None = Form(None), anchor: str = Form("")):
         ids = group_of(tid, group)
         for t_id in ids:
             bouncer.promote(t_id)
         flash(request, "Kept permanently. It won't expire." if len(ids) == 1 else
               f"Kept all {len(ids)} copies permanently. They won't expire.")
-        return RedirectResponse(back(request, f"/t/{tid}"), status_code=303)
+        return RedirectResponse(back(request, f"/t/{tid}", safe_anchor(anchor)), status_code=303)
 
     @app.post("/t/{tid}/unkeep")
-    def unkeep(request: Request, tid: int, group: str | None = Form(None)):
+    def unkeep(request: Request, tid: int, group: str | None = Form(None), anchor: str = Form("")):
         outcomes = {bouncer.unkeep(t_id) for t_id in group_of(tid, group)} - {"noop"}
         if outcomes == {"auto"}:
             flash(request, "No longer kept. It stays in your feed and expires with the community's retention.")
@@ -752,25 +832,32 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         elif outcomes:
             flash(request, "No longer kept. Copies from communities you follow stay in your feed and expire "
                            "normally; the others moved to the trash.")
-        return RedirectResponse(back(request, f"/t/{tid}"), status_code=303)
+        return RedirectResponse(back(request, f"/t/{tid}", safe_anchor(anchor)), status_code=303)
 
     @app.post("/t/{tid}/trash")
-    def trash_thread(request: Request, tid: int, group: str | None = Form(None)):
+    def trash_thread(request: Request, tid: int, group: str | None = Form(None), anchor: str = Form("")):
+        """`anchor`: the element to come back to (the next post), since this one leaves the page."""
         ids = group_of(tid, group)
         for t_id in ids:
             bouncer.move_to_trash(t_id)
         days = bouncer.trash_days()
         when = f"in {days} day{'s' if days != 1 else ''}" if days is not None else "only when you empty the trash"
         what = "Moved to trash" if len(ids) == 1 else f"Moved all {len(ids)} copies to trash"
-        flash(request, f"{what}. Permanently deleted {when}; restore from the Trash page.")
-        return RedirectResponse(back(request, f"/t/{tid}"), status_code=303)
+        flash(request, f"{what}. Permanently deleted {when}.",
+              undo={"action": f"/t/{tid}/restore", "fields": {"also": ids[1:]}})
+        return RedirectResponse(back(request, f"/t/{tid}", safe_anchor(anchor)), status_code=303)
 
     @app.post("/t/{tid}/restore")
-    def restore_thread(request: Request, tid: int):
-        retention = bouncer.restore_from_trash(tid)
-        if retention:
-            flash(request, "Restored" + (" and kept permanently." if retention == "manual" else
-                                         " as auto-captured. Its original expiry date still applies."))
+    def restore_thread(request: Request, tid: int, also: list[int] = Form([])):
+        """Out of the trash; `also` restores more threads (the copies trashed with it)."""
+        retentions = [r for r in (bouncer.restore_from_trash(t) for t in dict.fromkeys([tid, *also])) if r]
+        if retentions == ["manual"] * len(retentions) and retentions:
+            flash(request, "Restored and kept permanently.")
+        elif retentions == ["auto"] * len(retentions) and retentions:
+            flash(request, "Restored as auto-captured. Its original expiry date still applies."
+                  if len(retentions) == 1 else "Restored as auto-captured. Their original expiry dates still apply.")
+        elif retentions:
+            flash(request, f"Restored {len(retentions)} copies.")
         return RedirectResponse(back(request, f"/t/{tid}"), status_code=303)
 
     @app.get("/t/{tid}/delete", response_class=HTMLResponse)
@@ -1599,6 +1686,21 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                                   only=only if only in search_mod.ONLY else "",
                                   sort=sort if sort in search_mod.SORTS else "relevance")
 
+    def add_post_details(conn: Any, hits: list[dict[str, Any]]) -> None:
+        """What a post hit needs to look like it does in the feed: its
+        thumbnail and comment count."""
+        if not hits:
+            return
+        marks = ",".join("?" * len(hits))
+        extra = {r["id"]: r for r in conn.execute(
+            f"SELECT o.id, o.thumbnail_url, (SELECT COUNT(*) FROM objects x WHERE x.thread_id=o.thread_id "
+            f"AND x.object_type='comment') AS n_comments FROM objects o WHERE o.id IN ({marks})",
+            [h["id"] for h in hits])}
+        thumbs = feed_mod.thumbnails(conn, [(h["id"], h["url"], extra[h["id"]]["thumbnail_url"]) for h in hits])
+        for h in hits:
+            h["thumb"] = thumbs.get(h["id"])
+            h["n_comments"] = extra[h["id"]]["n_comments"]
+
     @app.get("/search", response_class=HTMLResponse)
     def search_page(request: Request, q: str = "", what: str = "all", community: str = "", author: str = "",
                     kept: str = "", only: str = "", sort: str = "relevance", page: int = 1):
@@ -1609,17 +1711,22 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             try:
                 with db.connect() as conn:
                     results = search_mod.search(conn, db.search_backend, q, f, page)
+                    add_post_details(conn, [h for h in results.hits if h["object_type"] == "post"])
             except search_mod.SearchError as exc:
                 error = str(exc)
-        params = {"q": q, "what": f.kind if f.kind != "all" else "", "community": f.community_id or "",
+        params ={"q": q, "what": f.kind if f.kind != "all" else "", "community": f.community_id or "",
                   "author": f.author, "kept": "1" if f.kept_only else "", "only": f.only,
                   "sort": f.sort if f.sort != "relevance" else ""}
 
         def page_url(n: int) -> str:
-            return "/search?" + urlencode({**{k: v for k, v in params.items() if v}, "page": n})
+            return "/search?" + urlencode({**{k: v for k, v in params.items() if v}, **({"page": n} if n > 1 else {})})
+
+        def without(*keys: str) -> str:
+            """This search with those filters taken off."""
+            return "/search?" + urlencode({k: v for k, v in params.items() if v and k not in keys})
         return render(request, "search.html", q=q, f=f, results=results, error=error,
                       communities=archived_communities(), kinds=search_mod.KINDS, sorts=search_mod.SORTS,
-                      only_options=search_mod.ONLY, page_url=page_url, backend=db.search_backend)
+                      only_options=search_mod.ONLY, page_url=page_url, without=without, backend=db.search_backend)
 
     @app.get("/api/search")
     def search_api(q: str = "", what: str = "all", community: str = "", author: str = "", kept: str = "",
@@ -1675,8 +1782,20 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             flash(request, "There's no inbox to check yet: add an account on the Accounts page.", "error")
         return RedirectResponse(back(request, "/inbox"), status_code=303)
 
+    @app.get("/inbox/read-all", response_class=HTMLResponse)
+    def inbox_confirm_read_all(request: Request, account: str = ""):
+        aid = int(account) if account.strip().isdigit() else None
+        rows = [s for s in inbox.status() if s["unread"] and (aid is None or s["account"].id == aid)]
+        if not rows:
+            return RedirectResponse("/inbox", status_code=303)
+        return render(request, "inbox_confirm.html", rows=rows, account_id=aid)
+
     @app.post("/inbox/read-all")
-    def inbox_read_all(request: Request, account_id: str = Form("")):
+    def inbox_read_all(request: Request, account_id: str = Form(""), confirmed: str = Form("")):
+        """Marks items read on their servers too, which can't be undone from here, so it asks first."""
+        if confirmed != "1":
+            return RedirectResponse("/inbox/read-all" + (f"?account={account_id}" if account_id.isdigit() else ""),
+                                    status_code=303)
         try:
             n = inbox.mark_all_read(int(account_id) if account_id.strip().isdigit() else None)
             flash(request, f"Marked {n} as read." if n else "Nothing was unread.")
@@ -1685,12 +1804,16 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         return RedirectResponse(back(request, "/inbox"), status_code=303)
 
     @app.post("/inbox/{iid}/read")
-    def inbox_read(request: Request, iid: int, read: str = Form("1")):
+    def inbox_read(request: Request, iid: int, read: str = Form("1"), anchor: str = Form("")):
+        """`anchor`: where to come back to (the next item, when this one leaves the Unread list)."""
         try:
             inbox.mark_read(iid, read == "1")
         except AccountError as exc:
             flash(request, str(exc), "error")
-        return RedirectResponse(back(request, "/inbox"), status_code=303)
+            return RedirectResponse(back(request, "/inbox", f"i{iid}"), status_code=303)
+        if read == "1":
+            flash(request, "Marked read.", undo={"action": f"/inbox/{iid}/read", "fields": {"read": "0"}})
+        return RedirectResponse(back(request, "/inbox", safe_anchor(anchor)), status_code=303)
 
     @app.post("/inbox/{iid}/reply")
     def inbox_reply(request: Request, iid: int, body: str = Form("")):
@@ -1699,8 +1822,9 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         except AccountError as exc:
             flash(request, str(exc), "error")
             return RedirectResponse(back(request, "/inbox", f"i{iid}"), status_code=303)
-        flash(request, "Reply sent. It's in the archived thread too." if oid else "Reply sent.")
-        return RedirectResponse(back(request, "/inbox"), status_code=303)
+        flash(request, "Reply sent. It's in the archived thread too." if oid else "Reply sent.",
+              link={"href": f"{object_page(oid)}#o{oid}", "label": "Show in thread"} if oid else None)
+        return RedirectResponse(back(request, "/inbox", f"i{iid}"), status_code=303)
 
     app.state.bouncer = bouncer
     app.state.db = db

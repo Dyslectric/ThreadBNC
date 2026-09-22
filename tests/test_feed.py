@@ -72,13 +72,67 @@ def test_feed_page_ui(settings, server, bouncer):
     client = TestClient(create_app(settings, bouncer))
     client.post("/login", data={"password": "pw"})
     html = client.get("/").text
-    assert "Your feed" in html and "post 3" in html and "☆ Keep" in html
+    assert "Your feed" in html and "post 3" in html and "<span class=\"\">Keep</span>" in html
     tid = one(bouncer, "SELECT id FROM archived_threads ORDER BY id DESC")[0]
-    client.post(f"/t/{tid}/keep", headers={"referer": "http://testserver/"})
-    assert "★ Kept" in client.get("/").text
+    r = client.post(f"/t/{tid}/keep", data={"anchor": f"p{tid}"}, headers={"referer": "http://testserver/"},
+                    follow_redirects=False)
+    assert r.headers["location"] == f"/#p{tid}"  # back to the post, not the top of the feed
+    assert f'action="/t/{tid}/unkeep"' in client.get("/").text
     assert "post" in client.get("/kept").text
     client.post("/feed/mark-read")
     assert "all caught up" in client.get("/?unread=1").text
+
+
+def test_mark_all_read_can_be_undone(settings, server, bouncer):
+    followed_with_posts(server, bouncer)
+    client = TestClient(create_app(settings, bouncer))
+    client.post("/login", data={"password": "pw"})
+    r = client.post("/feed/mark-read", headers={"referer": "http://testserver/", "X-ThreadBNC-Fetch": "1"})
+    data = r.json()  # sent by app.js: where it would go, and the message with its Undo
+    assert data["ok"] and data["redirect"] == "/" and data["messages"][0]["text"] == "Marked 3 posts as read."
+    undo = data["messages"][0]["undo"]
+    assert "all caught up" in client.get("/?unread=1").text
+    client.post(undo["action"], data=undo["fields"])
+    assert "post 3" in client.get("/?unread=1").text
+
+
+def test_posts_scrolled_past_are_read(settings, server, bouncer):
+    followed_with_posts(server, bouncer)
+    client = TestClient(create_app(settings, bouncer))
+    client.post("/login", data={"password": "pw"})
+    assert "data-mark-on-scroll" not in client.get("/").text  # off unless chosen
+    client.post("/feed/settings", data={"mark_read_on_scroll": "1"})
+    assert "data-mark-on-scroll" in client.get("/").text
+    with bouncer.db.connect() as conn:
+        ids = {r["title"]: r["id"] for r in conn.execute(
+            "SELECT t.id, r.title FROM archived_threads t JOIN revisions r ON r.object_id=t.root_object_id")}
+    seen = [ids["post 1"], ids["post 2"]]
+    assert client.post("/feed/seen", data={"ids": seen}).json() == {"ok": True, "marked": 2}
+    assert client.post("/feed/seen", data={"ids": seen}).json()["marked"] == 0  # already read
+    unread = client.get("/?unread=1").text
+    assert "post 3" in unread and "post 1" not in unread
+
+
+def test_trash_undo_restores_every_copy(settings, server, bouncer):
+    followed_with_posts(server, bouncer)
+    client = TestClient(create_app(settings, bouncer))
+    client.post("/login", data={"password": "pw"})
+    tid = one(bouncer, "SELECT id FROM archived_threads ORDER BY id DESC")[0]
+    data = client.post(f"/t/{tid}/trash", headers={"X-ThreadBNC-Fetch": "1"}).json()
+    undo = data["messages"][0]["undo"]
+    assert undo["action"] == f"/t/{tid}/restore" and "post 3" not in client.get("/").text
+    client.post(undo["action"], data=undo["fields"])
+    assert "post 3" in client.get("/").text
+
+
+def test_theme_is_remembered_per_browser(settings, bouncer):
+    client = TestClient(create_app(settings, bouncer))
+    client.post("/login", data={"password": "pw"})
+    assert "data-theme" not in client.get("/").text.split("<head>")[0]
+    client.post("/theme", data={"theme": "dark"}, headers={"X-ThreadBNC-Fetch": "1"})
+    assert '<html lang="en" data-theme="dark">' in client.get("/").text
+    client.post("/theme", data={"theme": "system"})
+    assert "data-theme" not in client.get("/").text.split("<head>")[0]
 
 
 def test_empty_feed_prompts_follow(settings, bouncer):

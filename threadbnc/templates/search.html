@@ -1,77 +1,116 @@
 {% extends "base.html" %}
-{% from "_macros.html" import when, state_badges, votes %}
+{% from "_macros.html" import when, state_badges, votes, icon, keep_button, pager as load_more %}
 {% block title %}{{ ('Search: ' ~ q) if q else 'Search' }}{% endblock %}
+
+{% macro earlier(h) -%}
+{% if not h.matched_current %}
+  <div class="hit-earlier small">
+    <div class="muted">{{ icon('clock') }} Matched an earlier version. How it changed since:
+      <a href="/o/{{ h.id }}/history">full history</a></div>
+    {% if h.diff %}<p class="diff">{{ h.diff }}</p>{% elif h.earlier %}<p class="diff"><del>{{ h.earlier }}</del></p>{% endif %}
+  </div>
+{% endif %}
+{%- endmacro %}
+
+{% macro where(h) -%}
+{% if h.cname %}<a class="pc-community" href="/c/{{ h.cid }}">{{ chandle(h.cname, h.c_ap) }}</a> · {% endif %}
+{% if h.username %}<span>{{ h.username }}@{{ h.a_instance }}</span> · {% endif %}
+{{ when(h.created_at or h.first_seen_at) }}
+{%- endmacro %}
+
 {% block content %}
 <h1>Search the archive</h1>
-<form method="get" action="/search" class="card search-form" role="search">
+{% set active = [] %}
+{% if f.kind != 'all' %}{% set _ = active.append((kinds[f.kind], 'what')) %}{% endif %}
+{% if f.community_id %}{% for c in communities if c.id == f.community_id %}{% set _ = active.append(('In ' ~ chandle(c.name, c.canonical_ap_id, True), 'community')) %}{% endfor %}{% endif %}
+{% if f.author %}{% set _ = active.append(('By ' ~ f.author, 'author')) %}{% endif %}
+{% if f.only %}{% set _ = active.append((only_options[f.only], 'only')) %}{% endif %}
+{% if f.kept_only %}{% set _ = active.append(('Kept only', 'kept')) %}{% endif %}
+<form method="get" action="/search" class="card search-form" role="search" data-autosubmit>
   <div class="row">
-    <input type="search" name="q" value="{{ q }}" placeholder='Words, "a phrase", prefix*, this OR that, -not' aria-label="Search for" autofocus>
-    <button>Search</button>
+    <input type="search" name="q" value="{{ q }}" placeholder='Words, "a phrase", prefix*, this OR that, -not' aria-label="Search for" autofocus data-search>
+    <button>{{ icon('search') }} Search</button>
   </div>
-  <div class="row search-filters">
-    <select name="what" aria-label="Look in">
-      {% for k, label in kinds.items() %}<option value="{{ k }}" {{ 'selected' if f.kind == k }}>{{ label }}</option>{% endfor %}
-    </select>
-    <select name="community" aria-label="Community">
-      <option value="">Every community</option>
-      {% for c in communities %}<option value="{{ c.id }}" {{ 'selected' if f.community_id == c.id }}>{{ chandle(c.name, c.canonical_ap_id, True) }}</option>{% endfor %}
-    </select>
-    <input name="author" value="{{ f.author }}" placeholder="By user@server" aria-label="Author" class="author-filter">
-    <select name="only" aria-label="Only">
-      {% for k, label in only_options.items() %}<option value="{{ k }}" {{ 'selected' if f.only == k }}>{{ label }}</option>{% endfor %}
-    </select>
-    <select name="sort" aria-label="Sort by">
-      {% for k, label in sorts.items() %}<option value="{{ k }}" {{ 'selected' if f.sort == k }}>{{ label }}</option>{% endfor %}
-    </select>
-    <label class="check small"><input type="checkbox" name="kept" value="1" {{ 'checked' if f.kept_only }}> Kept only</label>
-  </div>
-  <p class="small muted">Searches every version the bouncer saw, so text that was later edited away, deleted or
-    removed is found too. Threads in the trash aren't searched.{% if backend == 'like' %} This SQLite has no
-    full-text index (FTS5), so searching is slower and matches parts of words.{% endif %}</p>
+  <details class="search-filters-box"{% if active or f.sort != 'relevance' %} open{% endif %}>
+    <summary>{{ icon('filter') }} Filters and sorting{% if active %} <span class="count">{{ active | length }}</span>{% endif %}</summary>
+    <div class="row search-filters">
+      <select name="what" aria-label="Look in">
+        {% for k, label in kinds.items() %}<option value="{{ k }}" {{ 'selected' if f.kind == k }}>{{ label }}</option>{% endfor %}
+      </select>
+      <select name="community" aria-label="Community">
+        <option value="">Every community</option>
+        {% for c in communities %}<option value="{{ c.id }}" {{ 'selected' if f.community_id == c.id }}>{{ chandle(c.name, c.canonical_ap_id, True) }}</option>{% endfor %}
+      </select>
+      <input name="author" value="{{ f.author }}" placeholder="By user@server" aria-label="Author" class="author-filter">
+      <select name="only" aria-label="Only">
+        {% for k, label in only_options.items() %}<option value="{{ k }}" {{ 'selected' if f.only == k }}>{{ label }}</option>{% endfor %}
+      </select>
+      <select name="sort" aria-label="Sort by">
+        {% for k, label in sorts.items() %}<option value="{{ k }}" {{ 'selected' if f.sort == k }}>{{ label }}</option>{% endfor %}
+      </select>
+      <label class="check small"><input type="checkbox" name="kept" value="1" {{ 'checked' if f.kept_only }}> Kept only</label>
+    </div>
+    <p class="small muted">Searches every version the bouncer saw, so text that was later edited away, deleted or
+      removed is found too. Threads in the trash aren't searched.{% if backend == 'like' %} This SQLite has no
+      full-text index (FTS5), so searching is slower and matches parts of words.{% endif %}</p>
+  </details>
 </form>
+
+{% if active %}
+<div class="active-filters row small" aria-label="Filters in use">
+  {% for label, key in active %}
+    <a class="filter-chip" href="{{ without(key) }}" title="Remove this filter">{{ label }}{{ icon('x') }}<span class="sr-only"> (remove)</span></a>
+  {% endfor %}
+  {% if active | length > 1 %}<a class="small muted" href="{{ without('what', 'community', 'author', 'only', 'kept') }}">Clear all</a>{% endif %}
+</div>
+{% endif %}
 
 {% if error %}<div class="flash error">{{ error }}</div>{% endif %}
 
 {% if results %}
-<p class="muted">{{ results.total }} result{{ 's' if results.total != 1 }}{% if results.pages > 1 %} · page {{ results.page }} of {{ results.pages }}{% endif %}</p>
-{% if not results.hits %}<section class="card"><p class="muted">Nothing in the archive matches that.{% if f.community_id or f.author or f.only or f.kept_only or f.kind != 'all' %} Try fewer filters.{% endif %}</p></section>{% endif %}
-<ol class="plain search-results">
+<p class="muted small results-count">{{ results.total }} result{{ 's' if results.total != 1 }}{% if results.pages > 1 %} · page {{ results.page }} of {{ results.pages }}{% endif %}</p>
+{% if not results.hits %}<section class="card empty"><p class="muted">Nothing in the archive matches that.{% if active %} Try fewer filters.{% endif %}</p></section>{% endif %}
+<ol class="plain search-results" id="items" data-items>
 {% for h in results.hits %}
   {% set link = '/t/' ~ h.thread_id ~ ('#o' ~ h.id if h.object_type == 'comment' else '') %}
-  <li class="card hit">
-    <div class="hit-head">
-      <span class="pill {{ 'new' if h.object_type == 'post' else '' }}">{{ h.object_type }}</span>
-      {% if h.object_type == 'post' %}
-        <a class="hit-title" href="{{ link }}">{{ h.title_html or '(untitled)' }}</a>
-      {% else %}
-        <span class="muted">on</span> <a class="hit-title" href="{{ link }}">{{ h.thread_title or '(untitled)' }}</a>
-      {% endif %}
-      {{ state_badges(h) }}
-      {% if h.retention == 'manual' %}<span class="pill good" title="Kept: never expires">★ kept</span>{% endif %}
-    </div>
-    {% if h.snippet %}<p class="hit-snippet">{{ h.snippet }}</p>{% endif %}
-    {% if h.url_matched %}<p class="small hit-url"><code>{{ h.url }}</code></p>{% endif %}
-    {% if not h.matched_current %}
-      <div class="hit-earlier small">
-        <a class="pill warn" href="/o/{{ h.id }}/history">Matched an earlier version · history</a>
-        {% if h.earlier %}<span class="muted">{{ h.earlier }}</span>{% endif %}
-      </div>
+  {% if h.object_type == 'post' %}
+  <li class="post-card hit" id="h{{ h.id }}" data-entry data-open="{{ link }}">
+    {% if h.thumb %}
+      <a class="thumb" href="{{ link }}" tabindex="-1" aria-hidden="true">
+        {% if h.thumb.video %}<video src="/media/{{ h.thumb.id }}" muted preload="metadata"></video>
+        {% else %}<img src="/media/{{ h.thumb.id }}" alt="" loading="lazy">{% endif %}
+      </a>
     {% endif %}
-    <div class="small muted">
-      {% if h.cname %}<a href="/c/{{ h.cid }}">{{ chandle(h.cname, h.c_ap) }}</a> · {% endif %}
-      {% if h.username %}{{ h.username }}@{{ h.a_instance }} · {% endif %}
-      {{ when(h.created_at or h.first_seen_at) }}
-      {% if h.upvotes is not none or h.score is not none %} · {{ votes(h.upvotes, h.downvotes, h.score) }}{% endif %}
+    <div class="pc-main">
+      <div class="pc-meta small">{{ where(h) }} {{ state_badges(h) }}</div>
+      <h3 class="pc-title"><a href="{{ link }}">{{ h.title_html or '(untitled)' }}</a></h3>
+      {% if h.url_matched %}<div class="pc-link small"><code>{{ h.url }}</code></div>{% endif %}
+      {% if h.snippet %}<p class="pc-excerpt hit-snippet">{{ h.snippet }}</p>{% endif %}
+      {{ earlier(h) }}
+      <div class="pc-actions actions small">
+        <a class="act" href="/t/{{ h.thread_id }}#comments">{{ icon('comment') }}<span>{{ h.n_comments }} comment{{ 's' if h.n_comments != 1 }}</span></a>
+        {% if h.upvotes is not none or h.score is not none %}{{ votes(h.upvotes, h.downvotes, h.score) }}{% endif %}
+        {{ keep_button(h.thread_id, h.retention == 'manual', refresh='h' ~ h.id) }}
+      </div>
     </div>
   </li>
+  {% else %}
+  <li class="card hit comment-hit" id="h{{ h.id }}" data-entry data-open="{{ link }}">
+    <div class="pc-meta small">{{ icon('comment') }} {{ where(h) }} {{ state_badges(h) }}</div>
+    <div class="hit-context">on <a class="hit-title" href="{{ link }}">{{ h.thread_title or '(untitled)' }}</a></div>
+    {% if h.snippet %}<blockquote class="hit-quote">{{ h.snippet }}</blockquote>{% endif %}
+    {{ earlier(h) }}
+    <div class="actions small">
+      <a class="act" href="{{ link }}">{{ icon('comment') }}<span>Show in thread</span></a>
+      {% if h.upvotes is not none or h.score is not none %}{{ votes(h.upvotes, h.downvotes, h.score) }}{% endif %}
+      {% if h.retention == 'manual' %}<span class="pill kept">{{ icon('star-fill') }} Kept</span>{% endif %}
+    </div>
+  </li>
+  {% endif %}
 {% endfor %}
 </ol>
-{% if results.pages > 1 %}
-<nav class="row pager-row" aria-label="Pages">
-  {% if results.page > 1 %}<a class="chip" href="{{ page_url(results.page - 1) }}">← Previous page</a>{% endif %}
-  {% if results.page < results.pages %}<a class="chip" href="{{ page_url(results.page + 1) }}">Next page →</a>{% endif %}
-</nav>
-{% endif %}
+{{ load_more(page_url(results.page + 1) if results.page < results.pages else none,
+             page_url(1) if results.page > 1 else none, results.page) }}
 {% elif not q %}
 <section class="card small muted">
   <p><b>How to search</b></p>
@@ -82,7 +121,8 @@
     <li><code>caddy OR nginx</code>: either word</li>
     <li><code>backup -restic</code>: leave out anything mentioning restic</li>
   </ul>
-  <p>Words are matched whole, ignoring case and accents. Titles count most, then text, then links.</p>
+  <p>Words are matched whole, ignoring case and accents. Titles count most, then text, then links.
+    Press <kbd>/</kbd> anywhere to search.</p>
 </section>
 {% endif %}
 {% endblock %}

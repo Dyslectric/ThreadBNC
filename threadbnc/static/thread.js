@@ -1,7 +1,6 @@
 // Comment tree helpers. Collapsing itself is native <details>; this only adds
 // click-the-bar, bulk expand/collapse and jumping between highlighted comments.
 (function () {
-  document.documentElement.classList.add("js");
   const root = document.getElementById("comments");
   if (!root) return;
   const all = () => root.querySelectorAll("details.comment");

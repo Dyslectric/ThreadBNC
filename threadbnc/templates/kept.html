@@ -1,9 +1,9 @@
 {% extends "base.html" %}
-{% from "_macros.html" import when, change_row, state_badges %}
+{% from "_macros.html" import when, change_row, state_badges, icon %}
 {% block head %}{% if pending %}<meta http-equiv="refresh" content="4">{% endif %}{% endblock %}
 {% block title %}Kept{% endblock %}
 {% block content %}
-<h1>★ Kept</h1>
+<h1>{{ icon('star-fill', 'title-icon') }} Kept</h1>
 <p class="muted">Posts you've kept are never deleted. The bouncer keeps watching them for new comments, edits and removals, whether or not you follow their community.</p>
 
 <section class="card" id="archive">
@@ -30,7 +30,7 @@
 <div class="grid2">
   <section class="card">
     <h2>{{ total }} kept thread{{ 's' if total != 1 }}</h2>
-    {% if not groups %}<p class="muted">Nothing kept yet. Use ☆ Keep on a post in your feed, or paste a link above.</p>{% endif %}
+    {% if not groups %}<p class="muted">Nothing kept yet. Use Keep ({{ icon('star') }}, or <kbd>s</kbd>) on a post in your feed, or paste a link above.</p>{% endif %}
     {% for g in groups %}
       <h3 class="group-head"><a href="/c/{{ g.cid }}?tab=kept">{{ chandle(g.name, g.ap) }}</a></h3>
       <ul class="plain">

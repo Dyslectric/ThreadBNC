@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon %}
+{% block title %}Mark all read{% endblock %}
+{% block content %}
+<section class="card narrow-wide">
+  <h1>Mark everything read?</h1>
+  <p>This marks these read here <strong>and on their servers</strong>, which can't be undone from ThreadBNC:</p>
+  <ul>
+    {% for s in rows %}<li>{{ s.unread }} item{{ 's' if s.unread != 1 }} for {{ s.account.handle }}</li>{% endfor %}
+  </ul>
+  <form method="post" action="/inbox/read-all" class="row">
+    <input type="hidden" name="account_id" value="{{ account_id or '' }}">
+    <input type="hidden" name="confirmed" value="1">
+    <button>{{ icon('check-all') }} Mark all read</button>
+    <a href="/inbox{{ ('?account=' ~ account_id) if account_id }}">Cancel</a>
+  </form>
+</section>
+{% endblock %}

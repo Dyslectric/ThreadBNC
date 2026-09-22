@@ -397,8 +397,8 @@ def test_subreddits_show_as_r_name(settings, bouncer, reddit):
     bouncer.poll_follow(cid)
     client = logged_in(settings, bouncer)
     home = client.get("/").text
-    assert "r/pics" in home and "!pics" not in home and "↻ Repost" in home
-    assert "✎ New post" not in client.get(f"/c/{cid}").text
+    assert "r/pics" in home and "!pics" not in home and ">Repost</span>" in home
+    assert f"/c/{cid}/submit" not in client.get(f"/c/{cid}").text
 
 
 # -- reposting -----------------------------------------------------------------------------
@@ -470,7 +470,7 @@ def test_reddit_account_is_used_for_reddit_only(settings, bouncer, reddit, poste
     client.post("/accounts/act-as", data={"account_id": str(me.id)})
     page = client.get("/accounts").text
     assert "u/dave" in page and "Used automatically for anything on Reddit" in page
-    switcher = page.split('aria-label="Posting as"')[1].split("</select>")[0]
+    switcher = page.split('aria-label="Posting as"')[1].split("</form>")[0]
     assert "u/dave" not in switcher and "dave@home.test" in switcher
 
 

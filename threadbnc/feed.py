@@ -103,7 +103,7 @@ def load_feed(conn: Conn, *, community_id: int | None = None, sort: str = "new",
     rows = conn.execute(_BASE.format(scope=scope, filters=filters, group_filters=group_filters, order=order),
                         [*args, per_page + 1, (page - 1) * per_page]).fetchall()
     items = [dict(r) for r in rows[:per_page]]
-    thumbs = _thumbnails(conn, [(i["oid"], i["url"], i["thumbnail_url"]) for i in items])
+    thumbs = thumbnails(conn, [(i["oid"], i["url"], i["thumbnail_url"]) for i in items])
     copies = dupes.load_copies(conn, [i["dupe_key"] for i in items])
     for i in items:
         i["excerpt"] = excerpt(i["body"])
@@ -131,8 +131,8 @@ def attach_group(item: dict[str, Any], copies: list[dict[str, Any]]) -> None:
     item["breakdown"] = [dupes.breakdown_row(c["cname"], c["c_ap"], c["source_domain"], c) for c in copies]
 
 
-def _thumbnails(conn: Conn,
-                roots: list[tuple[int, str | None, str | None]]) -> dict[int, dict[str, Any]]:
+def thumbnails(conn: Conn,
+               roots: list[tuple[int, str | None, str | None]]) -> dict[int, dict[str, Any]]:
     """Archived image/video for each post: its link if that is media, else the
     server's preview image (article links), else the first embedded image."""
     if not roots:
@@ -169,12 +169,36 @@ def followed_communities(conn: Conn) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
-def mark_read(conn: Conn, now: str, community_id: int | None = None) -> None:
+def mark_read(conn: Conn, now: str, community_id: int | None = None) -> int:
+    """Mark a feed read; returns how many posts were unread. `now` becomes
+    their last_viewed_at, which is what unmark_read(now) undoes."""
     scope = ("community_id=?", [community_id]) if community_id is not None else (
         "community_id IN (SELECT community_id FROM community_follows WHERE active=1)", [])
+    unread = conn.execute(
+        f"SELECT COUNT(*) FROM archived_threads WHERE trashed_at IS NULL AND last_viewed_at IS NULL "
+        f"AND {scope[0]}", scope[1]).fetchone()[0]
     conn.execute(
         f"UPDATE archived_threads SET prev_viewed_at=last_viewed_at, last_viewed_at=? "
         f"WHERE trashed_at IS NULL AND {scope[0]}", [now, *scope[1]])
+    return unread
+
+
+def unmark_read(conn: Conn, stamp: str) -> None:
+    """Undo mark_read(stamp)."""
+    conn.execute("UPDATE archived_threads SET last_viewed_at=prev_viewed_at WHERE last_viewed_at=?", (stamp,))
+
+
+def mark_seen(conn: Conn, now: str, thread_ids: list[int]) -> int:
+    """Mark these unread posts read (scrolled past in the feed). Posts already
+    read keep their last visit, so their new comments stay highlighted."""
+    if not thread_ids:
+        return 0
+    marks = ",".join("?" * len(thread_ids))
+    n = conn.execute(f"SELECT COUNT(*) FROM archived_threads WHERE id IN ({marks}) AND last_viewed_at IS NULL",
+                     thread_ids).fetchone()[0]
+    conn.execute(f"UPDATE archived_threads SET last_viewed_at=? WHERE id IN ({marks}) AND last_viewed_at IS NULL",
+                 [now, *thread_ids])
+    return n
 
 
 def media_share(conn: Conn, community_id: int) -> tuple[int, int]:

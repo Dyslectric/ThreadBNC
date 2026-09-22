@@ -98,7 +98,7 @@ def test_trash_ui_flow(settings, server, bouncer):
     client.post(f"/t/{tid}/trash")
     assert "0 kept threads" in client.get("/kept").text
     page = client.get("/trash").text
-    assert "Trash (1)" in page and "was kept" in page
+    assert 'aria-label="1 in the trash"' in page and "was kept" in page
     assert "In the trash" in client.get(f"/t/{tid}").text
     r = client.post(f"/t/{tid}/delete", data={"confirm": "nope"}, follow_redirects=False)
     assert one(bouncer, "SELECT COUNT(*) FROM archived_threads")[0] == 1

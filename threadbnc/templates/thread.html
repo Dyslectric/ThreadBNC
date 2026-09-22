@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import when, state_badges, votes, copy_where %}
+{% from "_macros.html" import when, state_badges, votes, copy_where, icon, keep_button, trash_button %}
 {% block title %}{{ root.o.title if root else 'Thread' }}{% endblock %}
 
 {% macro event_list(events, show_source=False) -%}
@@ -25,8 +25,7 @@
   <span class="author" title="{{ o.a_ap }}">{{ o.username }}{% if not is_rss(o.canonical_ap_id) %}@{{ o.a_instance }}{% endif %}</span>
   · {{ when(o.created_at) }}
   {% if n.agg.upvotes is not none or n.agg.score is not none %}· {{ votes(n.agg.upvotes, n.agg.downvotes, n.agg.score, n.breakdown) }}{% endif %}
-  {% if o.revision_count > 1 %}· <a href="/o/{{ o.id }}/history">Edited {{ o.revision_count - 1 }} time{{ 's' if o.revision_count > 2 }} · View history</a>
-  {% else %}· <a href="/o/{{ o.id }}/history" class="muted">history</a>{% endif %}
+  {% if o.revision_count > 1 %}· <a href="/o/{{ o.id }}/history">Edited {{ o.revision_count - 1 }} time{{ 's' if o.revision_count > 2 }} · View history</a>{% endif %}
 {%- endmacro %}
 
 {# Checkboxes choosing which copies a comment goes to. `items`: (object id, label, checked). #}
@@ -59,16 +58,20 @@
   {% set every = (' on all ' ~ w | length ~ ' copies') if also else '' %}
   {% set owned = o.a_ap == who.actor_ap_id %}
   {% set powers = powers_by_community.get(o.community_id) %}
-  <div class="obj-actions small">
-    <form method="post" action="/o/{{ o.id }}/vote" class="inline">
+  <div class="obj-actions small" id="a{{ o.id }}">
+    <form method="post" action="/o/{{ o.id }}/vote" class="inline" data-inplace="a{{ o.id }}">
       <input type="hidden" name="score" value="{{ 0 if mine == 1 else 1 }}">
       {% for m in also %}<input type="hidden" name="also" value="{{ m.o.id }}">{% endfor %}
-      <button class="vote up {{ 'on' if mine == 1 }}" title="{{ 'Remove upvote' if mine == 1 else 'Upvote' }} as {{ as_whom }}{{ every }}">▲ {{ n.agg.upvotes if n.agg.upvotes is not none else '' }}</button>
+      {% set label = ('Remove upvote' if mine == 1 else 'Upvote') ~ ' as ' ~ as_whom ~ every %}
+      <button class="vote up {{ 'on' if mine == 1 }}" title="{{ label }}" aria-pressed="{{ 'true' if mine == 1 else 'false' }}"
+        aria-label="{{ label }}{{ (', ' ~ n.agg.upvotes ~ ' so far') if n.agg.upvotes is not none }}"><span aria-hidden="true">▲ {{ n.agg.upvotes if n.agg.upvotes is not none else '' }}</span></button>
     </form>
-    <form method="post" action="/o/{{ o.id }}/vote" class="inline">
+    <form method="post" action="/o/{{ o.id }}/vote" class="inline" data-inplace="a{{ o.id }}">
       <input type="hidden" name="score" value="{{ 0 if mine == -1 else -1 }}">
       {% for m in also %}<input type="hidden" name="also" value="{{ m.o.id }}">{% endfor %}
-      <button class="vote down {{ 'on' if mine == -1 }}" title="{{ 'Remove downvote' if mine == -1 else 'Downvote' }} as {{ as_whom }}{{ every }}">▼ {{ n.agg.downvotes if n.agg.downvotes is not none else '' }}</button>
+      {% set label = ('Remove downvote' if mine == -1 else 'Downvote') ~ ' as ' ~ as_whom ~ every %}
+      <button class="vote down {{ 'on' if mine == -1 }}" title="{{ label }}" aria-pressed="{{ 'true' if mine == -1 else 'false' }}"
+        aria-label="{{ label }}{{ (', ' ~ n.agg.downvotes ~ ' so far') if n.agg.downvotes is not none }}"><span aria-hidden="true">▼ {{ n.agg.downvotes if n.agg.downvotes is not none else '' }}</span></button>
     </form>
     {% if not is_post %}
       <details class="reply-box">
@@ -159,7 +162,6 @@
   <p class="muted">This thread has no stored root post.</p>
 {% else %}
 {% set o = root.o %}
-{% set g = '<input type="hidden" name="group" value="1">' | safe if grouped else '' %}
 {% if t.trashed_at %}
 <div class="flash warn-flash row">
   <span><strong>In the trash</strong> since {{ when(t.trashed_at) }} and not being monitored.
@@ -170,7 +172,7 @@
 {% endif %}
 <p class="small muted">
   <a href="/c/{{ t.cid }}">{{ chandle(t.cname, t.c_ap, True) }}</a>
-  · {% if t.retention == 'manual' %}<span class="pill good">★ kept</span>{% else %}<span class="pill new">in feed</span>
+  · {% if t.retention == 'manual' %}<span class="pill kept">{{ icon('star-fill') }} Kept</span>{% else %}<span class="pill new">in feed</span>
       {% if t.expires_at %}expires {{ when(t.expires_at) }} unless kept{% else %}no expiry while the community's retention is "forever"{% endif %}{% endif %}
 </p>
 <article class="card post {{ 'is-changed' if root.is_changed }}" id="o{{ o.id }}">
@@ -187,7 +189,7 @@
         <div class="small">{{ copy_where({'id': pc.t.id, 'cname': pc.t.cname, 'c_ap': pc.t.c_ap, 'username': pc.o.username, 'a_instance': pc.o.a_instance}) }}
           · {{ when(pc.o.created_at) }} · {{ votes(pc.o.upvotes, pc.o.downvotes, pc.o.score) }}
           · {{ pc.n_comments }} comment{{ 's' if pc.n_comments != 1 }}
-          {% if pc.t.retention == 'manual' %}<span class="pill good">★ kept</span>{% endif %}
+          {% if pc.t.retention == 'manual' %}<span class="pill kept">{{ icon('star-fill') }} Kept</span>{% endif %}
           {{ state_badges(pc.o) }}
           {% if pc.t.id == t.id %}<span class="pill muted">this one</span>{% endif %}</div>
         {% if pc.o.title != o.title %}<div class="copy-title">{{ pc.o.title }}</div>{% endif %}
@@ -211,30 +213,28 @@
       </div>
     {% elif preview(o) %}{% set pm = preview(o) %}
       <a class="link-preview" href="{{ o.url | safe_url }}" rel="noreferrer noopener nofollow" target="_blank">
-        <img src="/media/{{ pm.id }}" alt="" loading="lazy"><span class="small muted">{{ o.url | host }} ↗</span></a>
+        <img src="/media/{{ pm.id }}" alt="" loading="lazy"><span class="small muted">{{ o.url | host }}{{ icon('external') }}</span></a>
     {% elif m and m.status == 'pending' and o.url | looks_like_media %}<p class="small muted">Linked media is being archived…</p>
     {% elif m and m.status == 'failed' %}<p class="small bad-text">Linked media could not be archived: {{ m.error }}</p>{% endif %}
   {% endif %}
   {% if o.body %}<div class="md {{ 'faded' if o.cur_deleted or o.cur_removed }}">{{ md(o.body) }}</div>{% endif %}
   {{ event_list(root.events) }}
   {{ actions(root, is_post=True) }}
-  <div class="row small">
+  <div class="row small thread-foot">
     {% set original = (o.url if is_rss(o.canonical_ap_id) else o.canonical_ap_id) | safe_url %}
-    {% if original %}<a href="{{ original }}" rel="noreferrer noopener nofollow" target="_blank">Original ↗</a>{% endif %}
+    {% if original %}<a href="{{ original }}" rel="noreferrer noopener nofollow" target="_blank">Original{{ icon('external') }}</a>{% endif %}
     <span class="muted">source {{ t.source_domain }} · checked {{ when(t.last_checked_at) }} · next check {{ when(t.next_check_at) }}</span>
     {% if t.last_error %}<span class="bad-text">last sync failed: {{ t.last_error }}</span>{% endif %}
     {% if instance and not instance.available %}<span class="pill bad">instance unreachable</span>{% endif %}
     <form method="post" action="/t/{{ t.id }}/sync" class="inline"><button class="small secondary">Re-check now</button></form>
-    {% if accounts %}{% if is_rss(o.canonical_ap_id) %}<a class="chip" href="/t/{{ t.id }}/repost" title="Post this article to one of your communities">↗ Post</a>
-    {% else %}<a class="chip" href="/t/{{ t.id }}/repost" title="Post a copy in one of your communities">↻ Repost</a>{% endif %}{% endif %}
+  </div>
+  <div class="actions thread-actions small" id="thread-actions">
     {% if not t.trashed_at %}
-      {% if all_kept %}
-        <form method="post" action="/t/{{ t.id }}/unkeep" class="inline">{{ g }}<button class="chip on" title="Click to unkeep{{ ' every copy' if grouped }}">★ Kept</button></form>
-      {% else %}
-        <form method="post" action="/t/{{ t.id }}/keep" class="inline">{{ g }}<button class="chip" title="Keep{{ ' every copy' if grouped }} permanently">☆ Keep</button></form>
-        <form method="post" action="/t/{{ t.id }}/trash" class="inline">{{ g }}<button class="chip ghost" title="Move{{ ' every copy' if grouped }} to the trash">Hide</button></form>
-      {% endif %}
+      {{ keep_button(t.id, all_kept, grouped, refresh='thread-actions') }}
+      {% if not all_kept %}{{ trash_button(t.id, grouped) }}{% endif %}
     {% endif %}
+    {% if accounts %}{% if is_rss(o.canonical_ap_id) %}<a class="act" href="/t/{{ t.id }}/repost" title="Post this article to one of your communities">{{ icon('share') }}<span>Post</span></a>
+    {% else %}<a class="act" href="/t/{{ t.id }}/repost" title="Post a copy in one of your communities">{{ icon('repost') }}<span>Repost</span></a>{% endif %}{% endif %}
   </div>
 </article>
 
@@ -245,7 +245,7 @@
 {% if not t.trashed_at and writable_copies %}
 <section class="card compose">
   <form method="post" action="/t/{{ t.id }}/reply" class="stack">
-    <textarea name="body" rows="4" required placeholder="Add a comment as {{ as_whom }} (Markdown)"></textarea>
+    <textarea name="body" rows="4" required placeholder="Add a comment as {{ as_whom }} (Markdown)" id="compose" aria-label="Your comment"></textarea>
     {% if writable_copies | length > 1 %}
       {% set items = [] %}
       {% for pc in writable_copies %}{% set _ = items.append((pc.o.id, chandle(pc.t.cname, pc.t.c_ap, True) ~ ' (posted by ' ~ pc.o.username ~ ')' ~ (' · locked' if pc.o.cur_locked else ''), not (pc.o.cur_locked or pc.o.cur_removed or pc.o.cur_deleted))) %}{% endfor %}
@@ -259,10 +259,10 @@
 <p class="small muted"><a href="/accounts">Add an account</a> to comment, vote or post from here.</p>
 {% elif not writable_copies and not t.trashed_at and is_rss(o.canonical_ap_id) %}
 <p class="small muted">This is an article from a feed, which has no comments.
-  <a href="/t/{{ t.id }}/repost">↗ Post it</a> to one of your communities to discuss it there.</p>
+  <a href="/t/{{ t.id }}/repost">Post it</a> to one of your communities to discuss it there.</p>
 {% elif not writable_copies and not t.trashed_at %}
 <p class="small muted">This is on Reddit. <a href="/reddit">Log in with Reddit</a> to vote and comment here, or
-  <a href="/t/{{ t.id }}/repost">↻ repost it</a> to discuss it on your own server.</p>
+  <a href="/t/{{ t.id }}/repost">repost it</a> to discuss it on your own server.</p>
 {% endif %}
 
 <section class="comments" id="comments">
@@ -286,7 +286,7 @@
     <button type="button" class="small secondary" data-action="collapse-all">Collapse all</button>
     <button type="button" class="small secondary" data-action="collapse-replies">Top-level only</button>
     {% if new_count or changed_count %}
-    <button type="button" class="small secondary" data-action="next-highlight">Next new/changed ↓</button>
+    <button type="button" class="small secondary" data-action="next-highlight" title="Next new or changed comment (n)">{{ icon('arrow-down') }} Next new/changed</button>
     {% endif %}
   </div>
   {% endif %}

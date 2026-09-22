@@ -1,9 +1,10 @@
 {% extends "base.html" %}
-{% from "_macros.html" import when %}
+{% from "_macros.html" import when, icon, pager as load_more %}
 {% block title %}Inbox{% endblock %}
 {% block content %}
 {% set label = {'reply': 'Reply', 'mention': 'Mention', 'message': 'Message'} %}
 {% set qs = ('&kind=' ~ kind if kind else '') ~ ('&account=' ~ account_id if account_id else '') %}
+{% set unread_total = status | sum(attribute='unread') %}
 <header class="community-head">
   <div>
     <h1>Inbox</h1>
@@ -11,49 +12,63 @@
       Marking something read here marks it read on its server too.</p>
   </div>
   <div class="row">
-    <form method="post" action="/inbox/check"><button class="small secondary">↻ Check now</button></form>
-    {% if status | selectattr('unread') | list %}
-    <form method="post" action="/inbox/read-all"><input type="hidden" name="account_id" value="{{ account_id or '' }}">
-      <button class="small">Mark all read</button></form>
+    <form method="post" action="/inbox/check"><button class="small secondary">{{ icon('refresh') }} Check now</button></form>
+    {% if unread_total %}
+    <form method="post" action="/inbox/read-all"
+          data-confirm="Mark {{ unread_total }} item{{ 's' if unread_total != 1 }} read, here and on {{ 'its server' if (status | selectattr('unread') | list | length) == 1 else 'their servers' }}? This can't be undone from here.">
+      <input type="hidden" name="account_id" value="{{ account_id or '' }}">
+      <button class="small">{{ icon('check-all') }} Mark all read</button></form>
     {% endif %}
   </div>
 </header>
+
+{% for s in status if s.error %}
+<div class="flash error" role="alert">{{ icon('alert') }}
+  <span><strong>Can't check {{ s.account.handle }}'s inbox.</strong> {{ s.error }}
+    {% if s.checked_at %}<span class="muted">Last checked {{ when(s.checked_at) }}.</span>{% endif %}
+    <a href="/accounts">Accounts</a></span>
+</div>
+{% endfor %}
 
 {% if not status %}
 <section class="card"><p class="muted">Add an account on the <a href="/accounts">Accounts</a> page and its
   replies, mentions and messages show up here.</p></section>
 {% else %}
 <nav class="tabs" aria-label="Show">
-  <a href="/inbox?{{ qs[1:] }}" class="{{ 'on' if show == 'unread' }}">Unread</a>
+  <a href="/inbox?{{ qs[1:] }}" class="{{ 'on' if show == 'unread' }}">Unread{% if unread_total %} <span class="count">{{ unread_total }}</span>{% endif %}</a>
   <a href="/inbox?show=all{{ qs }}" class="{{ 'on' if show == 'all' }}">All</a>
 </nav>
 <div class="row inbox-filters small">
   {% set sq = 'show=all&' if show == 'all' else '' %}
-  <a class="chip {{ 'on' if not kind }}" href="/inbox?{{ sq }}{{ ('account=' ~ account_id) if account_id }}">Everything</a>
-  {% for k, name in kinds.items() %}
-    <a class="chip {{ 'on' if kind == k }}" href="/inbox?{{ sq }}kind={{ k }}{{ ('&account=' ~ account_id) if account_id }}">{{ name }}</a>
-  {% endfor %}
+  <nav class="seg" aria-label="Kind">
+    <a class="{{ 'on' if not kind }}" href="/inbox?{{ sq }}{{ ('account=' ~ account_id) if account_id }}">Everything</a>
+    {% for k, name in kinds.items() %}
+      <a class="{{ 'on' if kind == k }}" href="/inbox?{{ sq }}kind={{ k }}{{ ('&account=' ~ account_id) if account_id }}">{{ name }}</a>
+    {% endfor %}
+  </nav>
   {% if status | length > 1 %}
-  <form method="get" action="/inbox" class="row">
+  <form method="get" action="/inbox" class="row" data-autosubmit>
     {% if show == 'all' %}<input type="hidden" name="show" value="all">{% endif %}
     {% if kind %}<input type="hidden" name="kind" value="{{ kind }}">{% endif %}
     <select name="account" aria-label="Account">
       <option value="">Every account</option>
       {% for s in status %}<option value="{{ s.account.id }}" {{ 'selected' if account_id == s.account.id }}>{{ s.account.handle }}{{ (' (' ~ s.unread ~ ')') if s.unread }}</option>{% endfor %}
     </select>
-    <button class="small secondary">Show</button>
+    <button class="small secondary no-js">Show</button>
   </form>
   {% endif %}
 </div>
 
 {% if not items %}
-<section class="card"><p class="muted">{{ 'Nothing unread.' if show == 'unread' else 'Nothing here yet.' }}
+<section class="card empty"><p class="muted">{{ 'Nothing unread.' if show == 'unread' else 'Nothing here yet.' }}
   {% if show == 'unread' %}<a href="/inbox?show=all{{ qs }}">See everything</a>.{% endif %}</p></section>
 {% endif %}
 
-<ol class="plain inbox-items">
+<ol class="plain inbox-items" id="items" data-items>
 {% for i in items %}
-  <li class="card inbox-item {{ 'unread' if i.unread }}" id="i{{ i.id }}">
+  {% set next_item = loop.nextitem %}
+  {% set open_url = ('/t/' ~ i.thread_id ~ (('#o' ~ i.archived_oid) if i.archived_oid else '')) if i.thread_id else '' %}
+  <li class="card inbox-item {{ 'unread' if i.unread }}" id="i{{ i.id }}" data-entry{% if open_url %} data-open="{{ open_url }}"{% endif %}>
     <div class="hit-head">
       <span class="pill {{ 'new' if i.unread }}">{{ label[i.kind] }}</span>
       <span class="author">{{ i.author_name or 'someone' }}</span>
@@ -61,30 +76,31 @@
         <span class="muted">sent you a message{% if i.subject %}: {{ i.subject }}{% endif %}</span>
       {% else %}
         <span class="muted">{{ 'replied' if i.kind == 'reply' else 'mentioned you' }} on</span>
-        {% if i.thread_id %}<a href="/t/{{ i.thread_id }}{{ ('#o' ~ i.archived_oid) if i.archived_oid }}">{{ i.post_title or 'a post' }}</a>
+        {% if i.thread_id %}<a href="{{ open_url }}">{{ i.post_title or 'a post' }}</a>
         {% else %}<span>{{ i.post_title or 'a post' }}</span>{% endif %}
         {% if i.community_name %}<span class="muted">in {{ chandle(i.community_name, i.community_ap_id) }}</span>{% endif %}
       {% endif %}
       {% if i.deleted %}<span class="pill warn">deleted</span>{% endif %}
     </div>
     <div class="md">{{ md(i.body) }}</div>
-    <div class="row small muted inbox-actions">
-      <span>{{ when(i.created_at or i.first_seen_at) }}</span>
-      {% if status | length > 1 and i.account %}<span>to {{ i.account.handle }}</span>{% endif %}
-      {% if i.object_type != 'message' and i.object_ap_id | safe_url %}<a href="{{ i.object_ap_id }}" rel="noreferrer noopener" target="_blank">on {{ i.object_ap_id | host }} ↗</a>{% endif %}
+    <div class="actions small inbox-actions">
+      <span class="muted">{{ when(i.created_at or i.first_seen_at) }}</span>
+      {% if status | length > 1 and i.account %}<span class="muted">to {{ i.account.handle }}</span>{% endif %}
+      {% if i.object_type != 'message' and i.object_ap_id | safe_url %}<a class="act" href="{{ i.object_ap_id }}" rel="noreferrer noopener" target="_blank">on {{ i.object_ap_id | host }}{{ icon('external') }}</a>{% endif %}
       {% if i.object_type != 'message' and not i.thread_id and i.post_ap_id | safe_url %}
         <form method="post" action="/archive" class="inline"><input type="hidden" name="url" value="{{ i.post_ap_id }}">
-          <button class="link small" title="Save the whole thread to the archive and keep it">☆ Keep thread</button></form>
+          <button class="act" data-key="keep" title="Save the whole thread to the archive and keep it (s)">{{ icon('star') }}<span>Keep thread</span></button></form>
       {% endif %}
-      <form method="post" action="/inbox/{{ i.id }}/read" class="inline">
+      <form method="post" action="/inbox/{{ i.id }}/read" class="inline" data-inplace="i{{ i.id }}"{% if i.unread and show == 'unread' %} data-gone="Marked read"{% endif %}>
         <input type="hidden" name="read" value="{{ '1' if i.unread else '0' }}">
-        <button class="link small">{{ 'Mark read' if i.unread else 'Mark unread' }}</button></form>
+        {% if i.unread and show == 'unread' and next_item %}<input type="hidden" name="anchor" value="i{{ next_item.id }}">{% endif %}
+        <button class="act" data-key="read">{{ icon('check' if i.unread else 'inbox') }}<span>{{ 'Mark read' if i.unread else 'Mark unread' }}</span></button></form>
     </div>
     {% set reddit_blocked = i.account and i.account.is_reddit and not can_reply_reddit %}
     {% if not i.deleted and not reddit_blocked %}
-    <details class="inbox-reply">
-      <summary class="small">{{ 'Reply to message' if i.kind == 'message' else 'Reply' }}{% if i.account %} as {{ i.account.handle }}{% endif %}</summary>
-      <form method="post" action="/inbox/{{ i.id }}/reply" class="stack">
+    <details class="inbox-reply" data-reply>
+      <summary class="small">{{ icon('comment') }} {{ 'Reply to message' if i.kind == 'message' else 'Reply' }}{% if i.account %} as {{ i.account.handle }}{% endif %}</summary>
+      <form method="post" action="/inbox/{{ i.id }}/reply" class="stack" data-inplace="i{{ i.id }}" data-gone="Reply sent">
         <textarea name="body" rows="4" required aria-label="Your reply"></textarea>
         <div><button class="small">Send</button></div>
       </form>
@@ -93,12 +109,7 @@
   </li>
 {% endfor %}
 </ol>
-{% if page > 1 or more %}
-<nav class="row pager-row" aria-label="Pages">
-  {% if page > 1 %}<a class="chip" href="{{ page_url(page - 1) }}">← Newer</a>{% endif %}
-  {% if more %}<a class="chip" href="{{ page_url(page + 1) }}">Older →</a>{% endif %}
-</nav>
-{% endif %}
+{{ load_more(page_url(page + 1) if more else none, page_url(1) if page > 1 else none, page) }}
 
 <section class="card small">
   <h2>Accounts</h2>
@@ -108,7 +119,7 @@
       <span class="author">{{ s.account.handle }}</span>
       {% if s.unread %}<span class="pill new">{{ s.unread }} unread</span>{% endif %}
       <span class="muted">checked {{ when(s.checked_at) if s.checked_at else 'not yet' }}</span>
-      {% if s.error %}<span class="bad-text">{{ s.error }}</span>{% endif %}
+      {% if s.error %}<span class="bad-text">{{ icon('alert') }} can't be checked (see above)</span>{% endif %}
     </li>
   {% endfor %}
   </ul>

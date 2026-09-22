@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import when, votes %}
+{% from "_macros.html" import when, votes, icon, pager as load_more %}
 {% from "_feed.html" import controls, posts, pager, sidebar %}
 {% block title %}{{ chandle(c.name, c.canonical_ap_id, True) }}{% endblock %}
 {% block content %}
@@ -13,14 +13,10 @@
         {% if c.title %}<p class="muted">{{ c.title }}</p>{% endif %}
       </div>
       <div class="row">
-      <form method="get" action="/search" class="row" role="search">
-        <input type="hidden" name="community" value="{{ c.id }}">
-        <input type="search" name="q" placeholder="Search this community" aria-label="Search this community" class="community-search">
-      </form>
-      {% if not is_rss(c.canonical_ap_id) and (reddit_me if is_reddit(c.canonical_ap_id) else acting) %}<a class="chip" href="/c/{{ c.id }}/submit">✎ New post</a>{% endif %}
+      {% if not is_rss(c.canonical_ap_id) and (reddit_me if is_reddit(c.canonical_ap_id) else acting) %}<a class="button secondary small" href="/c/{{ c.id }}/submit">{{ icon('pencil') }} New post</a>{% endif %}
       {% if following %}
         <details class="settings">
-          <summary class="pill good">✓ Following · every {{ follow.poll_interval_minutes }} min · keep {{ (follow.retention_days ~ 'd') if follow.retention_days is not none else 'forever' }}</summary>
+          <summary class="button secondary small" title="Checked every {{ follow.poll_interval_minutes }} min · unkept posts kept {{ (follow.retention_days ~ ' days') if follow.retention_days is not none else 'forever' }}">{{ icon('check') }} Following{{ icon('chevron-down', 'chev') }}</summary>
           <div class="card settings-card">
             <form method="post" action="/c/{{ c.id }}/follow-settings" class="stack">
               <label>Check every <input type="number" name="poll_interval_minutes" min="1" class="num" value="{{ follow.poll_interval_minutes }}"> minutes</label>
@@ -36,7 +32,7 @@
             <p class="small muted">New posts are checked for comments and edits at this interval for their first day,
               then hourly until day 3, then every 6 hours.</p>
             {% endif %}
-            <p class="small muted">A number of days, or "forever". Posts you ★ keep never expire.
+            <p class="small muted">A number of days, or "forever". Posts you keep never expire.
               Checked via {{ follow.source_domain }}, last {{ when(follow.last_polled_at) if follow.last_polled_at else 'not yet' }}.
               {% if follow.last_error %}<span class="bad-text">{{ follow.last_error }}</span>{% endif %}</p>
             <form method="post" action="/c/{{ c.id }}/unfollow"><button class="small secondary">Unfollow</button></form>
@@ -51,13 +47,19 @@
       {% endif %}
       </div>
     </header>
+    {% if following and follow.last_error %}
+    <div class="flash error" role="alert">{{ icon('alert') }}
+      <span><strong>Checking this community is failing.</strong> {{ follow.last_error }}
+        {% if follow.last_polled_at %}<span class="muted">Last checked {{ when(follow.last_polled_at) }}.</span>{% endif %}</span>
+    </div>
+    {% endif %}
 
     <nav class="tabs">
       <a href="/c/{{ c.id }}" class="{{ 'on' if tab == 'feed' }}">Feed</a>
-      <a href="/c/{{ c.id }}?tab=kept" class="{{ 'on' if tab == 'kept' }}">★ Kept ({{ counts.get('manual', 0) }})</a>
+      <a href="/c/{{ c.id }}?tab=kept" class="{{ 'on' if tab == 'kept' }}">{{ icon('star') }} Kept ({{ counts.get('manual', 0) }})</a>
       {% if not is_rss(c.canonical_ap_id) %}<a href="/c/{{ c.id }}?tab=live" class="{{ 'on' if tab == 'live' }}">Live on server</a>{% endif %}
       <a href="/c/{{ c.id }}?tab=log" class="{{ 'on' if tab == 'log' }}">Log</a>
-      {% if powers.any %}<a href="/c/{{ c.id }}?tab=mod" class="{{ 'on' if tab == 'mod' }}">🛡 Moderation</a>{% endif %}
+      {% if powers.any %}<a href="/c/{{ c.id }}?tab=mod" class="{{ 'on' if tab == 'mod' }}">{{ icon('shield') }} Moderation</a>{% endif %}
       {% if counts.get('trash') %}<a href="/trash">Trash ({{ counts.get('trash') }})</a>{% endif %}
     </nav>
 
@@ -66,7 +68,7 @@
       {{ posts(feed.items, view, show_community=False) }}
       {% if not feed.items %}
         <section class="card empty"><p class="muted">
-          {% if tab == 'kept' %}Nothing kept from this community yet. Use ☆ Keep on a post.
+          {% if tab == 'kept' %}Nothing kept from this community yet. Use Keep on a post.
           {% elif not following %}You're not following this community. Follow it to fill this feed, or browse the Live tab.
           {% elif unread %}You're all caught up.{% else %}No posts captured yet.{% endif %}
         </p></section>
@@ -83,34 +85,33 @@
       </div>
       <p class="small muted">Fetched live from the community's server, including posts from before you followed it. Nothing here is stored until you keep it.</p>
       {% if live_error %}<div class="flash error">Could not load: {{ live_error }}</div>{% endif %}
+      <div id="items" class="cards" data-items>
       {% for item in live %}{% set p = item.post %}
-        <article class="post-card">
+        <article class="post-card" id="live{{ loop.index }}"{% if item.thread %} data-entry data-open="/t/{{ item.thread.id }}"{% endif %}>
           <div class="pc-main">
             <div class="pc-meta small">{{ p.author.username }}@{{ p.author.domain }} · {{ when(p.created_at) }}
               {% if p.deleted %}<span class="pill warn">deleted</span>{% endif %}{% if p.removed %}<span class="pill bad">removed</span>{% endif %}{% if p.locked %}<span class="pill warn">locked</span>{% endif %}</div>
             <h3 class="pc-title">{% if item.thread %}<a href="/t/{{ item.thread.id }}">{{ p.title }}</a>{% else %}{{ p.title }}{% endif %}</h3>
-            {% if p.url | safe_url %}<div class="pc-link small"><a href="{{ p.url | safe_url }}" target="_blank" rel="noreferrer noopener nofollow">{{ p.url | host }} ↗</a></div>{% endif %}
-            <div class="pc-actions small">
-              <span>{{ p.comment_count or 0 }} comments</span> {{ votes(p.upvotes, p.downvotes, p.score) }}
+            {% if p.url | safe_url %}<div class="pc-link small"><a href="{{ p.url | safe_url }}" target="_blank" rel="noreferrer noopener nofollow">{{ p.url | host }}{{ icon('external') }}</a></div>{% endif %}
+            <div class="pc-actions actions small">
+              <span class="act static">{{ icon('comment') }}{{ p.comment_count or 0 }} comments</span> {{ votes(p.upvotes, p.downvotes, p.score) }}
               {% if item.thread and item.thread.retention == 'manual' and not item.thread.trashed_at %}
-                <a class="chip on" href="/t/{{ item.thread.id }}">★ Kept</a>
+                <a class="act on" href="/t/{{ item.thread.id }}">{{ icon('star-fill') }}<span>Kept</span></a>
               {% else %}
                 {% if item.thread and item.thread.trashed_at %}<a class="pill warn" href="/t/{{ item.thread.id }}">in trash</a>
                 {% elif item.thread %}<a class="pill new" href="/t/{{ item.thread.id }}">in your feed</a>{% endif %}
                 <form method="post" action="/archive" class="inline">
                   <input type="hidden" name="url" value="{{ item.retain_url }}">
-                  <button class="chip">☆ Keep</button>
+                  <button class="act" data-key="keep" title="Save this thread and keep it permanently (s)">{{ icon('star') }}<span>Keep</span></button>
                 </form>
               {% endif %}
             </div>
           </div>
         </article>
       {% endfor %}
-      <nav class="pager">
-        {% if page > 1 %}<a href="/c/{{ c.id }}?tab=live&live_sort={{ live_sort }}&page={{ page - 1 }}">← Previous</a>{% else %}<span></span>{% endif %}
-        <span class="muted small">page {{ page }}</span>
-        {% if live %}<a href="/c/{{ c.id }}?tab=live&live_sort={{ live_sort }}&page={{ page + 1 }}">Next →</a>{% endif %}
-      </nav>
+      </div>
+      {{ load_more(('/c/' ~ c.id ~ '?tab=live&live_sort=' ~ live_sort ~ '&page=' ~ (page + 1)) if live else none,
+                   ('/c/' ~ c.id ~ '?tab=live&live_sort=' ~ live_sort) if page > 1 else none, page) }}
 
     {% elif tab == 'mod' %}
       {% if not powers.any %}

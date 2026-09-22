@@ -1,5 +1,7 @@
+{%- from "_macros.html" import icon -%}
+{%- set theme = request.cookies.get('theme') if request.cookies.get('theme') in themes else '' -%}
 <!doctype html>
-<html lang="en">
+<html lang="en"{% if theme %} data-theme="{{ theme }}"{% endif %}>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -7,46 +9,121 @@
   {% block head %}{% endblock %}
   <title>{% block title %}ThreadBNC{% endblock %} · ThreadBNC</title>
   <link rel="stylesheet" href="{{ static_url('style.css') }}">
+  <script src="{{ static_url('app.js') }}"></script>
 </head>
 <body>
+  <a class="skip-link" href="#main">Skip to content</a>
   <header class="top">
    <div class="top-inner">
-    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true">◆</span>ThreadBNC</a>
+    <a class="brand" href="/" aria-label="ThreadBNC home">{{ icon('logo', 'brand-mark') }}<span>ThreadBNC</span></a>
     {% if request.session.get('auth') %}
-    <nav>
-      <a href="/" class="{{ 'on' if request.url.path == '/' }}">Feed</a>
-      <a href="/communities" class="{{ 'on' if request.url.path.startswith('/communities') }}">Communities</a>
-      <a href="/kept" class="{{ 'on' if request.url.path.startswith('/kept') }}">★ Kept</a>
-      {% set ic = inbox_count() %}<a href="/inbox" class="{{ 'on' if request.url.path.startswith('/inbox') }}">Inbox{% if ic %} <span class="pill new" aria-label="{{ ic }} unread">{{ ic }}</span>{% endif %}</a>
-      <a href="/accounts" class="{{ 'on' if request.url.path.startswith('/accounts') }}">Accounts</a>
-      {% if accounts and accounts | selectattr('is_admin') | list %}<a href="/admin" class="{{ 'on' if request.url.path.startswith('/admin') }}">Admin</a>{% endif %}
-      {% set tc = trash_count() %}<a href="/trash" class="{{ 'on' if request.url.path.startswith('/trash') }}">Trash{% if tc %} ({{ tc }}){% endif %}</a>
-      {% if not request.url.path.startswith('/search') %}
-      <form method="get" action="/search" class="top-search" role="search">
-        <input type="search" name="q" placeholder="Search the archive" aria-label="Search the archive">
-      </form>
-      {% endif %}
-      {% set switchable = accounts | rejectattr('is_reddit') | list if accounts else [] %}
-      {% if switchable %}
-        <form method="post" action="/accounts/act-as" class="act-as">
-          <label class="small muted">as
-            <select name="account_id" aria-label="Posting as">
-              {% for a in switchable %}<option value="{{ a.id }}" {{ 'selected' if acting and a.id == acting.id }}>{{ a.handle }}{{ ' ⚠' if a.status != 'ok' }}</option>{% endfor %}
-            </select></label>
-          <button class="small secondary">Switch</button>
-        </form>
-      {% endif %}
-      {% if request.session.get('proxy_user') %}<span class="small muted" title="Signed in by your identity provider">via proxy as {{ request.session.get('proxy_user') }}</span>{% endif %}
-      <form method="post" action="/logout" class="inline"><button class="link">Log out</button></form>
+    {% set path = request.url.path %}
+    {% set ic = inbox_count() %}
+    <nav class="primary" aria-label="Main" id="site-nav" data-live>
+      {% for href, name, ico, on in [('/', 'Feed', 'feed', path == '/'),
+                                     ('/communities', 'Communities', 'communities', path.startswith('/communities') or path.startswith('/c/')),
+                                     ('/kept', 'Kept', 'star', path.startswith('/kept')),
+                                     ('/inbox', 'Inbox', 'inbox', path.startswith('/inbox'))] %}
+        <a href="{{ href }}" class="{{ 'on' if on }}"{% if on %} aria-current="page"{% endif %} title="{{ name }}">{{ icon(ico) }}<span class="label">{{ name }}</span>
+          {%- if href == '/inbox' and ic %} <span class="count" aria-label="{{ ic }} unread">{{ ic }}</span>{% endif %}</a>
+      {% endfor %}
     </nav>
+    {% set scoped = community if community is defined and community else none %}
+    {% if not path.startswith('/search') %}
+    <form method="get" action="/search" class="top-search" role="search">
+      {{ icon('search') }}
+      {% if scoped %}<input type="hidden" name="community" value="{{ scoped.id }}">{% endif %}
+      {% set where = ('Search ' ~ chandle(scoped.name, scoped.canonical_ap_id, True)) if scoped else 'Search the archive' %}
+      <input type="search" name="q" placeholder="{{ where }}" aria-label="{{ where }}" data-search>
+      <kbd class="key-hint" aria-hidden="true">/</kbd>
+    </form>
+    <a class="icon-button search-link" href="/search{{ ('?community=' ~ scoped.id) if scoped }}" title="Search" aria-label="Search">{{ icon('search') }}</a>
+    {% endif %}
+    {% set switchable = accounts | rejectattr('is_reddit') | list if accounts else [] %}
+    {% set tc = trash_count() %}
+    <details class="menu account-menu" id="account-menu" data-live>
+      <summary title="Accounts, trash, theme and more">{{ icon('user') }}<span class="label">{{ acting.handle if acting else 'Menu' }}</span>
+        {%- if acting and acting.status != 'ok' %}<span class="bad-text" title="This account needs attention">{{ icon('alert') }}</span>{% endif %}{{ icon('chevron-down', 'chev') }}</summary>
+      <div class="menu-panel">
+        {% if switchable %}
+        <form method="post" action="/accounts/act-as" class="menu-section" role="group" aria-label="Posting as">
+          <div class="menu-label">Post, vote and reply as</div>
+          {% for a in switchable %}{% set current = acting and a.id == acting.id %}
+            <button name="account_id" value="{{ a.id }}" class="menu-item {{ 'on' if current }}" aria-pressed="{{ 'true' if current else 'false' }}">
+              <span class="tick">{% if current %}{{ icon('check') }}{% endif %}</span><span class="grow">{{ a.handle }}</span>
+              {%- if a.status != 'ok' %}<span class="bad-text" title="Needs attention: see Accounts">{{ icon('alert') }}</span>{% endif %}</button>
+          {% endfor %}
+        </form>
+        {% endif %}
+        <div class="menu-section">
+          <a class="menu-item {{ 'on' if path.startswith('/accounts') }}" href="/accounts">{{ icon('user') }}<span class="grow">Accounts</span></a>
+          {% if accounts and accounts | selectattr('is_admin') | list %}<a class="menu-item {{ 'on' if path.startswith('/admin') }}" href="/admin">{{ icon('shield') }}<span class="grow">Admin</span></a>{% endif %}
+          <a class="menu-item {{ 'on' if path.startswith('/trash') }}" href="/trash">{{ icon('trash') }}<span class="grow">Trash</span>{% if tc %}<span class="count muted" aria-label="{{ tc }} in the trash">{{ tc }}</span>{% endif %}</a>
+        </div>
+        <form method="post" action="/theme" class="menu-section" data-theme-form>
+          <div class="menu-label">Theme</div>
+          <div class="seg theme-seg" role="group" aria-label="Theme">
+            {% for key, label, ico in [('light', 'Light', 'sun'), ('dark', 'Dark', 'moon'), ('', 'Device', 'monitor')] %}
+              <button name="theme" value="{{ key or 'system' }}" class="{{ 'on' if theme == key }}" aria-pressed="{{ 'true' if theme == key else 'false' }}">{{ icon(ico) }} {{ label }}</button>
+            {% endfor %}
+          </div>
+        </form>
+        <div class="menu-section">
+          <button type="button" class="menu-item js-only" data-action="shortcuts">{{ icon('keyboard') }}<span class="grow">Keyboard shortcuts</span><kbd>?</kbd></button>
+          {% if request.session.get('proxy_user') %}<p class="menu-note">Signed in by your identity provider (via proxy as {{ request.session.get('proxy_user') }})</p>{% endif %}
+          <form method="post" action="/logout"><button class="menu-item">{{ icon('logout') }}<span class="grow">Log out</span></button></form>
+        </div>
+      </div>
+    </details>
     {% endif %}
    </div>
   </header>
-  <main>
-    {% for kind, msg in request.session.pop('flash', []) %}
-      <div class="flash {{ kind }}">{{ msg }}</div>
+  <main id="main">
+    {% for f in request.session.pop('flash', []) %}
+      <div class="flash {{ f[0] }}" role="{{ 'alert' if f[0] == 'error' else 'status' }}">
+        <span>{{ f[1] }}</span>
+        {% if f | length > 2 and f[2] and f[2].href %}<a href="{{ f[2].href }}">{{ f[2].label }}</a>
+        {% elif f | length > 2 and f[2] %}
+        <form method="post" action="{{ f[2].action }}" class="inline">
+          {% for k, v in f[2].fields.items() %}{% for one in (v if v is iterable and v is not string else [v]) %}<input type="hidden" name="{{ k }}" value="{{ one }}">{% endfor %}{% endfor %}
+          <button class="link">{{ icon('undo') }} Undo</button>
+        </form>
+        {% endif %}
+      </div>
     {% endfor %}
     {% block content %}{% endblock %}
   </main>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  {% if request.session.get('auth') %}
+  <dialog id="shortcuts" class="card shortcuts" aria-labelledby="shortcuts-title">
+    <div class="dialog-head"><h2 id="shortcuts-title">Keyboard shortcuts</h2>
+      <form method="dialog"><button class="icon-button" aria-label="Close">{{ icon('x') }}</button></form></div>
+    <div class="shortcut-cols">
+      <section><h3>Anywhere</h3><dl>
+        <div><dt><kbd>/</kbd></dt><dd>Search</dd></div>
+        <div><dt><kbd>g</kbd> <kbd>f</kbd></dt><dd>Go to the feed</dd></div>
+        <div><dt><kbd>g</kbd> <kbd>c</kbd></dt><dd>Communities</dd></div>
+        <div><dt><kbd>g</kbd> <kbd>k</kbd></dt><dd>Kept</dd></div>
+        <div><dt><kbd>g</kbd> <kbd>i</kbd></dt><dd>Inbox</dd></div>
+        <div><dt><kbd>g</kbd> <kbd>t</kbd></dt><dd>Trash</dd></div>
+        <div><dt><kbd>?</kbd></dt><dd>This list</dd></div>
+      </dl></section>
+      <section><h3>Feed, search and inbox</h3><dl>
+        <div><dt><kbd>j</kbd> <kbd>k</kbd></dt><dd>Next / previous</dd></div>
+        <div><dt><kbd>o</kbd> or <kbd>Enter</kbd></dt><dd>Open</dd></div>
+        <div><dt><kbd>s</kbd></dt><dd>Keep / unkeep</dd></div>
+        <div><dt><kbd>d</kbd></dt><dd>Move to trash</dd></div>
+        <div><dt><kbd>m</kbd></dt><dd>Mark read / unread (inbox)</dd></div>
+        <div><dt><kbd>r</kbd></dt><dd>Reply (inbox)</dd></div>
+      </dl>
+      <h3>In a thread</h3><dl>
+        <div><dt><kbd>j</kbd> <kbd>k</kbd></dt><dd>Next / previous comment</dd></div>
+        <div><dt><kbd>n</kbd></dt><dd>Next new or changed comment</dd></div>
+        <div><dt><kbd>Space</kbd></dt><dd>Collapse / expand comment (after <kbd>j</kbd>)</dd></div>
+        <div><dt><kbd>c</kbd></dt><dd>Write a comment</dd></div>
+      </dl></section>
+    </div>
+  </dialog>
+  {% endif %}
 </body>
 </html>

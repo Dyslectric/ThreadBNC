@@ -154,7 +154,7 @@ def test_follow_a_feed(settings, bouncer, web):
     assert one(bouncer, "SELECT username FROM actors WHERE id=?", first["author_id"])[0] == "Jane Doe"
     assert "![cat](https://blog.example/img/cat.jpg)" in post_row(bouncer, "post-2")["body"]
     page = logged_in(settings, bouncer).get("/").text
-    assert "Jane&#39;s Blog" in page and "· feed" in page and "↗ Post" in page and "Jane Doe@" not in page
+    assert "Jane&#39;s Blog" in page and "· feed" in page and ">Post</span>" in page and "Jane Doe@" not in page
     assert "Live on server" not in logged_in(settings, bouncer).get(f"/c/{cid}").text
 
 

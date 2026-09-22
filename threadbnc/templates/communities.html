@@ -1,13 +1,13 @@
 {% extends "base.html" %}
-{% from "_macros.html" import when %}
+{% from "_macros.html" import when, icon %}
 {% block title %}Communities{% endblock %}
 {% block content %}
 <div class="feed-head">
   <h1>Communities</h1>
-  {% if accounts | selectattr('is_admin') | list %}<a class="chip" href="/communities/new">＋ Start a community</a>{% endif %}
+  {% if accounts | selectattr('is_admin') | list %}<a class="button secondary small" href="/communities/new">{{ icon('plus') }} Start a community</a>{% endif %}
 </div>
 
-<section class="card">
+<section class="card" id="follow">
   <h2>Follow a community</h2>
   <form method="post" action="/follow" class="stack">
     <input name="community" placeholder="!technology@lemmy.world  ·  https://lemmy.world/c/technology  ·  r/technology  ·  a feed or website URL" required>
@@ -38,7 +38,7 @@
         <a href="/c/{{ f.id }}"><strong>{{ chandle(f.name, f.canonical_ap_id) }}</strong></a>
         {% if f.unread %}<span class="pill new">{{ f.unread }} unread</span>{% endif %}
         <div class="small muted">{{ f.title or '' }} · {{ f.total }} posts saved · checked {{ when(f.last_polled_at) if f.last_polled_at else 'not yet' }}
-          {% if f.last_error %}· <span class="bad-text">{{ f.last_error }}</span>{% endif %}</div>
+          {% if f.last_error %}· <span class="bad-text">{{ icon('alert') }} {{ f.last_error }}</span>{% endif %}</div>
       </div>
       <form method="post" action="/c/{{ f.id }}/follow-settings" class="row compact">
         <label>every <input type="number" name="poll_interval_minutes" min="1" class="num" value="{{ f.poll_interval_minutes }}"> min</label>

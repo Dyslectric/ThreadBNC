@@ -5,7 +5,7 @@
 <h1>Reddit</h1>
 <p class="muted">Follow subreddits like any other community: type <code>r/name</code> on the Communities page, or
   follow your subscriptions below. Logged in with Reddit, you can vote, comment and post there too: it's done as
-  your Reddit account automatically, whichever account is picked in the header. <strong>↻ Repost</strong> copies a post
+  your Reddit account automatically, whichever account is picked in the header. <strong>Repost</strong> copies a post
   to one of your own communities, or from them to a subreddit.</p>
 
 {% if reddit %}
@@ -22,7 +22,7 @@
       <div class="small muted">{% if reddit.client_id %}App <code>{{ reddit.client_id }}</code> · {% endif %}connected {{ when(reddit.connected_at) }}
         {% if reddit.last_error %}<div class="bad-text">{{ reddit.last_error }}</div>{% endif %}</div>
     </div>
-    {% if reddit.has_account %}<a class="chip" href="/reddit?subs=1">Show my subscriptions</a>{% endif %}
+    {% if reddit.has_account %}<a class="button secondary small" href="/reddit?subs=1">Show my subscriptions</a>{% endif %}
     <details class="reply-box">
       <summary class="small">Disconnect…</summary>
       <form method="post" action="/reddit/disconnect">
