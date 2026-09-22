@@ -557,7 +557,8 @@ fieldset.targets legend { color: var(--muted); padding: 0 4px; }
 .picture-card.unread .pc-title a { font-weight: 700; }
 .picture-media { margin: 8px -16px 2px; background: var(--bg); border-block: 1px solid var(--line); }
 .picture-media img, .picture-media video { display: block; width: 100%; height: auto; max-height: 80vh; object-fit: contain; }
-.picture-media [data-gallery] .gallery-track { aspect-ratio: var(--ratio, 4 / 3); max-height: 80vh; }
+/* The width stops max-height narrowing a tall first picture's gallery (it would hug the left). */
+.picture-media [data-gallery] .gallery-track { width: 100%; aspect-ratio: var(--ratio, 4 / 3); max-height: 80vh; }
 .picture-media [data-gallery] img, .picture-media [data-gallery] video { height: 100%; }
 .picture-card .pc-excerpt { -webkit-line-clamp: 5; line-clamp: 5; }
 .tile-body { padding: 9px 11px 8px; display: flex; flex-direction: column; gap: 4px; flex: 1; }
