@@ -203,7 +203,7 @@ API: `POST /archive` with `{"url": "..."}` and `Authorization: Bearer $THREADBNC
 
 | Variable | Default | |
 |---|---|---|
-| `THREADBNC_PASSWORD` | *(required)* | UI login. The server refuses to start without it. |
+| `THREADBNC_PASSWORD` | *(required)* | UI login. The server refuses to start without it, unless a proxy signs people in (below); then it's an optional fallback. |
 | `THREADBNC_API_TOKEN` | unset | Enables bearer-token API access |
 | `THREADBNC_DATABASE_URL` | unset | `postgresql://user:pass@host/db`. Unset means SQLite in the data dir. |
 | `THREADBNC_DATA_DIR` | `./data` (`/data` in Docker) | SQLite DB (if used), archived media, generated session secret |
@@ -217,6 +217,21 @@ API: `POST /archive` with `{"url": "..."}` and `Authorization: Bearer $THREADBNC
 | `THREADBNC_MIN_REQUEST_INTERVAL` | `1.0` | Seconds between requests to the same instance |
 | `THREADBNC_MEDIA_DIR` | `<data>/media` | Where archived images/videos are stored |
 | `THREADBNC_MEDIA_MAX_MB` | `25` | Largest single image or video file that will be archived; bigger files are skipped and linked to the original |
+| `THREADBNC_PROXY_AUTH_HEADER` | unset | Header in which a signing-in reverse proxy passes the user's name, e.g. `X-authentik-username` |
+| `THREADBNC_PROXY_SECRET` | unset | Required with the above (16+ characters). The proxy must send it as `X-ThreadBNC-Proxy-Secret` |
+| `THREADBNC_PROXY_ALLOWED_USERS` | unset | Comma-separated usernames allowed in; unset = whoever the proxy lets through |
+| `THREADBNC_PROXY_LOGOUT_URL` | `/outpost.goauthentik.io/sign_out` | Where Log out sends proxy-signed-in sessions, so the proxy session ends too |
+
+#### Behind a proxy that signs people in (Authentik forward auth)
+
+With `THREADBNC_PROXY_AUTH_HEADER` set, a request counts as signed in when it carries that header **and**
+`X-ThreadBNC-Proxy-Secret: $THREADBNC_PROXY_SECRET`. The proxy adds the secret only to requests it has
+authenticated, so nobody who reaches the app another way (another container on the same network, a
+misrouted port) can sign in by sending the user header themselves. A session started this way lasts only
+while requests keep arriving through the proxy. For Traefik: put the forward-auth middleware first and a
+`headers.customrequestheaders.X-ThreadBNC-Proxy-Secret` middleware after it on the app's router. Keep API
+scripts working by giving `/archive` and `/api/` requests that carry `Authorization: Bearer …` their own
+router without forward auth (and without the secret); ThreadBNC's API token protects them.
 
 ## How it works
 

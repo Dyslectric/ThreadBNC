@@ -5,10 +5,17 @@
   <h1>Private archive</h1>
   <p class="muted">This archive is private. Sign in to continue.</p>
   {% if error %}<div class="flash error">{{ error }}</div>{% endif %}
+  {% if not password_login %}
+  <p>Sign in through your identity provider: open this archive at its usual address and you'll be asked to
+    sign in there. Password sign-in is turned off.</p>
+  {% else %}
+  {% if proxy_login %}<p class="small muted">Normally you're signed in by your identity provider; the password
+    is a fallback.</p>{% endif %}
   <form method="post" action="/login" class="stack">
     <input type="hidden" name="next" value="{{ next or '/' }}">
     <label>Password <input type="password" name="password" autofocus required autocomplete="current-password"></label>
     <button>Sign in</button>
   </form>
+  {% endif %}
 </section>
 {% endblock %}

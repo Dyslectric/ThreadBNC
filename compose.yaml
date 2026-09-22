@@ -28,13 +28,19 @@ services:
         condition: service_healthy
     environment:
       THREADBNC_DATABASE_URL: postgresql://threadbnc:${POSTGRES_PASSWORD}@db:5432/threadbnc
-      THREADBNC_PASSWORD: ${THREADBNC_PASSWORD:?set THREADBNC_PASSWORD in .env}
+      # Required unless a proxy signs people in (THREADBNC_PROXY_AUTH_HEADER); then it's a fallback.
+      THREADBNC_PASSWORD: ${THREADBNC_PASSWORD:-}
       THREADBNC_SECRET_KEY: ${THREADBNC_SECRET_KEY:-}
       THREADBNC_CREDENTIALS_KEY: ${THREADBNC_CREDENTIALS_KEY:-}
       THREADBNC_API_TOKEN: ${THREADBNC_API_TOKEN:-}
       THREADBNC_HTTPS_ONLY: ${THREADBNC_HTTPS_ONLY:-1}
       THREADBNC_MEDIA_MAX_MB: ${THREADBNC_MEDIA_MAX_MB:-25}
       THREADBNC_TRASH_DAYS: ${THREADBNC_TRASH_DAYS:-30}
+      # Signed in by a reverse proxy (e.g. Authentik forward auth); see README.
+      THREADBNC_PROXY_AUTH_HEADER: ${THREADBNC_PROXY_AUTH_HEADER:-}
+      THREADBNC_PROXY_SECRET: ${THREADBNC_PROXY_SECRET:-}
+      THREADBNC_PROXY_ALLOWED_USERS: ${THREADBNC_PROXY_ALLOWED_USERS:-}
+      THREADBNC_PROXY_LOGOUT_URL: ${THREADBNC_PROXY_LOGOUT_URL:-/outpost.goauthentik.io/sign_out}
       # Trust X-Forwarded-* from the reverse proxy. Safe because the port below
       # is only bound to the host's loopback interface by default.
       FORWARDED_ALLOW_IPS: "*"

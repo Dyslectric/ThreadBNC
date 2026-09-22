@@ -38,6 +38,13 @@ class Settings:
     media_max_bytes: int = 25_000_000
     default_trash_days: int | None = 30
     credentials_key: str | None = None
+    # Signed in by a reverse proxy (e.g. Traefik + Authentik forward auth): the
+    # proxy puts the user's name in `proxy_auth_header` and `proxy_secret` in
+    # PROXY_SECRET_HEADER; only requests with both count. See web.py's guard.
+    proxy_auth_header: str | None = None
+    proxy_secret: str | None = None
+    proxy_allowed_users: tuple[str, ...] = ()
+    proxy_logout_url: str | None = None
 
 
 def _load_secret(data_dir: Path) -> str:
@@ -78,4 +85,10 @@ def load_settings() -> Settings:
         media_max_bytes=_env_int("THREADBNC_MEDIA_MAX_MB", 25) * 1_000_000,
         default_trash_days=None if trash.lower() in ("", "none", "forever") else int(trash),
         credentials_key=os.environ.get("THREADBNC_CREDENTIALS_KEY") or None,
+        proxy_auth_header=os.environ.get("THREADBNC_PROXY_AUTH_HEADER", "").strip() or None,
+        proxy_secret=os.environ.get("THREADBNC_PROXY_SECRET") or None,
+        proxy_allowed_users=tuple(u.strip().lower() for u in os.environ.get("THREADBNC_PROXY_ALLOWED_USERS", "")
+                                  .split(",") if u.strip()),
+        proxy_logout_url=os.environ.get("THREADBNC_PROXY_LOGOUT_URL", "/outpost.goauthentik.io/sign_out").strip()
+        or None,
     )

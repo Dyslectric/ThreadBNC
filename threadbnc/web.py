@@ -33,6 +33,9 @@ from .bouncer import Bouncer
 from .moderation import REGISTRATION_MODES, Moderation
 from .private import PrivateCommunities
 from .sso import CALLBACK_PATH, SingleSignOn, callback_url
+
+# The reverse proxy adds this (with THREADBNC_PROXY_SECRET) to requests it has signed in.
+PROXY_SECRET_HEADER = "X-ThreadBNC-Proxy-Secret"
 from .config import Settings, load_settings
 from .db import open_database, parse_ts, utcnow
 from .render import MediaInfo, looks_like_media, render_markdown
@@ -202,8 +205,13 @@ def word_diff(old: str | None, new: str | None) -> Markup:
 
 def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None) -> FastAPI:
     settings = settings or load_settings()
-    if not settings.password:
-        raise SystemExit("THREADBNC_PASSWORD must be set; the archive is never served unauthenticated.")
+    if settings.proxy_auth_header and len(settings.proxy_secret or "") < 16:
+        raise SystemExit("THREADBNC_PROXY_AUTH_HEADER needs THREADBNC_PROXY_SECRET (16+ characters), which the "
+                         "proxy adds to every request it has signed in; without it anyone who can reach the app "
+                         "directly could send the header themselves.")
+    if not settings.password and not settings.proxy_auth_header:
+        raise SystemExit("Set THREADBNC_PASSWORD, or THREADBNC_PROXY_AUTH_HEADER when a proxy signs people in; "
+                         "the archive is never served unauthenticated.")
     db = bouncer.db if bouncer else open_database(settings)
     bouncer = bouncer or Bouncer(db, settings)
     poster = Poster(bouncer, TokenVault(settings.credentials_key, settings.data_dir))
@@ -233,16 +241,40 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             return conn.execute("SELECT COUNT(*) FROM archived_threads WHERE trashed_at IS NOT NULL").fetchone()[0]
 
     templates.env.globals.update(event_label=event_label, tone=lambda e: TONE.get(e["event_type"], ""),
-                                 static_url=static_url, trash_count=trash_count)
+                                 static_url=static_url, trash_count=trash_count,
+                                 password_login=bool(settings.password),
+                                 proxy_login=bool(settings.proxy_auth_header))
     app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
 
     # The SSO return page comes from the identity provider's site, so the
     # (SameSite=strict) session cookie isn't sent; it's authorised by its state.
     PUBLIC = ("/login", "/static/", "/robots.txt", "/healthz", CALLBACK_PATH)
 
+    def proxy_user(request: Request) -> str | None:
+        """Who the reverse proxy says this is, if it really came through the
+        proxy (it carries the proxy's secret)."""
+        if not settings.proxy_auth_header:
+            return None
+        name = request.headers.get(settings.proxy_auth_header, "").strip()
+        given = request.headers.get(PROXY_SECRET_HEADER, "")
+        if name and given and hmac.compare_digest(given.encode(), settings.proxy_secret.encode()):  # type: ignore[union-attr]
+            return name
+        return None
+
     @app.middleware("http")
     async def guard(request: Request, call_next):
         path = request.url.path
+        via_proxy = proxy_user(request)
+        if via_proxy:
+            if settings.proxy_allowed_users and via_proxy.lower() not in settings.proxy_allowed_users:
+                return PlainTextResponse(f"{via_proxy} isn't allowed to use this archive.", status_code=403)
+            if request.session.get("proxy_user") != via_proxy:
+                request.session.clear()
+                request.session.update(auth=True, proxy_user=via_proxy)
+        elif request.session.get("proxy_user"):
+            # Signed in by the proxy earlier, but this request didn't come through
+            # it (the proxy session ended, or the app was reached directly).
+            request.session.clear()
         authed = bool(request.session.get("auth"))
         if not authed and settings.api_token:
             header = request.headers.get("authorization", "")
@@ -327,7 +359,9 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
 
     @app.post("/login")
     def login(request: Request, password: str = Form(...), next: str = Form("/")):
-        if hmac.compare_digest(password.encode(), settings.password.encode()):  # type: ignore[union-attr]
+        if not settings.password:
+            return render(request, "login.html", error=None, next=local_path(next))
+        if hmac.compare_digest(password.encode(), settings.password.encode()):
             request.session.clear()
             request.session["auth"] = True
             return RedirectResponse(local_path(next), status_code=303)
@@ -336,8 +370,11 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
 
     @app.post("/logout")
     def logout(request: Request):
+        via_proxy = bool(request.session.get("proxy_user"))
         request.session.clear()
-        return RedirectResponse("/login", status_code=303)
+        # Signed in by the proxy: end that session too, or the next page signs you straight back in.
+        target = settings.proxy_logout_url if via_proxy and settings.proxy_logout_url else "/login"
+        return RedirectResponse(target, status_code=303)
 
     # ---- feed (home) -----------------------------------------------------
     def back(request: Request, default: str, anchor: str | None = None) -> str:
