@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from .base import (
+    REDDIT_DOMAIN,
+    CommentList,
     CommunityRef,
     ModAction,
     NActor,
@@ -16,6 +18,7 @@ from .base import (
     ThreadRef,
     UnsupportedSoftware,
     host_of,
+    is_reddit_host,
     parse_community_ref,
     parse_thread_url,
 )
@@ -54,10 +57,11 @@ def detect_software(http: HttpClient, domain: str) -> tuple[str, str | None]:
 
 
 __all__ = [
-    "ADAPTERS", "CommunityRef", "HttpClient", "JoinRequest", "Lemmy1Adapter", "LemmyAdapter", "ModAction",
+    "ADAPTERS", "REDDIT_DOMAIN", "CommentList", "CommunityRef", "HttpClient", "JoinRequest", "Lemmy1Adapter",
+    "LemmyAdapter", "ModAction",
     "NActor", "NComment",
     "NCommunity", "NPost", "PieFedAdapter", "RemoteAuthError", "RemoteError", "RemoteNotFound",
     "RemoteRejected", "RemoteUnavailable",
     "ThreadRef", "ThreadiverseAdapter", "UnsupportedSoftware", "adapter_class", "detect_software", "host_of",
-    "parse_community_ref", "parse_thread_url",
+    "is_reddit_host", "parse_community_ref", "parse_thread_url",
 ]

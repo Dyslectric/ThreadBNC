@@ -24,11 +24,15 @@ from .adapters import (
     adapter_class,
     detect_software,
     host_of,
+    is_reddit_host,
     parse_community_ref,
     parse_thread_url,
 )
-from .config import Settings
+from .adapters.reddit import RedditAdapter
+from .config import REDDIT_MIN_POLL_MINUTES, Settings
 from .db import Database, fmt_ts, parse_ts, utcnow
+from .reddit import RedditConnection
+from .vault import TokenVault
 
 log = logging.getLogger("threadbnc.bouncer")
 
@@ -39,6 +43,9 @@ MAX_POLL_PAGES = 5  # read further back until we reach known posts, up to this m
 # Re-check threads often while they're new, then back off: most comments arrive
 # in a post's first day or two. (post age limit, minimum minutes between checks)
 RECHECK_TAPER = [(timedelta(days=1), 0), (timedelta(days=3), 60), (None, 360)]
+# Reddit threads back off further (its request budget is shared by everything):
+# every 2 hours until day 3, twice a day until day 7, then daily.
+REDDIT_RECHECK_TAPER = [(timedelta(days=1), 0), (timedelta(days=3), 120), (timedelta(days=7), 720), (None, 1440)]
 # When a post's comment count and newest-comment time are unchanged, skip
 # re-fetching the comment tree -- but still do a full fetch at least this often,
 # since edits and some deletions don't change those counters.
@@ -51,11 +58,16 @@ def _plus(ts: str, **delta: float) -> str:
 
 class Bouncer:
     def __init__(self, db: Database, settings: Settings, http: HttpClient | None = None,
-                 adapter_factory: Callable[[str], ThreadiverseAdapter] | None = None):
+                 adapter_factory: Callable[[str], ThreadiverseAdapter] | None = None,
+                 reddit: RedditConnection | None = None):
         self.db = db
         self.settings = settings
         self.http = http or HttpClient(settings.user_agent, settings.http_timeout,
                                        settings.min_request_interval)
+        self.reddit = reddit or RedditConnection(
+            db, TokenVault(settings.credentials_key, settings.data_dir), timeout=settings.http_timeout,
+            min_interval=settings.reddit_min_request_interval)
+        self.reddit_adapter = RedditAdapter(self.reddit)
         self._adapter_factory = adapter_factory
         self._adapters: dict[str, tuple[ThreadiverseAdapter, str]] = {}  # domain -> (adapter, chosen at)
         # Extra work for each pass that needs accounts (e.g. private community join requests).
@@ -72,6 +84,8 @@ class Bouncer:
 
     # -- adapters ----------------------------------------------------------
     def adapter_for(self, domain: str) -> ThreadiverseAdapter:
+        if is_reddit_host(domain):
+            return self.reddit_adapter
         if self._adapter_factory:
             return self._adapter_factory(domain)
         now = utcnow()
@@ -195,7 +209,8 @@ class Bouncer:
             tid = cur.lastrowid
             root_id = store.apply_post(conn, tid, post, src_domain, now, True, result)
             cid = conn.execute("SELECT community_id FROM objects WHERE id=?", (root_id,)).fetchone()[0]
-            store.apply_comments(conn, tid, root_id, cid, comments, src_domain, now, True, True, result)
+            store.apply_comments(conn, tid, root_id, cid, comments, src_domain, now, True,
+                                 getattr(comments, "complete", True), result)
             expires = self._expiry_for(conn, cid, now) if retention == "auto" else None
             conn.execute(
                 "UPDATE archived_threads SET last_full_fetch_at=?, remote_comment_count=?, "
@@ -327,13 +342,21 @@ class Bouncer:
                 return f["poll_interval_minutes"]
         return self.settings.default_sync_minutes
 
+    @staticmethod
+    def _is_reddit(conn: Any, community_id: int | None) -> bool:
+        row = conn.execute("SELECT canonical_ap_id FROM communities WHERE id=?", (community_id,)).fetchone()
+        return bool(row) and is_reddit_host(host_of(row["canonical_ap_id"]))
+
     def _thread_interval(self, conn: Any, community_id: int | None, created_at: str | None) -> int:
         """Minutes until a thread's next re-check: the community's interval while
-        the post is young, tapering to hourly and then every 6 hours."""
-        base = self._interval(conn, community_id)
+        the post is young, tapering to hourly and then every 6 hours (further
+        on Reddit, see REDDIT_RECHECK_TAPER)."""
+        base, taper = self._interval(conn, community_id), RECHECK_TAPER
+        if self._is_reddit(conn, community_id):
+            base, taper = max(base, self.settings.reddit_poll_minutes), REDDIT_RECHECK_TAPER
         created = parse_ts(created_at)
         age = parse_ts(utcnow()) - created if created else timedelta(days=365)  # type: ignore[operator]
-        for limit, floor in RECHECK_TAPER:
+        for limit, floor in taper:
             if limit is None or age < limit:
                 return max(base, floor)
         return base
@@ -358,8 +381,9 @@ class Bouncer:
         last_full = parse_ts(t["last_full_fetch_at"])
         if last_full is None or parse_ts(now) - last_full >= FULL_FETCH_EVERY:  # type: ignore[operator]
             return False
-        if post.comment_count is None or post.newest_comment_at is None:
+        if post.comment_count is None:
             return False  # server doesn't report counters; always fetch
+        # (Reddit reports a count but no newest-comment time; then the count alone decides.)
         return (post.comment_count == t["remote_comment_count"]
                 and post.newest_comment_at == t["remote_newest_comment_at"])
 
@@ -394,7 +418,7 @@ class Bouncer:
                 root_id = store.apply_post(conn, thread_id, post, domain, now, False, result)
                 if full:
                     store.apply_comments(conn, thread_id, root_id, t["community_id"], comments, domain, now,
-                                         False, True, result)
+                                         False, getattr(comments, "complete", True), result)
                     conn.execute(
                         "UPDATE archived_threads SET last_full_fetch_at=?, remote_comment_count=?, "
                         "remote_newest_comment_at=? WHERE id=?",
@@ -504,7 +528,7 @@ class Bouncer:
                          retention_days: int | None = -1, backfill: bool = False) -> int:
         ref, community = self.resolve_community(text)
         now = utcnow()
-        interval = poll_interval_minutes or self.settings.default_follow_poll_minutes
+        interval = self.poll_interval(ref.domain, poll_interval_minutes)
         days = self.settings.default_follow_retention_days if retention_days == -1 else retention_days
         with self.db.transaction() as conn:
             cid = store.upsert_community(conn, community, now)
@@ -525,9 +549,21 @@ class Bouncer:
         self.wake.set()
         return cid
 
+    def poll_interval(self, domain: str, asked: int | None) -> int:
+        """How often to check a community: what was asked for, else the default
+        for its kind of server. Subreddits are never checked more often than
+        every REDDIT_MIN_POLL_MINUTES."""
+        if is_reddit_host(domain):
+            return max(asked or self.settings.reddit_poll_minutes, REDDIT_MIN_POLL_MINUTES)
+        return asked or self.settings.default_follow_poll_minutes
+
     def update_follow(self, community_id: int, poll_interval_minutes: int, retention_days: int | None) -> None:
         now = utcnow()
         with self.db.transaction() as conn:
+            f = conn.execute("SELECT source_domain FROM community_follows WHERE community_id=?",
+                             (community_id,)).fetchone()
+            if f:
+                poll_interval_minutes = self.poll_interval(f["source_domain"], poll_interval_minutes)
             conn.execute(
                 "UPDATE community_follows SET poll_interval_minutes=?, retention_days=?, next_poll_at=? "
                 "WHERE community_id=?", (poll_interval_minutes, retention_days, now, community_id),
@@ -578,17 +614,19 @@ class Bouncer:
         # First poll: one page (backfill). Later polls: keep paging until we hit a
         # post we already know or one older than capture_since, so busy
         # communities don't drop posts between polls.
-        max_pages = MAX_POLL_PAGES if f["last_polled_at"] else 1
         posts = []
         try:
             adapter = self.reader(ref.domain, community_id)
+            # Adapters may ask for smaller pages and fewer of them (Reddit does).
+            size = getattr(adapter, "poll_page_size", AUTO_CAPTURE_PAGE)
+            max_pages = getattr(adapter, "max_poll_pages", MAX_POLL_PAGES) if f["last_polled_at"] else 1
             for page in range(1, max_pages + 1):
-                batch = adapter.list_community_posts(ref, sort="New", page=page, limit=AUTO_CAPTURE_PAGE)
+                batch = adapter.list_community_posts(ref, sort="New", page=page, limit=size)
                 posts.extend(batch)
                 # Pinned posts sit at the top of "New" whatever their age, so they
                 # say nothing about how far back this page reaches.
                 reached_known = any(self._already_seen(p, since) for p in batch if not p.featured)
-                if reached_known or len(batch) < AUTO_CAPTURE_PAGE:
+                if reached_known or len(batch) < size:
                     break
         except RemoteError as exc:
             with self.db.transaction() as conn:

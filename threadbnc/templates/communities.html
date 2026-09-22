@@ -10,9 +10,10 @@
 <section class="card">
   <h2>Follow a community</h2>
   <form method="post" action="/follow" class="stack">
-    <input name="community" placeholder="!technology@lemmy.world  or  https://lemmy.world/c/technology" required>
+    <input name="community" placeholder="!technology@lemmy.world  or  https://lemmy.world/c/technology  or  r/technology" required>
     <div class="row">
-      <label>Check every <input type="number" name="poll_interval_minutes" value="{{ default_poll }}" min="1" class="num"> min</label>
+      <label>Check every <input type="number" name="poll_interval_minutes" placeholder="{{ default_poll }}" min="1" class="num"
+        title="Blank: every {{ default_poll }} minutes, or {{ reddit_poll }} for a subreddit"> min</label>
       <label>Keep unkept posts for
         <select name="retention_days">
           {% for d in [7, 30, 90, 365] %}<option value="{{ d }}" {{ 'selected' if d == default_days }}>{{ d }} days</option>{% endfor %}
@@ -23,6 +24,8 @@
     </div>
     <button>Follow</button>
   </form>
+  <p class="small muted">Leave the interval blank for the default: {{ default_poll }} minutes, or {{ reddit_poll }} for subreddits.
+    {% if not reddit %}To follow subreddits, <a href="/reddit">connect Reddit</a> first.{% else %}<a href="/reddit">Reddit settings</a>{% endif %}</p>
 </section>
 
 <section class="card">
@@ -32,7 +35,7 @@
   {% for f in follows %}
     <li class="follow-row">
       <div>
-        <a href="/c/{{ f.id }}"><strong>!{{ f.name }}</strong><span class="muted">@{{ f.canonical_ap_id | host }}</span></a>
+        <a href="/c/{{ f.id }}"><strong>{{ chandle(f.name, f.canonical_ap_id) }}</strong></a>
         {% if f.unread %}<span class="pill new">{{ f.unread }} unread</span>{% endif %}
         <div class="small muted">{{ f.title or '' }} · {{ f.total }} posts saved · checked {{ when(f.last_polled_at) if f.last_polled_at else 'not yet' }}
           {% if f.last_error %}· <span class="bad-text">{{ f.last_error }}</span>{% endif %}</div>
@@ -53,7 +56,7 @@
   <h2>Other communities with kept posts</h2>
   <ul class="plain">
   {% for c in others %}
-    <li><a href="/c/{{ c.id }}?tab=kept">!{{ c.name }}<span class="muted">@{{ c.canonical_ap_id | host }}</span></a>
+    <li><a href="/c/{{ c.id }}?tab=kept">{{ chandle(c.name, c.canonical_ap_id) }}</a>
       <span class="small muted">· {{ c.kept }} kept</span></li>
   {% endfor %}
   </ul>

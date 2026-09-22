@@ -20,11 +20,12 @@
       <a href="/accounts" class="{{ 'on' if request.url.path.startswith('/accounts') }}">Accounts</a>
       {% if accounts and accounts | selectattr('is_admin') | list %}<a href="/admin" class="{{ 'on' if request.url.path.startswith('/admin') }}">Admin</a>{% endif %}
       {% set tc = trash_count() %}<a href="/trash" class="{{ 'on' if request.url.path.startswith('/trash') }}">Trash{% if tc %} ({{ tc }}){% endif %}</a>
-      {% if accounts %}
+      {% set switchable = accounts | rejectattr('is_reddit') | list if accounts else [] %}
+      {% if switchable %}
         <form method="post" action="/accounts/act-as" class="act-as">
           <label class="small muted">as
             <select name="account_id" aria-label="Posting as">
-              {% for a in accounts %}<option value="{{ a.id }}" {{ 'selected' if acting and a.id == acting.id }}>{{ a.handle }}{{ ' ⚠' if a.status != 'ok' }}</option>{% endfor %}
+              {% for a in switchable %}<option value="{{ a.id }}" {{ 'selected' if acting and a.id == acting.id }}>{{ a.handle }}{{ ' ⚠' if a.status != 'ok' }}</option>{% endfor %}
             </select></label>
           <button class="small secondary">Switch</button>
         </form>

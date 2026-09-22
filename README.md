@@ -1,6 +1,6 @@
 # ThreadBNC — Threadiverse bouncer + private archive
 
-A private, feed-first reader for Lemmy and PieFed that keeps a history of what it observes. When a post or comment is edited, removed or deleted after the bouncer has seen it, the change is recorded alongside the earlier version instead of replacing it.
+A private, feed-first reader for Lemmy, PieFed and Reddit that keeps a history of what it observes. When a post or comment is edited, removed or deleted after the bouncer has seen it, the change is recorded alongside the earlier version instead of replacing it.
 
 **Following and reading:**
 - Follow communities. The **bouncer** checks each one for new posts and saves them along with their comments. It reads up to 5 pages back per check, so only an unusually large burst between checks could slip past.
@@ -41,6 +41,7 @@ Everything else stays, but the archive is only as durable as the disk and databa
 | **Communities** | Follow a community (starts with its current first page) and manage the check interval and retention for each one. |
 | **★ Kept** | Keep a post by link, see kept threads grouped by community, recent changes and the bouncer queue. |
 | **Trash** | Hidden and unkept threads, restorable until the trash period ends. |
+| **Reddit** (`/reddit`, linked from Accounts) | Connect Reddit, and follow your Reddit subscriptions. |
 
 **Keep and Hide:**
 - **☆ Keep** holds a post with no expiry date.
@@ -65,6 +66,83 @@ When the same link or the same text post shows up more than once, whether repost
 - **Votes** on a combined post or squashed comment go to every copy.
 - **Mod** tools, **Edit** and **Delete** act on the first copy only; the Mod panel names which one.
 - Opening the thread marks every copy as read. **Show only this one** (`?merge=0`) shows a single copy on its own.
+
+## Reddit
+
+Subreddits work like any other community: follow `r/name` (or paste `https://www.reddit.com/r/name`) and its
+posts and comments land in your feed, with edits, removals and deletions kept as history. You can also keep a
+single Reddit post by pasting its link on the **Kept** page; share links from the Reddit app (`/r/name/s/…`) work too.
+
+Logged in with Reddit, you can also vote, comment, reply, post, edit and delete there. To discuss a Reddit post on
+your own server instead, **repost** it.
+
+### Connecting
+
+Reddit's API needs an app of your own. Create one at [reddit.com/prefs/apps](https://www.reddit.com/prefs/apps),
+then connect it on the **Reddit** page in one of two ways:
+
+| | App type | What you enter | What you get |
+|---|---|---|---|
+| **Log in with Reddit** | web app (or installed app, which has no secret) | client id and secret; you then approve ThreadBNC on reddit.com | Reads as your account, lists your subscriptions so you can follow them in one go, and votes, comments and posts as you |
+| **App only** (API key) | web app or script | client id and secret | Reads public subreddits, no Reddit account involved; can't vote, comment or post |
+
+- For **Log in with Reddit**, set the app's redirect uri to the address the Reddit page shows, `https://<your ThreadBNC>/reddit/callback`.
+- Your Reddit password never passes through ThreadBNC. It keeps the refresh token Reddit returns and the app secret, both encrypted with `THREADBNC_CREDENTIALS_KEY`, like account sessions.
+- **Disconnect** ends the sign-in on Reddit too. Followed subreddits and everything saved from them stay, but aren't checked until you connect again.
+- Reddit may require you to request API access before a new app works.
+- Reddit logins made before ThreadBNC could vote and comment can only read. The Reddit page marks them **read only**; log in again to allow writing.
+
+### Voting, commenting and posting on Reddit
+
+Logging in with Reddit adds your Reddit account (`u/name`) to the Accounts page. It isn't in the header's account
+switcher. **Anything on Reddit is done as your Reddit account automatically**, and everything else as the account
+picked in the switcher, so you never switch just to upvote a Reddit comment.
+
+| Where | What you can do |
+|---|---|
+| Reddit thread page | Vote on the post and on each comment, comment, reply |
+| Your own Reddit posts and comments | Edit and delete |
+| Subreddit page | **✎ New post**, as a link or text post |
+| **↻ Repost** | Post a copy to a subreddit you follow, as well as to your own communities |
+
+- On a group that mixes Reddit and Lemmy/PieFed copies, each copy gets its own account: one vote or comment goes to every copy, as your Reddit account on Reddit and as the picked account elsewhere.
+- What Reddit sends back is archived straight away, as with Lemmy. When the bouncer next checks the thread it recognises your comment rather than adding it again.
+- Reddit doesn't allow some things, and ThreadBNC says so instead of trying: changing a post's title or link (only its text), or restoring a deleted post or comment. Archived threads (usually older than six months) take no new comments or votes.
+- Reddit is stricter about writing through the API than about reading. A new API client that posts or votes a lot can be flagged as spam, so use this at a human pace.
+- Moderating subreddits from ThreadBNC isn't supported.
+
+### Polling, conservatively
+
+One app gets about 100 requests a minute from Reddit, shared by everything ThreadBNC does, and Reddit blocks
+clients that go over. So Reddit is checked much less eagerly than Lemmy or PieFed:
+
+- **Subreddits** are checked every 60 minutes by default (`THREADBNC_REDDIT_POLL_MINUTES`), and never more often than every 10, whatever you set. Each check reads at most 2 pages of 25 new posts; the first check reads one.
+- **Threads** are re-checked at the subreddit's interval for their first day, then every 2 hours until day 3, twice a day until day 7, then daily.
+- **Unchanged threads cost one request.** When the comment count hasn't changed, only the post is re-read. The comment tree is re-read at most every 6 hours.
+- **Big threads**: each fetch reads the newest 200 comments. Reddit hides the rest behind "load more comments", which ThreadBNC doesn't expand. A comment that drops out of view isn't marked as gone; only a complete comment tree can show that.
+- **Spacing**: at most one request every 2 seconds (`THREADBNC_REDDIT_MIN_REQUEST_INTERVAL`). When Reddit's rate-limit headers say the allowance is nearly used, or it answers 429, ThreadBNC waits for the window to reset.
+- **Sign-in problems** stop everything until you reconnect, so a revoked or expired sign-in isn't retried against Reddit.
+- **Outages** are handled as they are for Lemmy: a failure, a 403 (private or quarantined subreddit) or a pause is retried with exponential backoff and never counts as a deletion.
+
+### Reposting
+
+**↻ Repost** appears on every thread page, and on Reddit posts in the feed. It works from Reddit to your server, and,
+when you're logged in with Reddit, from your server to a subreddit you follow. It opens a new post that is already filled in:
+
+- the same title (trimmed to Lemmy's 200 characters) and link;
+- a `cross-posted from: <original>` line, and the original text quoted underneath.
+
+Then pick where it goes:
+
+- By default the list shows communities on the server of the account you're posting as, then ones you follow, then subreddits you follow. The community you used last is selected next time.
+- You can type any other `!name@server` (or `r/name`) instead.
+- You can edit anything before posting.
+
+The new post is kept automatically. It has the same link, or the same text once the crosspost line and quoting are
+ignored, so ThreadBNC shows it together with the Reddit original as [duplicates](#duplicates-and-crossposts).
+The original records **You reposted this to !community@server**.
+
+When you aren't logged in with Reddit, votes and comments on a mixed group go only to the non-Reddit copies.
 
 ## Accounts and posting
 
@@ -234,6 +312,8 @@ API: `POST /archive` with `{"url": "..."}` and `Authorization: Bearer $THREADBNC
 | `THREADBNC_FOLLOW_POLL_MINUTES` | `15` | Default poll interval for followed communities |
 | `THREADBNC_FOLLOW_RETENTION_DAYS` | `30` | Default retention for auto-captured posts (`forever` allowed) |
 | `THREADBNC_MIN_REQUEST_INTERVAL` | `1.0` | Seconds between requests to the same instance |
+| `THREADBNC_REDDIT_POLL_MINUTES` | `60` | Default check interval for followed subreddits (at least 10) |
+| `THREADBNC_REDDIT_MIN_REQUEST_INTERVAL` | `2.0` | Seconds between requests to Reddit (at least 1) |
 | `THREADBNC_MEDIA_DIR` | `<data>/media` | Where archived images/videos are stored |
 | `THREADBNC_MEDIA_MAX_MB` | `25` | Largest single image or video file that will be archived; bigger files are skipped and linked to the original |
 | `THREADBNC_PROXY_AUTH_HEADER` | unset | Header in which a signing-in reverse proxy passes the user's name, e.g. `X-authentik-username` |
@@ -256,7 +336,8 @@ router without forward auth (and without the secret); ThreadBNC's API token prot
 
 ```
 threadbnc/
-  adapters/      ThreadiverseAdapter + LemmyAdapter (/api/v3) + PieFedAdapter (/api/alpha)
+  adapters/      ThreadiverseAdapter + LemmyAdapter (/api/v3) + PieFedAdapter (/api/alpha) + RedditAdapter
+  reddit.py      Reddit connection: app credentials, OAuth login, tokens, rate limits
   store.py       append-only persistence: revisions, state events, missing detection, purge
   bouncer.py     ingestion, source selection, sync, follows, expiry, job queue, worker loop
   feed.py        feed queries: sorting, unread / new-comment counts, thumbnails

@@ -1,17 +1,18 @@
 {% extends "base.html" %}
 {% block title %}New post{% endblock %}
 {% block content %}
-<p class="small"><a href="/c/{{ c.id }}">← !{{ c.name }}@{{ c.canonical_ap_id | host }}</a></p>
-<h1>New post in !{{ c.name }}<span class="muted">@{{ c.canonical_ap_id | host }}</span></h1>
+{% set who = reddit_me if is_reddit(c.canonical_ap_id) else acting %}
+<p class="small"><a href="/c/{{ c.id }}">← {{ chandle(c.name, c.canonical_ap_id, True) }}</a></p>
+<h1>New post in {{ chandle(c.name, c.canonical_ap_id) }}</h1>
 <section class="card">
-  {% if not acting %}<p class="bad-text"><a href="/accounts">Add an account</a> first.</p>{% endif %}
+  {% if not who %}<p class="bad-text">{% if is_reddit(c.canonical_ap_id) %}<a href="/reddit">Log in with Reddit</a>{% else %}<a href="/accounts">Add an account</a>{% endif %} first.</p>{% endif %}
   <form method="post" action="/c/{{ c.id }}/submit" class="stack">
     <label>Title <input name="title" required maxlength="200"></label>
     <label>Link <span class="muted small">(optional)</span> <input type="url" name="url" placeholder="https://"></label>
     <label>Text <span class="muted small">(optional, Markdown)</span> <textarea name="body" rows="10"></textarea></label>
     <div class="row">
-      <button {{ 'disabled' if not acting }}>Post as {{ acting.handle if acting else '…' }}</button>
-      <span class="small muted">Posted from {{ acting.domain if acting else 'your account' }}. It will be kept in the archive automatically.</span>
+      <button {{ 'disabled' if not who }}>Post as {{ who.handle if who else '…' }}</button>
+      <span class="small muted">{% if who and not who.is_reddit %}Posted from {{ who.domain }}. {% endif %}It will be kept in the archive automatically.</span>
     </div>
   </form>
 </section>

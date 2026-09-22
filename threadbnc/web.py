@@ -25,14 +25,16 @@ from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import dupes
+from . import dupes, store
 from . import feed as feed_mod
 from . import media as media_mod
-from .adapters import RemoteError, host_of
+from .adapters import RemoteError, host_of, is_reddit_host
 from .accounts import Account, AccountError, Poster
 from .bouncer import Bouncer
 from .moderation import REGISTRATION_MODES, Moderation
 from .private import PrivateCommunities
+from .reddit import CALLBACK_PATH as REDDIT_CALLBACK_PATH, RedditError
+from .reddit import callback_url as reddit_callback_url
 from .sso import CALLBACK_PATH, SingleSignOn, callback_url
 
 # The reverse proxy adds this (with THREADBNC_PROXY_SECRET) to requests it has signed in.
@@ -85,6 +87,7 @@ EVENT_LABELS = {
     "deleted_from_trash": "Trashed thread permanently deleted",
     "delete_requested": "You deleted this via ThreadBNC (waiting to see it on the server)",
     "undelete_requested": "You restored this via ThreadBNC (waiting to see it on the server)",
+    "reposted": "You reposted this via ThreadBNC",
 }
 ATTRIBUTION_LABELS = {
     "moderator": "by moderator",
@@ -97,7 +100,7 @@ TONE = {
     "restored": "good", "author_restored": "good", "reappeared": "good", "unlocked": "good",
     "discovered": "new", "instance_unavailable": "bad", "community_removed": "bad",
     "community_deleted": "bad", "auto_capture_expired": "muted", "trash_expired": "muted",
-    "deleted_from_trash": "muted", "trashed": "warn", "restored_from_trash": "good",
+    "deleted_from_trash": "muted", "trashed": "warn", "restored_from_trash": "good", "reposted": "new",
 }
 
 
@@ -186,6 +189,8 @@ def event_label(e: Any) -> str:
     if et in ("removed", "restored", "locked", "unlocked", "community_removed") and e["attribution"]:
         label += " " + ATTRIBUTION_LABELS.get(e["attribution"], f"by {e['attribution']}")
     meta = json.loads(e["metadata_json"] or "{}")
+    if et == "reposted" and meta.get("to"):
+        label = f"You reposted this to {meta['to']} as {meta.get('account', '?')}"
     if meta.get("state_at_first_observation"):
         label += " (already in this state when first observed)"
     return label
@@ -215,6 +220,21 @@ def safe_url(value: str | None) -> str | None:
     if not value:
         return None
     return value if urlparse(value).scheme in ("http", "https") else None
+
+
+def is_reddit(ap_id: str | None) -> bool:
+    return is_reddit_host(host_of(ap_id or ""))
+
+
+def chandle(name: str, ap_id: str | None, plain: bool = False) -> Markup | str:
+    """A community's handle: r/name for subreddits, !name@host otherwise (with
+    the host dimmed unless `plain`)."""
+    if is_reddit(ap_id):
+        return f"r/{name}"
+    host = host_of(ap_id or "")
+    if plain:
+        return f"!{name}@{host}"
+    return Markup('!{}<span class="muted">@{}</span>').format(name, host)
 
 
 def word_diff(old: str | None, new: str | None) -> Markup:
@@ -270,12 +290,13 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     templates.env.globals.update(event_label=event_label, tone=lambda e: TONE.get(e["event_type"], ""),
                                  static_url=static_url, trash_count=trash_count,
                                  password_login=bool(settings.password),
-                                 proxy_login=bool(settings.proxy_auth_header))
+                                 proxy_login=bool(settings.proxy_auth_header), chandle=chandle,
+                                 is_reddit=is_reddit)
     app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
 
     # The SSO return page comes from the identity provider's site, so the
     # (SameSite=strict) session cookie isn't sent; it's authorised by its state.
-    PUBLIC = ("/login", "/static/", "/robots.txt", "/healthz", CALLBACK_PATH)
+    PUBLIC = ("/login", "/static/", "/robots.txt", "/healthz", CALLBACK_PATH, REDDIT_CALLBACK_PATH)
 
     def proxy_user(request: Request) -> str | None:
         """Who the reverse proxy says this is, if it really came through the
@@ -349,18 +370,21 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                        session_cookie="threadbnc_session")
 
     def acting(request: Request) -> Account | None:
-        """The account forms act as: the one picked in the header, else the default."""
+        """The account forms act as: the one picked in the header, else the
+        default. Never the Reddit account: Poster.account_for switches to it by
+        itself for anything on Reddit."""
         chosen = poster.get(request.session.get("acting_account"))
-        return chosen or poster.default()
+        return chosen if chosen and not chosen.is_reddit else poster.default()
 
     def render(request: Request, name: str, **ctx: Any) -> HTMLResponse:
         if request.session.get("auth"):
             ctx.setdefault("accounts", poster.list())
             ctx.setdefault("acting", acting(request))
+            ctx.setdefault("reddit_me", poster.reddit_account())
         return templates.TemplateResponse(request, name, ctx)
 
     def require_acting(request: Request) -> Account:
-        account = acting(request)
+        account = acting(request) or poster.reddit_account()
         if account is None:
             raise AccountError("Add an account on the Accounts page first.")
         return account
@@ -552,15 +576,18 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                    WHERE c.id NOT IN (SELECT community_id FROM community_follows WHERE active=1)
                    GROUP BY c.id ORDER BY c.name""").fetchall()
         return render(request, "communities.html", follows=follows, others=others,
-                      default_poll=settings.default_follow_poll_minutes,
-                      default_days=settings.default_follow_retention_days)
+                      default_poll=settings.default_follow_poll_minutes, reddit_poll=settings.reddit_poll_minutes,
+                      default_days=settings.default_follow_retention_days, reddit=bouncer.reddit.status())
 
     @app.post("/follow")
-    def follow(request: Request, community: str = Form(...), poll_interval_minutes: int = Form(15),
+    def follow(request: Request, community: str = Form(...), poll_interval_minutes: str = Form(""),
                retention_days: str = Form("30"), backfill: str | None = Form(None)):
+        """A blank check interval means the default for that kind of server
+        (slower for Reddit)."""
         days = None if retention_days.strip().lower() in ("", "forever", "none") else int(retention_days)
+        every = int(poll_interval_minutes) if poll_interval_minutes.strip().isdigit() else None
         try:
-            cid = bouncer.follow_community(community, max(1, poll_interval_minutes), days, bool(backfill))
+            cid = bouncer.follow_community(community, max(1, every) if every else None, days, bool(backfill))
         except (RemoteError, ValueError) as exc:
             flash(request, f"Could not follow {community}: {exc}", "error")
             return RedirectResponse(back(request, "/communities"), status_code=303)
@@ -624,7 +651,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                             "JOIN objects o ON o.id=t.root_object_id WHERE o.canonical_ap_id=?",
                             (p.ap_id,)).fetchone()
                         live.append({"post": p, "thread": th,
-                                     "retain_url": f"https://{ref.domain}/post/{p.local_id}"})
+                                     "retain_url": p.ap_id if is_reddit_host(ref.domain)
+                                     else f"https://{ref.domain}/post/{p.local_id}"})
             except RemoteError as exc:
                 live_error = str(exc)
         return render(request, "community.html", c=c, follow=follow_row, tab=tab, feed=fp, counts=counts,
@@ -784,7 +812,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                 sign_in = sso.options(server, callback_url(str(request.base_url)))
             except AccountError:
                 pass
-        return render(request, "accounts.html", server=server, sign_in=sign_in)
+        poster.sync_reddit_account()
+        return render(request, "accounts.html", server=server, sign_in=sign_in, reddit=bouncer.reddit.status())
 
     # ---- single sign-on -------------------------------------------------------
     def our_callback(request: Request) -> str:
@@ -1069,7 +1098,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
 
     @app.post("/accounts/act-as")
     def act_as(request: Request, account_id: int = Form(...)):
-        if poster.get(account_id):
+        chosen = poster.get(account_id)
+        if chosen and not chosen.is_reddit:
             request.session["acting_account"] = account_id
         return RedirectResponse(back(request, "/"), status_code=303)
 
@@ -1099,8 +1129,10 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                 if not oid:
                     where[oid] = (tid, None)
                     continue
-                row = conn.execute("SELECT thread_id, object_type FROM objects WHERE id=?", (oid,)).fetchone()
-                if row and row["thread_id"]:
+                row = conn.execute("SELECT thread_id, object_type, canonical_ap_id FROM objects WHERE id=?",
+                                   (oid,)).fetchone()
+                skip = choose and is_reddit(row["canonical_ap_id"]) and not poster.reddit_account() if row else False
+                if row and row["thread_id"] and not skip:
                     where[oid] = (row["thread_id"], None if row["object_type"] == "post" else oid)
         if not where:
             flash(request, "Pick at least one post to comment on.", "error")
@@ -1136,6 +1168,13 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     def vote(request: Request, oid: int, score: int = Form(...), also: list[int] = Form([])):
         """Vote on an object, and on its duplicates (`also`) when shown squashed."""
         ids = list(dict.fromkeys([oid, *also]))
+        if len(ids) > 1 and not poster.reddit_account():  # not logged in with Reddit: vote on the other copies
+            with db.connect() as conn:
+                rows = conn.execute(f"SELECT id, canonical_ap_id FROM objects WHERE id IN ({','.join('?' * len(ids))})",
+                                    ids).fetchall()
+            reddit_ids = {r["id"] for r in rows if is_reddit(r["canonical_ap_id"])}
+            ids = [i for i in ids if i not in reddit_ids] or ids
+            oid = ids[0]
         if len(ids) == 1:
             return account_action(request, object_page(oid), lambda a: poster.vote(a, oid, score),
                                   anchor=f"o{oid}")
@@ -1194,6 +1233,158 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             tid = poster.submit(account, cid, title, body, url)
             return RedirectResponse(f"/t/{tid}", status_code=303)
         return account_action(request, f"/c/{cid}/submit", act, "Posted. It's kept automatically.")
+
+    # ---- reposting -----------------------------------------------------------
+    def repost_targets(account: Account | None, reddit_me: Account | None) -> list[dict[str, Any]]:
+        """Communities a post can be reposted to, grouped: those on the acting
+        account's own server, followed ones, followed subreddits (when logged
+        in with Reddit), then the rest."""
+        with db.connect() as conn:
+            rows = conn.execute(
+                "SELECT c.id, c.name, c.canonical_ap_id, "
+                "EXISTS(SELECT 1 FROM community_follows f WHERE f.community_id=c.id AND f.active=1) AS followed "
+                "FROM communities c ORDER BY c.name").fetchall()
+        home = account.domain if account else None
+        out = []
+        for r in rows:
+            c = dict(r, host=host_of(r["canonical_ap_id"]), label=chandle(r["name"], r["canonical_ap_id"], True))
+            if is_reddit(r["canonical_ap_id"]):
+                if not reddit_me or not c["followed"]:
+                    continue
+                c["rank"], c["group"] = 2, f"Subreddits (as {reddit_me.handle})"
+            elif account is None:
+                continue
+            elif c["host"] == home:
+                c["rank"], c["group"] = 0, f"On {home}"
+            else:
+                c["rank"], c["group"] = (1, "Following") if c["followed"] else (3, "Other communities")
+            out.append(c)
+        out.sort(key=lambda c: (c["rank"], c["name"].lower(), c["host"]))
+        return out
+
+    @app.get("/t/{tid}/repost", response_class=HTMLResponse)
+    def repost_form(request: Request, tid: int):
+        with db.connect() as conn:
+            t = conn.execute(THREAD_SQL, (tid,)).fetchone()
+        if not t:
+            raise HTTPException(404)
+        try:
+            draft = poster.repost_draft(tid)
+        except AccountError as exc:
+            flash(request, str(exc), "error")
+            return RedirectResponse(f"/t/{tid}", status_code=303)
+        me = acting(request)
+        targets = repost_targets(me, poster.reddit_account())
+        last = request.session.get("repost_to")
+        chosen = last if any(c["id"] == last for c in targets) else (targets[0]["id"] if targets else None)
+        return render(request, "repost.html", t=t, draft=draft, targets=targets, chosen=chosen)
+
+    @app.post("/t/{tid}/repost")
+    def repost(request: Request, tid: int, title: str = Form(...), url: str = Form(""), body: str = Form(""),
+               community_id: str = Form(""), community: str = Form("")):
+        """Post a copy in one of your communities: picked from the list, or
+        typed as !name@host (looked up, not followed)."""
+        def act(account: Account) -> RedirectResponse:
+            cid = int(community_id) if community_id.strip().isdigit() else None
+            if community.strip():
+                try:
+                    _ref, found = bouncer.resolve_community(community)
+                except (RemoteError, ValueError) as exc:
+                    raise AccountError(f"Couldn't find {community.strip()}: {exc}") from exc
+                with db.transaction() as conn:
+                    cid = store.upsert_community(conn, found, utcnow())
+            if not cid:
+                raise AccountError("Pick a community to post it in.")
+            new_tid = poster.repost(account, tid, cid, title, body, url)
+            request.session["repost_to"] = cid
+            return RedirectResponse(f"/t/{new_tid}", status_code=303)
+        return account_action(request, f"/t/{tid}/repost", act, "Reposted. It's kept automatically, and shown "
+                                                               "together with the original.")
+
+    # ---- Reddit --------------------------------------------------------------
+    @app.get("/reddit", response_class=HTMLResponse)
+    def reddit_page(request: Request, subs: int = 0):
+        status = bouncer.reddit.status()
+        subscriptions, subs_error = None, None
+        if subs and status and status["mode"] == "user":
+            try:
+                subscriptions = bouncer.reddit_adapter.subscriptions()
+            except RemoteError as exc:
+                subs_error = str(exc)
+        followed: set[str] = set()
+        if subscriptions:
+            with db.connect() as conn:
+                followed = {r["canonical_ap_id"].lower() for r in conn.execute(
+                    "SELECT c.canonical_ap_id FROM communities c JOIN community_follows f ON f.community_id=c.id "
+                    "WHERE f.active=1")}
+        return render(request, "reddit.html", reddit=status, callback=reddit_callback_url(str(request.base_url)),
+                      subscriptions=subscriptions, subs_error=subs_error, followed=followed,
+                      reddit_poll=settings.reddit_poll_minutes, reddit_interval=settings.reddit_min_request_interval,
+                      default_days=settings.default_follow_retention_days)
+
+    @app.post("/reddit/app")
+    def reddit_app(request: Request, client_id: str = Form(...), client_secret: str = Form("")):
+        try:
+            bouncer.reddit.connect_app(client_id, client_secret)
+            poster.sync_reddit_account()
+            flash(request, "Connected to Reddit with your app (no Reddit account). Follow subreddits as r/name.")
+        except RedditError as exc:
+            flash(request, str(exc), "error")
+        return RedirectResponse("/reddit", status_code=303)
+
+    @app.post("/reddit/login")
+    def reddit_login(request: Request, client_id: str = Form(...), client_secret: str = Form("")):
+        try:
+            bouncer.reddit.start_login(client_id, client_secret, reddit_callback_url(str(request.base_url)))
+        except RedditError as exc:
+            flash(request, str(exc), "error")
+            return RedirectResponse("/reddit", status_code=303)
+        # Via a page, not a redirect: form-action 'self' would block a form
+        # submission that ends up on reddit.com.
+        return RedirectResponse("/reddit/go", status_code=303)
+
+    @app.get("/reddit/go", response_class=HTMLResponse)
+    def reddit_go(request: Request):
+        pending = bouncer.reddit.pending_url()
+        if not pending:
+            return RedirectResponse("/reddit", status_code=303)
+        return render(request, "sso_go.html", url=pending, provider="Reddit", heading="Log in with Reddit")
+
+    @app.get(REDDIT_CALLBACK_PATH, response_class=HTMLResponse)
+    def reddit_callback(request: Request, state: str = "", code: str | None = None, error: str | None = None):
+        # Reached from reddit.com, so the (SameSite=strict) session cookie isn't
+        # sent: authorised by the single-use state instead, like single sign-on.
+        ok, message = bouncer.reddit.finish_login(state, code, error)
+        if ok:
+            poster.sync_reddit_account()
+        return templates.TemplateResponse(request, "sso_return.html", {
+            "next": "/reddit", "message": None if ok else message, "heading": "Reddit"},
+            status_code=200 if ok else 400)
+
+    @app.post("/reddit/disconnect")
+    def reddit_disconnect(request: Request):
+        bouncer.reddit.disconnect()
+        poster.sync_reddit_account()
+        flash(request, "Disconnected from Reddit. Followed subreddits stay, but aren't checked until you connect "
+                       "again; everything already saved stays.")
+        return RedirectResponse("/reddit", status_code=303)
+
+    @app.post("/reddit/follow")
+    def reddit_follow(request: Request, names: list[str] = Form([]), retention_days: str = Form("30")):
+        days = None if retention_days.strip().lower() in ("", "forever", "none") else int(retention_days)
+        done, failed = 0, []
+        for name in dict.fromkeys(n.strip() for n in names if n.strip()):
+            try:
+                bouncer.follow_community(f"r/{name}", None, days, backfill=True)
+                done += 1
+            except (RemoteError, ValueError) as exc:
+                failed.append(f"r/{name}: {exc}")
+        if done:
+            flash(request, f"Following {done} subreddit{'s' if done != 1 else ''}, each checked every "
+                           f"{settings.reddit_poll_minutes} minutes.")
+        if failed:
+            flash(request, "Couldn't follow " + "; ".join(failed), "error")
+        return RedirectResponse("/reddit?subs=1", status_code=303)
 
     @app.post("/t/{tid}/sync")
     def sync_now(request: Request, tid: int):
@@ -1292,11 +1483,12 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         changed_count = sum(1 for n in displayed if n["is_changed"] and not n["is_new"])
         md, media_for, preview = md_for(list(nodes))
         me = acting(request)
-        my_votes = poster.my_votes(me, [o["canonical_ap_id"] for o in objs])
+        ap_ids = [o["canonical_ap_id"] for o in objs]
+        my_votes = {**poster.my_votes(me, ap_ids), **poster.my_votes(poster.reddit_account(), ap_ids)}
         powers = {th["cid"]: mod.powers(me, th["cid"]) for th in threads.values()}
         counts = {c["id"]: c["n_comments"] for c in copies}
-        post_copies = [{"t": threads[i], "o": roots[i]["o"], "n_comments": counts.get(i, raw_comments)}
-                       for i in tids if i in roots]
+        post_copies = [{"t": threads[i], "o": roots[i]["o"], "n_comments": counts.get(i, raw_comments),
+                        "reddit": is_reddit(roots[i]["o"]["canonical_ap_id"])} for i in tids if i in roots]
         return render(request, "thread.html", t=t, root=root, total_comments=len(displayed),
                       raw_comments=raw_comments, md=md, media_for=media_for, preview=preview, my_votes=my_votes,
                       me=me, powers_by_community=powers, new_count=new_count, changed_count=changed_count,

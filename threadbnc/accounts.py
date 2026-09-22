@@ -1,6 +1,11 @@
 """Acting as Lemmy/PieFed accounts: login, posting, commenting, voting,
 editing and deleting your own content.
 
+Reddit: logging in with Reddit (reddit.py) adds your Reddit account here too.
+It isn't in the header switcher: anything on Reddit is done as it
+automatically, and everything else as the account picked in the switcher
+(see account_for).
+
 Every write happens on the account's *home* server (the only place its token
 is valid), so targets are resolved there first by ActivityPub id. What the
 server returns is recorded in the archive immediately -- your comment shows up
@@ -16,7 +21,9 @@ from typing import Any, Callable, TypeVar
 from urllib.parse import urlparse
 
 from . import store
-from .adapters import RemoteAuthError, RemoteError, RemoteRejected, ThreadiverseAdapter
+from .adapters import (
+    REDDIT_DOMAIN, RemoteAuthError, RemoteError, RemoteRejected, ThreadiverseAdapter, host_of, is_reddit_host,
+)
 from .bouncer import Bouncer
 from .db import utcnow
 from .vault import TokenVault, VaultError
@@ -24,6 +31,11 @@ from .vault import TokenVault, VaultError
 log = logging.getLogger("threadbnc.accounts")
 # Lemmy's default: lowercase letters, digits, underscore; 3 to 20 characters.
 _COMMUNITY_NAME = re.compile(r"[a-z0-9_]{3,20}")
+TITLE_MAX = 200  # Lemmy's limit; Reddit allows 300
+NO_REDDIT_LOGIN = ("To vote, comment or post on Reddit, log in with Reddit on the Reddit page (an app-only "
+                   "connection can only read).")
+REDDIT_READ_ONLY_LOGIN = ("Connect Reddit again on the Reddit page to allow voting, commenting and posting; "
+                          "this sign-in was made before ThreadBNC asked for that and can only read.")
 T = TypeVar("T")
 
 
@@ -40,6 +52,10 @@ _FRIENDLY = {
     "banned_from_community": "This account is banned from that community.",
     "only_mods_can_post_in_community": "Only moderators can post in that community.",
     "locked": "That thread is locked.",
+    "too_old": "That Reddit thread is archived: it can't get new comments or votes.",
+    "ratelimit": "Reddit is rate-limiting your account; try again in a few minutes.",
+    "subreddit_notallowed": "You aren't allowed to post in that subreddit.",
+    "subreddit_noexist": "That subreddit doesn't exist.",
 }
 
 
@@ -61,8 +77,12 @@ class Account:
     is_admin: bool = False
 
     @property
+    def is_reddit(self) -> bool:
+        return self.domain == REDDIT_DOMAIN
+
+    @property
     def handle(self) -> str:
-        return f"{self.username}@{self.domain}"
+        return f"u/{self.username}" if self.is_reddit else f"{self.username}@{self.domain}"
 
     @classmethod
     def from_row(cls, r: Any) -> "Account":
@@ -100,8 +120,50 @@ class Poster:
         return Account.from_row(r) if r else None
 
     def default(self) -> Account | None:
-        accounts = self.list()
+        """The account to act as when none is picked. Never the Reddit account,
+        which is only ever used for things on Reddit."""
+        accounts = [a for a in self.list() if not a.is_reddit]
         return next((a for a in accounts if a.is_default), accounts[0] if accounts else None)
+
+    # -- the Reddit account --------------------------------------------------------
+    def sync_reddit_account(self) -> None:
+        """Make the Accounts page match the Reddit connection: your Reddit
+        account while you're logged in with Reddit, nothing otherwise."""
+        status = self.bouncer.reddit.status()
+        keep = None
+        with self.db.transaction() as conn:
+            if status and status["mode"] == "user" and status.get("username"):
+                keep = f"https://www.reddit.com/user/{status['username']}"
+                conn.execute(
+                    "INSERT INTO accounts(domain, software, username, actor_ap_id, status, is_default, is_admin, "
+                    "added_at, last_error) VALUES (?, 'reddit', ?, ?, ?, 0, 0, ?, ?) "
+                    "ON CONFLICT(actor_ap_id) DO UPDATE SET status=excluded.status, last_error=excluded.last_error",
+                    (REDDIT_DOMAIN, status["username"], keep, "ok" if status["status"] == "ok" else "needs_login",
+                     utcnow(), status.get("last_error")))
+            for r in conn.execute("SELECT id FROM accounts WHERE domain=? AND actor_ap_id!=?",
+                                  (REDDIT_DOMAIN, keep or "")).fetchall():
+                conn.execute("DELETE FROM my_votes WHERE account_id=?", (r["id"],))
+                conn.execute("DELETE FROM accounts WHERE id=?", (r["id"],))
+
+    def reddit_account(self) -> Account | None:
+        """Your Reddit account, if it can vote, comment and post."""
+        status = self.bouncer.reddit.status()
+        if not status or not status["can_write"]:
+            return None
+        return next((a for a in self.list() if a.is_reddit), None)
+
+    def account_for(self, account: Account, ap_id: str) -> Account:
+        """Who acts on an object or community: your Reddit account for anything
+        on Reddit, otherwise the account you picked."""
+        if is_reddit_host(host_of(ap_id)):
+            reddit = self.reddit_account()
+            if reddit is None:
+                status = self.bouncer.reddit.status()
+                raise AccountError(REDDIT_READ_ONLY_LOGIN if status and status["mode"] == "user" else NO_REDDIT_LOGIN)
+            return reddit
+        if account.is_reddit:
+            raise AccountError("Add a Lemmy or PieFed account on the Accounts page to do that.")
+        return account
 
     def add(self, server: str, username: str, password: str, totp: str | None = None) -> Account:
         """Log in and keep the resulting session token (encrypted). The password
@@ -131,7 +193,7 @@ class Poster:
             raise AccountError(f"Couldn't reach {domain}: {exc}") from exc
         now = utcnow()
         with self.db.transaction() as conn:
-            first = conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 0
+            first = conn.execute("SELECT COUNT(*) FROM accounts WHERE domain!=?", (REDDIT_DOMAIN,)).fetchone()[0] == 0
             conn.execute(
                 "INSERT INTO accounts(domain, software, username, actor_ap_id, display_name, token_enc, status, "
                 "is_default, is_admin, added_at) VALUES (?,?,?,?,?,?,'ok',?,?,?) "
@@ -181,6 +243,10 @@ class Poster:
         account = self.get(account_id)
         if account is None:
             return
+        if account.is_reddit:
+            self.bouncer.reddit.disconnect()
+            self.sync_reddit_account()
+            return
         try:
             adapter, token = self._session(account)
             adapter.logout(token)
@@ -190,10 +256,16 @@ class Poster:
             conn.execute("DELETE FROM my_votes WHERE account_id=?", (account_id,))
             conn.execute("DELETE FROM accounts WHERE id=?", (account_id,))
             if not conn.execute("SELECT 1 FROM accounts WHERE is_default=1").fetchone():
-                conn.execute("UPDATE accounts SET is_default=1 WHERE id=(SELECT MIN(id) FROM accounts)")
+                conn.execute("UPDATE accounts SET is_default=1 WHERE id=(SELECT MIN(id) FROM accounts WHERE domain!=?)",
+                             (REDDIT_DOMAIN,))
 
     # -- helpers ----------------------------------------------------------------
     def _session(self, account: Account) -> tuple[ThreadiverseAdapter, str]:
+        if account.is_reddit:  # the Reddit connection holds the sign-in; there's no token here
+            status = self.bouncer.reddit.status()
+            if not status or status["status"] != "ok":
+                raise AccountError("Reddit needs connecting again (Reddit page).")
+            return self.bouncer.adapter_for(REDDIT_DOMAIN), ""
         with self.db.connect() as conn:
             row = conn.execute("SELECT token_enc FROM accounts WHERE id=?", (account.id,)).fetchone()
         if row is None or not row["token_enc"] or account.status != "ok":
@@ -267,6 +339,7 @@ class Poster:
         if t is None:
             raise AccountError("Thread not found.")
         root_id, parent_id = t["root_object_id"], parent_object_id or t["root_object_id"]
+        account = self.account_for(account, self._object(root_id)["canonical_ap_id"])
 
         def act(adapter: ThreadiverseAdapter, token: str) -> Any:
             post_local = self._local_id(adapter, token, account.domain, root_id, "post")
@@ -291,6 +364,7 @@ class Poster:
             c = conn.execute("SELECT canonical_ap_id FROM communities WHERE id=?", (community_id,)).fetchone()
         if c is None:
             raise AccountError("Community not found.")
+        account = self.account_for(account, c["canonical_ap_id"])
 
         def act(adapter: ThreadiverseAdapter, token: str) -> Any:
             found = adapter.resolve_as(token, c["canonical_ap_id"])
@@ -303,9 +377,51 @@ class Poster:
         return self.bouncer._ingest_post(post, account.domain, post.local_id, adapter, source_url=post.ap_id,
                                          retention="manual")
 
+    # -- reposting -------------------------------------------------------------------
+    def repost_draft(self, thread_id: int) -> dict[str, Any]:
+        """A new post that shares a thread's post (from Reddit or anywhere else):
+        same title and link, the text quoted, and Lemmy's "cross-posted from:"
+        line pointing at the original, so readers can find it and ThreadBNC
+        shows the two together as duplicates."""
+        with self.db.connect() as conn:
+            row = conn.execute(
+                "SELECT o.canonical_ap_id, r.title, r.body, r.url FROM archived_threads t "
+                "JOIN objects o ON o.id=t.root_object_id "
+                "JOIN revisions r ON r.object_id=o.id AND r.seq=o.revision_count WHERE t.id=?", (thread_id,)
+            ).fetchone()
+        if row is None:
+            raise AccountError("Thread not found.")
+        title = (row["title"] or "").strip()
+        if len(title) > TITLE_MAX:
+            title = title[: TITLE_MAX - 1].rstrip() + "…"
+        body = f"cross-posted from: {row['canonical_ap_id']}"
+        text = (row["body"] or "").strip()
+        if text and text not in ("[deleted]", "[removed]"):
+            body += "\n\n" + "\n".join(f"> {line}" if line.strip() else ">" for line in text.splitlines())
+        return {"title": title, "url": row["url"] or "", "body": body, "source": row["canonical_ap_id"]}
+
+    def repost(self, account: Account, thread_id: int, community_id: int, title: str, body: str | None = None,
+               url: str | None = None) -> int:
+        """Post a copy of a thread's post in one of your communities. Returns
+        the new thread's id; the original gets a "reposted" event."""
+        tid = self.submit(account, community_id, title, body, url)
+        with self.db.transaction() as conn:
+            src = conn.execute("SELECT root_object_id FROM archived_threads WHERE id=?", (thread_id,)).fetchone()
+            c = conn.execute("SELECT name, canonical_ap_id FROM communities WHERE id=?", (community_id,)).fetchone()
+            account = self.account_for(account, c["canonical_ap_id"])
+            where = f"r/{c['name']}" if is_reddit_host(host_of(c["canonical_ap_id"])) else \
+                f"!{c['name']}@{host_of(c['canonical_ap_id'])}"
+            if src:
+                store.add_event(conn, "reposted", utcnow(), object_id=src["root_object_id"], thread_id=thread_id,
+                                attribution="author",
+                                metadata={"via": "threadbnc", "account": account.handle, "thread_id": tid,
+                                          "to": where})
+        return tid
+
     def edit(self, account: Account, object_id: int, body: str, title: str | None = None,
              url: str | None = None) -> None:
         obj = self._object(object_id)
+        account = self.account_for(account, obj["canonical_ap_id"])
         self._require_owner(account, obj)
         kind = obj["object_type"]
         if kind == "post" and not (title or "").strip():
@@ -331,6 +447,7 @@ class Poster:
         """Delete (or undelete) your own post/comment on its server. The archive
         keeps its text and records the deletion as history."""
         obj = self._object(object_id)
+        account = self.account_for(account, obj["canonical_ap_id"])
         self._require_owner(account, obj)
         kind = obj["object_type"]
 
@@ -353,6 +470,7 @@ class Poster:
         if score not in (-1, 0, 1):
             raise AccountError("Invalid vote.")
         obj = self._object(object_id)
+        account = self.account_for(account, obj["canonical_ap_id"])
         kind = obj["object_type"]
 
         def act(adapter: ThreadiverseAdapter, token: str) -> Any:

@@ -1,19 +1,22 @@
 {% extends "base.html" %}
 {% block title %}Edit{% endblock %}
 {% block content %}
+{% set who = reddit_me if is_reddit(o.canonical_ap_id) else acting %}
+{% set on_reddit = is_reddit(o.canonical_ap_id) %}
 <p class="small"><a href="/t/{{ o.thread_id }}#o{{ o.id }}">← back to thread</a></p>
 <h1>Edit your {{ o.object_type }}</h1>
 <section class="card">
-  {% if not acting %}<p class="bad-text">Add an account first.</p>{% endif %}
+  {% if not who %}<p class="bad-text">{{ 'Log in with Reddit (Reddit page) first.' if on_reddit else 'Add an account first.' }}</p>{% endif %}
   <form method="post" action="/o/{{ o.id }}/edit" class="stack">
     {% if o.object_type == 'post' %}
-      <label>Title <input name="title" value="{{ o.title or '' }}" required></label>
-      <label>Link <input type="url" name="url" value="{{ o.url or '' }}"></label>
+      <label>Title <input name="title" value="{{ o.title or '' }}" required {{ 'readonly' if on_reddit }}></label>
+      <label>Link <input type="url" name="url" value="{{ o.url or '' }}" {{ 'readonly' if on_reddit }}></label>
+      {% if on_reddit %}<p class="small muted">Reddit only lets you change a post's text, not its title or link.</p>{% endif %}
     {% endif %}
     <label>Text (Markdown)
       <textarea name="body" rows="10" {{ 'required' if o.object_type == 'comment' }}>{{ o.body or '' }}</textarea></label>
     <div class="row">
-      <button>Save as {{ acting.handle if acting else '…' }}</button>
+      <button {{ 'disabled' if not who }}>Save as {{ who.handle if who else '…' }}</button>
       <span class="small muted">The archive keeps the previous version in the post's history.</span>
     </div>
   </form>

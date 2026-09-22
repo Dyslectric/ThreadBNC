@@ -3,7 +3,7 @@
 {% block title %}Signing in{% endblock %}
 {% block content %}
 <section class="card narrow">
-  <h1>Single sign-on</h1>
+  <h1>{{ heading or 'Single sign-on' }}</h1>
   <p class="muted">Taking you to {{ provider or 'the sign-in page' }}…</p>
   <p><a href="{{ url }}">Continue</a></p>
 </section>

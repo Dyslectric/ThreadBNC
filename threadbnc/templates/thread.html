@@ -15,7 +15,7 @@
 {# Where a (possibly squashed) comment was seen: one pill per copy of the post. #}
 {% macro sources(n) -%}
   {% if grouped %}
-    {% for s in n.sources %}<a class="pill src" href="/t/{{ s.id }}?merge=0" title="Under the copy in !{{ s.cname }}@{{ s.c_ap | host }}, read from {{ s.server }}">!{{ s.cname }}<span class="muted">@{{ s.c_ap | host }}</span></a>{% endfor %}
+    {% for s in n.sources %}<a class="pill src" href="/t/{{ s.id }}?merge=0" title="Under the copy in {{ chandle(s.cname, s.c_ap, True) }}, read from {{ s.server }}">{{ chandle(s.cname, s.c_ap) }}</a>{% endfor %}
   {% endif %}
   {% if n.members | length > 1 %}<span class="pill new" title="Posted {{ n.members | length }} times with the same text; shown once">×{{ n.members | length }}</span>{% endif %}
 {%- endmacro %}
@@ -41,39 +41,46 @@
 {%- endmacro %}
 
 {# Voting / replying / editing as the acting account (see header switcher).
-   Votes go to every copy of a squashed comment or duplicated post. #}
+   Votes go to every copy of a squashed comment or duplicated post. Copies on
+   Reddit are acted on as your Reddit account (reddit_me), automatically; they
+   are left out when you aren't logged in with Reddit. #}
 {% macro actions(n, is_post=False) -%}
-{% if me %}
-  {% set o = n.o %}
+{% set w = [] %}{% set hs = [] %}
+{% for m in n.members %}{% set acct = reddit_me if is_reddit(m.o.canonical_ap_id) else me %}
+  {% if acct %}{% set _ = w.append(m) %}{% if acct.handle not in hs %}{% set _ = hs.append(acct.handle) %}{% endif %}{% endif %}{% endfor %}
+{% if w %}
+  {% set o = w[0].o %}
+  {% set who = reddit_me if is_reddit(o.canonical_ap_id) else me %}
+  {% set as_whom = hs | join(' and ') %}
   {% set ns = namespace(mine=0) %}
-  {% for m in n.members %}{% if not ns.mine %}{% set ns.mine = my_votes.get(m.o.canonical_ap_id, 0) %}{% endif %}{% endfor %}
+  {% for m in w %}{% if not ns.mine %}{% set ns.mine = my_votes.get(m.o.canonical_ap_id, 0) %}{% endif %}{% endfor %}
   {% set mine = ns.mine %}
-  {% set also = n.members[1:] %}
-  {% set every = (' on all ' ~ n.members | length ~ ' copies') if also else '' %}
-  {% set owned = o.a_ap == me.actor_ap_id %}
+  {% set also = w[1:] %}
+  {% set every = (' on all ' ~ w | length ~ ' copies') if also else '' %}
+  {% set owned = o.a_ap == who.actor_ap_id %}
   {% set powers = powers_by_community.get(o.community_id) %}
   <div class="obj-actions small">
     <form method="post" action="/o/{{ o.id }}/vote" class="inline">
       <input type="hidden" name="score" value="{{ 0 if mine == 1 else 1 }}">
       {% for m in also %}<input type="hidden" name="also" value="{{ m.o.id }}">{% endfor %}
-      <button class="vote up {{ 'on' if mine == 1 }}" title="{{ 'Remove upvote' if mine == 1 else 'Upvote' }} as {{ me.handle }}{{ every }}">▲ {{ n.agg.upvotes if n.agg.upvotes is not none else '' }}</button>
+      <button class="vote up {{ 'on' if mine == 1 }}" title="{{ 'Remove upvote' if mine == 1 else 'Upvote' }} as {{ as_whom }}{{ every }}">▲ {{ n.agg.upvotes if n.agg.upvotes is not none else '' }}</button>
     </form>
     <form method="post" action="/o/{{ o.id }}/vote" class="inline">
       <input type="hidden" name="score" value="{{ 0 if mine == -1 else -1 }}">
       {% for m in also %}<input type="hidden" name="also" value="{{ m.o.id }}">{% endfor %}
-      <button class="vote down {{ 'on' if mine == -1 }}" title="{{ 'Remove downvote' if mine == -1 else 'Downvote' }} as {{ me.handle }}{{ every }}">▼ {{ n.agg.downvotes if n.agg.downvotes is not none else '' }}</button>
+      <button class="vote down {{ 'on' if mine == -1 }}" title="{{ 'Remove downvote' if mine == -1 else 'Downvote' }} as {{ as_whom }}{{ every }}">▼ {{ n.agg.downvotes if n.agg.downvotes is not none else '' }}</button>
     </form>
     {% if not is_post %}
       <details class="reply-box">
         <summary>Reply</summary>
         <form method="post" action="/t/{{ t.id }}/reply" class="stack">
-          <textarea name="body" rows="4" required placeholder="Reply as {{ me.handle }} (Markdown)"></textarea>
+          <textarea name="body" rows="4" required placeholder="Reply as {{ as_whom }} (Markdown)"></textarea>
           {% if also %}
             {% set items = [] %}
-            {% for m in n.members %}{% set _ = items.append((m.o.id, 'Reply to the one in !' ~ m.src.cname ~ '@' ~ (m.src.c_ap | host), True)) %}{% endfor %}
+            {% for m in w %}{% set _ = items.append((m.o.id, 'Reply to the one in ' ~ chandle(m.src.cname, m.src.c_ap, True), True)) %}{% endfor %}
             {{ targets(items) }}
           {% else %}<input type="hidden" name="parent_id" value="{{ o.id }}">{% endif %}
-          <button class="small">Reply as {{ me.handle }}</button>
+          <button class="small">Reply as {{ as_whom }}</button>
         </form>
       </details>
     {% endif %}
@@ -82,18 +89,19 @@
       <details class="reply-box">
         <summary>{{ 'Restore' if o.cur_deleted else 'Delete' }}</summary>
         <form method="post" action="/o/{{ o.id }}/delete">
-          {% if o.cur_deleted %}<input type="hidden" name="restore" value="1">
-            <button class="small">Restore on {{ me.domain }}</button>
+          {% if o.cur_deleted and who.is_reddit %}<p class="muted">Reddit can't bring back deleted posts or comments.</p>
+          {% elif o.cur_deleted %}<input type="hidden" name="restore" value="1">
+            <button class="small">Restore on {{ who.domain }}</button>
           {% else %}<p class="muted">Deletes it on the server. The archive keeps what it has seen.</p>
-            <button class="small danger">Delete on {{ me.domain }}</button>{% endif %}
+            <button class="small danger">Delete on {{ who.domain }}</button>{% endif %}
         </form>
       </details>
     {% endif %}
     {% if powers and powers.any %}
       <details class="reply-box mod-box">
-        <summary title="{{ 'Moderator' if powers.moderator else 'Server admin' }} tools{{ (' for the copy in !' ~ n.src.cname) if grouped }}">Mod</summary>
+        <summary title="{{ 'Moderator' if powers.moderator else 'Server admin' }} tools{{ (' for the copy in ' ~ chandle(w[0].src.cname, w[0].src.c_ap, True)) if grouped }}">Mod</summary>
         <div class="stack mod-panel">
-          {% if grouped %}<span class="small muted">Acts on the copy in !{{ n.src.cname }}@{{ n.src.c_ap | host }}.</span>{% endif %}
+          {% if grouped %}<span class="small muted">Acts on the copy in {{ chandle(w[0].src.cname, w[0].src.c_ap, True) }}.</span>{% endif %}
           <form method="post" action="/o/{{ o.id }}/mod" class="row">
             {% if o.cur_removed %}
               <button name="action" value="restore" class="small">Restore</button>
@@ -109,7 +117,7 @@
             <button name="action" value="{{ 'unpin' if o.cur_featured else 'pin' }}" class="small secondary">{{ 'Unpin' if o.cur_featured else 'Pin' }} in community</button>
           </form>
           {% endif %}
-          {% if o.a_ap and o.a_ap != me.actor_ap_id %}
+          {% if o.a_ap and o.a_ap != who.actor_ap_id %}
           <form method="post" action="/o/{{ o.id }}/ban-author" class="row">
             <span class="small">Ban {{ o.username }}@{{ o.a_instance }} from the community:</span>
             <input name="reason" required placeholder="Reason">
@@ -161,7 +169,7 @@
 </div>
 {% endif %}
 <p class="small muted">
-  <a href="/c/{{ t.cid }}">!{{ t.cname }}@{{ t.c_ap | host }}</a>
+  <a href="/c/{{ t.cid }}">{{ chandle(t.cname, t.c_ap, True) }}</a>
   · {% if t.retention == 'manual' %}<span class="pill good">★ kept</span>{% else %}<span class="pill new">in feed</span>
       {% if t.expires_at %}expires {{ when(t.expires_at) }} unless kept{% else %}no expiry while the community's retention is "forever"{% endif %}{% endif %}
 </p>
@@ -216,6 +224,7 @@
     {% if t.last_error %}<span class="bad-text">last sync failed: {{ t.last_error }}</span>{% endif %}
     {% if instance and not instance.available %}<span class="pill bad">instance unreachable</span>{% endif %}
     <form method="post" action="/t/{{ t.id }}/sync" class="inline"><button class="small secondary">Re-check now</button></form>
+    {% if accounts %}<a class="chip" href="/t/{{ t.id }}/repost" title="Post a copy in one of your communities">↻ Repost</a>{% endif %}
     {% if not t.trashed_at %}
       {% if all_kept %}
         <form method="post" action="/t/{{ t.id }}/unkeep" class="inline">{{ g }}<button class="chip on" title="Click to unkeep{{ ' every copy' if grouped }}">★ Kept</button></form>
@@ -227,21 +236,28 @@
   </div>
 </article>
 
-{% if me and not t.trashed_at %}
+{% set writable_copies = [] %}{% set hs = [] %}
+{% for pc in post_copies %}{% set acct = reddit_me if pc.reddit else me %}
+  {% if acct %}{% set _ = writable_copies.append(pc) %}{% if acct.handle not in hs %}{% set _ = hs.append(acct.handle) %}{% endif %}{% endif %}{% endfor %}
+{% set as_whom = hs | join(' and ') %}
+{% if not t.trashed_at and writable_copies %}
 <section class="card compose">
   <form method="post" action="/t/{{ t.id }}/reply" class="stack">
-    <textarea name="body" rows="4" required placeholder="Add a comment as {{ me.handle }} (Markdown)"></textarea>
-    {% if grouped %}
+    <textarea name="body" rows="4" required placeholder="Add a comment as {{ as_whom }} (Markdown)"></textarea>
+    {% if writable_copies | length > 1 %}
       {% set items = [] %}
-      {% for pc in post_copies %}{% set _ = items.append((pc.o.id, '!' ~ pc.t.cname ~ '@' ~ (pc.t.c_ap | host) ~ ' (posted by ' ~ pc.o.username ~ ')' ~ (' · locked' if pc.o.cur_locked else ''), not (pc.o.cur_locked or pc.o.cur_removed or pc.o.cur_deleted))) %}{% endfor %}
+      {% for pc in writable_copies %}{% set _ = items.append((pc.o.id, chandle(pc.t.cname, pc.t.c_ap, True) ~ ' (posted by ' ~ pc.o.username ~ ')' ~ (' · locked' if pc.o.cur_locked else ''), not (pc.o.cur_locked or pc.o.cur_removed or pc.o.cur_deleted))) %}{% endfor %}
       {{ targets(items) }}
     {% endif %}
-    <div class="row"><button>Comment as {{ me.handle }}</button>
-      {% if accounts | length > 1 %}<span class="small muted">Switch accounts in the header.</span>{% endif %}</div>
+    <div class="row"><button>Comment as {{ as_whom }}</button>
+      {% if (accounts | rejectattr('is_reddit') | list | length) > 1 %}<span class="small muted">Switch accounts in the header{{ '; Reddit copies always get your Reddit account' if reddit_me and writable_copies | selectattr('reddit') | list }}.</span>{% endif %}</div>
   </form>
 </section>
 {% elif not accounts %}
 <p class="small muted"><a href="/accounts">Add an account</a> to comment, vote or post from here.</p>
+{% elif not writable_copies and not t.trashed_at %}
+<p class="small muted">This is on Reddit. <a href="/reddit">Log in with Reddit</a> to vote and comment here, or
+  <a href="/t/{{ t.id }}/repost">↻ repost it</a> to discuss it on your own server.</p>
 {% endif %}
 
 <section class="comments" id="comments">

@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% from "_macros.html" import when %}
+{% block title %}Reddit{% endblock %}
+{% block content %}
+<h1>Reddit</h1>
+<p class="muted">Follow subreddits like any other community: type <code>r/name</code> on the Communities page, or
+  follow your subscriptions below. Logged in with Reddit, you can vote, comment and post there too: it's done as
+  your Reddit account automatically, whichever account is picked in the header. <strong>↻ Repost</strong> copies a post
+  to one of your own communities, or from them to a subreddit.</p>
+
+{% if reddit %}
+<section class="card">
+  <h2>Connected</h2>
+  <div class="follow-row">
+    <div>
+      {% if reddit.mode == 'user' %}<strong>{{ ('u/' ~ reddit.username) if reddit.username else 'Your Reddit account' }}</strong>
+        <span class="muted">· logged in with Reddit</span>
+      {% else %}<strong>App only</strong> <span class="muted">· no Reddit account, public subreddits</span>{% endif %}
+      {% if reddit.status == 'ok' %}<span class="pill good">working</span>{% else %}<span class="pill bad">needs connecting again</span>{% endif %}
+      {% if reddit.mode == 'user' and not reddit.can_write %}<span class="pill warn" title="Signed in before ThreadBNC asked to vote, comment and post">read only: connect again below</span>{% endif %}
+      {% if reddit.paused_seconds %}<span class="pill warn" title="Reddit's rate limit">paused {{ reddit.paused_seconds }} s</span>{% endif %}
+      <div class="small muted">App <code>{{ reddit.client_id }}</code> · connected {{ when(reddit.connected_at) }}
+        {% if reddit.last_error %}<div class="bad-text">{{ reddit.last_error }}</div>{% endif %}</div>
+    </div>
+    {% if reddit.mode == 'user' %}<a class="chip" href="/reddit?subs=1">Show my subscriptions</a>{% endif %}
+    <details class="reply-box">
+      <summary class="small">Disconnect…</summary>
+      <form method="post" action="/reddit/disconnect">
+        <p class="small muted">Forgets the app{{ ' and ends the sign-in on Reddit' if reddit.mode == 'user' }}.
+          Followed subreddits and everything saved from them stay; they're just not checked until you connect again.</p>
+        <button class="small danger">Disconnect</button>
+      </form>
+    </details>
+  </div>
+</section>
+{% endif %}
+
+{% if subs_error %}<div class="flash error">Couldn't load your subscriptions: {{ subs_error }}</div>{% endif %}
+{% if subscriptions is not none %}
+<section class="card">
+  <h2>Your subscriptions ({{ subscriptions | length }})</h2>
+  {% if not subscriptions %}<p class="muted">You aren't subscribed to any subreddits.</p>{% else %}
+  <p class="small muted">Tick the ones to follow here. Each is checked every {{ reddit_poll }} minutes; every
+    subreddit you follow uses part of Reddit's request allowance, so pick the ones you actually read.</p>
+  <form method="post" action="/reddit/follow" class="stack">
+    <ul class="plain sub-list">
+      {% for c in subscriptions %}
+        {% set on = c.ap_id | lower in followed %}
+        <li><label class="check"><input type="checkbox" name="names" value="{{ c.name }}" {{ 'disabled' if on }}>
+          r/{{ c.name }}</label>
+          {% if on %}<span class="pill good">following</span>{% endif %}
+          {% if c.title %}<span class="small muted">· {{ c.title }}</span>{% endif %}</li>
+      {% endfor %}
+    </ul>
+    <div class="row">
+      <label>Keep unkept posts for
+        <select name="retention_days">
+          {% for d in [7, 30, 90, 365] %}<option value="{{ d }}" {{ 'selected' if d == default_days }}>{{ d }} days</option>{% endfor %}
+          <option value="forever" {{ 'selected' if default_days is none }}>forever</option>
+        </select></label>
+      <button>Follow ticked subreddits</button>
+    </div>
+  </form>
+  {% endif %}
+</section>
+{% endif %}
+
+<section class="card">
+  <h2>{{ 'Connect a different way' if reddit else 'Connect' }}</h2>
+  <p class="small">Reddit's API needs an app of your own:</p>
+  <ol class="small">
+    <li>Open <a href="https://www.reddit.com/prefs/apps" target="_blank" rel="noreferrer noopener">reddit.com/prefs/apps</a>
+      and choose <em>create another app</em>.</li>
+    <li>Pick <strong>web app</strong> (or <strong>installed app</strong>, which has no secret). As the redirect uri, enter exactly
+      <code class="copyable">{{ callback }}</code></li>
+    <li>Copy the client id (the string under the app's name) and the secret into one of the forms below.</li>
+  </ol>
+  <p class="small muted">Reddit may ask you to request API access before a new app works; see its developer terms.</p>
+  <div class="grid2">
+    <form method="post" action="/reddit/login" class="card stack" autocomplete="off">
+      <h3>Log in with Reddit</h3>
+      <p class="small muted">You approve ThreadBNC on reddit.com; your Reddit password never passes through here. It
+        can then list your subscriptions, read what your account can see, and vote, comment, post, edit and delete as you.</p>
+      <label>Client id <input name="client_id" required></label>
+      <label>Secret <span class="muted small">(blank for an installed app)</span> <input type="password" name="client_secret" autocomplete="off"></label>
+      <button>Log in with Reddit</button>
+    </form>
+    <form method="post" action="/reddit/app" class="card stack" autocomplete="off">
+      <h3>App only (API key)</h3>
+      <p class="small muted">No Reddit account: reads public subreddits with just the app's id and secret.</p>
+      <label>Client id <input name="client_id" required></label>
+      <label>Secret <input type="password" name="client_secret" autocomplete="off"></label>
+      <button>Connect</button>
+    </form>
+  </div>
+  <p class="small muted">Only encrypted tokens and the encrypted secret are stored, with the same key as your account sessions.</p>
+</section>
+
+<section class="card">
+  <h2>How often Reddit is checked</h2>
+  <ul class="small">
+    <li>Subreddits: every {{ reddit_poll }} minutes unless you choose otherwise, and never more often than every 10.
+      Each check reads up to 2 pages of 25 new posts.</li>
+    <li>Threads: at that interval for their first day, then every 2 hours until day 3, twice a day until day 7, then daily.
+      When a thread's comment count hasn't changed, only the post is re-read (one request), and the whole comment
+      tree at most every 6 hours.</li>
+    <li>Big threads: the newest 200 comments are read each time. Reddit hides the rest behind "load more", which
+      isn't followed, so comments seen once are kept even when they drop out of view.</li>
+    <li>At most one request every {{ reddit_interval }} seconds, and ThreadBNC stops when Reddit's rate-limit
+      headers say the allowance is nearly used up.</li>
+  </ul>
+</section>
+{% endblock %}

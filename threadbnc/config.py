@@ -6,6 +6,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+REDDIT_MIN_POLL_MINUTES = 10  # the fastest a subreddit may be checked, whatever is asked for
+
+
 def _env_int(name: str, default: int) -> int:
     raw = os.environ.get(name)
     return int(raw) if raw else default
@@ -45,6 +48,10 @@ class Settings:
     proxy_secret: str | None = None
     proxy_allowed_users: tuple[str, ...] = ()
     proxy_logout_url: str | None = None
+    # Reddit: slower defaults than Lemmy/PieFed, since one app's request budget
+    # (about 100 a minute) covers everything. See reddit.py.
+    reddit_poll_minutes: int = 60
+    reddit_min_request_interval: float = 2.0
 
 
 def _load_secret(data_dir: Path) -> str:
@@ -91,4 +98,6 @@ def load_settings() -> Settings:
                                   .split(",") if u.strip()),
         proxy_logout_url=os.environ.get("THREADBNC_PROXY_LOGOUT_URL", "/outpost.goauthentik.io/sign_out").strip()
         or None,
+        reddit_poll_minutes=max(REDDIT_MIN_POLL_MINUTES, _env_int("THREADBNC_REDDIT_POLL_MINUTES", 60)),
+        reddit_min_request_interval=max(1.0, float(os.environ.get("THREADBNC_REDDIT_MIN_REQUEST_INTERVAL", "2.0"))),
     )

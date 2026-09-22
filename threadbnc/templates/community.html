@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% from "_macros.html" import when, votes %}
 {% from "_feed.html" import controls, post_card, pager, sidebar %}
-{% block title %}!{{ c.name }}@{{ c.canonical_ap_id | host }}{% endblock %}
+{% block title %}{{ chandle(c.name, c.canonical_ap_id, True) }}{% endblock %}
 {% block content %}
 {% set following = follow and follow.active %}
 {% set base = "/c/" ~ c.id ~ "?tab=" ~ tab ~ "&" %}
@@ -9,11 +9,11 @@
   <div class="main-col">
     <header class="community-head">
       <div>
-        <h1>!{{ c.name }}<span class="muted">@{{ c.canonical_ap_id | host }}</span></h1>
+        <h1>{{ chandle(c.name, c.canonical_ap_id) }}</h1>
         {% if c.title %}<p class="muted">{{ c.title }}</p>{% endif %}
       </div>
       <div class="row">
-      {% if accounts %}<a class="chip" href="/c/{{ c.id }}/submit">✎ New post</a>{% endif %}
+      {% if (reddit_me if is_reddit(c.canonical_ap_id) else acting) %}<a class="chip" href="/c/{{ c.id }}/submit">✎ New post</a>{% endif %}
       {% if following %}
         <details class="settings">
           <summary class="pill good">✓ Following · every {{ follow.poll_interval_minutes }} min · keep {{ (follow.retention_days ~ 'd') if follow.retention_days is not none else 'forever' }}</summary>
@@ -24,8 +24,14 @@
                 <input name="retention_days" class="num" value="{{ follow.retention_days if follow.retention_days is not none else 'forever' }}"> days</label>
               <button class="small">Save</button>
             </form>
+            {% if is_reddit(c.canonical_ap_id) %}
+            <p class="small muted">Subreddits are checked every 10 minutes at the most. New posts are checked for
+              comments and edits at this interval for their first day, then every 2 hours until day 3, twice a day
+              until day 7, then daily.</p>
+            {% else %}
             <p class="small muted">New posts are checked for comments and edits at this interval for their first day,
               then hourly until day 3, then every 6 hours.</p>
+            {% endif %}
             <p class="small muted">A number of days, or "forever". Posts you ★ keep never expire.
               Checked via {{ follow.source_domain }}, last {{ when(follow.last_polled_at) if follow.last_polled_at else 'not yet' }}.
               {% if follow.last_error %}<span class="bad-text">{{ follow.last_error }}</span>{% endif %}</p>

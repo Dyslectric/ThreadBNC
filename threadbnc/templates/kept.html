@@ -9,7 +9,7 @@
 <section class="card" id="archive">
   <h2>Keep a post by link</h2>
   <form method="post" action="/archive" class="row">
-    <input type="url" name="url" placeholder="https://lemmy.example/post/12345" required>
+    <input type="url" name="url" placeholder="https://lemmy.example/post/12345  or a reddit.com post link" required>
     <button>Keep</button>
   </form>
   <p class="muted small">Any Lemmy or PieFed post or comment link. The whole thread is saved.</p>
@@ -32,7 +32,7 @@
     <h2>{{ total }} kept thread{{ 's' if total != 1 }}</h2>
     {% if not groups %}<p class="muted">Nothing kept yet. Use ☆ Keep on a post in your feed, or paste a link above.</p>{% endif %}
     {% for g in groups %}
-      <h3 class="group-head"><a href="/c/{{ g.cid }}?tab=kept">!{{ g.name }}<span class="muted">@{{ g.ap | host }}</span></a></h3>
+      <h3 class="group-head"><a href="/c/{{ g.cid }}?tab=kept">{{ chandle(g.name, g.ap) }}</a></h3>
       <ul class="plain">
       {% for t in g.threads %}
         <li><a href="/t/{{ t.id }}">{{ t.title }}</a> {{ state_badges(t) }}

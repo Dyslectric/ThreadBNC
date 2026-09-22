@@ -33,6 +33,14 @@ class RemoteAuthError(RemoteError):
         self.code = code
 
 
+class CommentList(list):
+    """fetch_comments' result. `complete` is False when the server only returned
+    part of the tree (Reddit's "load more comments"), so comments that aren't in
+    it mustn't be taken as gone."""
+
+    complete: bool = True
+
+
 class RemoteRejected(RemoteError):
     """The server refused a write (banned, locked thread, rate limit, bad input...)."""
 
@@ -140,6 +148,31 @@ class CommunityRef:
         return f"{self.name}@{self.home}" if self.home and self.home != self.domain else self.name
 
 
+# Reddit isn't federated: every reddit.com host (www., old., np., m.) and redd.it
+# links are one "server", REDDIT_DOMAIN.
+REDDIT_DOMAIN = "reddit.com"
+_REDDIT_POST = [re.compile(r"^/(?:r/[^/]+/)?comments/([a-z0-9]+)", re.I), re.compile(r"^/gallery/([a-z0-9]+)", re.I)]
+_REDDIT_SHARE = re.compile(r"^/r/[^/]+/s/[A-Za-z0-9]+/?$")
+_SUBREDDIT = re.compile(r"^/?r/([A-Za-z0-9_]{2,21})/?$")
+
+
+def is_reddit_host(host: str | None) -> bool:
+    host = (host or "").lower().split(":")[0]
+    return host in ("reddit.com", "redd.it") or host.endswith(".reddit.com")
+
+
+def _reddit_thread_ref(host: str, path: str) -> ThreadRef:
+    if host == "redd.it" and re.fullmatch(r"/[a-z0-9]+/?", path, re.I):
+        return ThreadRef(REDDIT_DOMAIN, "post", path.strip("/").lower())
+    for pat in _REDDIT_POST:
+        m = pat.match(path)
+        if m:
+            return ThreadRef(REDDIT_DOMAIN, "post", m.group(1).lower())
+    if _REDDIT_SHARE.match(path):  # the app's share links: /r/name/s/code redirects to the post
+        return ThreadRef(REDDIT_DOMAIN, "share", path)
+    raise ValueError(f"Unrecognised Reddit post URL path: {path}")
+
+
 _POST_PATTERNS = [
     re.compile(r"^/post/(\d+)(?:/(\d+))?/?"),  # lemmy /post/1  /post/1/2 (comment context)
     re.compile(r"^/c/[^/]+/p/(\d+)(?:/[^/]*)?/?"),  # piefed /c/name/p/1/slug
@@ -155,9 +188,11 @@ def parse_thread_url(url: str) -> ThreadRef:
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
         raise ValueError("Not an http(s) URL")
     domain = parsed.hostname.lower()
+    path = parsed.path or "/"
+    if is_reddit_host(domain):
+        return _reddit_thread_ref(domain, path)
     if parsed.port:
         domain = f"{domain}:{parsed.port}"
-    path = parsed.path or "/"
     for pat in _COMMENT_PATTERNS:
         m = pat.match(path)
         if m:
@@ -170,10 +205,21 @@ def parse_thread_url(url: str) -> ThreadRef:
 
 
 def parse_community_ref(text: str) -> CommunityRef:
-    """Accepts !name@host, name@host, https://host/c/name, https://host/c/name@home."""
+    """Accepts !name@host, name@host, https://host/c/name, https://host/c/name@home,
+    and subreddits: r/name or https://www.reddit.com/r/name."""
     text = text.strip()
     if text.startswith("!"):
         text = text[1:]
+    m = _SUBREDDIT.match(text)
+    if m:
+        return CommunityRef(REDDIT_DOMAIN, m.group(1), REDDIT_DOMAIN)
+    if "reddit.com/" in text.lower():
+        parsed = urlparse(text if "://" in text else "https://" + text)
+        m = re.match(r"^/r/([A-Za-z0-9_]{2,21})(?:/|$)", parsed.path or "")
+        if is_reddit_host(parsed.hostname) and m:
+            return CommunityRef(REDDIT_DOMAIN, m.group(1), REDDIT_DOMAIN)
+        if is_reddit_host(parsed.hostname):
+            raise ValueError("Not a subreddit URL (expected https://www.reddit.com/r/name)")
     if "://" in text or text.startswith(("/", "www.")) or ("/c/" in text):
         u = text if "://" in text else "https://" + text
         parsed = urlparse(u)

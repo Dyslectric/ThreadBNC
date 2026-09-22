@@ -22,6 +22,16 @@
         <div class="small muted"><code>{{ a.actor_ap_id }}</code>
           {% if a.last_error %}<div class="bad-text">{{ a.last_error }}</div>{% endif %}</div>
       </div>
+      {% if a.is_reddit %}
+      <span class="small muted">Used automatically for anything on Reddit · <a href="/reddit">Reddit settings</a></span>
+      <details class="reply-box">
+        <summary class="small">Remove…</summary>
+        <form method="post" action="/accounts/{{ a.id }}/remove">
+          <p class="small muted">Disconnects Reddit: ends the sign-in on Reddit and forgets it here. Followed subreddits and everything saved stay.</p>
+          <button class="small danger">Remove {{ a.handle }}</button>
+        </form>
+      </details>
+      {% else %}
       {% if not a.is_default %}
         <form method="post" action="/accounts/{{ a.id }}/default" class="inline"><button class="small secondary">Make default</button></form>
       {% endif %}
@@ -33,9 +43,24 @@
           <button class="small danger">Remove {{ a.handle }}</button>
         </form>
       </details>
+      {% endif %}
     </li>
   {% endfor %}
   </ul>
+</section>
+
+<section class="card">
+  <h2>Reddit</h2>
+  {% if reddit %}
+    <p>Connected {{ ('as u/' ~ reddit.username) if reddit.username else 'with an app (no Reddit account)' }}
+      {% if reddit.status != 'ok' %}<span class="pill bad">needs connecting again</span>{% endif %}
+      · <a href="/reddit">Reddit settings</a></p>
+    <p class="small muted">{% if reddit.can_write %}Votes, comments and posts on Reddit are made as u/{{ reddit.username }} automatically, whichever account is picked in the header.
+      {% elif reddit.mode == 'user' %}This sign-in can only read. Connect again on the Reddit page to vote, comment and post.
+      {% else %}An app-only connection can only read. Log in with Reddit to vote, comment and post.{% endif %}</p>
+  {% else %}
+    <p class="muted">Follow subreddits and repost from them to your own communities. <a href="/reddit">Connect Reddit →</a></p>
+  {% endif %}
 </section>
 
 <section class="card narrow-form">

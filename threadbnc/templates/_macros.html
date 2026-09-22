@@ -1,5 +1,5 @@
 {% macro community_handle(name, ap_id) -%}
-!{{ name }}@{{ ap_id | host }}
+{{ chandle(name, ap_id, True) }}
 {%- endmacro %}
 
 {% macro when(ts) -%}
@@ -26,7 +26,7 @@
     <span class="vb-title">Votes by server</span>
     <table>
       {% for b in breakdown %}<tr>
-        <td class="vb-where"><span class="vb-server">{{ b.server }}</span><span class="vb-community">!{{ b.community }}@{{ b.community_host }}</span></td>
+        <td class="vb-where"><span class="vb-server">{{ b.server }}</span><span class="vb-community">{{ chandle(b.community, 'https://' ~ b.community_host ~ '/', True) }}</span></td>
         {% if b.upvotes is not none %}<td class="up">▲ {{ b.upvotes }}</td><td class="down">{% if b.downvotes is not none %}▼ {{ b.downvotes }}{% endif %}</td>
         {% else %}<td colspan="2" class="muted">{{ b.score if b.score is not none else '—' }}{% if b.score is not none %} pts{% endif %}</td>{% endif %}
       </tr>{% endfor %}
@@ -41,7 +41,7 @@
 
 {# Where a duplicated post was posted: community and poster for each copy. #}
 {% macro copy_where(c) -%}
-<a href="/t/{{ c.id }}" class="copy-where"><span class="pc-community">!{{ c.cname }}<span class="muted">@{{ c.c_ap | host }}</span></span></a>
+<a href="/t/{{ c.id }}" class="copy-where"><span class="pc-community">{{ chandle(c.cname, c.c_ap) }}</span></a>
 <span class="muted">by</span> <span>{{ c.username }}@{{ c.a_instance }}</span>
 {%- endmacro %}
 
