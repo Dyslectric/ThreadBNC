@@ -111,6 +111,10 @@ TONE = {
 
 
 COMMENT_SORTS = {"hot": "Hot", "top": "Top", "new": "New", "old": "Old", "controversial": "Controversial"}
+# A feed's settings, in words (feed.py's SORTS, WINDOWS and unread filters).
+FEED_SORTS = {"new": "New", "active": "Active", "top": "Top", "comments": "Most comments"}
+FEED_WINDOWS = {"day": "Past day", "week": "Past week", "month": "Past month", "all": "All time"}
+FEED_SHOWS = {"": "All posts", "posts": "Unread posts", "comments": "New comments", "any": "Unread or new comments"}
 
 
 def _hours_since(ts: str | None) -> float:
@@ -338,9 +342,18 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     def mark_on_scroll() -> bool:
         return db.get_setting("mark_read_on_scroll") == "1"
 
+    def custom_feeds() -> list[dict[str, Any]]:
+        with db.connect() as conn:
+            return feed_mod.custom_feeds(conn)
+
+    def following_collapsed() -> bool:
+        return db.get_setting("following_collapsed") == "1"
+
     templates.env.globals.update(event_label=event_label, tone=lambda e: TONE.get(e["event_type"], ""),
                                  static_url=static_url, trash_count=trash_count, inbox_count=inbox.unread_count,
-                                 mark_on_scroll=mark_on_scroll, themes=THEMES,
+                                 mark_on_scroll=mark_on_scroll, themes=THEMES, custom_feeds=custom_feeds,
+                                 following_collapsed=following_collapsed, feed_sorts=FEED_SORTS,
+                                 feed_windows=FEED_WINDOWS, feed_shows=FEED_SHOWS,
                                  password_login=bool(settings.password),
                                  proxy_login=bool(settings.proxy_auth_header), chandle=chandle,
                                  is_reddit=is_reddit, is_rss=is_rss)
@@ -542,24 +555,121 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                              "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
 
     @app.get("/", response_class=HTMLResponse)
-    def home(request: Request, sort: str = "new", t: str = "all", unread: str = "", page: int = 1,
-             view: str | None = None):
+    def home(request: Request, sort: str | None = None, t: str | None = None, unread: str | None = None,
+             page: int = 1, view: str | None = None):
+        """The main feed: every followed community, as the address says or else
+        as its defaults say."""
         save_view("home_view", view)
         chosen = db.get_setting("home_view")
         with db.connect() as conn:
-            unread = feed_mod.unread_mode(unread)
-            fp = feed_mod.load_feed(conn, sort=sort, window=t, unread=unread, page=page)
+            defaults = feed_mod.load_defaults(conn)
+            s = defaults.with_url(sort, t, unread)
+            fp = feed_mod.load_feed(conn, sort=s.sort, window=s.window, unread=s.unread, page=page)
             follows = feed_mod.followed_communities(conn)
         # The home feed mixes communities, so "auto" goes by what's on this page.
         shown = feed_mod.pick_view(chosen, sum(1 for i in fp.items if i["thumb"]), len(fp.items))
-        return render(request, "feed.html", feed=fp, follows=follows, sort=sort, window=t, unread=unread,
-                      base_url="/", community=None, view=shown, view_chosen=chosen)
+        return render(request, "feed.html", feed=fp, follows=follows, sort=s.sort, window=s.window, unread=s.unread,
+                      defaults=defaults, custom=None, base_url="/", community=None, view=shown, view_chosen=chosen)
+
+    @app.get("/f/{fid}", response_class=HTMLResponse)
+    def custom_feed_page(request: Request, fid: int, sort: str | None = None, t: str | None = None,
+                         unread: str | None = None, page: int = 1, view: str | None = None):
+        """One of your own feeds: its communities, shown with its own defaults."""
+        if view in (*feed_mod.VIEWS, "auto"):
+            with db.transaction() as conn:
+                conn.execute("UPDATE custom_feeds SET view_mode=? WHERE id=?", (None if view == "auto" else view, fid))
+        with db.connect() as conn:
+            custom = feed_mod.custom_feed(conn, fid)
+            if custom is None:
+                raise HTTPException(404)
+            defaults = feed_mod.feed_settings(custom, feed_mod.load_defaults(conn))
+            s = defaults.with_url(sort, t, unread)
+            fp = feed_mod.load_feed(conn, community_ids=custom["community_ids"], sort=s.sort, window=s.window,
+                                    unread=s.unread, page=page)
+            follows = feed_mod.followed_communities(conn)
+        shown = feed_mod.pick_view(custom["view_mode"], sum(1 for i in fp.items if i["thumb"]), len(fp.items))
+        return render(request, "feed.html", feed=fp, follows=follows, sort=s.sort, window=s.window, unread=s.unread,
+                      defaults=defaults, custom=custom, base_url=f"/f/{fid}", community=None, view=shown,
+                      view_chosen=custom["view_mode"])
+
+    @app.post("/feed/defaults")
+    def feed_defaults(request: Request, sort: str = Form("new"), t: str = Form("all"), unread: str = Form(""),
+                      feed_id: int | None = Form(None)):
+        """Make what a feed shows now its default: the main feed's (which
+        community pages use too), or one of your own feeds'."""
+        s = feed_mod.FeedSettings.clean(sort, t, unread)
+        with db.transaction() as conn:
+            if feed_id is None:
+                feed_mod.save_defaults(conn, s)
+            else:
+                feed_mod.save_custom_feed_settings(conn, feed_id, s)
+        flash(request, f"Now shown by default: {describe_settings(s)}.")
+        return RedirectResponse(f"/f/{feed_id}" if feed_id else "/", status_code=303)
+
+    def describe_settings(s: feed_mod.FeedSettings) -> str:
+        return " · ".join([FEED_SORTS[s.sort], FEED_WINDOWS[s.window], FEED_SHOWS[s.unread]])
+
+    def feed_form(request: Request, custom: dict[str, Any] | None, error: str | None = None) -> HTMLResponse:
+        with db.connect() as conn:
+            follows = feed_mod.followed_communities(conn)
+            chosen = set(custom["community_ids"]) if custom else set()
+            followed = {f["id"] for f in follows}
+            others = [dict(r) for r in conn.execute(  # in the feed, but not followed any more
+                "SELECT id, name, title, canonical_ap_id FROM communities WHERE id IN ({})".format(
+                    ",".join("?" * len(chosen - followed))), sorted(chosen - followed))] if chosen - followed else []
+            defaults = feed_mod.load_defaults(conn)
+        return render(request, "feed_edit.html", custom=custom, communities=follows + others, chosen=chosen,
+                      settings=feed_mod.feed_settings(custom, defaults) if custom else defaults, error=error,
+                      sorts=FEED_SORTS, windows=FEED_WINDOWS, shows=FEED_SHOWS)
+
+    @app.get("/feeds/new", response_class=HTMLResponse)
+    def new_feed(request: Request):
+        return feed_form(request, None)
+
+    @app.get("/f/{fid}/edit", response_class=HTMLResponse)
+    def edit_feed(request: Request, fid: int):
+        with db.connect() as conn:
+            custom = feed_mod.custom_feed(conn, fid)
+        if custom is None:
+            raise HTTPException(404)
+        return feed_form(request, custom)
+
+    @app.post("/feeds")
+    @app.post("/f/{fid}/edit")
+    def save_feed(request: Request, fid: int | None = None, name: str = Form(""), community: list[int] = Form([]),
+                  sort: str = Form("new"), t: str = Form("all"), unread: str = Form(""), view: str = Form("auto")):
+        name = " ".join(name.split())[:80]
+        if not name:
+            with db.connect() as conn:
+                custom = feed_mod.custom_feed(conn, fid) if fid else None
+            return feed_form(request, custom, "Give the feed a name.")
+        with db.transaction() as conn:
+            fid = feed_mod.save_custom_feed(conn, fid, name, community, feed_mod.FeedSettings.clean(sort, t, unread),
+                                            view, utcnow())
+        flash(request, f"Saved “{name}”.")
+        return RedirectResponse(f"/f/{fid}", status_code=303)
+
+    @app.post("/f/{fid}/delete")
+    def delete_feed(request: Request, fid: int):
+        with db.transaction() as conn:
+            feed_mod.delete_custom_feed(conn, fid)
+        flash(request, "Feed deleted. Its communities and posts are untouched.")
+        return RedirectResponse("/", status_code=303)
+
+    @app.post("/feed/sidebar")
+    def feed_sidebar(request: Request, collapsed: str = Form("0")):
+        """Remember whether the Following list is collapsed."""
+        with db.transaction() as conn:
+            conn.execute("INSERT INTO app_settings(key, value) VALUES ('following_collapsed', ?) "
+                         "ON CONFLICT(key) DO UPDATE SET value=excluded.value", ("1" if collapsed == "1" else "0",))
+        return RedirectResponse(back(request, "/"), status_code=303)
 
     @app.post("/feed/mark-read")
-    def mark_read(request: Request, community_id: int | None = Form(None)):
+    def mark_read(request: Request, community_id: int | None = Form(None), feed_id: int | None = Form(None)):
         stamp = utcnow()
         with db.transaction() as conn:
-            n = feed_mod.mark_read(conn, stamp, community_id)
+            custom = feed_mod.custom_feed(conn, feed_id) if feed_id else None
+            n = feed_mod.mark_read(conn, stamp, community_id, custom["community_ids"] if custom else None)
         if n:
             flash(request, f"Marked {n} post{'s' if n != 1 else ''} as read.",
                   undo={"action": "/feed/mark-unread", "fields": {"stamp": stamp}})
@@ -833,9 +943,12 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         return RedirectResponse(back(request, f"/c/{cid}"), status_code=303)
 
     @app.get("/c/{cid}", response_class=HTMLResponse)
-    def community(request: Request, cid: int, tab: str = "feed", sort: str = "new", t: str = "all",
-                  unread: str = "", page: int = 1, live_sort: str = "Hot", view: str | None = None):
+    def community(request: Request, cid: int, tab: str = "feed", sort: str | None = None, t: str | None = None,
+                  unread: str | None = None, page: int = 1, live_sort: str = "Hot", view: str | None = None):
         save_view("", view, cid)
+        with db.connect() as conn:
+            s = feed_mod.load_defaults(conn).with_url(sort, t, unread)
+        sort, t, unread = s.sort, s.window, s.unread
         with db.connect() as conn:
             c = conn.execute("SELECT c.*, i.domain FROM communities c JOIN instances i ON i.id=c.instance_id "
                              "WHERE c.id=?", (cid,)).fetchone()
@@ -844,7 +957,6 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             follow_row = conn.execute("SELECT * FROM community_follows WHERE community_id=?", (cid,)).fetchone()
             fp, shown = None, "list"
             if tab in ("feed", "kept"):
-                unread = feed_mod.unread_mode(unread)
                 fp = feed_mod.load_feed(conn, community_id=cid, sort=sort, window=t, unread=unread,
                                         kept_only=tab == "kept", page=page)
                 shown = feed_mod.pick_view(c["view_mode"], *feed_mod.media_share(conn, cid))

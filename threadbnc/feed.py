@@ -92,15 +92,109 @@ def unread_mode(value: Any) -> str:
     return "any" if value is True or value == "1" else ""
 
 
-def load_feed(conn: Conn, *, community_id: int | None = None, sort: str = "new",
-              window: str = "all", unread: str | bool = "", kept_only: bool = False, page: int = 1,
-              per_page: int = 25) -> FeedPage:
-    args: list[Any] = []
-    if community_id is not None:
-        scope = "AND t.community_id=?"
-        args.append(community_id)
+# --- how a feed is shown by default -------------------------------------------------
+
+@dataclass
+class FeedSettings:
+    """A feed's sort, time range and unread filter: what it shows when the
+    address doesn't say."""
+
+    sort: str = "new"
+    window: str = "all"
+    unread: str = ""
+
+    @classmethod
+    def clean(cls, sort: Any, window: Any, unread: Any) -> FeedSettings:
+        return cls(sort if sort in SORTS else "new", window if window in WINDOWS else "all", unread_mode(unread))
+
+    def with_url(self, sort: str | None, window: str | None, unread: str | None) -> FeedSettings:
+        """These settings, with whatever the address chose instead."""
+        return FeedSettings.clean(self.sort if sort is None else sort, self.window if window is None else window,
+                                  self.unread if unread is None else unread)
+
+
+def load_defaults(conn: Conn) -> FeedSettings:
+    """The main feed's defaults, which community pages use too."""
+    row = conn.execute("SELECT value FROM app_settings WHERE key='feed_defaults'").fetchone()
+    saved = json.loads(row[0]) if row and row[0] else {}
+    return FeedSettings.clean(saved.get("sort"), saved.get("window"), saved.get("unread"))
+
+
+def save_defaults(conn: Conn, settings: FeedSettings) -> None:
+    conn.execute("INSERT INTO app_settings(key, value) VALUES ('feed_defaults', ?) "
+                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                 (json.dumps({"sort": settings.sort, "window": settings.window, "unread": settings.unread}),))
+
+
+# --- your own feeds ------------------------------------------------------------------
+
+def custom_feeds(conn: Conn) -> list[dict[str, Any]]:
+    """Every custom feed, with its communities and how many unread posts it has."""
+    feeds = [dict(r) for r in conn.execute("SELECT * FROM custom_feeds ORDER BY name, id")]
+    members: dict[int, list[int]] = {}
+    for r in conn.execute("SELECT feed_id, community_id FROM custom_feed_communities"):
+        members.setdefault(r[0], []).append(r[1])
+    unread = {r[0]: r[1] for r in conn.execute(
+        "SELECT community_id, COUNT(*) FROM archived_threads WHERE trashed_at IS NULL AND last_viewed_at IS NULL "
+        "GROUP BY community_id")}
+    for f in feeds:
+        f["community_ids"] = sorted(members.get(f["id"], []))
+        f["unread_count"] = sum(unread.get(c, 0) for c in f["community_ids"])
+    return feeds
+
+
+def custom_feed(conn: Conn, feed_id: int) -> dict[str, Any] | None:
+    return next((f for f in custom_feeds(conn) if f["id"] == feed_id), None)
+
+
+def feed_settings(feed: dict[str, Any], defaults: FeedSettings) -> FeedSettings:
+    """A custom feed's own settings, falling back to the main feed's."""
+    return FeedSettings.clean(feed["sort"] or defaults.sort, feed["time_window"] or defaults.window,
+                              defaults.unread if feed["unread"] is None else feed["unread"])
+
+
+def save_custom_feed(conn: Conn, feed_id: int | None, name: str, community_ids: list[int], settings: FeedSettings,
+                     view: str | None, now: str) -> int:
+    view = view if view in VIEWS else None
+    if feed_id is None:
+        feed_id = conn.execute("INSERT INTO custom_feeds(name, sort, time_window, unread, view_mode, created_at) "
+                               "VALUES (?,?,?,?,?,?)", (name, settings.sort, settings.window, settings.unread, view,
+                                                        now)).lastrowid
     else:
-        scope = "AND t.community_id IN (SELECT community_id FROM community_follows WHERE active=1)"
+        conn.execute("UPDATE custom_feeds SET name=?, sort=?, time_window=?, unread=?, view_mode=? WHERE id=?",
+                     (name, settings.sort, settings.window, settings.unread, view, feed_id))
+        conn.execute("DELETE FROM custom_feed_communities WHERE feed_id=?", (feed_id,))
+    for cid in sorted(set(community_ids)):
+        conn.execute("INSERT INTO custom_feed_communities(feed_id, community_id) VALUES (?,?)", (feed_id, cid))
+    return feed_id  # type: ignore[return-value]
+
+
+def save_custom_feed_settings(conn: Conn, feed_id: int, settings: FeedSettings) -> None:
+    conn.execute("UPDATE custom_feeds SET sort=?, time_window=?, unread=? WHERE id=?",
+                 (settings.sort, settings.window, settings.unread, feed_id))
+
+
+def delete_custom_feed(conn: Conn, feed_id: int) -> None:
+    conn.execute("DELETE FROM custom_feed_communities WHERE feed_id=?", (feed_id,))
+    conn.execute("DELETE FROM custom_feeds WHERE id=?", (feed_id,))
+
+
+def _scope(community_id: int | None, community_ids: list[int] | None, column: str) -> tuple[str, list[Any]]:
+    """Which communities a feed covers: one, a custom feed's, or every followed one."""
+    if community_id is not None:
+        return f"{column}=?", [community_id]
+    if community_ids is not None:
+        if not community_ids:
+            return "1=0", []
+        return f"{column} IN ({','.join('?' * len(community_ids))})", list(community_ids)
+    return f"{column} IN (SELECT community_id FROM community_follows WHERE active=1)", []
+
+
+def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: list[int] | None = None,
+              sort: str = "new", window: str = "all", unread: str | bool = "", kept_only: bool = False,
+              page: int = 1, per_page: int = 25) -> FeedPage:
+    where, args = _scope(community_id, community_ids, "t.community_id")
+    scope = f"AND {where}"
     if kept_only:
         scope += " AND t.retention='manual'"
     filters = ""
@@ -191,11 +285,11 @@ def followed_communities(conn: Conn) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
-def mark_read(conn: Conn, now: str, community_id: int | None = None) -> int:
+def mark_read(conn: Conn, now: str, community_id: int | None = None,
+              community_ids: list[int] | None = None) -> int:
     """Mark a feed read; returns how many posts were unread. `now` becomes
     their last_viewed_at, which is what unmark_read(now) undoes."""
-    scope = ("community_id=?", [community_id]) if community_id is not None else (
-        "community_id IN (SELECT community_id FROM community_follows WHERE active=1)", [])
+    scope = _scope(community_id, community_ids, "community_id")
     unread = conn.execute(
         f"SELECT COUNT(*) FROM archived_threads WHERE trashed_at IS NULL AND last_viewed_at IS NULL "
         f"AND {scope[0]}", scope[1]).fetchone()[0]

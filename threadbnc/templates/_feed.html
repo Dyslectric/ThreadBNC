@@ -2,12 +2,16 @@
 {% from "_macros.html" import pager as load_more %}
 
 {# base: URL prefix ending in "?" or "&" that keeps any fixed params (e.g. tab).
-   unread: '', or the unread filter (posts, comments or any). #}
+   unread: '', or the unread filter (posts, comments or any). Always in the
+   address, even when empty: a feed's default may be to show unread only. #}
 {% macro feed_url(base, sort, window, unread, page=1) -%}
-{{ base }}sort={{ sort }}&t={{ window }}{% if unread %}&unread={{ unread }}{% endif %}{% if page > 1 %}&page={{ page }}{% endif %}
+{{ base }}sort={{ sort }}&t={{ window }}&unread={{ unread }}{% if page > 1 %}&page={{ page }}{% endif %}
 {%- endmacro %}
 
-{% macro controls(base, sort, window, unread, community_id=none, view='list', view_chosen=none) %}
+{# defaults: the feed's FeedSettings, to offer making the current ones its
+   default (the main feed and your own feeds; community pages use the main feed's). #}
+{% macro controls(base, sort, window, unread, community_id=none, view='list', view_chosen=none, feed_id=none,
+                  defaults=none) %}
 {% set here = feed_url(base, sort, window, unread) %}
 {% set views = [('list', 'Posts: thumbnail, title and the start of the text', 'list'),
                 ('pictures', 'Pictures, one column', 'picture'), ('tiles', 'Pictures in a grid', 'tiles')] %}
@@ -44,6 +48,7 @@
   <span class="grow"></span>
   <form method="post" action="/feed/mark-read" class="inline" data-inplace="items">
     {% if community_id %}<input type="hidden" name="community_id" value="{{ community_id }}">{% endif %}
+    {% if feed_id %}<input type="hidden" name="feed_id" value="{{ feed_id }}">{% endif %}
     <button class="act" title="Mark every post here as read">{{ icon('check-all') }}<span class="label">Mark all read</span></button>
   </form>
   <nav class="seg view-seg" aria-label="Show posts as">
@@ -61,6 +66,19 @@
           <a class="menu-item {{ 'on' if on }}" href="{{ here }}&view={{ key }}"><span class="tick">{% if on %}{{ icon('check') }}{% endif %}</span>{{ label }}</a>
         {% endfor %}
       </div>
+      {% if defaults is not none %}
+      <form method="post" action="/feed/defaults" class="menu-section">
+        <div class="menu-label">Shown by default</div>
+        <p class="menu-note">{{ feed_sorts[defaults.sort] }} · {{ feed_windows[defaults.window] }} · {{ feed_shows[defaults.unread] }}{% if not feed_id %}. Community pages use this too.{% endif %}</p>
+        {% if (defaults.sort, defaults.window, defaults.unread) != (sort, window, unread) %}
+          <input type="hidden" name="sort" value="{{ sort }}"><input type="hidden" name="t" value="{{ window }}">
+          <input type="hidden" name="unread" value="{{ unread }}">
+          {% if feed_id %}<input type="hidden" name="feed_id" value="{{ feed_id }}">{% endif %}
+          <button class="menu-item"><span class="tick"></span><span class="grow wrap">Make this the default:
+            {{ feed_sorts[sort] }} · {{ feed_windows[window] }} · {{ feed_shows[unread] }}</span></button>
+        {% endif %}
+      </form>
+      {% endif %}
       {% set scrolling = mark_on_scroll() %}
       <form method="post" action="/feed/settings" class="menu-section">
         <input type="hidden" name="mark_read_on_scroll" value="{{ '' if scrolling else '1' }}">
@@ -236,7 +254,7 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
 </a></li>
 {%- endmacro %}
 
-{% macro sidebar(follows, current_id=none) %}
+{% macro sidebar(follows, current_id=none, feed_id=none) %}
 {# Grouped by kind of source once the list is long enough to need it. #}
 {% set g = namespace(fedi=[], reddit=[], feeds=[]) %}
 {% for f in follows %}
@@ -246,11 +264,27 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
 {% endfor %}
 {% set groups = [('Lemmy & PieFed', g.fedi), ('Reddit', g.reddit), ('Feeds', g.feeds)] | selectattr(1) | list %}
 {% set grouped = follows | length > 8 and groups | length > 1 %}
-<aside class="sidebar" id="feed-sidebar" data-live aria-label="Communities you follow">
-  <section class="card">
-    <h2>Following</h2>
+{% set home = current_id is none and feed_id is none %}
+<aside class="sidebar" id="feed-sidebar" data-live aria-label="Feeds and communities you follow">
+  <section class="card fl-feeds">
+    <h2>Feeds</h2>
     <ul class="follow-list">
-      <li><a href="/" class="{{ 'on' if current_id is none }}"{% if current_id is none %} aria-current="page"{% endif %}><span class="fl-name">All communities</span></a></li>
+      <li><a href="/" class="{{ 'on' if home }}"{% if home %} aria-current="page"{% endif %}><span class="fl-name">All communities</span></a></li>
+      {% for f in custom_feeds() %}
+      <li><a href="/f/{{ f.id }}" class="{{ 'on' if feed_id == f.id }}"{% if feed_id == f.id %} aria-current="page"{% endif %}
+             title="{{ f.community_ids | length }} communit{{ 'y' if f.community_ids | length == 1 else 'ies' }}">
+        <span class="fl-name">{{ f.name }}</span>
+        {% if f.unread_count %}<span class="count" aria-label="{{ f.unread_count }} unread">{{ f.unread_count }}</span>{% endif %}</a></li>
+      {% endfor %}
+      <li class="fl-add"><a href="/feeds/new">{{ icon('plus') }}<span class="fl-name">New feed</span></a></li>
+    </ul>
+  </section>
+  <section class="card">
+    {% set collapsed = following_collapsed() %}
+    <details class="fl-panel" data-remember="/feed/sidebar"{% if not collapsed %} open{% endif %}>
+    <summary class="fl-summary" title="Show or hide the communities you follow">
+      <h2>Following</h2><span class="count muted">{{ follows | length }}</span><span class="grow"></span>{{ icon('chevron-down', 'chev') }}</summary>
+    <ul class="follow-list">
       {% if grouped %}
         {% for label, fs in groups %}
           <li class="fl-group" aria-hidden="true">{{ label }}</li>
@@ -268,6 +302,7 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
       <button class="small">Follow</button>
     </form>
     <p class="small"><a href="/communities">Manage follows →</a></p>
+    </details>
   </section>
 </aside>
 {% endmacro %}

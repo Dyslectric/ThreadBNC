@@ -241,6 +241,14 @@ document.documentElement.classList.add("js");
     }
   });
 
+  // Panels that remember whether they're open (the Following list): the page
+  // reads it back from the server, so it stays as you left it.
+  document.addEventListener("toggle", (ev) => {
+    const panel = ev.target;
+    if (!(panel instanceof HTMLDetailsElement) || !panel.dataset.remember) return;
+    post(panel.dataset.remember, { collapsed: panel.open ? "0" : "1" }).catch(() => {});
+  }, true);
+
   // Filters that apply as soon as they change (search filters, inbox account).
   document.addEventListener("change", (ev) => {
     const form = ev.target.closest("form[data-autosubmit]");

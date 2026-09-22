@@ -1,10 +1,10 @@
 {% extends "base.html" %}
 {% from "_feed.html" import controls, posts, pager, sidebar %}
-{% block title %}Feed{% endblock %}
+{% block title %}{{ custom.name if custom else 'Feed' }}{% endblock %}
 {% block content %}
 <div class="layout">
   <div class="main-col">
-    {% if not follows %}
+    {% if not follows and not custom %}
       <section class="card hero">
         <h1>Follow a community to start your feed</h1>
         <p class="muted">The bouncer checks each community you follow and saves new posts, comments and edits. If something is later edited, removed or deleted, you still have what was there.</p>
@@ -18,18 +18,22 @@
       </section>
     {% else %}
       <div class="feed-head">
-        <h1>Your feed</h1>
-        {{ controls("/?", sort, window, unread, view=view, view_chosen=view_chosen) }}
+        {% if custom %}
+        <h1>{{ custom.name }} <a class="icon-button" href="/f/{{ custom.id }}/edit" title="Edit this feed" aria-label="Edit this feed">{{ icon('pencil') }}</a></h1>
+        {% else %}<h1>Your feed</h1>{% endif %}
+        {{ controls(base_url ~ '?', sort, window, unread, view=view, view_chosen=view_chosen,
+                    feed_id=custom.id if custom else none, defaults=defaults) }}
       </div>
       {{ posts(feed.items, view) }}
       {% if not feed.items %}
         <section class="card empty"><p class="muted">
-          {% if unread == 'comments' %}No new comments on posts you've read.{% elif unread %}You're all caught up.{% elif window != 'all' %}Nothing in this time range.{% else %}No posts captured yet. The bouncer checks followed communities every few minutes.{% endif %}
+          {% if custom and not custom.community_ids %}This feed has no communities yet. <a href="/f/{{ custom.id }}/edit">Choose some</a>.
+          {% elif unread == 'comments' %}No new comments on posts you've read.{% elif unread %}You're all caught up.{% elif window != 'all' %}Nothing in this time range.{% else %}No posts captured yet. The bouncer checks followed communities every few minutes.{% endif %}
         </p></section>
       {% endif %}
-      {{ pager(feed, "/?", sort, window, unread) }}
+      {{ pager(feed, base_url ~ '?', sort, window, unread) }}
     {% endif %}
   </div>
-  {{ sidebar(follows) }}
+  {{ sidebar(follows, feed_id=custom.id if custom else none) }}
 </div>
 {% endblock %}

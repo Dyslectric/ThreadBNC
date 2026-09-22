@@ -372,6 +372,23 @@ CREATE TABLE IF NOT EXISTS sso_logins (
     account_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL
 );
 
+-- Your own feeds: a named mix of communities, each with its own default sort,
+-- time range, unread filter and view; NULL = the main feed's defaults (feed.py).
+CREATE TABLE IF NOT EXISTS custom_feeds (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    sort TEXT,
+    time_window TEXT,
+    unread TEXT,
+    view_mode TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS custom_feed_communities (
+    feed_id INTEGER NOT NULL REFERENCES custom_feeds(id) ON DELETE CASCADE,
+    community_id INTEGER NOT NULL REFERENCES communities(id) ON DELETE CASCADE,
+    PRIMARY KEY (feed_id, community_id)
+);
+
 CREATE TABLE IF NOT EXISTS app_settings (
     key TEXT PRIMARY KEY,
     value TEXT
@@ -473,7 +490,7 @@ COLUMN_MIGRATIONS = [
 # Postgres so callers can keep using `cursor.lastrowid`.
 _ID_TABLES = {"instances", "actors", "communities", "archived_threads", "objects", "revisions",
               "state_events", "media", "jobs", "accounts", "mod_actions", "join_requests",
-              "inbox_items", "articles", "ap_inbox"}
+              "inbox_items", "articles", "ap_inbox", "custom_feeds"}
 _INSERT_RE = re.compile(r"^\s*INSERT\s+INTO\s+(\w+)", re.IGNORECASE)
 _PG_WRITE_LOCK = 727_001  # advisory lock id: one writer at a time, like SQLite's BEGIN IMMEDIATE
 

@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon %}
+{% block title %}{{ 'Edit ' ~ custom.name if custom else 'New feed' }}{% endblock %}
+{% block content %}
+<p class="small"><a href="{{ '/f/' ~ custom.id if custom else '/' }}">← {{ custom.name if custom else 'Your feed' }}</a></p>
+<h1>{{ 'Edit “' ~ custom.name ~ '”' if custom else 'New feed' }}</h1>
+<p class="muted">A feed of your own: the communities you pick, shown the way you choose. The communities stay in your main feed too.</p>
+{% if error %}<div class="flash error" role="alert">{{ icon('alert') }} <span>{{ error }}</span></div>{% endif %}
+
+<form method="post" action="{{ '/f/' ~ custom.id ~ '/edit' if custom else '/feeds' }}" class="stack">
+  <section class="card">
+    <label>Name <input name="name" value="{{ custom.name if custom else '' }}" maxlength="80" required
+                       placeholder="News, Photos, Linux…" autofocus></label>
+  </section>
+
+  <section class="card">
+    <h2>Communities</h2>
+    {% if not communities %}<p class="muted">You don't follow any communities yet. <a href="/communities#follow">Follow some</a> first.</p>{% endif %}
+    {% set g = namespace(fedi=[], reddit=[], feeds=[]) %}
+    {% for c in communities %}
+      {% if is_reddit(c.canonical_ap_id) %}{% set g.reddit = g.reddit + [c] %}
+      {% elif is_rss(c.canonical_ap_id) %}{% set g.feeds = g.feeds + [c] %}
+      {% else %}{% set g.fedi = g.fedi + [c] %}{% endif %}
+    {% endfor %}
+    {% for label, cs in [('Lemmy & PieFed', g.fedi), ('Reddit', g.reddit), ('Feeds', g.feeds)] if cs %}
+    <fieldset class="feed-picks">
+      <legend class="small muted">{{ label }}</legend>
+      {% for c in cs %}
+      <label class="check"><input type="checkbox" name="community" value="{{ c.id }}" {{ 'checked' if c.id in chosen }}>
+        <span>{{ chandle(c.name, c.canonical_ap_id) }}{% if c.title %} <span class="small muted">{{ c.title }}</span>{% endif %}</span></label>
+      {% endfor %}
+    </fieldset>
+    {% endfor %}
+  </section>
+
+  <section class="card">
+    <h2>Shown by default</h2>
+    <div class="row">
+      <label>Sort <select name="sort">{% for k, v in sorts.items() %}<option value="{{ k }}" {{ 'selected' if settings.sort == k }}>{{ v }}</option>{% endfor %}</select></label>
+      <label>From <select name="t">{% for k, v in windows.items() %}<option value="{{ k }}" {{ 'selected' if settings.window == k }}>{{ v }}</option>{% endfor %}</select></label>
+      <label>Show <select name="unread">{% for k, v in shows.items() %}<option value="{{ k }}" {{ 'selected' if settings.unread == k }}>{{ v }}</option>{% endfor %}</select></label>
+      <label>As <select name="view">
+        {% for k, v in [('auto', 'Pick by how many have images'), ('list', 'Posts'), ('pictures', 'Pictures'), ('tiles', 'Grid')] %}
+        <option value="{{ k }}" {{ 'selected' if (custom and custom.view_mode == k) or (k == 'auto' and not (custom and custom.view_mode)) }}>{{ v }}</option>{% endfor %}
+      </select></label>
+    </div>
+    <p class="small muted">You can still change these on the feed; its ⚙ menu can make what you're looking at the new default.</p>
+  </section>
+
+  <div class="row"><button>{{ 'Save' if custom else 'Create feed' }}</button></div>
+</form>
+
+{% if custom %}
+<form method="post" action="/f/{{ custom.id }}/delete" class="danger-zone" data-confirm="Delete the feed “{{ custom.name }}”? Its communities and posts are untouched.">
+  <button class="small secondary">{{ icon('trash') }} Delete this feed</button>
+</form>
+{% endif %}
+{% endblock %}
