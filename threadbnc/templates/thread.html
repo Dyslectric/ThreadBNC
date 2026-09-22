@@ -22,7 +22,7 @@
 
 {% macro byline(n) -%}
   {% set o = n.o %}
-  <span class="author" title="{{ o.a_ap }}">{{ o.username }}@{{ o.a_instance }}</span>
+  <span class="author" title="{{ o.a_ap }}">{{ o.username }}{% if not is_rss(o.canonical_ap_id) %}@{{ o.a_instance }}{% endif %}</span>
   · {{ when(o.created_at) }}
   {% if n.agg.upvotes is not none or n.agg.score is not none %}· {{ votes(n.agg.upvotes, n.agg.downvotes, n.agg.score, n.breakdown) }}{% endif %}
   {% if o.revision_count > 1 %}· <a href="/o/{{ o.id }}/history">Edited {{ o.revision_count - 1 }} time{{ 's' if o.revision_count > 2 }} · View history</a>
@@ -46,7 +46,7 @@
    are left out when you aren't logged in with Reddit. #}
 {% macro actions(n, is_post=False) -%}
 {% set w = [] %}{% set hs = [] %}
-{% for m in n.members %}{% set acct = reddit_me if is_reddit(m.o.canonical_ap_id) else me %}
+{% for m in n.members %}{% set acct = none if is_rss(m.o.canonical_ap_id) else (reddit_me if is_reddit(m.o.canonical_ap_id) else me) %}
   {% if acct %}{% set _ = w.append(m) %}{% if acct.handle not in hs %}{% set _ = hs.append(acct.handle) %}{% endif %}{% endif %}{% endfor %}
 {% if w %}
   {% set o = w[0].o %}
@@ -219,12 +219,14 @@
   {{ event_list(root.events) }}
   {{ actions(root, is_post=True) }}
   <div class="row small">
-    <a href="{{ o.canonical_ap_id | safe_url }}" rel="noreferrer noopener nofollow" target="_blank">Original ↗</a>
+    {% set original = (o.url if is_rss(o.canonical_ap_id) else o.canonical_ap_id) | safe_url %}
+    {% if original %}<a href="{{ original }}" rel="noreferrer noopener nofollow" target="_blank">Original ↗</a>{% endif %}
     <span class="muted">source {{ t.source_domain }} · checked {{ when(t.last_checked_at) }} · next check {{ when(t.next_check_at) }}</span>
     {% if t.last_error %}<span class="bad-text">last sync failed: {{ t.last_error }}</span>{% endif %}
     {% if instance and not instance.available %}<span class="pill bad">instance unreachable</span>{% endif %}
     <form method="post" action="/t/{{ t.id }}/sync" class="inline"><button class="small secondary">Re-check now</button></form>
-    {% if accounts %}<a class="chip" href="/t/{{ t.id }}/repost" title="Post a copy in one of your communities">↻ Repost</a>{% endif %}
+    {% if accounts %}{% if is_rss(o.canonical_ap_id) %}<a class="chip" href="/t/{{ t.id }}/repost" title="Post this article to one of your communities">↗ Post</a>
+    {% else %}<a class="chip" href="/t/{{ t.id }}/repost" title="Post a copy in one of your communities">↻ Repost</a>{% endif %}{% endif %}
     {% if not t.trashed_at %}
       {% if all_kept %}
         <form method="post" action="/t/{{ t.id }}/unkeep" class="inline">{{ g }}<button class="chip on" title="Click to unkeep{{ ' every copy' if grouped }}">★ Kept</button></form>
@@ -237,7 +239,7 @@
 </article>
 
 {% set writable_copies = [] %}{% set hs = [] %}
-{% for pc in post_copies %}{% set acct = reddit_me if pc.reddit else me %}
+{% for pc in post_copies %}{% set acct = none if is_rss(pc.o.canonical_ap_id) else (reddit_me if pc.reddit else me) %}
   {% if acct %}{% set _ = writable_copies.append(pc) %}{% if acct.handle not in hs %}{% set _ = hs.append(acct.handle) %}{% endif %}{% endif %}{% endfor %}
 {% set as_whom = hs | join(' and ') %}
 {% if not t.trashed_at and writable_copies %}
@@ -255,6 +257,9 @@
 </section>
 {% elif not accounts %}
 <p class="small muted"><a href="/accounts">Add an account</a> to comment, vote or post from here.</p>
+{% elif not writable_copies and not t.trashed_at and is_rss(o.canonical_ap_id) %}
+<p class="small muted">This is an article from a feed, which has no comments.
+  <a href="/t/{{ t.id }}/repost">↗ Post it</a> to one of your communities to discuss it there.</p>
 {% elif not writable_copies and not t.trashed_at %}
 <p class="small muted">This is on Reddit. <a href="/reddit">Log in with Reddit</a> to vote and comment here, or
   <a href="/t/{{ t.id }}/repost">↻ repost it</a> to discuss it on your own server.</p>

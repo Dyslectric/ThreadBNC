@@ -24,6 +24,7 @@ from urllib.parse import urlparse
 from . import store
 from .adapters import (
     REDDIT_DOMAIN, RemoteAuthError, RemoteError, RemoteRejected, ThreadiverseAdapter, host_of, is_reddit_host,
+    is_rss,
 )
 from .bouncer import Bouncer
 from .db import utcnow
@@ -33,6 +34,7 @@ log = logging.getLogger("threadbnc.accounts")
 # Lemmy's default: lowercase letters, digits, underscore; 3 to 20 characters.
 _COMMUNITY_NAME = re.compile(r"[a-z0-9_]{3,20}")
 TITLE_MAX = 200  # Lemmy's limit; Reddit allows 300
+EXCERPT_CHARS = 500  # how much of a feed article a post of it quotes
 NO_REDDIT_LOGIN = ("To vote, comment or post on Reddit, log in with Reddit on the Reddit page (an app-only "
                    "connection can only read).")
 REDDIT_READ_ONLY_LOGIN = ("Connect Reddit again on the Reddit page to allow voting, commenting and posting; "
@@ -89,6 +91,20 @@ class Account:
     def from_row(cls, r: Any) -> "Account":
         return cls(r["id"], r["domain"], r["username"], r["actor_ap_id"], r["display_name"], r["status"],
                    bool(r["is_default"]), r["last_error"], bool(r["is_admin"]))
+
+
+def _excerpt(body: str | None) -> str:
+    """The opening paragraphs of an article, up to about EXCERPT_CHARS, without images."""
+    out: list[str] = []
+    for para in re.split(r"\n\s*\n", body or ""):
+        para = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", para).strip()
+        if not para or para.startswith("#"):
+            continue
+        out.append(para)
+        if sum(len(p) for p in out) >= EXCERPT_CHARS:
+            break
+    text = "\n\n".join(out)
+    return text if len(text) <= EXCERPT_CHARS * 2 else text[: EXCERPT_CHARS * 2].rsplit(" ", 1)[0] + "…"
 
 
 def _domain_from(text: str) -> str:
@@ -155,7 +171,11 @@ class Poster:
 
     def account_for(self, account: Account, ap_id: str) -> Account:
         """Who acts on an object or community: your Reddit account for anything
-        on Reddit, otherwise the account you picked."""
+        on Reddit, otherwise the account you picked. Feeds take no comments,
+        votes or posts: share an article with ↗ Post instead."""
+        if is_rss(ap_id):
+            raise AccountError("Feed articles can't be commented on or voted on, and feeds can't be posted to. "
+                               "Use ↗ Post to share the article in one of your communities.")
         if is_reddit_host(host_of(ap_id)):
             reddit = self.reddit_account()
             if reddit is None:
@@ -395,6 +415,10 @@ class Poster:
         title = (row["title"] or "").strip()
         if len(title) > TITLE_MAX:
             title = title[: TITLE_MAX - 1].rstrip() + "…"
+        if is_rss(row["canonical_ap_id"]):  # a feed article: its link, and a short excerpt rather than all of it
+            excerpt = _excerpt(row["body"])
+            quoted = "\n".join(f"> {line}" if line.strip() else ">" for line in excerpt.splitlines())
+            return {"title": title, "url": row["url"] or "", "body": quoted, "source": row["url"] or ""}
         body = f"cross-posted from: {row['canonical_ap_id']}"
         text = (row["body"] or "").strip()
         if text and text not in ("[deleted]", "[removed]"):

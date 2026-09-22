@@ -13,7 +13,7 @@
         {% if c.title %}<p class="muted">{{ c.title }}</p>{% endif %}
       </div>
       <div class="row">
-      {% if (reddit_me if is_reddit(c.canonical_ap_id) else acting) %}<a class="chip" href="/c/{{ c.id }}/submit">✎ New post</a>{% endif %}
+      {% if not is_rss(c.canonical_ap_id) and (reddit_me if is_reddit(c.canonical_ap_id) else acting) %}<a class="chip" href="/c/{{ c.id }}/submit">✎ New post</a>{% endif %}
       {% if following %}
         <details class="settings">
           <summary class="pill good">✓ Following · every {{ follow.poll_interval_minutes }} min · keep {{ (follow.retention_days ~ 'd') if follow.retention_days is not none else 'forever' }}</summary>
@@ -51,7 +51,7 @@
     <nav class="tabs">
       <a href="/c/{{ c.id }}" class="{{ 'on' if tab == 'feed' }}">Feed</a>
       <a href="/c/{{ c.id }}?tab=kept" class="{{ 'on' if tab == 'kept' }}">★ Kept ({{ counts.get('manual', 0) }})</a>
-      <a href="/c/{{ c.id }}?tab=live" class="{{ 'on' if tab == 'live' }}">Live on server</a>
+      {% if not is_rss(c.canonical_ap_id) %}<a href="/c/{{ c.id }}?tab=live" class="{{ 'on' if tab == 'live' }}">Live on server</a>{% endif %}
       <a href="/c/{{ c.id }}?tab=log" class="{{ 'on' if tab == 'log' }}">Log</a>
       {% if powers.any %}<a href="/c/{{ c.id }}?tab=mod" class="{{ 'on' if tab == 'mod' }}">🛡 Moderation</a>{% endif %}
       {% if counts.get('trash') %}<a href="/trash">Trash ({{ counts.get('trash') }})</a>{% endif %}

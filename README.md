@@ -1,6 +1,6 @@
 # ThreadBNC — Threadiverse bouncer + private archive
 
-A private, feed-first reader for Lemmy, PieFed and Reddit that keeps a history of what it observes. When a post or comment is edited, removed or deleted after the bouncer has seen it, the change is recorded alongside the earlier version instead of replacing it.
+A private, feed-first reader for Lemmy, PieFed, Reddit and RSS/Atom feeds that keeps a history of what it observes. When a post or comment is edited, removed or deleted after the bouncer has seen it, the change is recorded alongside the earlier version instead of replacing it.
 
 **Following and reading:**
 - Follow communities. The **bouncer** checks each one for new posts and saves them along with their comments. It reads up to 5 pages back per check, so only an unusually large burst between checks could slip past.
@@ -160,6 +160,19 @@ ignored, so ThreadBNC shows it together with the Reddit original as [duplicates]
 The original records **You reposted this to !community@server**.
 
 When you aren't logged in with Reddit, votes and comments on a mixed group go only to the non-Reddit copies.
+
+## RSS and Atom feeds
+
+Feeds are followed like communities: paste the feed's address, or just a site's address if the site advertises a
+feed, into the follow box. RSS 2.0, RSS 1.0 (RDF) and Atom all work. Articles land in your feed like posts, with
+edits kept as history, keeping and expiry, duplicate grouping and tiles.
+
+- **Article text** is converted from HTML to Markdown: paragraphs, headings, emphasis, links, lists, quotes and code. Scripts and styles are dropped. Images in articles, and a feed's thumbnails, are archived like any other post's media, so photo feeds look good as tiles.
+- **↗ Post** (on feed articles in the feed, and on the article's page) shares one in one of your communities: a link post with the article's title and link, and a short quoted excerpt you can edit or remove. The copy you post is kept, and shown together with the article, because they share the link.
+- **Feeds have no comments or votes**, so article pages have no comment box. Once you post an article, its comments are on your copy, shown on the same page.
+- **Checking** is every 60 minutes by default (`THREADBNC_RSS_POLL_MINUTES`), and never more often than every 5. It uses conditional requests, so an unchanged feed costs one short "not modified" answer. One fetch serves every article from that feed for 5 minutes. Articles are re-checked for edits on the slower Reddit schedule.
+- **Feeds only list their latest entries.** An article that drops out of its feed is kept as last seen and marked "Dropped out of its feed", not recorded as missing, and isn't checked any more.
+- Fetches follow at most 5 redirects, refuse private and local addresses, and stop at 5 MB.
 
 ## Accounts and posting
 
@@ -331,6 +344,7 @@ API: `POST /archive` with `{"url": "..."}` and `Authorization: Bearer $THREADBNC
 | `THREADBNC_MIN_REQUEST_INTERVAL` | `1.0` | Seconds between requests to the same instance |
 | `THREADBNC_REDDIT_POLL_MINUTES` | `60` | Default check interval for followed subreddits (at least 10) |
 | `THREADBNC_REDDIT_MIN_REQUEST_INTERVAL` | `2.0` | Seconds between requests to Reddit (at least 1) |
+| `THREADBNC_RSS_POLL_MINUTES` | `60` | Default check interval for followed feeds (at least 5) |
 | `THREADBNC_MEDIA_DIR` | `<data>/media` | Where archived images/videos are stored |
 | `THREADBNC_MEDIA_MAX_MB` | `25` | Largest single image or video file that will be archived; bigger files are skipped and linked to the original |
 | `THREADBNC_PROXY_AUTH_HEADER` | unset | Header in which a signing-in reverse proxy passes the user's name, e.g. `X-authentik-username` |
@@ -354,6 +368,7 @@ router without forward auth (and without the secret); ThreadBNC's API token prot
 ```
 threadbnc/
   adapters/      ThreadiverseAdapter + LemmyAdapter (/api/v3) + PieFedAdapter (/api/alpha) + RedditAdapter
+                 + RssAdapter (RSS/Atom, HTML -> Markdown)
   reddit.py      Reddit connection: app credentials, OAuth login, tokens, rate limits
   store.py       append-only persistence: revisions, state events, missing detection, purge
   bouncer.py     ingestion, source selection, sync, follows, expiry, job queue, worker loop

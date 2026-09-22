@@ -156,6 +156,16 @@ _REDDIT_SHARE = re.compile(r"^/r/[^/]+/s/[A-Za-z0-9]+/?$")
 _SUBREDDIT = re.compile(r"^/?r/([A-Za-z0-9_]{2,21})/?$")
 
 
+# RSS and Atom feeds live on a pseudo server; their communities, posts and
+# authors have ids starting with RSS_PREFIX (see adapters/rss.py).
+RSS_DOMAIN = "rss"
+RSS_PREFIX = "rss:"
+
+
+def is_rss(ap_id: str | None) -> bool:
+    return (ap_id or "").startswith(RSS_PREFIX)
+
+
 def is_reddit_host(host: str | None) -> bool:
     host = (host or "").lower().split(":")[0]
     return host in ("reddit.com", "redd.it") or host.endswith(".reddit.com")
@@ -206,8 +216,11 @@ def parse_thread_url(url: str) -> ThreadRef:
 
 def parse_community_ref(text: str) -> CommunityRef:
     """Accepts !name@host, name@host, https://host/c/name, https://host/c/name@home,
-    and subreddits: r/name or https://www.reddit.com/r/name."""
+    subreddits: r/name or https://www.reddit.com/r/name, and feeds: rss:<url>, or
+    any other web address (a feed, or a page that links to one)."""
     text = text.strip()
+    if text.lower().startswith(RSS_PREFIX):
+        return CommunityRef(RSS_DOMAIN, text[len(RSS_PREFIX):].strip(), RSS_DOMAIN)
     if text.startswith("!"):
         text = text[1:]
     m = _SUBREDDIT.match(text)
@@ -224,8 +237,10 @@ def parse_community_ref(text: str) -> CommunityRef:
         u = text if "://" in text else "https://" + text
         parsed = urlparse(u)
         m = re.match(r"^/(?:c|m)/([^/?#]+)", parsed.path or "")
-        if not parsed.hostname or not m:
+        if not parsed.hostname:
             raise ValueError("Not a community URL (expected https://host/c/name)")
+        if not m:  # not a Lemmy/PieFed community page: try it as a feed
+            return CommunityRef(RSS_DOMAIN, u, RSS_DOMAIN)
         domain = parsed.hostname.lower()
         name = m.group(1)
         if "@" in name:

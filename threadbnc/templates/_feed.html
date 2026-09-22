@@ -64,7 +64,8 @@
         <form method="post" action="/t/{{ i.id }}/keep" class="inline">{{ g }}<button class="chip" title="Keep permanently">☆</button></form>
         <form method="post" action="/t/{{ i.id }}/trash" class="inline">{{ g }}<button class="chip ghost" title="Hide from feed">✕</button></form>
       {% endif %}
-      {% if is_reddit(i.c_ap) %}<a class="chip" href="/t/{{ i.id }}/repost" title="Repost to one of your communities">↻</a>{% endif %}
+      {% if is_reddit(i.c_ap) %}<a class="chip" href="/t/{{ i.id }}/repost" title="Repost to one of your communities">↻</a>
+      {% elif is_rss(i.c_ap) %}<a class="chip" href="/t/{{ i.id }}/repost" title="Post this article to one of your communities">↗</a>{% endif %}
       </span>
     </div>
   </div>
@@ -91,7 +92,7 @@
   <div class="pc-main">
     <div class="pc-meta small">
       {% if show_community %}<a class="pc-community" href="/c/{{ i.community_id }}">{{ chandle(i.cname, i.c_ap) }}</a> ·{% endif %}
-      <span>{{ i.username }}@{{ i.a_instance }}</span> · {{ when(i.created_at) }}
+      <span>{{ i.username }}{% if not is_rss(i.c_ap) %}@{{ i.a_instance }}{% endif %}</span> · {{ when(i.created_at) }}
       {{ state_badges(i) }}
     </div>
     {% if i.group %}
@@ -115,7 +116,8 @@
         <form method="post" action="/t/{{ i.id }}/trash" class="inline">{{ g }}<button class="chip ghost" title="Hide from feed (moves {{ 'every copy ' if i.group }}to the trash)">Hide</button></form>
         {% if i.expires_at %}<span class="muted" title="Auto-captured; deleted {{ i.expires_at | absolute }} unless kept">expires {{ i.expires_at | ago }}</span>{% endif %}
       {% endif %}
-      {% if is_reddit(i.c_ap) %}<a class="chip" href="/t/{{ i.id }}/repost" title="Post a copy in one of your communities">↻ Repost</a>{% endif %}
+      {% if is_reddit(i.c_ap) %}<a class="chip" href="/t/{{ i.id }}/repost" title="Post a copy in one of your communities">↻ Repost</a>
+      {% elif is_rss(i.c_ap) %}<a class="chip" href="/t/{{ i.id }}/repost" title="Post this article to one of your communities">↗ Post</a>{% endif %}
     </div>
   </div>
 </article>
@@ -148,7 +150,7 @@
       {% endfor %}
     </ul>
     <form method="post" action="/follow" class="stack follow-quick">
-      <input name="community" placeholder="!community@instance or r/name" required aria-label="Community to follow">
+      <input name="community" placeholder="!community@instance, r/name or a feed URL" required aria-label="Community to follow">
       <input type="hidden" name="backfill" value="1">
       <button class="small">Follow</button>
     </form>

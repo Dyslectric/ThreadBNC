@@ -14,6 +14,8 @@ from . import media, store
 from .adapters import (
     CommunityRef,
     HttpClient,
+    RSS_DOMAIN,
+    RSS_PREFIX,
     NCommunity,
     NPost,
     RemoteError,
@@ -25,11 +27,13 @@ from .adapters import (
     detect_software,
     host_of,
     is_reddit_host,
+    is_rss,
     parse_community_ref,
     parse_thread_url,
 )
 from .adapters.reddit import RedditAdapter
-from .config import REDDIT_MIN_POLL_MINUTES, Settings
+from .adapters.rss import FeedFetcher, RssAdapter
+from .config import REDDIT_MIN_POLL_MINUTES, RSS_MIN_POLL_MINUTES, Settings
 from .db import Database, fmt_ts, parse_ts, utcnow
 from .reddit import RedditConnection
 from .vault import TokenVault
@@ -43,8 +47,9 @@ MAX_POLL_PAGES = 5  # read further back until we reach known posts, up to this m
 # Re-check threads often while they're new, then back off: most comments arrive
 # in a post's first day or two. (post age limit, minimum minutes between checks)
 RECHECK_TAPER = [(timedelta(days=1), 0), (timedelta(days=3), 60), (None, 360)]
-# Reddit threads back off further (its request budget is shared by everything):
-# every 2 hours until day 3, twice a day until day 7, then daily.
+# Reddit threads back off further (its request budget is shared by everything),
+# and so do feed articles (they rarely change): every 2 hours until day 3,
+# twice a day until day 7, then daily.
 REDDIT_RECHECK_TAPER = [(timedelta(days=1), 0), (timedelta(days=3), 120), (timedelta(days=7), 720), (None, 1440)]
 # When a post's comment count and newest-comment time are unchanged, skip
 # re-fetching the comment tree -- but still do a full fetch at least this often,
@@ -68,6 +73,7 @@ class Bouncer:
             db, TokenVault(settings.credentials_key, settings.data_dir), timeout=settings.http_timeout,
             min_interval=settings.reddit_min_request_interval)
         self.reddit_adapter = RedditAdapter(self.reddit)
+        self.rss_adapter = RssAdapter(FeedFetcher(settings.user_agent, settings.http_timeout, self.http.throttle))
         self._adapter_factory = adapter_factory
         self._adapters: dict[str, tuple[ThreadiverseAdapter, str]] = {}  # domain -> (adapter, chosen at)
         # Extra work for each pass that needs accounts (e.g. private community join requests).
@@ -86,6 +92,8 @@ class Bouncer:
     def adapter_for(self, domain: str) -> ThreadiverseAdapter:
         if is_reddit_host(domain):
             return self.reddit_adapter
+        if domain == RSS_DOMAIN:
+            return self.rss_adapter
         if self._adapter_factory:
             return self._adapter_factory(domain)
         now = utcnow()
@@ -342,18 +350,24 @@ class Bouncer:
                 return f["poll_interval_minutes"]
         return self.settings.default_sync_minutes
 
-    @staticmethod
-    def _is_reddit(conn: Any, community_id: int | None) -> bool:
+    def _slow_source(self, conn: Any, community_id: int | None) -> int | None:
+        """The slowest re-check interval for threads from Reddit or a feed (None
+        for Lemmy/PieFed)."""
         row = conn.execute("SELECT canonical_ap_id FROM communities WHERE id=?", (community_id,)).fetchone()
-        return bool(row) and is_reddit_host(host_of(row["canonical_ap_id"]))
+        if not row:
+            return None
+        if is_reddit_host(host_of(row["canonical_ap_id"])):
+            return self.settings.reddit_poll_minutes
+        return self.settings.rss_poll_minutes if is_rss(row["canonical_ap_id"]) else None
 
     def _thread_interval(self, conn: Any, community_id: int | None, created_at: str | None) -> int:
         """Minutes until a thread's next re-check: the community's interval while
         the post is young, tapering to hourly and then every 6 hours (further
-        on Reddit, see REDDIT_RECHECK_TAPER)."""
+        on Reddit and for feeds, see REDDIT_RECHECK_TAPER)."""
         base, taper = self._interval(conn, community_id), RECHECK_TAPER
-        if self._is_reddit(conn, community_id):
-            base, taper = max(base, self.settings.reddit_poll_minutes), REDDIT_RECHECK_TAPER
+        slow = self._slow_source(conn, community_id)
+        if slow:
+            base, taper = max(base, slow), REDDIT_RECHECK_TAPER
         created = parse_ts(created_at)
         age = parse_ts(utcnow()) - created if created else timedelta(days=365)  # type: ignore[operator]
         for limit, floor in taper:
@@ -405,6 +419,9 @@ class Bouncer:
                 post = adapter.fetch_post(local)
             except RemoteNotFound:
                 post = None
+            if post is None and getattr(adapter, "ages_out", False):
+                self._aged_out(thread_id)
+                return result
             full = post is not None and (force or not self._comments_unchanged(t, post, now))
             comments = adapter.fetch_comments(local) if full else []
         except (RemoteUnavailable, UnsupportedSoftware) as exc:
@@ -435,6 +452,16 @@ class Bouncer:
             if full:
                 self._maybe_move_source(thread_id, post, domain, local)
         return result
+
+    def _aged_out(self, thread_id: int) -> None:
+        """A feed article that's no longer in its feed: feeds only list their
+        latest entries, so that's not deletion. Keep what we have and stop
+        checking it."""
+        now = utcnow()
+        with self.db.transaction() as conn:
+            conn.execute("UPDATE archived_threads SET active=0, last_checked_at=?, next_check_at=NULL WHERE id=?",
+                         (now, thread_id))
+            store.add_event(conn, "aged_out", now, thread_id=thread_id)
 
     def _maybe_move_source(self, thread_id: int, post: NPost, domain: str, local: str) -> None:
         """A thread first seen on a secondary server (e.g. a post you just made
@@ -514,6 +541,8 @@ class Bouncer:
         ref = parse_community_ref(text)
         adapter = self.adapter_for(ref.domain)
         community = adapter.fetch_community(ref)
+        if ref.domain == RSS_DOMAIN:  # the feed's own URL (a page may have led to it)
+            return CommunityRef(RSS_DOMAIN, community.local_id or ref.name, RSS_DOMAIN), community
         home = community.domain
         if home and home != ref.domain:
             try:  # poll the community's home instance when it speaks a supported API
@@ -555,6 +584,8 @@ class Bouncer:
         every REDDIT_MIN_POLL_MINUTES."""
         if is_reddit_host(domain):
             return max(asked or self.settings.reddit_poll_minutes, REDDIT_MIN_POLL_MINUTES)
+        if domain == RSS_DOMAIN:
+            return max(asked or self.settings.rss_poll_minutes, RSS_MIN_POLL_MINUTES)
         return asked or self.settings.default_follow_poll_minutes
 
     def update_follow(self, community_id: int, poll_interval_minutes: int, retention_days: int | None) -> None:
@@ -595,9 +626,13 @@ class Bouncer:
                              (community_id,)).fetchone()
             c = conn.execute("SELECT canonical_ap_id, name FROM communities WHERE id=?",
                              (community_id,)).fetchone()
+        if f and f["source_domain"] == RSS_DOMAIN:  # the feed URL, which may contain "@"
+            return CommunityRef(RSS_DOMAIN, f["source_ref"], RSS_DOMAIN)
         if f:
             name, _, home = f["source_ref"].partition("@")
             return CommunityRef(f["source_domain"], name, home or f["source_domain"])
+        if is_rss(c["canonical_ap_id"]):
+            return CommunityRef(RSS_DOMAIN, c["canonical_ap_id"][len(RSS_PREFIX):], RSS_DOMAIN)
         home = host_of(c["canonical_ap_id"])
         return CommunityRef(home, c["name"], home)
 

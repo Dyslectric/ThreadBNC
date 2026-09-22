@@ -2,10 +2,17 @@
 {% block title %}Repost{% endblock %}
 {% block content %}
 <p class="small"><a href="/t/{{ t.id }}">← {{ draft.title }}</a></p>
+{% if is_rss(t.c_ap) %}
+<h1>Post this article</h1>
+<p class="muted">From {{ chandle(t.cname, t.c_ap) }} ·
+  <a href="{{ draft.source | safe_url }}" target="_blank" rel="noreferrer noopener nofollow">article ↗</a>.
+  Share it in one of your communities: a link post with a short excerpt, which you can edit or remove.</p>
+{% else %}
 <h1>Repost</h1>
 <p class="muted">From {{ chandle(t.cname, t.c_ap) }} ·
   <a href="{{ draft.source | safe_url }}" target="_blank" rel="noreferrer noopener nofollow">original ↗</a>.
   Post a copy in one of your communities. The text starts with a "cross-posted from" line linking back to the original.</p>
+{% endif %}
 <section class="card">
   {% if not acting and not reddit_me %}<p class="bad-text"><a href="/accounts">Add an account</a> first.</p>{% endif %}
   <form method="post" action="/t/{{ t.id }}/repost" class="stack">

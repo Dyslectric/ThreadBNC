@@ -28,7 +28,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from . import dupes, store
 from . import feed as feed_mod
 from . import media as media_mod
-from .adapters import RemoteError, host_of, is_reddit_host
+from .adapters import RemoteError, host_of, is_reddit_host, is_rss
 from .accounts import Account, AccountError, Poster
 from .bouncer import Bouncer
 from .moderation import REGISTRATION_MODES, Moderation
@@ -88,6 +88,7 @@ EVENT_LABELS = {
     "delete_requested": "You deleted this via ThreadBNC (waiting to see it on the server)",
     "undelete_requested": "You restored this via ThreadBNC (waiting to see it on the server)",
     "reposted": "You reposted this via ThreadBNC",
+    "aged_out": "Dropped out of its feed; kept as it was, no longer checked",
 }
 ATTRIBUTION_LABELS = {
     "moderator": "by moderator",
@@ -227,10 +228,12 @@ def is_reddit(ap_id: str | None) -> bool:
 
 
 def chandle(name: str, ap_id: str | None, plain: bool = False) -> Markup | str:
-    """A community's handle: r/name for subreddits, !name@host otherwise (with
-    the host dimmed unless `plain`)."""
+    """A community's handle: r/name for subreddits, the feed's title for feeds,
+    !name@host otherwise (with the host dimmed unless `plain`)."""
     if is_reddit(ap_id):
         return f"r/{name}"
+    if is_rss(ap_id):
+        return f"{name} (feed)" if plain else Markup('{}<span class="muted"> · feed</span>').format(name)
     host = host_of(ap_id or "")
     if plain:
         return f"!{name}@{host}"
@@ -291,7 +294,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                                  static_url=static_url, trash_count=trash_count,
                                  password_login=bool(settings.password),
                                  proxy_login=bool(settings.proxy_auth_header), chandle=chandle,
-                                 is_reddit=is_reddit)
+                                 is_reddit=is_reddit, is_rss=is_rss)
     app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
 
     # The SSO return page comes from the identity provider's site, so the
@@ -1270,6 +1273,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         out = []
         for r in rows:
             c = dict(r, host=host_of(r["canonical_ap_id"]), label=chandle(r["name"], r["canonical_ap_id"], True))
+            if is_rss(r["canonical_ap_id"]):
+                continue
             if is_reddit(r["canonical_ap_id"]):
                 if not reddit_me or not c["followed"]:
                     continue
