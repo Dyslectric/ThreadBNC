@@ -115,6 +115,36 @@ def register_all_existing(conn: Conn) -> None:
     for a in conn.execute("SELECT id, images_json FROM articles a WHERE status='ok' AND images_json IS NOT NULL "
                           "AND NOT EXISTS (SELECT 1 FROM article_media m WHERE m.article_id=a.id)").fetchall():
         attach_pictures(conn, a["id"], pictures(a), now)
+    for a in conn.execute("SELECT id, content_html FROM articles a WHERE status='ok' "
+                          "AND NOT EXISTS (SELECT 1 FROM article_links l WHERE l.article_id=a.id)").fetchall():
+        record_links(conn, a["id"], a["content_html"])
+
+
+def links_in(content_html: str | None) -> set[str]:
+    """The pages an article links to (ones we might read), without #fragments."""
+    if not content_html:
+        return set()
+    root = lxml.html.fragment_fromstring(content_html, create_parent="div")
+    return {url for a in root.iter("a") if (url := candidate(urldefrag((a.get("href") or "").strip())[0]))}
+
+
+def record_links(conn: Conn, article_id: int, content_html: str | None) -> None:
+    """Which pages the article links to, so an article can list the ones that mention it."""
+    conn.execute("DELETE FROM article_links WHERE article_id=?", (article_id,))
+    conn.executemany("INSERT INTO article_links(article_id, url) VALUES (?,?)",
+                     [(article_id, url) for url in links_in(content_html)])
+
+
+def mentioned_by(conn: Conn, a: Any, limit: int = 30) -> list[Any]:
+    """Other articles here that link to this one (at the address it was
+    linked by, or the one it was read from)."""
+    urls = {u for u in (a["url"], a["fetched_from"]) if u}
+    marks = ",".join("?" * len(urls))
+    return conn.execute(
+        f"SELECT DISTINCT o.id, o.title, o.site_name, o.url, o.fetched_at FROM article_links l "
+        f"JOIN articles o ON o.id=l.article_id AND o.status='ok' "
+        f"WHERE l.url IN ({marks}) AND o.id!=? ORDER BY o.fetched_at DESC LIMIT ?",
+        (*urls, a["id"], limit)).fetchall()
 
 
 def attach_pictures(conn: Conn, article_id: int, urls: list[str], now: str) -> None:
@@ -130,8 +160,9 @@ def collect_orphans(conn: Conn, now: str | None = None) -> int:
     cutoff = fmt_ts(parse_ts(now or utcnow()) - timedelta(days=STANDALONE_DAYS))  # type: ignore[operator]
     unwanted = ("NOT EXISTS (SELECT 1 FROM article_refs r WHERE r.article_id=articles.id) AND kept_at IS NULL "
                 "AND (opened_at IS NULL OR opened_at < ?)")
-    conn.execute(f"DELETE FROM article_media WHERE article_id IN (SELECT id FROM articles WHERE {unwanted})",
-                 (cutoff,))
+    for table in ("article_media", "article_links"):
+        conn.execute(f"DELETE FROM {table} WHERE article_id IN (SELECT id FROM articles WHERE {unwanted})",
+                     (cutoff,))
     return conn.execute(f"DELETE FROM articles WHERE {unwanted}", (cutoff,)).rowcount
 
 
@@ -370,6 +401,7 @@ class ArticleFetcher:
                 (art.title, art.byline, art.site_name, art.published, art.lead_image, art.content_html,
                  json.dumps(pics), art.words, final_url, now, row["id"]))
             attach_pictures(conn, row["id"], pics, now)
+            record_links(conn, row["id"], art.content_html)
             for r in conn.execute("SELECT object_id FROM article_refs WHERE article_id=?", (row["id"],)).fetchall():
                 register_media(conn, r["object_id"], pics, now, from_article=True)
 

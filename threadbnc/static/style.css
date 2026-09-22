@@ -778,3 +778,39 @@ fieldset.feed-picks input[type=checkbox] { flex: none; width: 16px; margin: 0; }
 .reader-actions { margin-top: 10px; }
 .reader-discussed { border-top: 1px solid var(--line); padding-top: 10px; margin-bottom: 16px; }
 .reader-discussed h2 { font-size: 0.95rem; margin: 0 0 4px; }
+
+/* ---- kept articles: the articles here that link to them, beside the article (below it when narrow) ---- */
+.reader-col { container-type: inline-size; }
+.reader-mentions { border-top: 1px solid var(--line); padding-top: 10px; margin-bottom: 16px; }
+.reader-mentions h2 { font-size: 0.95rem; margin: 0 0 4px; }
+.reader-mentions p { margin: 4px 0; }
+@container (min-width: 58rem) {
+  .reader:has(> .reader-mentions:not([hidden])) { max-width: calc(42rem + 17rem + 36px); display: grid; grid-template-columns: minmax(0, 42rem) 17rem;
+    gap: 36px; align-items: start; justify-content: center; }
+  .reader > .reader-mentions { position: sticky; top: calc(var(--header-h) + 16px); margin: 38px 0 0;
+    border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; background: var(--card); }
+  .dive-col .reader > .reader-mentions { top: 0; }
+}
+
+/* ---- linked articles opened beside the one you're reading (wide), or inside it (narrow): app.js ---- */
+a.article-link.dived, a[data-dive].dived { background: var(--hover); border-radius: 4px; }
+.dive-loading { margin: 12px 0; }
+@media (min-width: 1100px) {
+  main:has(.reader-deck.diving) { max-width: none; padding-bottom: 16px; }
+  .reader-deck.diving { --shown: min(var(--cols, 2), 2); display: flex; gap: 14px; overflow-x: auto;
+    scroll-snap-type: x mandatory; overscroll-behavior-x: contain; }
+  .reader-deck.diving > .reader-col { flex: 0 0 calc((100% - (var(--shown) - 1) * 14px) / var(--shown));
+    height: calc(100dvh - var(--header-h) - 44px); overflow-y: auto; overscroll-behavior-y: contain;
+    scroll-snap-align: end; background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+    padding: 18px 24px; }
+  .reader-deck.diving .reader-head h1 { font-size: 1.6rem; }
+}
+@media (min-width: 1760px) {
+  .reader-deck.diving { --shown: min(var(--cols, 2), 3); }
+}
+.dive-inline { margin: 4px 0 18px; padding: 12px 14px; border: 1px solid var(--line); border-left: 3px solid var(--accent);
+  border-radius: 10px; background: var(--card); font-size: 0.95rem; }
+.dive-inline .reader { max-width: none; }
+.dive-inline .reader-head h1 { font-size: 1.3rem; }
+.dive-inline .reader-body { font-size: 1em; margin: 14px 0 18px; }
+.dive-inline .reader-foot { display: none; }

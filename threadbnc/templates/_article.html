@@ -1,0 +1,85 @@
+{# The reader: an article (a post's, t and o; or one opened from a link), or why it couldn't be read.
+   `pane`: opened beside or inside another article (app.js), so it closes rather than going back. #}
+{% from "_macros.html" import when, icon, keep_button %}
+{% set parts = 'reader-actions-' ~ a.id ~ ' mentions-' ~ a.id %}
+<article class="reader" id="reader-{{ a.id }}"{% if pane %} data-src="/a/{{ a.id }}?pane=1"{% endif %}>
+ <div class="reader-main">
+  <p class="small reader-nav">
+    {% if pane %}<button type="button" class="link" data-dive-close>{{ icon('x') }} Close</button>
+      · <a href="/a/{{ a.id }}">Open on its own</a>
+    {% elif t %}<a href="/t/{{ t.id }}">← Back to the post in {{ t.cname }}</a>
+    {% else %}<a href="/" data-back>← Back</a>{% endif %}
+  </p>
+  {% if a.status == 'ok' %}
+  <header class="reader-head">
+    <div class="small muted">{{ a.site_name or (a.fetched_from | host) }}{% if a.published %} · {{ a.published }}{% endif %}</div>
+    <h1>{{ a.title or (o.title if o else '') }}</h1>
+    {% if a.byline %}<p class="muted reader-byline">By {{ a.byline }}</p>{% endif %}
+    <div class="small muted">
+      {{ a.word_count }} words · about {{ ((a.word_count or 0) / 230) | round(0, 'ceil') | int }} min
+      · saved {{ when(a.fetched_at) }}
+    </div>
+    <div class="actions reader-actions small" id="reader-actions-{{ a.id }}">
+      {% if t %}
+        {% if not t.trashed_at %}{{ keep_button(t.id, t.retention == 'manual', refresh=parts) }}{% endif %}
+        {% if accounts %}<a class="act" href="/t/{{ t.id }}/repost" title="Post a copy in one of your communities">{{ icon('repost') }}<span>Repost</span></a>{% endif %}
+        <a class="act" href="/t/{{ t.id }}#comments">{{ icon('comment') }}<span>Comments</span></a>
+      {% else %}
+        <form method="post" action="/a/{{ a.id }}/{{ 'unkeep' if a.kept_at else 'keep' }}" class="inline" data-inplace="{{ parts }}">
+          <button class="act {{ 'on' if a.kept_at }}" aria-pressed="{{ 'true' if a.kept_at else 'false' }}"
+            title="{{ 'Kept. Click to unkeep.' if a.kept_at else 'Keep this article: it stays until you unkeep it' }}">
+            {{ icon('star-fill' if a.kept_at else 'star') }}<span>{{ 'Kept' if a.kept_at else 'Keep' }}</span></button>
+        </form>
+        {% if accounts %}<a class="act" href="/a/{{ a.id }}/post" title="Post this article in one of your communities">{{ icon('share') }}<span>Repost</span></a>{% endif %}
+      {% endif %}
+      {% if a.url | safe_url %}<a class="act" href="{{ a.url | safe_url }}" rel="noreferrer noopener nofollow" target="_blank">{{ icon('external') }}<span>Original</span></a>{% endif %}
+    </div>
+  </header>
+  {% if lead %}<img class="media reader-lead" src="/media/{{ lead.id }}" alt="">{% endif %}
+  <div class="md reader-body">{{ content }}</div>
+  {% if discussed %}
+  <section class="reader-discussed small">
+    <h2>{{ 'Also posted' if t else 'Posted' }} in</h2>
+    <ul class="plain">{% for d in discussed %}<li><a href="/t/{{ d.id }}">{{ d.title }}</a>
+      <span class="muted">· {{ chandle(d.name, d.canonical_ap_id) }}</span></li>{% endfor %}</ul>
+  </section>
+  {% endif %}
+  <footer class="reader-foot small muted">
+    <p>Saved from {{ a.fetched_from | host }} {{ when(a.fetched_at) }}, as the bouncer read it: the page may have changed since,
+      and some parts of it (videos, embeds, interactive pieces) aren't kept.
+      Links marked <span class="article-link" aria-hidden="true"></span> are articles you can read here too.</p>
+    {% if t %}<p><a class="button secondary" href="/t/{{ t.id }}#comments">{{ icon('comment') }}Comments</a></p>{% endif %}
+  </footer>
+  {% else %}
+  <header class="reader-head">
+    <div class="small muted">{{ a.url | host }}</div>
+    <h1>{{ 'Reading this page…' if a.status == 'pending' else "Couldn't read this page here" }}</h1>
+  </header>
+  <section class="card">
+    {% if a.status == 'pending' %}
+      <p>The site didn't answer yet{% if a.error %} ({{ a.error }}){% endif %}. It's tried again in the background.</p>
+    {% elif a.status == 'skipped' %}
+      <p class="muted">{{ (a.error or 'Not an article') | capitalize }}.</p>
+    {% else %}
+      <p class="bad-text">{{ a.error or 'The site refused.' }}</p>
+    {% endif %}
+    <div class="row">
+      {% if a.url | safe_url %}<a class="button" href="{{ a.url | safe_url }}" rel="noreferrer noopener nofollow" target="_blank">{{ icon('external') }} Open the original</a>{% endif %}
+      {% if a.status != 'skipped' %}<form method="post" action="/a/{{ a.id }}/retry" class="inline" data-inplace="reader-{{ a.id }}"><button class="secondary">{{ icon('refresh') }} Try again</button></form>{% endif %}
+    </div>
+  </section>
+  {% endif %}
+ </div>
+  {# Kept articles list the articles here that link to them. #}
+  <aside class="reader-mentions small" id="mentions-{{ a.id }}" aria-labelledby="mentions-{{ a.id }}-title"{% if not kept %} hidden{% endif %}>
+    {% if kept %}
+    <h2 id="mentions-{{ a.id }}-title">Mentioned in</h2>
+    {% if mentions %}
+    <ul class="plain">{% for m in mentions %}<li><a href="/a/{{ m.id }}" data-dive>{{ m.title or m.url }}</a>
+      <div class="muted">{{ m.site_name or (m.url | host) }}</div></li>{% endfor %}</ul>
+    {% else %}
+    <p class="muted">No other article saved here links to this one yet. When one does, it's listed here.</p>
+    {% endif %}
+    {% endif %}
+  </aside>
+</article>

@@ -413,6 +413,140 @@ document.documentElement.classList.add("js");
     if (seenQueue.size && navigator.sendBeacon) navigator.sendBeacon("/feed/seen", seenBody());
   });
 
+  // ---- diving into linked articles (the reader) --------------------------------------
+  // A link to another article opens it beside the one you're reading on a wide
+  // screen (a column each, two or three on screen, the newest scrolled to), or
+  // inside it, under the paragraph with the link, on a narrow one. Opening one
+  // from a column replaces the columns after it. Without this they're pages.
+  const WIDE = matchMedia("(min-width: 1100px)");
+  const deckOf = (el) => el.closest("[data-deck]");
+  const cols = (deck) => [...deck.children];
+
+  function paneUrl(href) {
+    const u = new URL(href, location.href);
+    u.searchParams.set("pane", "1");
+    return u.href;
+  }
+
+  function opened(link, on) {
+    link.classList.toggle("dived", on);
+    link.setAttribute("aria-expanded", on ? "true" : "false");
+  }
+
+  // Column mode: each column scrolls by itself, so the one you were reading keeps its place.
+  function setDiving(deck, on) {
+    const first = deck.firstElementChild;
+    if (on === deck.classList.contains("diving")) return;
+    if (on) {
+      const read = window.scrollY + headerH() - (first.getBoundingClientRect().top + window.scrollY);
+      deck.classList.add("diving");
+      window.scrollTo(0, deck.getBoundingClientRect().top + window.scrollY - headerH() - 12);
+      first.scrollTop = Math.max(0, read);
+    } else {
+      const read = first.scrollTop;
+      deck.classList.remove("diving");
+      deck.style.removeProperty("--cols");
+      window.scrollTo(0, first.getBoundingClientRect().top + window.scrollY - headerH() + read);
+    }
+  }
+
+  function closeColumnsAfter(deck, col, reopening = false) {
+    for (const c of cols(deck).slice(cols(deck).indexOf(col) + 1)) {
+      if (c.opener) opened(c.opener, false);
+      c.remove();
+    }
+    deck.style.setProperty("--cols", cols(deck).length);
+    if (cols(deck).length === 1 && !reopening) setDiving(deck, false);
+  }
+
+  function closeDive(box) {
+    if (box.opener) opened(box.opener, false);
+    if (box.classList.contains("dive-col")) {
+      const deck = deckOf(box);
+      closeColumnsAfter(deck, box.previousElementSibling);
+      if (box.opener && box.opener.isConnected) box.opener.focus({ preventScroll: true });
+    } else {
+      box.remove();
+      if (box.opener && box.opener.isConnected) { box.opener.focus({ preventScroll: true }); reveal(box.opener); }
+    }
+  }
+
+  // Where a narrow screen puts it: under the paragraph (or in the list item) the link is in.
+  function placeInline(link, box) {
+    const block = link.closest("p, li, dd, td, blockquote, figure, h2, h3, h4, h5, h6, pre") || link;
+    block.insertAdjacentElement(block.matches("li, dd, td") ? "beforeend" : "afterend", box);
+  }
+
+  async function dive(link) {
+    const deck = deckOf(link);
+    const wide = WIDE.matches;
+    const box = document.createElement(wide ? "div" : "section");
+    box.className = wide ? "reader-col dive-col" : "dive-inline";
+    box.opener = link;
+    box.setAttribute("aria-busy", "true");
+    box.innerHTML = '<p class="muted dive-loading">Reading…</p>';
+    if (wide) {
+      const col = link.closest(".reader-col");
+      closeColumnsAfter(deck, col, true);
+      for (const other of $$("a.dived", col)) opened(other, false);
+      setDiving(deck, true);
+      deck.append(box);
+      deck.style.setProperty("--cols", cols(deck).length);
+      deck.scrollTo({ left: deck.scrollWidth, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" });
+    } else {
+      placeInline(link, box);
+    }
+    opened(link, true);
+    try {
+      const r = await fetch(paneUrl(link.href), { credentials: "same-origin" });
+      if (!r.ok || new URL(r.url).origin !== location.origin) throw new Error("HTTP " + r.status);
+      const doc = new DOMParser().parseFromString(await r.text(), "text/html");
+      const article = $("article.reader", doc);
+      if (!article) throw new Error("not an article");
+      if (!box.isConnected) return; // closed while it was being read
+      box.replaceChildren(document.adoptNode(article));
+      box.removeAttribute("aria-busy");
+      if (wide) box.scrollTop = 0; else reveal(box);
+    } catch (e) {
+      // Not something to read here after all (the site itself, say): open it as a page.
+      if (box.isConnected) closeDive(box);
+      location.assign(link.href);
+    }
+  }
+
+  document.addEventListener("click", (ev) => {
+    const close = ev.target.closest("[data-dive-close]");
+    if (close) {
+      const box = close.closest(".dive-col, .dive-inline");
+      if (box) closeDive(box);
+      return;
+    }
+    const link = ev.target.closest("a.article-link, a[data-dive]");
+    if (!link || !deckOf(link) || ev.button !== 0 || ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.altKey) return;
+    ev.preventDefault();
+    if (link.classList.contains("dived")) {
+      const box = [...$$(".dive-col, .dive-inline", deckOf(link))].find((b) => b.opener === link);
+      if (box) { closeDive(box); return; }
+    }
+    dive(link);
+  });
+
+  // Crossing between wide and narrow: columns and inline articles don't carry over, so close them.
+  WIDE.addEventListener("change", () => {
+    for (const deck of $$("[data-deck]")) {
+      for (const box of $$(".dive-inline", deck)) closeDive(box);
+      if (deck.children.length > 1) closeColumnsAfter(deck, deck.firstElementChild);
+    }
+  });
+
+  function closeLastDive() {
+    const deck = $("[data-deck]");
+    const boxes = deck ? $$(".dive-col, .dive-inline", deck) : [];
+    if (!boxes.length) return false;
+    closeDive(boxes[boxes.length - 1]);
+    return true;
+  }
+
   // ---- keyboard shortcuts ---------------------------------------------------------
   let current = null;
   let gPending = null;
@@ -546,7 +680,11 @@ document.documentElement.classList.add("js");
         break;
       }
       case "Escape":
-        for (const menu of $$("details.menu[open]")) menu.open = false;
+        if ($("details.menu[open]")) {
+          for (const menu of $$("details.menu[open]")) menu.open = false;
+        } else if (!current) {
+          closeLastDive();
+        }
         select(null);
         break;
     }

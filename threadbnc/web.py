@@ -1948,9 +1948,12 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         """Where a link to an article goes to be read here."""
         return "/read?url=" + quote(url, safe="")
 
-    def article_view(request: Request, a: Any, t: Any = None, o: Any = None) -> HTMLResponse:
+    def article_view(request: Request, a: Any, t: Any = None, o: Any = None, pane: bool = False) -> HTMLResponse:
         """An article in the reader: a post's (t, o) or one opened from a link.
-        Links in it to other articles are read here too."""
+        Links in it to other articles are read here too. Kept, it lists the
+        articles here that link to it. `pane`: just the article, for app.js to
+        open beside (or inside) the one you're reading."""
+        kept = bool(a["kept_at"] or (t and t["retention"] == "manual"))
         with db.connect() as conn:
             table = {**(media_mod.lookup_for_objects(conn, [o["id"]]) if o else {}),
                      **articles.media_lookup(conn, a["id"])}
@@ -1960,13 +1963,14 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                 "JOIN objects o ON o.id=t.root_object_id JOIN revisions r ON r.object_id=o.id AND r.seq=o.revision_count "
                 "JOIN communities c ON c.id=t.community_id WHERE ar.article_id=? AND t.id!=? ORDER BY t.id DESC LIMIT 10",
                 (a["id"], t["id"] if t else 0)).fetchall()
+            mentions = articles.mentioned_by(conn, a) if kept else []
         lead = table.get(a["lead_image_url"] or "")
         shown = lead and lead.status == "ok" and (lead.content_type or "").startswith("image/") \
             and lead.content_type != "image/svg+xml"
         content = articles.render(a["content_html"], table.get, a["fetched_from"] or a["url"], read_href) \
             if a["status"] == "ok" else None
-        return render(request, "article.html", t=t, o=o, a=a, content=content, lead=lead if shown else None,
-                      discussed=discussed)
+        return render(request, "article_pane.html" if pane else "article.html", t=t, o=o, a=a, content=content,
+                      lead=lead if shown else None, discussed=discussed, kept=kept, mentions=mentions, pane=pane)
 
     @app.get("/t/{tid}/article", response_class=HTMLResponse)
     def article_page(request: Request, tid: int):
@@ -1983,9 +1987,10 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         return article_view(request, a, t, o)
 
     @app.get("/read")
-    def read_link(url: str = ""):
+    def read_link(url: str = "", pane: bool = False):
         """A link to an article, read here: fetched the first time (you're
-        waiting for it, so now rather than in the background), then shown."""
+        waiting for it, so now rather than in the background), then shown
+        (`pane`: just the article, see article_view)."""
         if not safe_url(url):
             raise HTTPException(400, "Not a web address")
         if not articles.candidate(url):  # a picture, a video, a social site: the page itself
@@ -1994,17 +1999,17 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             a = articles.ensure(conn, url, utcnow())
         if a["status"] == "pending":
             bouncer.articles.fetch_one(a)
-        return RedirectResponse(f"/a/{a['id']}", status_code=303)
+        return RedirectResponse(f"/a/{a['id']}" + ("?pane=1" if pane else ""), status_code=303)
 
     @app.get("/a/{aid}", response_class=HTMLResponse)
-    def article_by_id(request: Request, aid: int):
+    def article_by_id(request: Request, aid: int, pane: bool = False):
         """An article opened from a link (or any saved article): read here, or
         why it couldn't be."""
         with db.connect() as conn:
             a = conn.execute("SELECT * FROM articles WHERE id=?", (aid,)).fetchone()
         if a is None:
             raise HTTPException(404)
-        return article_view(request, a)
+        return article_view(request, a, pane=pane)
 
     @app.post("/a/{aid}/retry")
     def article_try_again(request: Request, aid: int):
@@ -2014,7 +2019,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             a = conn.execute("SELECT * FROM articles WHERE id=?", (aid,)).fetchone()
         if a is not None and a["status"] == "pending":
             bouncer.articles.fetch_one(a)
-        return RedirectResponse(f"/a/{aid}", status_code=303)
+        return RedirectResponse(back(request, f"/a/{aid}"), status_code=303)  # the page it's open on
 
     @app.post("/a/{aid}/keep")
     @app.post("/a/{aid}/unkeep")

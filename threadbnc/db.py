@@ -246,6 +246,15 @@ CREATE TABLE IF NOT EXISTS article_media (
 );
 CREATE INDEX IF NOT EXISTS article_media_media ON article_media(media_id);
 
+-- The pages an article links to (without #fragments), so an article can list
+-- the ones that mention it. Rewritten each time the article is read.
+CREATE TABLE IF NOT EXISTS article_links (
+    article_id INTEGER NOT NULL REFERENCES articles(id),
+    url TEXT NOT NULL,
+    PRIMARY KEY (article_id, url)
+);
+CREATE INDEX IF NOT EXISTS article_links_url ON article_links(url);
+
 -- Which posts (in any revision) linked to which articles.
 CREATE TABLE IF NOT EXISTS article_refs (
     object_id INTEGER NOT NULL REFERENCES objects(id),

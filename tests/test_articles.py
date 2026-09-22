@@ -245,6 +245,54 @@ def test_article_links_open_in_the_reader(server, abouncer, settings):
     assert client.get(link, follow_redirects=False).headers["location"] == f"/a/{aid}"
 
 
+
+def test_kept_articles_list_the_articles_that_mention_them(server, abouncer, settings):
+    client = reader(settings, abouncer)
+    client.get("/read?url=https%3A%2F%2Fnews.test%2Flinking")
+    linking = one_article(abouncer, "https://news.test/linking")
+    client.get("/read?url=https%3A%2F%2Fnews.test%2F2026%2F09%2Fother-story-here")
+    other = one_article(abouncer, "https://news.test/2026/09/other-story-here")
+    with abouncer.db.connect() as conn:  # the section page and the #fragment link to itself are recorded too
+        assert {r[0] for r in conn.execute("SELECT url FROM article_links WHERE article_id=?", (linking["id"],))} == {
+            "https://news.test/2026/09/other-story-here", "https://news.test/world", "https://news.test/linking",
+            "https://news.test/related"}
+        assert [m["id"] for m in articles.mentioned_by(conn, other)] == [linking["id"]]
+        assert articles.mentioned_by(conn, linking) == []  # linking to itself isn't a mention
+    # Only kept articles show them.
+    assert "Mentioned in" not in client.get(f"/a/{other['id']}").text
+    client.post(f"/a/{other['id']}/keep")
+    page = client.get(f"/a/{other['id']}").text
+    assert "Mentioned in" in page and f'<a href="/a/{linking["id"]}" data-dive>' in page
+    assert "No other article saved here links" not in page
+    client.post(f"/a/{linking['id']}/keep")
+    assert "No other article saved here links" in client.get(f"/a/{linking['id']}").text
+    # A post's article shows them once the post is kept (this one is: it was saved by link).
+    tid = post_linking(server, abouncer, "https://news.test/2026/09/other-story-here")
+    assert f'<a href="/a/{linking["id"]}" data-dive>' in client.get(f"/t/{tid}/article").text
+    # Recorded for articles read before this, and gone with the article.
+    with abouncer.db.transaction() as conn:
+        conn.execute("DELETE FROM article_links")
+        articles.register_all_existing(conn)
+        assert [m["id"] for m in articles.mentioned_by(conn, other)] == [linking["id"]]
+        conn.execute("UPDATE articles SET kept_at=NULL, opened_at='2000-01-01T00:00:00Z' WHERE id=?", (linking["id"],))
+        articles.collect_orphans(conn)
+        assert conn.execute("SELECT COUNT(*) FROM article_links WHERE article_id=?", (linking["id"],)).fetchone()[0] == 0
+
+
+def test_articles_open_beside_the_one_being_read(abouncer, settings):
+    """app.js asks for just the article (pane=1), to show beside or inside the one you're reading."""
+    client = reader(settings, abouncer)
+    r = client.get("/read?url=https%3A%2F%2Fnews.test%2F2026%2F09%2Fother-story-here&pane=1", follow_redirects=False)
+    aid = one_article(abouncer, "https://news.test/2026/09/other-story-here")["id"]
+    assert r.headers["location"] == f"/a/{aid}?pane=1"
+    pane = client.get(r.headers["location"]).text
+    assert "<html" not in pane and "The other story" in pane and "data-dive-close" in pane
+    assert f'data-src="/a/{aid}?pane=1"' in pane and "data-back" not in pane
+    assert 'data-inplace="reader-actions-' in pane  # keeping it doesn't leave the page it's open on
+    full = client.get(f"/a/{aid}").text
+    assert "data-deck" in full and "data-dive-close" not in full and "data-back" in full
+
+
 def one_article(b, url):
     with b.db.connect() as conn:
         return conn.execute("SELECT * FROM articles WHERE url=?", (url,)).fetchone()
