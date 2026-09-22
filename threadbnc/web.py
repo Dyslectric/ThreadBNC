@@ -26,7 +26,7 @@ from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import dupes, store
+from . import articles, dupes, store
 from . import search as search_mod
 from . import feed as feed_mod
 from . import media as media_mod
@@ -1652,6 +1652,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                 f"WHERE o.thread_id IN ({marks}) AND e.event_type!='discovered' ORDER BY e.observed_at", tids):
                 events.setdefault(e["object_id"], []).append(e)
             instance = conn.execute("SELECT * FROM instances WHERE domain=?", (t["source_domain"],)).fetchone()
+            post = next((o for o in objs if o["thread_id"] == tid and o["object_type"] == "post"), None)
+            article = articles.for_object(conn, post["id"], post["url"]) if post else None
             seen_at = {i: th["last_viewed_at"] for i, th in threads.items()}
             # Every copy's comments are on this page, so they all count as read.
             conn.execute(f"UPDATE archived_threads SET prev_viewed_at=last_viewed_at, last_viewed_at=? "
@@ -1717,9 +1719,41 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                       raw_comments=raw_comments, md=md, media_for=media_for, preview=preview, my_votes=my_votes,
                       me=me, powers_by_community=powers, new_count=new_count, changed_count=changed_count,
                       comment_sort=sort, comment_sorts=COMMENT_SORTS, instance=instance, since=since,
-                      grouped=len(tids) > 1, post_copies=post_copies, merge=merge,
+                      grouped=len(tids) > 1, post_copies=post_copies, merge=merge, article=article,
                       n_copies=max(len(copies), 1),
                       all_kept=all(th["retention"] == "manual" for th in threads.values()))
+
+    @app.get("/t/{tid}/article", response_class=HTMLResponse)
+    def article_page(request: Request, tid: int):
+        """The article the post links to, as the bouncer read it."""
+        with db.connect() as conn:
+            t = conn.execute(THREAD_SQL, (tid,)).fetchone()
+            if not t:
+                raise HTTPException(404)
+            o = conn.execute("SELECT o.*, r.title, r.url FROM objects o JOIN revisions r ON r.object_id=o.id "
+                             "AND r.seq=o.revision_count WHERE o.id=?", (t["root_object_id"],)).fetchone()
+            a = articles.for_object(conn, o["id"], o["url"]) if o else None
+            if not a or a["status"] != "ok":
+                raise HTTPException(404)
+            table = media_mod.lookup_for_objects(conn, [o["id"]])
+        lead = table.get(a["lead_image_url"] or "")
+        shown = lead and lead.status == "ok" and (lead.content_type or "").startswith("image/") \
+            and lead.content_type != "image/svg+xml"
+        return render(request, "article.html", t=t, o=o, a=a, content=articles.render(a["content_html"], table.get),
+                      lead=lead if shown else None)
+
+    @app.post("/t/{tid}/article/retry")
+    def article_retry(request: Request, tid: int):
+        with db.transaction() as conn:
+            t = conn.execute("SELECT root_object_id FROM archived_threads WHERE id=?", (tid,)).fetchone()
+            o = conn.execute("SELECT r.url FROM objects o JOIN revisions r ON r.object_id=o.id "
+                             "AND r.seq=o.revision_count WHERE o.id=?", (t["root_object_id"],)).fetchone() if t else None
+            a = articles.for_object(conn, t["root_object_id"], o["url"]) if o else None
+            queued = bool(a) and articles.retry(conn, a["id"])
+        if queued:
+            bouncer.wake.set()
+            flash(request, "The article will be read again shortly.")
+        return RedirectResponse(f"/t/{tid}", status_code=303)
 
     @app.get("/o/{oid}/history", response_class=HTMLResponse)
     def history(request: Request, oid: int):

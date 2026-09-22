@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% from "_macros.html" import when, icon %}
+{% block title %}{{ a.title or o.title }}{% endblock %}
+{% block content %}
+<article class="reader">
+  <p class="small reader-nav"><a href="/t/{{ t.id }}">← Back to the post in {{ t.cname }}</a></p>
+  <header class="reader-head">
+    <div class="small muted">{{ a.site_name or (a.fetched_from | host) }}{% if a.published %} · {{ a.published }}{% endif %}</div>
+    <h1>{{ a.title or o.title }}</h1>
+    {% if a.byline %}<p class="muted reader-byline">By {{ a.byline }}</p>{% endif %}
+    <div class="small muted">
+      {{ a.word_count }} words · about {{ ((a.word_count or 0) / 230) | round(0, 'ceil') | int }} min
+      · saved {{ when(a.fetched_at) }}
+      {% if a.url | safe_url %}· <a href="{{ a.url | safe_url }}" rel="noreferrer noopener nofollow" target="_blank">Original{{ icon('external') }}</a>{% endif %}
+    </div>
+  </header>
+  {% if lead %}<img class="media reader-lead" src="/media/{{ lead.id }}" alt="">{% endif %}
+  <div class="md reader-body">{{ content }}</div>
+  <footer class="reader-foot small muted">
+    <p>Saved from {{ a.fetched_from | host }} {{ when(a.fetched_at) }}, as the bouncer read it: the page may have changed since,
+      and some parts of it (videos, embeds, interactive pieces) aren't kept.</p>
+    <p><a class="button secondary" href="/t/{{ t.id }}#comments">{{ icon('comment') }}Comments</a></p>
+  </footer>
+</article>
+{% endblock %}

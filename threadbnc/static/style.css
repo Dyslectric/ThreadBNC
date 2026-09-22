@@ -714,3 +714,25 @@ svg.meter rect.track { fill: var(--line); }
   table.storage .hide-narrow { display: none; }
   table.storage .bar-col { width: 22%; min-width: 50px; }
 }
+
+/* ---- linked articles (reader view) ---- */
+.act.read-article { color: var(--accent); }
+.act.read-article:hover { color: var(--accent-hover); }
+.article-cta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: 8px 0; }
+.reader { max-width: 42rem; margin: 0 auto; }
+.reader-nav { margin: 0 0 18px; }
+.reader-head h1 { font-size: 1.9rem; margin: 6px 0 8px; }
+.reader-byline { margin: 0 0 6px; }
+img.media.reader-lead { width: 100%; max-height: none; margin: 18px 0 0; }
+.reader-body { font-size: 1.1rem; line-height: 1.7; margin: 22px 0 28px; }
+.reader-body p { margin: 0 0 1em; }
+.reader-body h2, .reader-body h3, .reader-body h4 { font-size: 1.2em; line-height: 1.3; margin: 1.5em 0 0.5em; }
+.reader-body img.media, .reader-body video.media { max-height: none; margin: 14px auto; }
+.reader-body figure { margin: 1em 0; }
+.reader-body figcaption { font-size: 0.85em; color: var(--muted); }
+.reader-body blockquote { font-style: italic; }
+.reader-foot { border-top: 1px solid var(--line); padding-top: 12px; }
+@media (max-width: 600px) {
+  .reader-head h1 { font-size: 1.5rem; }
+  .reader-body { font-size: 1.05rem; }
+}

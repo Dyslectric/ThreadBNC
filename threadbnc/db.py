@@ -200,9 +200,42 @@ CREATE TABLE IF NOT EXISTS media_refs (
     object_id INTEGER NOT NULL REFERENCES objects(id),
     media_id INTEGER NOT NULL REFERENCES media(id),
     first_seen_at TEXT NOT NULL,
+    from_article INTEGER NOT NULL DEFAULT 0,  -- 1 = only in the article the post links to, not the post itself
     PRIMARY KEY (object_id, media_id)
 );
 CREATE INDEX IF NOT EXISTS media_refs_media ON media_refs(media_id);
+
+-- Web pages posts link to, read by the bouncer (see articles.py). Keyed by the
+-- link as posted; content_html is the extracted article, already sanitised.
+CREATE TABLE IF NOT EXISTS articles (
+    id INTEGER PRIMARY KEY,
+    url TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'ok', 'failed', 'skipped')),
+    title TEXT,
+    byline TEXT,
+    site_name TEXT,
+    published TEXT,
+    lead_image_url TEXT,      -- the page's preview picture, when the article has none of its own
+    content_html TEXT,
+    images_json TEXT,         -- the article's pictures (archived as media of the posts linking to it)
+    word_count INTEGER,
+    fetched_from TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT,
+    error TEXT,
+    first_seen_at TEXT NOT NULL,
+    fetched_at TEXT
+);
+CREATE INDEX IF NOT EXISTS articles_pending ON articles(status, next_attempt_at);
+
+-- Which posts (in any revision) linked to which articles.
+CREATE TABLE IF NOT EXISTS article_refs (
+    object_id INTEGER NOT NULL REFERENCES objects(id),
+    article_id INTEGER NOT NULL REFERENCES articles(id),
+    first_seen_at TEXT NOT NULL,
+    PRIMARY KEY (object_id, article_id)
+);
+CREATE INDEX IF NOT EXISTS article_refs_article ON article_refs(article_id);
 
 -- Accounts ThreadBNC can act as. Only the server-issued session token is kept,
 -- encrypted (see vault.py); passwords are never stored.
@@ -404,13 +437,14 @@ COLUMN_MIGRATIONS = [
     ("communities", "media_transcode", "INTEGER"),
     ("media", "original_bytes", "INTEGER"),
     ("media", "original_type", "TEXT"),
+    ("media_refs", "from_article", "INTEGER NOT NULL DEFAULT 0"),
 ]
 
 # Tables with an integer `id` key: inserts into these get `RETURNING id` on
 # Postgres so callers can keep using `cursor.lastrowid`.
 _ID_TABLES = {"instances", "actors", "communities", "archived_threads", "objects", "revisions",
               "state_events", "media", "jobs", "accounts", "mod_actions", "join_requests",
-              "inbox_items"}
+              "inbox_items", "articles"}
 _INSERT_RE = re.compile(r"^\s*INSERT\s+INTO\s+(\w+)", re.IGNORECASE)
 _PG_WRITE_LOCK = 727_001  # advisory lock id: one writer at a time, like SQLite's BEGIN IMMEDIATE
 

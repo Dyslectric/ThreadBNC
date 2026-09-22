@@ -22,7 +22,8 @@ Stored observations aren't overwritten: edits add a new version, and removals an
   - Threads are checked less often as they age: at the community's check interval for the first day (15 minutes by default, 30 for threads kept by link), then hourly, then every 6 hours after day 3.
   - When a post's comment count hasn't changed, the comment tree is re-read only every 6 hours. Edits to existing comments can take that long to show up.
 - **Content that was already gone.** If a comment was deleted or removed before the bouncer first saw it, only its placeholder is stored.
-- **Some media.** Images or videos over the size limit (25 MB by default, or set per community), downloads that keep failing, and linked article pages are not saved. A link to the original is kept instead. Communities that have transcoding turned on keep a smaller copy of oversized files instead (see [Media and Markdown](#media-and-markdown)).
+- **Some media.** Images or videos over the size limit (25 MB by default, or set per community) and downloads that keep failing are not saved. A link to the original is kept instead. Communities that have transcoding turned on keep a smaller copy of oversized files instead (see [Media and Markdown](#media-and-markdown)).
+- **Some linked articles.** Paywalled pages, sites that refuse the bouncer, and pages with too little text aren't saved, and the article is kept as the bouncer first read it, not as later updated (see [Linked articles](#linked-articles)).
 - **Outages.** Nothing is lost while an instance is unreachable, but changes that happen and are reversed during the outage won't be seen.
 
 **What it deletes, by design**
@@ -395,6 +396,7 @@ API (each call with `Authorization: Bearer $THREADBNC_API_TOKEN`):
 | `THREADBNC_MEDIA_MAX_MB` | `25` | Largest single image or video file that will be archived; bigger files are skipped and linked to the original (the Storage page and each community can override this) |
 | `THREADBNC_MEDIA_TRANSCODE` | `0` | Default for communities that haven't chosen, unless set on the Storage page: `1` shrinks files over the size limit with ffmpeg instead of skipping them |
 | `THREADBNC_MEDIA_TRANSCODE_SOURCE_MAX_MB` | `1000` | Largest original downloaded to transcode; bigger files are skipped |
+| `THREADBNC_ARTICLES` | `1` | Read the web pages posts link to and keep the article, for **Read article** (see [Linked articles](#linked-articles)); `0` turns it off |
 | `THREADBNC_PROXY_AUTH_HEADER` | unset | Header in which a signing-in reverse proxy passes the user's name, e.g. `X-authentik-username` |
 | `THREADBNC_PROXY_SECRET` | unset | Required with the above (16+ characters). The proxy must send it as `X-ThreadBNC-Proxy-Secret` |
 | `THREADBNC_PROXY_ALLOWED_USERS` | unset | Comma-separated usernames allowed in; unset = whoever the proxy lets through |
@@ -500,13 +502,26 @@ Posts and comments are rendered as Markdown: CommonMark plus tables, strikethrou
 
 Transcoding needs `ffmpeg` and `ffprobe` on the `PATH`. The Docker image includes them. Transcoding runs in the bouncer's background loop, so a long video can hold up other syncing for a few minutes.
 
+## Linked articles
+
+When a post links to a web page, the bouncer reads the page and keeps the article on it, so you can read it here and it outlives the site's copy.
+
+- Posts with a saved article get a **Read article** button: in the feed (all three views) and on the thread page. It opens the article in a clean reading view (`/t/{id}/article`) with its headline, author, date, text and pictures, and a link back to the comments.
+- The article is pulled out of the page with [trafilatura](https://trafilatura.readthedocs.io/): the text, headings, lists, quotes, tables, links and pictures, without the site's menus, ads, scripts and comments. It's cleaned with nh3 like everything else.
+- Its pictures are archived as the post's media, so they follow the community's media settings and are shown from the archive, never loaded from the site. They're kept out of the post's thumbnail and gallery in the feed.
+- Links that aren't articles aren't tried: images and videos (archived as media instead), home pages, Reddit, YouTube and other social or video sites, and links to other Lemmy or PieFed posts.
+- The page is read once, newest links first, a batch per bouncer check. Posts linking to the same page share one copy. Links posted before this existed are read in the background too.
+- **What can't be saved:** pages behind a paywall or login, sites that refuse the bouncer (it identifies itself as ThreadBNC rather than posing as a browser), pages with fewer than 80 words of text, and pages over 5 MB. The thread page says why, and offers **Try again** when the site was down or refused.
+- Articles are deleted with the last thread that links to them.
+- `THREADBNC_ARTICLES=0` stops reading pages; links are still noted, and read once it's turned back on.
+
 ## Privacy
 
 - Every route except `/login`, `/robots.txt` and static files requires a session or the API token.
 - Responses send `noindex`, `no-store`, `no-referrer`, a strict CSP and `frame-ancestors 'none'`.
 - The session cookie is `SameSite=Strict`.
 - Archived text is rendered as sanitised Markdown. Raw HTML is never passed through.
-- Remote images are fetched by the server, never by your browser.
+- Remote images are fetched by the server, never by your browser. The same goes for linked articles and their pictures.
 - Nothing is exposed publicly. Sharing and export are left for later.
 
 ## Known limits / next steps

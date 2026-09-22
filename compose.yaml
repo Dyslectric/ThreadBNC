@@ -37,6 +37,8 @@ services:
       THREADBNC_MEDIA_MAX_MB: ${THREADBNC_MEDIA_MAX_MB:-25}
       # Default for communities that haven't chosen (Media tab): shrink oversized files with ffmpeg.
       THREADBNC_MEDIA_TRANSCODE: ${THREADBNC_MEDIA_TRANSCODE:-0}
+      # Read the web pages posts link to and keep the article (Read article).
+      THREADBNC_ARTICLES: ${THREADBNC_ARTICLES:-1}
       THREADBNC_TRASH_DAYS: ${THREADBNC_TRASH_DAYS:-30}
       # Signed in by a reverse proxy (e.g. Authentik forward auth); see README.
       THREADBNC_PROXY_AUTH_HEADER: ${THREADBNC_PROXY_AUTH_HEADER:-}

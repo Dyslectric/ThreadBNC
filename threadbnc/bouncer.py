@@ -10,7 +10,7 @@ import traceback
 from datetime import timedelta
 from typing import Any, Callable
 
-from . import media, store
+from . import articles, media, store
 from .adapters import (
     CommunityRef,
     HttpClient,
@@ -86,6 +86,8 @@ class Bouncer:
                                         timeout=max(settings.http_timeout, 30.0), throttle=self.http.throttle,
                                         transcode_default=settings.media_transcode,
                                         transcode_source_max_bytes=settings.media_transcode_source_max_bytes)
+        self.articles = articles.ArticleFetcher(db, settings.user_agent, enabled=settings.archive_articles,
+                                                timeout=max(settings.http_timeout, 30.0), throttle=self.http.throttle)
         self._media_backfilled = False
         self.wake = threading.Event()
         self._stop = threading.Event()
@@ -837,7 +839,11 @@ class Bouncer:
             with self.db.transaction() as conn:
                 media.register_all_existing(conn)
                 media.skip_unprobed_links(conn)
+                articles.register_all_existing(conn)
             self._media_backfilled = True
+        # A batch per tick, so a backlog of links doesn't hold up checking threads.
+        if not self._stop.is_set():
+            self.articles.fetch_pending(limit=20)
         while not self._stop.is_set() and self.media.fetch_pending(limit=10):
             while self.run_one_job():
                 pass

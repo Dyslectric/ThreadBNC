@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
+import json
 import mimetypes
 import socket
 import tempfile
@@ -196,6 +197,8 @@ def skip_unprobed_links(conn: Conn) -> int:
     for r in conn.execute("SELECT body FROM revisions WHERE body IS NOT NULL"):
         wanted.update(extract_media_urls(r["body"]))
     wanted.update(r[0] for r in conn.execute("SELECT thumbnail_url FROM objects WHERE thumbnail_url IS NOT NULL"))
+    for r in conn.execute("SELECT images_json FROM articles WHERE images_json IS NOT NULL"):
+        wanted.update(json.loads(r[0]))  # pictures in linked articles (articles.py)
     n = 0
     for r in conn.execute("SELECT id, url FROM media WHERE status='pending'").fetchall():
         if r["url"] not in wanted and not looks_like_media(r["url"]):
@@ -205,13 +208,17 @@ def skip_unprobed_links(conn: Conn) -> int:
     return n
 
 
-def register(conn: Conn, object_id: int, urls: Iterable[str], now: str) -> None:
+def register(conn: Conn, object_id: int, urls: Iterable[str], now: str, from_article: bool = False) -> None:
+    """`from_article`: pictures in the article the post links to (articles.py),
+    which aren't shown as the post's own pictures in feeds."""
+    # A picture that's the post's own as well as the article's counts as its own.
+    on_conflict = "DO NOTHING" if from_article else "DO UPDATE SET from_article=0 WHERE media_refs.from_article=1"
     for url in urls:
         conn.execute("INSERT INTO media(url, first_seen_at, next_attempt_at) VALUES (?,?,?) "
                      "ON CONFLICT(url) DO NOTHING", (url, now, now))
         mid = conn.execute("SELECT id FROM media WHERE url=?", (url,)).fetchone()[0]
-        conn.execute("INSERT INTO media_refs(object_id, media_id, first_seen_at) VALUES (?,?,?) "
-                     "ON CONFLICT(object_id, media_id) DO NOTHING", (object_id, mid, now))
+        conn.execute("INSERT INTO media_refs(object_id, media_id, first_seen_at, from_article) VALUES (?,?,?,?) "
+                     f"ON CONFLICT(object_id, media_id) {on_conflict}", (object_id, mid, now, int(from_article)))
 
 
 def register_all_existing(conn: Conn) -> None:

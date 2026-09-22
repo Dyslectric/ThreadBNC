@@ -44,6 +44,8 @@ class Settings:
     # (each community can choose for itself), and the most downloaded to try.
     media_transcode: bool = False
     media_transcode_source_max_bytes: int = 1_000_000_000
+    # Read the web pages posts link to and keep the article text (articles.py).
+    archive_articles: bool = True
     default_trash_days: int | None = 30
     credentials_key: str | None = None
     # Signed in by a reverse proxy (e.g. Traefik + Authentik forward auth): the
@@ -99,6 +101,7 @@ def load_settings() -> Settings:
         media_max_bytes=_env_int("THREADBNC_MEDIA_MAX_MB", 25) * 1_000_000,
         media_transcode=_env_bool("THREADBNC_MEDIA_TRANSCODE", False),
         media_transcode_source_max_bytes=_env_int("THREADBNC_MEDIA_TRANSCODE_SOURCE_MAX_MB", 1000) * 1_000_000,
+        archive_articles=_env_bool("THREADBNC_ARTICLES", True),
         default_trash_days=None if trash.lower() in ("", "none", "forever") else int(trash),
         credentials_key=os.environ.get("THREADBNC_CREDENTIALS_KEY") or None,
         proxy_auth_header=os.environ.get("THREADBNC_PROXY_AUTH_HEADER", "").strip() or None,

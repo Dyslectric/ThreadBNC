@@ -77,6 +77,11 @@
 id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids or [i.id]) | join(' ') }}"
 {%- endmacro %}
 
+{# The archived copy of the article a post links to, when the bouncer could read it. #}
+{% macro article_link(i, short=False) -%}
+{% if i.article %}<a class="act read-article" href="/t/{{ i.id }}/article" title="Read the linked article here">{{ icon('article') }}<span{% if short %} class="sr-only"{% endif %}>Read article</span></a>{% endif %}
+{%- endmacro %}
+
 {% macro repost_link(i, short=False) -%}
 {% if is_reddit(i.c_ap) %}<a class="act" href="/t/{{ i.id }}/repost" title="Post a copy in one of your communities">{{ icon('repost') }}<span class="{{ 'sr-only' if short }}">Repost</span></a>
 {% elif is_rss(i.c_ap) %}<a class="act" href="/t/{{ i.id }}/repost" title="Post this article to one of your communities">{{ icon('share') }}<span class="{{ 'sr-only' if short }}">Post</span></a>{% endif %}
@@ -127,6 +132,7 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
       <a class="act" href="/t/{{ i.id }}#comments" title="{{ i.n_comments }} comment{{ 's' if i.n_comments != 1 }}">{{ icon('comment') }}<span class="sr-only">Comments: </span>{{ i.n_comments }}</a>
       {% if i.n_new %}<a href="/t/{{ i.id }}#comments" class="pill new">{{ i.n_new }} new</a>{% endif %}
       {{ votes(i.upvotes, i.downvotes, i.score, i.breakdown if i.group) }}
+      {{ article_link(i, short=True) }}
       <span class="grow"></span>
       {{ read_button(i.id, i.unread, i.group, anchor='p' ~ i.id, short=True, refresh='p' ~ i.id) }}
       {{ keep_button(i.id, i.all_kept, i.group, anchor='p' ~ i.id, short=True, refresh='p' ~ i.id) }}
@@ -164,6 +170,7 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
     <div class="pc-actions actions small">
       <a class="act" href="/t/{{ i.id }}#comments">{{ icon('comment') }}<span>{{ i.n_comments }} comment{{ 's' if i.n_comments != 1 }}</span></a>
       {% if i.n_new %}<a href="/t/{{ i.id }}#comments" class="pill new">{{ i.n_new }} new</a>{% endif %}
+      {{ article_link(i) }}
       {{ votes(i.upvotes, i.downvotes, i.score, i.breakdown if i.group) }}
       {{ read_button(i.id, i.unread, i.group, anchor='p' ~ i.id, refresh='p' ~ i.id) }}
       {{ keep_button(i.id, i.all_kept, i.group, anchor='p' ~ i.id, refresh='p' ~ i.id) }}
@@ -193,6 +200,7 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
   <div class="pc-actions actions small">
     <a class="act" href="/t/{{ i.id }}#comments">{{ icon('comment') }}<span>{{ i.n_comments }} comment{{ 's' if i.n_comments != 1 }}</span></a>
     {% if i.n_new %}<a href="/t/{{ i.id }}#comments" class="pill new">{{ i.n_new }} new</a>{% endif %}
+    {{ article_link(i) }}
     {{ votes(i.upvotes, i.downvotes, i.score, i.breakdown if i.group) }}
     {{ read_button(i.id, i.unread, i.group, anchor='p' ~ i.id, refresh='p' ~ i.id) }}
     {{ keep_button(i.id, i.all_kept, i.group, anchor='p' ~ i.id, refresh='p' ~ i.id) }}

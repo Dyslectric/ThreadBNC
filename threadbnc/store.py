@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import dupes, media
+from . import articles, dupes, media
 from .adapters import NActor, NComment, NCommunity, NPost, host_of
 from .db import Conn, dumps
 
@@ -218,6 +218,7 @@ def record_revision(conn: Conn, object_id: int, now: str, *, title: str | None,
          dumps(rev_meta), h),
     )
     media.register(conn, object_id, media.media_candidates(values["title"], values["body"], values["url"]), now)
+    articles.register(conn, object_id, values["url"], now)
     if seq == 1:
         conn.execute("UPDATE objects SET revision_count=1 WHERE id=?", (object_id,))
     else:
@@ -445,10 +446,12 @@ def purge_thread(conn: Conn, thread_id: int, now: str, media_dir: Path | None = 
         conn.execute(f"DELETE FROM revisions WHERE object_id IN ({marks})", ids)
         conn.execute(f"DELETE FROM object_local_ids WHERE object_id IN ({marks})", ids)
         conn.execute(f"DELETE FROM media_refs WHERE object_id IN ({marks})", ids)
+        conn.execute(f"DELETE FROM article_refs WHERE object_id IN ({marks})", ids)
         conn.execute(f"UPDATE objects SET parent_id=NULL, root_post_id=NULL WHERE id IN ({marks})", ids)
         conn.execute(f"DELETE FROM objects WHERE id IN ({marks})", ids)
     conn.execute("DELETE FROM archived_threads WHERE id=?", (thread_id,))
     add_event(conn, reason, now, community_id=t["community_id"],
               metadata={"root_ap_id": root["canonical_ap_id"] if root else None, "retention": t["retention"],
                         "captured_at": t["retained_at"], "objects_purged": len(ids)})
+    articles.collect_orphans(conn)
     return media.collect_orphans(conn, media_dir) if media_dir else []
