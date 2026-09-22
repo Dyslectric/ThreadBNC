@@ -58,6 +58,7 @@
       <a href="/c/{{ c.id }}" class="{{ 'on' if tab == 'feed' }}">Feed</a>
       <a href="/c/{{ c.id }}?tab=kept" class="{{ 'on' if tab == 'kept' }}">{{ icon('star') }} Kept ({{ counts.get('manual', 0) }})</a>
       {% if not is_rss(c.canonical_ap_id) %}<a href="/c/{{ c.id }}?tab=live" class="{{ 'on' if tab == 'live' }}">Live on server</a>{% endif %}
+      <a href="/c/{{ c.id }}?tab=media" class="{{ 'on' if tab == 'media' }}">Media</a>
       <a href="/c/{{ c.id }}?tab=log" class="{{ 'on' if tab == 'log' }}">Log</a>
       {% if powers.any %}<a href="/c/{{ c.id }}?tab=mod" class="{{ 'on' if tab == 'mod' }}">{{ icon('shield') }} Moderation</a>{% endif %}
       {% if counts.get('trash') %}<a href="/trash">Trash ({{ counts.get('trash') }})</a>{% endif %}
@@ -112,6 +113,68 @@
       </div>
       {{ load_more(('/c/' ~ c.id ~ '?tab=live&live_sort=' ~ live_sort ~ '&page=' ~ (page + 1)) if live else none,
                    ('/c/' ~ c.id ~ '?tab=live&live_sort=' ~ live_sort) if page > 1 else none, page) }}
+
+    {% elif tab == 'media' %}
+      {% set d = media_default %}
+      {% set on = c.media_transcode if c.media_transcode is not none else d.transcode %}
+      <section class="card" id="media-settings">
+        <h2>Media archiving</h2>
+        <form method="post" action="/c/{{ c.id }}/media-settings" class="stack">
+          <label>Archive&nbsp;
+            <select name="archive">
+              <option value="default" {{ 'selected' if not c.media_archive }}>Default: {{ archive_modes[d.archive] | lower }}</option>
+              {% for value, label in archive_modes.items() %}
+              <option value="{{ value }}" {{ 'selected' if c.media_archive == value }}>{{ label }}</option>
+              {% endfor %}
+            </select></label>
+          <label>Largest file kept
+            <input name="max_mb" class="num" inputmode="numeric" value="{{ c.media_max_mb or '' }}"
+                   placeholder="{{ d.max_bytes // 1000000 }}" title="Blank = the default, {{ d.max_bytes | size }}"> MB</label>
+          <label>Files bigger than that&nbsp;
+            <select name="transcode">
+              <option value="default" {{ 'selected' if c.media_transcode is none }}>Default: {{ 'transcode to fit' if d.transcode else 'leave out' }}</option>
+              <option value="on" {{ 'selected' if c.media_transcode == 1 }}>Transcode to fit</option>
+              <option value="off" {{ 'selected' if c.media_transcode == 0 }}>Leave out</option>
+            </select></label>
+          <button class="small">Save</button>
+        </form>
+        <p class="small muted">Transcoding turns videos and animated GIFs into MP4s at whatever quality fits the limit,
+          and scales pictures down. It runs in the background and can take a few minutes per video.
+          Files already archived stay as they are. Pictures and videos shared with another community
+          get the more generous of the two communities' settings.</p>
+        {% if on and not can_transcode %}
+        <div class="flash error" role="alert">{{ icon('alert') }} <span>ffmpeg isn't installed on the server, so oversized files
+          are left out for now.</span></div>
+        {% endif %}
+      </section>
+
+      {% set ok = media.counts.get('ok') %}
+      <section class="card">
+        <h2>Archived from here</h2>
+        <ul class="plain">
+          {% set n = ok.n if ok else 0 %}
+          <li><strong>{{ n }}</strong> file{{ 's' if n != 1 }}, {{ (ok.bytes if ok else 0) | size }}
+            {% if ok and ok.transcoded %}<span class="muted">· {{ ok.transcoded }} transcoded, down from {{ ok.original | size }}</span>{% endif %}</li>
+          {% for status, label in [('pending', 'waiting to download'), ('failed', "couldn't be archived"), ('skipped', 'left out')] %}
+            {% if media.counts.get(status) %}<li>{{ media.counts[status].n }} {{ label }}</li>{% endif %}
+          {% endfor %}
+        </ul>
+        {% if media.transcoded %}
+        <h3>Recently transcoded</h3>
+        <ul class="plain small">{% for m in media.transcoded %}
+          <li><a href="/media/{{ m.id }}" target="_blank">{{ m.url | host }}</a>
+            <span class="muted">· {{ m.original_bytes | size }} {{ m.original_type }} → {{ m.size_bytes | size }} {{ m.content_type }}</span></li>
+        {% endfor %}</ul>
+        {% endif %}
+        {% if media.problems %}
+        <h3>Not archived</h3>
+        <ul class="plain small">{% for m in media.problems %}
+          <li><a href="{{ m.url | safe_url }}" target="_blank" rel="noreferrer noopener nofollow">{{ m.url | host }}</a>
+            <span class="muted">· {{ m.error or m.status }}</span></li>
+        {% endfor %}</ul>
+        <form method="post" action="/c/{{ c.id }}/media-retry"><button class="small secondary">Try these again</button></form>
+        {% endif %}
+      </section>
 
     {% elif tab == 'mod' %}
       {% if not powers.any %}

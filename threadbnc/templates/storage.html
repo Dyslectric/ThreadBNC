@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% block title %}Storage{% endblock %}
+{% macro meter(value, top, label) -%}
+  <svg class="meter" viewBox="0 0 100 6" preserveAspectRatio="none" role="img" aria-label="{{ label }}">
+    <title>{{ label }}</title>
+    <rect class="track" width="100" height="6" rx="2"/>
+    {% if value %}<rect width="{{ '%.2f' % [100 * value / top, 1.5] | max if top else 0 }}" height="6" rx="2"/>{% endif %}
+  </svg>
+{%- endmacro %}
+{% macro media_note(usage) -%}
+  {% for k, (one, many) in nouns.items() if usage.media[k][0] %}{% set n = usage.media[k][0] %}{{ '{:,}'.format(n) }} {{ one if n == 1 else many }} ({{ usage.media[k][1] | size }}){{ ' · ' if not loop.last }}{% endfor %}
+{%- endmacro %}
+{% block content %}
+{% set e = u.everything %}
+{% set grand = e.total %}
+<h1>Storage</h1>
+
+<div class="stat-row">
+  <section class="card stat">
+    <div class="stat-label">Archived content</div>
+    <div class="stat-value">{{ grand | size }}</div>
+    <div class="small muted">media and text, each file counted once</div>
+  </section>
+  <section class="card stat">
+    <div class="stat-label">Media</div>
+    <div class="stat-value">{{ e.media_bytes | size }}</div>
+    <div class="small muted">{{ '{:,}'.format(e.media_files) }} file{{ 's' if e.media_files != 1 }}{% if u.transcoded %} · {{ u.transcoded }} transcoded, saving {{ u.saved | size }}{% endif %}</div>
+  </section>
+  <section class="card stat">
+    <div class="stat-label">Text</div>
+    <div class="stat-value">{{ e.text | size }}</div>
+    <div class="small muted">{{ '{:,}'.format(e.revisions) }} version{{ 's' if e.revisions != 1 }} of posts and comments</div>
+  </section>
+  {% if u.database is not none %}
+  <section class="card stat">
+    <div class="stat-label">Database on disk</div>
+    <div class="stat-value">{{ u.database | size }}</div>
+    <div class="small muted">text plus history, search index and bookkeeping</div>
+  </section>
+  {% endif %}
+  {% if u.free is not none %}
+  <section class="card stat">
+    <div class="stat-label">Free for media</div>
+    <div class="stat-value">{{ u.free | size }}</div>
+    <div class="small muted">on the disk media is stored on</div>
+  </section>
+  {% endif %}
+</div>
+
+<section class="card">
+  <h2>By kind of content</h2>
+  {% set top = (u.kinds | map(attribute='bytes') | max) if u.kinds else 0 %}
+  <div class="table-scroll">
+  <table class="storage">
+    <thead><tr><th scope="col">Kind</th><th scope="col" class="n">Items</th><th scope="col" class="n">Size</th><th scope="col" class="n">Share</th><th scope="col" class="bar-col"><span class="sr-only">Size bar</span></th></tr></thead>
+    <tbody>
+    {% for k in u.kinds %}
+      <tr>
+        <th scope="row">{{ k.label }}{% if k.note %}<div class="small muted">{{ k.note }}</div>{% endif %}</th>
+        <td class="n">{{ '{:,}'.format(k.count) }}</td>
+        <td class="n">{{ k.bytes | size }}</td>
+        <td class="n muted">{{ '%.0f' % (100 * k.bytes / grand) if grand else 0 }}%</td>
+        <td class="bar-col">{{ meter(k.bytes, top, k.label ~ ': ' ~ (k.bytes | size)) }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="5" class="muted">Nothing archived yet.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <p class="small muted">Text is what was stored for every version of each post and comment: titles, bodies,
+    links and details such as scores. Edits keep the earlier versions, so heavily edited threads take more.</p>
+</section>
+
+<section class="card">
+  <h2>By kind of thread</h2>
+  {% set top = (u.threads | map(attribute='1.total') | max) if u.threads else 0 %}
+  <div class="table-scroll">
+  <table class="storage">
+    <thead><tr><th scope="col">Kind</th><th scope="col" class="n">Threads</th><th scope="col" class="n hide-narrow">Text</th><th scope="col" class="n hide-narrow">Media</th><th scope="col" class="n">Total</th><th scope="col" class="bar-col"><span class="sr-only">Size bar</span></th></tr></thead>
+    <tbody>
+    {% for label, t in u.threads %}
+      <tr>
+        <th scope="row">{{ label }}</th>
+        <td class="n">{{ '{:,}'.format(t.threads) if t.threads else '' }}</td>
+        <td class="n hide-narrow">{{ t.text | size }}</td>
+        <td class="n hide-narrow" title="{{ media_note(t) }}">{{ t.media_bytes | size }}</td>
+        <td class="n"><strong>{{ t.total | size }}</strong></td>
+        <td class="bar-col">{{ meter(t.total, top, label ~ ': ' ~ (t.total | size)) }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="6" class="muted">Nothing archived yet.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <p class="small muted">Auto-captured threads are deleted when their community's retention runs out, and trashed ones when
+    the <a href="/trash">trash</a> period ends, along with media nothing else uses. A picture used by both a kept and an
+    auto-captured thread counts in both rows.</p>
+</section>
+
+<section class="card">
+  <h2>By community</h2>
+  {% set top = (u.communities | map(attribute='1.total') | max) if u.communities else 0 %}
+  <div class="table-scroll">
+  <table class="storage">
+    <thead><tr><th scope="col">Community</th><th scope="col" class="n">Threads</th><th scope="col" class="n hide-narrow">Text</th><th scope="col" class="n hide-narrow">Media</th><th scope="col" class="n">Total</th><th scope="col" class="bar-col"><span class="sr-only">Size bar</span></th></tr></thead>
+    <tbody>
+    {% for c, t in u.communities %}
+      <tr>
+        <th scope="row">{% if c %}<a href="/c/{{ c.id }}?tab=media" title="Media settings for this community">{{ chandle(c.name, c.canonical_ap_id) }}</a>{% else %}<span class="muted">No community</span>{% endif %}
+          {% if t.media_files %}<div class="small muted">{{ media_note(t) }}</div>{% endif %}</th>
+        <td class="n">{{ '{:,}'.format(t.threads) }}</td>
+        <td class="n hide-narrow">{{ t.text | size }}</td>
+        <td class="n hide-narrow">{{ t.media_bytes | size }}</td>
+        <td class="n"><strong>{{ t.total | size }}</strong></td>
+        <td class="bar-col">{{ meter(t.total, top, (c.name if c else 'No community') ~ ': ' ~ (t.total | size)) }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="6" class="muted">Nothing archived yet.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <p class="small muted">Largest first. Open a community to change what it archives, its size limit and transcoding.
+    {% if u.shared %}Files used in more than one community ({{ u.shared | size }}) count in each, so these rows add up
+    to more than the total.{% endif %}</p>
+</section>
+{% endblock %}

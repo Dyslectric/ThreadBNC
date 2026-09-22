@@ -50,7 +50,11 @@ CREATE TABLE IF NOT EXISTS communities (
     cur_removed INTEGER NOT NULL DEFAULT 0,
     cur_deleted INTEGER NOT NULL DEFAULT 0,
     moderators_json TEXT,     -- last observed moderator actor ids (JSON list)
-    view_mode TEXT            -- feed shown as 'list' or 'tiles'; NULL = decide from how much media it has
+    view_mode TEXT,           -- feed shown as 'list' or 'tiles'; NULL = decide from how much media it has
+    -- Media archiving here (see media.MediaPolicy); NULL = the server-wide default.
+    media_archive TEXT,       -- 'all' | 'images' | 'off'
+    media_max_mb INTEGER,     -- largest file kept
+    media_transcode INTEGER   -- 1 = shrink files over the limit with ffmpeg instead of giving up
 );
 
 -- A followed community: bouncer polls its new posts and auto-captures them
@@ -184,7 +188,9 @@ CREATE TABLE IF NOT EXISTS media (
     next_attempt_at TEXT,
     error TEXT,
     first_seen_at TEXT NOT NULL,
-    fetched_at TEXT
+    fetched_at TEXT,
+    original_bytes INTEGER,   -- set when the stored file was transcoded down from a bigger one
+    original_type TEXT
 );
 CREATE INDEX IF NOT EXISTS media_pending ON media(status, next_attempt_at);
 CREATE INDEX IF NOT EXISTS media_sha ON media(sha256);
@@ -393,6 +399,11 @@ COLUMN_MIGRATIONS = [
     ("communities", "view_mode", "TEXT"),
     ("accounts", "inbox_checked_at", "TEXT"),
     ("accounts", "inbox_error", "TEXT"),
+    ("communities", "media_archive", "TEXT"),
+    ("communities", "media_max_mb", "INTEGER"),
+    ("communities", "media_transcode", "INTEGER"),
+    ("media", "original_bytes", "INTEGER"),
+    ("media", "original_type", "TEXT"),
 ]
 
 # Tables with an integer `id` key: inserts into these get `RETURNING id` on

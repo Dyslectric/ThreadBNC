@@ -689,3 +689,25 @@ dialog.shortcuts::backdrop { background: rgba(0, 0, 0, .35); }
 }
 .account-menu { margin-left: auto; }
 .top-search ~ .account-menu, .search-link ~ .account-menu { margin-left: 0; }
+
+/* Storage page: headline numbers, then tables with a bar per row. */
+.stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.stat-row > .card { margin-bottom: 0; }
+.stat { padding: 14px 16px; }
+.stat-label { color: var(--muted); font-size: .85rem; }
+.stat-value { font-size: 1.6rem; font-weight: 700; letter-spacing: -0.02em; margin: 2px 0 4px; font-variant-numeric: tabular-nums; }
+.table-scroll { overflow-x: auto; }
+table.storage { width: 100%; border-collapse: collapse; }
+table.storage th, table.storage td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+table.storage thead th { color: var(--muted); font-size: .85rem; font-weight: 600; }
+table.storage tbody th { font-weight: 500; }
+table.storage .n { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+table.storage .bar-col { width: 28%; min-width: 90px; vertical-align: middle; }
+table.storage tbody tr:hover { background: var(--hover); }
+svg.meter { display: block; width: 100%; height: 8px; }
+svg.meter rect { fill: var(--accent); }
+svg.meter rect.track { fill: var(--line); }
+@media (max-width: 600px) {
+  table.storage .hide-narrow { display: none; }
+  table.storage .bar-col { width: 22%; min-width: 50px; }
+}

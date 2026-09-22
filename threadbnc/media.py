@@ -4,6 +4,11 @@ Media is registered when a revision is recorded and downloaded later by the
 bouncer (never while holding the DB write lock). Files are content-addressed
 under <data_dir>/media and are only ever removed when every object referencing
 them has been purged (expired auto-captured threads).
+
+Each community can say what gets archived (everything, pictures only, nothing),
+how big a file may be, and whether files over that are transcoded down to fit
+(see transcode.py) instead of given up on. Media shared between communities gets
+the most generous of their settings.
 """
 
 from __future__ import annotations
@@ -21,6 +26,7 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 
+from . import transcode
 from .adapters.http import HostThrottle
 from .db import Conn, Database, fmt_ts, parse_ts, utcnow
 from .render import MediaInfo, extract_media_urls, looks_like_media
@@ -40,6 +46,78 @@ _EXT = {"image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif", "image/w
 
 class MediaRejected(Exception):
     """Permanent: not media, too large, or a forbidden address."""
+
+
+class MediaSkipped(MediaRejected):
+    """Not wanted: not media at all, or a community's settings leave it out."""
+
+
+ARCHIVE_MODES = {"all": "Pictures and videos", "images": "Pictures only", "off": "Nothing"}
+_RANK = {"off": 0, "images": 1, "all": 2}
+# Errors that a change of settings can fix; requeue() retries these.
+POLICY_SUFFIX = "for this community"
+
+
+@dataclass(frozen=True)
+class MediaPolicy:
+    archive: str = "all"  # all | images | off
+    max_bytes: int = 25_000_000
+    transcode: bool = False  # shrink files over max_bytes with ffmpeg
+
+    def override(self, archive: str | None, max_mb: int | None, transcode_: int | None) -> MediaPolicy:
+        """This policy with a community's own choices (NULL = keep the default) applied."""
+        return MediaPolicy(archive if archive in ARCHIVE_MODES else self.archive,
+                           max_mb * 1_000_000 if max_mb else self.max_bytes,
+                           self.transcode if transcode_ is None else bool(transcode_))
+
+    def merge(self, other: MediaPolicy) -> MediaPolicy:
+        """The more generous of two policies, for media several communities share."""
+        return MediaPolicy(max(self.archive, other.archive, key=_RANK.__getitem__),
+                           max(self.max_bytes, other.max_bytes), self.transcode or other.transcode)
+
+
+def policy_for(conn: Conn, media_id: int, default: MediaPolicy) -> MediaPolicy:
+    rows = conn.execute(
+        "SELECT DISTINCT c.media_archive, c.media_max_mb, c.media_transcode FROM media_refs r "
+        "JOIN objects o ON o.id=r.object_id LEFT JOIN communities c ON c.id=o.community_id WHERE r.media_id=?",
+        (media_id,)).fetchall()
+    if not rows:
+        return default
+    policies = [default.override(r[0], r[1], r[2]) for r in rows]
+    result = policies[0]
+    for p in policies[1:]:
+        result = result.merge(p)
+    return result
+
+
+def community_ids_sql() -> str:
+    return "SELECT r.media_id FROM media_refs r JOIN objects o ON o.id=r.object_id WHERE o.community_id=?"
+
+
+def requeue(conn: Conn, community_id: int) -> int:
+    """Try again the community's media that was too large or left out by its
+    settings, after those settings (or the server's) changed."""
+    return conn.execute(
+        "UPDATE media SET status='pending', attempts=0, next_attempt_at=?, error=NULL "
+        f"WHERE id IN ({community_ids_sql()}) AND ((status='failed' AND error LIKE 'too large%') "
+        "OR (status='skipped' AND error LIKE ?))", (utcnow(), community_id, f"%{POLICY_SUFFIX}")).rowcount
+
+
+def community_stats(conn: Conn, community_id: int) -> dict[str, Any]:
+    """What's been archived for a community, for its Media tab."""
+    ids = community_ids_sql()
+    counts = {r["status"]: r for r in conn.execute(
+        "SELECT status, COUNT(*) AS n, COALESCE(SUM(size_bytes), 0) AS bytes, "
+        "COALESCE(SUM(original_bytes), 0) AS original, COUNT(original_bytes) AS transcoded "
+        f"FROM media WHERE id IN ({ids}) GROUP BY status", (community_id,))}
+    problems = conn.execute(
+        f"SELECT id, url, status, error, attempts FROM media WHERE id IN ({ids}) "
+        "AND (status='failed' OR (status='skipped' AND error NOT LIKE 'not media%')) ORDER BY id DESC LIMIT 25",
+        (community_id,)).fetchall()
+    transcoded = conn.execute(
+        f"SELECT id, url, content_type, size_bytes, original_bytes, original_type FROM media WHERE id IN ({ids}) "
+        "AND original_bytes IS NOT NULL ORDER BY fetched_at DESC LIMIT 10", (community_id,)).fetchall()
+    return {"counts": counts, "problems": problems, "transcoded": transcoded}
 
 
 def sniff(head: bytes) -> str | None:
@@ -138,21 +216,32 @@ class Downloaded:
     size: int
     sha256: str
     final_url: str
+    original_size: int | None = None  # set when transcoded down from a bigger file
+    original_type: str | None = None
 
 
 class MediaFetcher:
     def __init__(self, db: Database, media_dir: Path, user_agent: str, max_bytes: int,
                  timeout: float = 30.0, client: httpx.Client | None = None, check_host: bool = True,
-                 throttle: HostThrottle | None = None):
+                 throttle: HostThrottle | None = None, transcode_default: bool = False,
+                 transcode_source_max_bytes: int = 1_000_000_000):
         self.db = db
         self.throttle = throttle or HostThrottle(1.0)
         self.media_dir = media_dir
-        self.max_bytes = max_bytes
+        self.default_policy = MediaPolicy("all", max_bytes, transcode_default)
+        # Files are downloaded up to this size when they might be transcoded down.
+        self.source_max_bytes = transcode_source_max_bytes
         self.check_host = check_host
         self.client = client or httpx.Client(timeout=timeout, headers={"User-Agent": user_agent},
                                              follow_redirects=False)
 
-    def _download(self, url: str) -> Downloaded:
+    def can_transcode(self) -> bool:
+        return transcode.available()
+
+    def _download(self, url: str, policy: MediaPolicy | None = None) -> Downloaded:
+        policy = policy or self.default_policy
+        shrinkable = policy.transcode and self.can_transcode()
+        cap = max(policy.max_bytes, self.source_max_bytes) if shrinkable else policy.max_bytes
         if urlparse(url).path.lower().endswith(".gifv"):  # imgur-style: the real file is .mp4
             url = url[: -len(".gifv")] + ".mp4"
         current = url
@@ -171,9 +260,11 @@ class MediaFetcher:
                 declared = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
                 length = int(resp.headers.get("content-length") or 0)
                 if declared.startswith(("text/", "application/json", "application/xhtml")):
-                    raise MediaRejected(f"not media ({declared})")
-                if length > self.max_bytes:
-                    raise MediaRejected(f"too large ({length // 1_000_000} MB)")
+                    raise MediaSkipped(f"not media ({declared})")
+                if policy.archive == "images" and declared.startswith("video/"):
+                    raise MediaSkipped(f"videos aren't archived {POLICY_SUFFIX}")
+                if length > cap:
+                    raise MediaRejected(f"too large ({length / 1_000_000:.1f} MB)")
                 self.media_dir.mkdir(parents=True, exist_ok=True)
                 h = hashlib.sha256()
                 size, head = 0, b""
@@ -184,18 +275,34 @@ class MediaFetcher:
                             if len(head) < 32:
                                 head += chunk[: 32 - len(head)]
                             size += len(chunk)
-                            if size > self.max_bytes:
-                                raise MediaRejected(f"too large (> {self.max_bytes // 1_000_000} MB)")
+                            if size > cap:
+                                raise MediaRejected(f"too large (> {cap // 1_000_000} MB)")
                             h.update(chunk)
                             tmp.write(chunk)
                     ctype = sniff(head) or declared
                     if not ctype.startswith(("image/", "video/")):
-                        raise MediaRejected(f"not media ({declared or 'unknown type'})")
+                        raise MediaSkipped(f"not media ({declared or 'unknown type'})")
+                    if policy.archive == "images" and ctype.startswith("video/"):
+                        raise MediaSkipped(f"videos aren't archived {POLICY_SUFFIX}")
                 except BaseException:
                     Path(tmp.name).unlink(missing_ok=True)
                     raise
                 return Downloaded(Path(tmp.name), ctype, size, h.hexdigest(), current)
         raise MediaRejected("too many redirects")
+
+    def _shrink(self, dl: Downloaded, limit: int) -> Downloaded:
+        """Transcode a download that's over the limit (only downloaded that big when allowed to)."""
+        try:
+            out, ctype = transcode.shrink(dl.tmp_path, dl.content_type, limit, self.media_dir)
+        except transcode.TranscodeError as exc:
+            raise MediaRejected(f"too large ({dl.size / 1_000_000:.1f} MB); couldn't transcode: {exc}") from None
+        finally:
+            dl.tmp_path.unlink(missing_ok=True)
+        h = hashlib.sha256()
+        with out.open("rb") as f:
+            for chunk in iter(lambda: f.read(CHUNK), b""):
+                h.update(chunk)
+        return Downloaded(out, ctype, out.stat().st_size, h.hexdigest(), dl.final_url, dl.size, dl.content_type)
 
     def _store(self, dl: Downloaded) -> str:
         ext = _EXT.get(dl.content_type) or mimetypes.guess_extension(dl.content_type) or ".bin"
@@ -220,12 +327,18 @@ class MediaFetcher:
 
     def fetch_one(self, row: Any) -> None:
         now = utcnow()
+        with self.db.connect() as conn:
+            policy = policy_for(conn, row["id"], self.default_policy)
         try:
-            dl = self._download(row["url"])
+            if policy.archive == "off":
+                raise MediaSkipped(f"archiving is off {POLICY_SUFFIX}")
+            dl = self._download(row["url"], policy)
+            if dl.size > policy.max_bytes:
+                dl = self._shrink(dl, policy.max_bytes)
             rel = self._store(dl)
         except MediaRejected as exc:
             with self.db.transaction() as conn:
-                status = "skipped" if str(exc).startswith("not media") else "failed"
+                status = "skipped" if isinstance(exc, MediaSkipped) else "failed"
                 conn.execute("UPDATE media SET status=?, error=?, attempts=attempts+1, fetched_at=? WHERE id=?",
                              (status, str(exc), now, row["id"]))
             return
@@ -243,8 +356,10 @@ class MediaFetcher:
         with self.db.transaction() as conn:
             conn.execute(
                 "UPDATE media SET status='ok', content_type=?, size_bytes=?, sha256=?, storage_path=?, "
-                "fetched_from=?, fetched_at=?, attempts=attempts+1, error=NULL WHERE id=?",
-                (dl.content_type, dl.size, dl.sha256, rel, dl.final_url, now, row["id"]),
+                "fetched_from=?, fetched_at=?, attempts=attempts+1, error=NULL, original_bytes=?, original_type=? "
+                "WHERE id=?",
+                (dl.content_type, dl.size, dl.sha256, rel, dl.final_url, now, dl.original_size, dl.original_type,
+                 row["id"]),
             )
 
 

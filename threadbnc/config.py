@@ -40,6 +40,10 @@ class Settings:
     user_agent: str
     media_dir: Path | None = None
     media_max_bytes: int = 25_000_000
+    # Server-wide default for shrinking files over media_max_bytes with ffmpeg
+    # (each community can choose for itself), and the most downloaded to try.
+    media_transcode: bool = False
+    media_transcode_source_max_bytes: int = 1_000_000_000
     default_trash_days: int | None = 30
     credentials_key: str | None = None
     # Signed in by a reverse proxy (e.g. Traefik + Authentik forward auth): the
@@ -93,6 +97,8 @@ def load_settings() -> Settings:
         ),
         media_dir=Path(os.environ.get("THREADBNC_MEDIA_DIR", str(data_dir / "media"))),
         media_max_bytes=_env_int("THREADBNC_MEDIA_MAX_MB", 25) * 1_000_000,
+        media_transcode=_env_bool("THREADBNC_MEDIA_TRANSCODE", False),
+        media_transcode_source_max_bytes=_env_int("THREADBNC_MEDIA_TRANSCODE_SOURCE_MAX_MB", 1000) * 1_000_000,
         default_trash_days=None if trash.lower() in ("", "none", "forever") else int(trash),
         credentials_key=os.environ.get("THREADBNC_CREDENTIALS_KEY") or None,
         proxy_auth_header=os.environ.get("THREADBNC_PROXY_AUTH_HEADER", "").strip() or None,

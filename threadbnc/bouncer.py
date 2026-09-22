@@ -83,7 +83,9 @@ class Bouncer:
         self.read_token: Callable[[str, int], str | None] | None = None
         self.media_dir = settings.media_dir or (settings.data_dir / "media")
         self.media = media.MediaFetcher(db, self.media_dir, settings.user_agent, settings.media_max_bytes,
-                                        timeout=max(settings.http_timeout, 30.0), throttle=self.http.throttle)
+                                        timeout=max(settings.http_timeout, 30.0), throttle=self.http.throttle,
+                                        transcode_default=settings.media_transcode,
+                                        transcode_source_max_bytes=settings.media_transcode_source_max_bytes)
         self._media_backfilled = False
         self.wake = threading.Event()
         self._stop = threading.Event()

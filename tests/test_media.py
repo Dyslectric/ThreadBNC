@@ -6,7 +6,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from threadbnc import media
+from threadbnc import media, transcode
 from threadbnc.db import utcnow
 from threadbnc.render import MediaInfo, extract_media_urls, render_markdown
 from threadbnc.web import create_app
@@ -254,3 +254,171 @@ def test_nsfw_tiles_are_veiled(settings, server, mbouncer):
     client.post("/login", data={"password": "pw"})
     page = client.get(f"/c/{cid}").text
     assert page.count(" veiled") == 1 and '<span class="tile-veil">NSFW<span class="small">Tap to show</span></span>' in page
+
+
+
+# --- per-community settings and transcoding ---------------------------------
+
+needs_ffmpeg = pytest.mark.skipif(not transcode.available(), reason="ffmpeg not installed")
+BIG: dict[str, tuple[bytes, str]] = {}  # path -> (content, type), made with ffmpeg on first use
+
+
+def big_file(name: str) -> tuple[bytes, str]:
+    """A clip / picture well over 1 MB (the smallest limit a community can set)."""
+    if name not in BIG:
+        import subprocess
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            out = f"{d}/{name}"
+            if name.endswith(".mp4"):  # 4 s of lossless test pattern with a tone
+                args = ["-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30", "-f", "lavfi",
+                        "-i", "sine=frequency=440", "-t", "4", "-c:v", "libx264", "-qp", "0", "-preset",
+                        "ultrafast", "-c:a", "aac", "-shortest"]
+            else:  # a noisy picture, which compresses badly as PNG
+                args = ["-f", "lavfi", "-i", "nullsrc=size=1600x1200,geq=random(1)*255:128:128", "-frames:v", "1"]
+            subprocess.run(["ffmpeg", "-v", "error", "-y", *args, out], check=True)
+            BIG[name] = (open(out, "rb").read(), "video/mp4" if name.endswith(".mp4") else "image/png")
+    return BIG[name]
+
+
+def remote_with_big(request: httpx.Request) -> httpx.Response:
+    name = request.url.path.lstrip("/")
+    if name in ("clip.mp4", "noise.png"):
+        body, ctype = big_file(name)
+        return httpx.Response(200, content=body, headers={"content-type": ctype})
+    if name == "fat.png":  # really over 1 MB, unlike huge.png, which only says so
+        return httpx.Response(200, content=PNG + b"\x00" * 1_500_000, headers={"content-type": "image/png"})
+    if name == "small.mp4":
+        return httpx.Response(200, content=b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 50,
+                              headers={"content-type": "video/mp4"})
+    return fake_remote(request)
+
+
+@pytest.fixture
+def tbouncer(bouncer):
+    bouncer.media = media.MediaFetcher(bouncer.db, bouncer.media_dir, "t", 1_000_000,
+                                       client=httpx.Client(transport=httpx.MockTransport(remote_with_big)),
+                                       check_host=False)
+    return bouncer
+
+
+def community_with(server, b, body: str) -> int:
+    server.add_post("1", "media", body)
+    b.ingest_url(f"https://{DOMAIN}/post/1")
+    with b.db.connect() as conn:
+        return conn.execute("SELECT id FROM communities").fetchone()[0]
+
+
+def logged_in(settings, b) -> TestClient:
+    client = TestClient(create_app(settings, b))
+    client.post("/login", data={"password": "pw"})
+    return client
+
+
+def test_community_can_leave_out_videos_or_everything(settings, server, tbouncer):
+    cid = community_with(server, tbouncer, "![a](https://img.test/cat.gif) ![v](https://img.test/small.mp4)")
+    client = logged_in(settings, tbouncer)
+    client.post(f"/c/{cid}/media-settings", data={"archive": "images", "max_mb": "", "transcode": "default"})
+    tbouncer.media.fetch_pending()
+    rows = media_rows(tbouncer)
+    assert rows["https://img.test/cat.gif"]["status"] == "ok"
+    assert rows["https://img.test/small.mp4"]["status"] == "skipped"
+    assert "for this community" in rows["https://img.test/small.mp4"]["error"]
+
+    # Allowing videos again retries the one that was left out.
+    r = client.post(f"/c/{cid}/media-settings", data={"archive": "default", "max_mb": "", "transcode": "default"})
+    assert "Trying again 1 file" in r.text
+    tbouncer.media.fetch_pending()
+    assert media_rows(tbouncer)["https://img.test/small.mp4"]["status"] == "ok"
+
+    server.add_post("2", "more", "![b](https://img.test/octet)")
+    client.post(f"/c/{cid}/media-settings", data={"archive": "off", "max_mb": "", "transcode": "default"})
+    tbouncer.ingest_url(f"https://{DOMAIN}/post/2")
+    tbouncer.media.fetch_pending()
+    assert media_rows(tbouncer)["https://img.test/octet"]["status"] == "skipped"
+    assert media_rows(tbouncer)["https://img.test/cat.gif"]["status"] == "ok"  # already archived: kept
+
+
+def test_shared_media_gets_the_more_generous_setting(server, tbouncer):
+    cid = community_with(server, tbouncer, "![v](https://img.test/small.mp4)")
+    default = tbouncer.media.default_policy
+    with tbouncer.db.transaction() as conn:
+        conn.execute("UPDATE communities SET media_archive='off' WHERE id=?", (cid,))
+        mid = conn.execute("SELECT id FROM media").fetchone()[0]
+        assert media.policy_for(conn, mid, default) == media.MediaPolicy("off", 1_000_000, False)
+        # The same video posted in another community that keeps pictures only, up to 50 MB, transcoding.
+        now = utcnow()
+        other = conn.execute("INSERT INTO communities(canonical_ap_id, name, first_seen_at, last_seen_at, "
+                             "media_archive, media_max_mb, media_transcode) "
+                             "VALUES ('https://x.test/c/o', 'o', ?, ?, 'images', 50, 1)", (now, now)).lastrowid
+        oid = conn.execute("INSERT INTO objects(canonical_ap_id, object_type, community_id, first_seen_at, "
+                           "last_seen_at) VALUES ('https://x.test/post/9', 'post', ?, ?, ?)",
+                           (other, now, now)).lastrowid
+        media.register(conn, oid, ["https://img.test/small.mp4"], now)
+        assert media.policy_for(conn, mid, default) == media.MediaPolicy("images", 50_000_000, True)
+
+
+def test_oversized_without_transcoding_fails_then_retries_when_enabled(settings, server, tbouncer, monkeypatch):
+    monkeypatch.setattr(media.transcode, "shrink",
+                        lambda src, ctype, limit, workdir: (_write(workdir, b"\x00\x00\x00\x18ftypmp42small"),
+                                                            "video/mp4"))
+    monkeypatch.setattr(media.MediaFetcher, "can_transcode", lambda self: True)
+    cid = community_with(server, tbouncer, "![v](https://img.test/fat.png)")
+    tbouncer.media.fetch_pending()
+    assert media_rows(tbouncer)["https://img.test/fat.png"]["error"].startswith("too large")
+
+    client = logged_in(settings, tbouncer)
+    client.post(f"/c/{cid}/media-settings", data={"archive": "default", "max_mb": "", "transcode": "on"})
+    tbouncer.media.fetch_pending()
+    row = media_rows(tbouncer)["https://img.test/fat.png"]
+    assert row["status"] == "ok" and row["content_type"] == "video/mp4"
+    assert row["original_type"] == "image/png" and row["original_bytes"] == len(PNG) + 1_500_000
+
+
+def _write(workdir, data: bytes):
+    import tempfile
+    from pathlib import Path
+    with tempfile.NamedTemporaryFile(dir=workdir, delete=False) as f:
+        f.write(data)
+    return Path(f.name)
+
+
+def test_bad_size_limit_is_refused(settings, server, tbouncer):
+    cid = community_with(server, tbouncer, "")
+    client = logged_in(settings, tbouncer)
+    r = client.post(f"/c/{cid}/media-settings", data={"archive": "all", "max_mb": "lots", "transcode": "on"})
+    assert "number of megabytes" in r.text
+    with tbouncer.db.connect() as conn:
+        assert conn.execute("SELECT media_archive FROM communities WHERE id=?", (cid,)).fetchone()[0] is None
+
+
+@needs_ffmpeg
+def test_oversized_video_and_picture_are_transcoded_to_fit(settings, server, tbouncer):
+    cid = community_with(server, tbouncer, "![v](https://img.test/clip.mp4) ![p](https://img.test/noise.png)")
+    assert len(big_file("clip.mp4")[0]) > 1_000_000 and len(big_file("noise.png")[0]) > 1_000_000
+    client = logged_in(settings, tbouncer)
+    client.post(f"/c/{cid}/media-settings", data={"archive": "all", "max_mb": "1", "transcode": "on"})
+    tbouncer.media.fetch_pending()
+    rows = media_rows(tbouncer)
+    video, picture = rows["https://img.test/clip.mp4"], rows["https://img.test/noise.png"]
+    assert video["status"] == "ok", video["error"]
+    assert video["content_type"] == "video/mp4" and video["size_bytes"] <= 1_000_000
+    assert video["original_bytes"] == len(big_file("clip.mp4")[0])
+    assert picture["status"] == "ok", picture["error"]
+    assert picture["content_type"] in ("image/webp", "image/jpeg") and picture["size_bytes"] <= 1_000_000
+    stored = transcode.probe(tbouncer.media_dir / video["storage_path"])
+    assert {s["codec_type"] for s in stored["streams"]} == {"video", "audio"}
+
+    page = client.get(f"/c/{cid}?tab=media").text
+    assert "2</strong> files" in page and "2 transcoded" in page and "Recently transcoded" in page
+    assert 'value="1"' in page and '<option value="on" selected>' in page
+
+
+def test_media_tab_lists_what_was_not_archived(settings, server, tbouncer):
+    cid = community_with(server, tbouncer, "![big](https://img.test/huge.png) ![a](https://img.test/cat.gif)")
+    tbouncer.media.fetch_pending()
+    client = logged_in(settings, tbouncer)
+    page = client.get(f"/c/{cid}?tab=media").text
+    assert "Not archived" in page and "too large" in page and "1 couldn&#39;t be archived" in page
+    r = client.post(f"/c/{cid}/media-retry")
+    assert "Trying again 1 file" in r.text

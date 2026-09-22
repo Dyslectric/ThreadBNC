@@ -22,7 +22,7 @@ Stored observations aren't overwritten: edits add a new version, and removals an
   - Threads are checked less often as they age: at the community's check interval for the first day (15 minutes by default, 30 for threads kept by link), then hourly, then every 6 hours after day 3.
   - When a post's comment count hasn't changed, the comment tree is re-read only every 6 hours. Edits to existing comments can take that long to show up.
 - **Content that was already gone.** If a comment was deleted or removed before the bouncer first saw it, only its placeholder is stored.
-- **Some media.** Images or videos over the size limit (25 MB by default), downloads that keep failing, and linked article pages are not saved. A link to the original is kept instead.
+- **Some media.** Images or videos over the size limit (25 MB by default, or set per community), downloads that keep failing, and linked article pages are not saved. A link to the original is kept instead. Communities that have transcoding turned on keep a smaller copy of oversized files instead (see [Media and Markdown](#media-and-markdown)).
 - **Outages.** Nothing is lost while an instance is unreachable, but changes that happen and are reversed during the outage won't be seen.
 
 **What it deletes, by design**
@@ -37,11 +37,12 @@ Everything else stays, but the archive is only as durable as the disk and databa
 | Page | What it's for |
 |---|---|
 | **Feed** (`/`) | Posts from every followed community. Sort by New, Active, Top or Most comments; filter by day, week, month or all time; show unread only; mark all read. The sidebar lists followed communities with unread counts. |
-| **Community** (`/c/{id}`) | The same feed for one community, plus ★ Kept, **Live on server** (browse its full history, fetched live) and a log. Follow settings sit behind the "✓ Following" pill. |
+| **Community** (`/c/{id}`) | The same feed for one community, plus ★ Kept, **Live on server** (browse its full history, fetched live), **Media** (what it archives, size limit, transcoding) and a log. Follow settings sit behind the "✓ Following" pill. |
 | **Communities** | Follow a community (starts with its current first page) and manage the check interval and retention for each one. |
 | **★ Kept** | Keep a post by link, see kept threads grouped by community, recent changes and the bouncer queue. |
 | **Search** (`/search`, and the box in the header) | Every version of every archived post and comment. See [Search](#search). |
 | **Inbox** | Replies, mentions and private messages for all your accounts. See [Inbox](#inbox). |
+| **Storage** | How much space the archive takes: media and text by kind of content, by kind of thread (kept, auto-captured, in the trash) and by community, plus the database size and free disk space. Each community links to its Media settings. |
 | **Trash** | Hidden and unkept threads, restorable until the trash period ends. |
 | **Reddit** (`/reddit`, linked from Accounts) | Connect Reddit, and follow your Reddit subscriptions. |
 
@@ -391,7 +392,9 @@ API (each call with `Authorization: Bearer $THREADBNC_API_TOKEN`):
 | `THREADBNC_RSS_POLL_MINUTES` | `60` | Default check interval for followed feeds (at least 5) |
 | `THREADBNC_INBOX_POLL_MINUTES` | `5` | How often each account's inbox is checked (Reddit's: at least 10) |
 | `THREADBNC_MEDIA_DIR` | `<data>/media` | Where archived images/videos are stored |
-| `THREADBNC_MEDIA_MAX_MB` | `25` | Largest single image or video file that will be archived; bigger files are skipped and linked to the original |
+| `THREADBNC_MEDIA_MAX_MB` | `25` | Largest single image or video file that will be archived; bigger files are skipped and linked to the original (each community can override this) |
+| `THREADBNC_MEDIA_TRANSCODE` | `0` | Default for communities that haven't chosen: `1` shrinks files over the size limit with ffmpeg instead of skipping them |
+| `THREADBNC_MEDIA_TRANSCODE_SOURCE_MAX_MB` | `1000` | Largest original downloaded to transcode; bigger files are skipped |
 | `THREADBNC_PROXY_AUTH_HEADER` | unset | Header in which a signing-in reverse proxy passes the user's name, e.g. `X-authentik-username` |
 | `THREADBNC_PROXY_SECRET` | unset | Required with the above (16+ characters). The proxy must send it as `X-ThreadBNC-Proxy-Secret` |
 | `THREADBNC_PROXY_ALLOWED_USERS` | unset | Comma-separated usernames allowed in; unset = whoever the proxy lets through |
@@ -422,7 +425,9 @@ threadbnc/
   search.py      full-text search over every revision (SQLite FTS5 / Postgres GIN), query syntax, snippets
   inbox.py       replies, mentions and messages per account: polling, read state, replying
   render.py      Markdown -> sanitised HTML, archived-media substitution
-  media.py       media download, content-addressed storage, cleanup
+  media.py       media download, per-community archiving settings, content-addressed storage, cleanup
+  storage.py     the Storage page's breakdown of space used
+  transcode.py   ffmpeg: shrink oversized videos/pictures to fit a size limit
   web.py         FastAPI UI/API, auth guard, views
 ```
 
@@ -483,6 +488,15 @@ Posts and comments are rendered as Markdown: CommonMark plus tables, strikethrou
 - Downloads refuse private or loopback addresses, cap redirects and file size, and check file types from their first bytes.
 - `/media/{id}` requires sign-in and is served sandboxed. SVGs are never shown inline.
 - Media is deleted only when every object that referenced it has been purged, which happens only when auto-captured threads expire.
+
+**Per community** (the community's **Media** tab):
+- **Archive**: pictures and videos, pictures only, or nothing. Files already archived stay when you turn this down.
+- **Largest file kept**: overrides `THREADBNC_MEDIA_MAX_MB` for this community.
+- **Files bigger than that**: leave them out, or **transcode to fit**. Videos and animated GIFs become H.264/AAC MP4s at whatever bitrate fits (up to 1080p). Pictures are scaled down and saved as WebP. Videos too long to fit at a watchable bitrate are left out.
+- The tab also shows how much is archived, what was transcoded, and what couldn't be archived and why. **Try these again** retries them. Saving new settings retries anything the old settings left out or found too large.
+- A file posted in several communities gets the most generous of their settings.
+
+Transcoding needs `ffmpeg` and `ffprobe` on the `PATH`. The Docker image includes them. Transcoding runs in the bouncer's background loop, so a long video can hold up other syncing for a few minutes.
 
 ## Privacy
 

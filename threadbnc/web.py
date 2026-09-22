@@ -30,6 +30,7 @@ from . import dupes, store
 from . import search as search_mod
 from . import feed as feed_mod
 from . import media as media_mod
+from . import storage as storage_mod
 from .adapters import RemoteError, host_of, is_reddit_host, is_rss
 from .accounts import Account, AccountError, Poster
 from .bouncer import Bouncer
@@ -200,6 +201,16 @@ def event_label(e: Any) -> str:
     return label
 
 
+def human_size(n: int | None) -> str:
+    """Bytes as KB/MB/GB (decimal, like disk makers and our size limits)."""
+    n = n or 0
+    for unit, scale in (("GB", 1e9), ("MB", 1e6), ("KB", 1e3)):
+        if n >= scale:
+            v = n / scale
+            return f"{v:.1f} {unit}" if v < 10 else f"{v:,.0f} {unit}"
+    return f"{n} bytes"
+
+
 def ago(value: str | None) -> str:
     dt = parse_ts(value)
     if not dt:
@@ -306,7 +317,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     templates = Jinja2Templates(directory=str(HERE / "templates"))
     templates.env.filters.update(ago=ago, absolute=absolute, safe_url=safe_url, host=host_of,
-                                 looks_like_media=looks_like_media)
+                                 looks_like_media=looks_like_media, size=human_size)
     def static_url(name: str) -> str:
         # Cache-bust with the file's mtime so UI updates show up without a hard reload.
         return f"/static/{name}?v={int((HERE / 'static' / name).stat().st_mtime)}"
@@ -736,6 +747,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             cevents = conn.execute("SELECT * FROM state_events WHERE community_id=? ORDER BY id DESC LIMIT 30",
                                    (cid,)).fetchall()
             follows = feed_mod.followed_communities(conn)
+            media_data = media_mod.community_stats(conn, cid) if tab == "media" else None
         me = acting(request)
         powers = mod.powers(me, cid)
         mod_data: dict[str, Any] = {}
@@ -767,7 +779,43 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         return render(request, "community.html", c=c, follow=follow_row, tab=tab, feed=fp, counts=counts,
                       events=cevents, live=live, live_error=live_error, sort=sort, window=t, unread=unread,
                       page=page, live_sort=live_sort, follows=follows, base_url=f"/c/{cid}",
-                      community=c, powers=powers, mod_data=mod_data, view=shown, view_chosen=c["view_mode"])
+                      community=c, powers=powers, mod_data=mod_data, view=shown, view_chosen=c["view_mode"],
+                      media=media_data, media_default=bouncer.media.default_policy,
+                      archive_modes=media_mod.ARCHIVE_MODES, can_transcode=bouncer.media.can_transcode())
+
+    @app.post("/c/{cid}/media-settings")
+    def media_settings(request: Request, cid: int, archive: str = Form("default"), max_mb: str = Form(""),
+                       transcode: str = Form("default")):
+        """What gets archived from a community; blank/"default" choices follow the server's settings."""
+        try:
+            limit = int(max_mb) if max_mb.strip() else None
+        except ValueError:
+            limit = 0
+        if limit is not None and not 1 <= limit <= 100_000:
+            flash(request, "The size limit is a number of megabytes, or blank for the default.", "error")
+            return RedirectResponse(f"/c/{cid}?tab=media", status_code=303)
+        with db.transaction() as conn:
+            conn.execute("UPDATE communities SET media_archive=?, media_max_mb=?, media_transcode=? WHERE id=?",
+                         (archive if archive in media_mod.ARCHIVE_MODES else None, limit,
+                          {"on": 1, "off": 0}.get(transcode), cid))
+            n = media_mod.requeue(conn, cid)
+        bouncer.wake.set()
+        flash(request, "Media settings saved." + (f" Trying again {n} file{'s' if n != 1 else ''} "
+                                                  "the old settings left out." if n else ""))
+        return RedirectResponse(f"/c/{cid}?tab=media", status_code=303)
+
+    @app.post("/c/{cid}/media-retry")
+    def media_retry(request: Request, cid: int):
+        with db.transaction() as conn:
+            n = media_mod.requeue(conn, cid)
+            # Plus downloads that ran out of attempts (servers down, timeouts).
+            n += conn.execute(
+                "UPDATE media SET status='pending', attempts=0, next_attempt_at=?, error=NULL "
+                f"WHERE id IN ({media_mod.community_ids_sql()}) AND status='failed'",
+                (utcnow(), cid)).rowcount
+        bouncer.wake.set()
+        flash(request, f"Trying again {n} file{'s' if n != 1 else ''}." if n else "Nothing to try again.")
+        return RedirectResponse(f"/c/{cid}?tab=media", status_code=303)
 
     # ---- media ----------------------------------------------------------
     media_root = (bouncer.media_dir).resolve()
@@ -888,6 +936,12 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                JOIN revisions r ON r.object_id=o.id AND r.seq=o.revision_count
                JOIN communities c ON c.id=t.community_id
                WHERE t.trashed_at IS NOT NULL ORDER BY t.trashed_at DESC""").fetchall()
+
+    @app.get("/storage", response_class=HTMLResponse)
+    def storage_page(request: Request):
+        with db.connect() as conn:
+            usage = storage_mod.overview(db, conn, bouncer.media_dir)
+        return render(request, "storage.html", u=usage, nouns=storage_mod.NOUNS)
 
     @app.get("/trash", response_class=HTMLResponse)
     def trash(request: Request):
