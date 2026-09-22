@@ -145,6 +145,48 @@ document.documentElement.classList.add("js");
     }
   }
 
+  // ---- votes -----------------------------------------------------------------
+  // A vote shows at once and is sent in the background. The page isn't fetched
+  // again afterwards (on a big thread that's a lot to download and re-render),
+  // unless the server says something went wrong: then it shows what's true.
+  function showVote(box, mine, copies) {
+    const up = $("button.vote.up", box), down = $("button.vote.down", box);
+    const old = up.classList.contains("on") ? 1 : down.classList.contains("on") ? -1 : 0;
+    for (const [btn, dir] of [[up, 1], [down, -1]]) {
+      const on = mine === dir;
+      const count = $("span", btn);
+      const n = count.textContent.match(/-?\d+/);
+      if (n) count.textContent = count.textContent.replace(n[0], String(+n[0] + copies * (on - (old === dir))));
+      btn.classList.toggle("on", on);
+      btn.setAttribute("aria-pressed", String(on));
+      btn.title = btn.dataset[on ? "on" : "off"];
+      btn.setAttribute("aria-label", btn.title);
+      $("input[name=score]", btn.form).value = on ? 0 : dir;
+    }
+    return old;
+  }
+
+  async function vote(form) {
+    const box = form.closest(".obj-actions");
+    if (box.dataset.busy) return;
+    box.dataset.busy = "1";
+    const fields = new URLSearchParams(new FormData(form));
+    const copies = 1 + $$("input[name=also]", form).length;
+    const before = showVote(box, +fields.get("score"), copies);
+    try {
+      const data = await post(form.action, fields);
+      const dest = new URL(data.redirect || location.href, location.href);
+      if (dest.pathname !== location.pathname) { location.assign(dest.href); return; }
+      if (!data.ok) await refresh([box.id]);
+      for (const m of data.messages || []) toast(m);
+    } catch (e) {
+      showVote(box, before, copies);
+      toast({ kind: "error", text: "Your vote didn't go through (" + e.message + "). Try again." });
+    } finally {
+      delete box.dataset.busy;
+    }
+  }
+
   // ---- forms -----------------------------------------------------------------
   document.addEventListener("submit", async (ev) => {
     const form = ev.target;
@@ -165,6 +207,11 @@ document.documentElement.classList.add("js");
       ev.preventDefault();
       setTheme(submitter.value);
       post(form.action, { theme: submitter.value }).catch(() => {});
+      return;
+    }
+    if (form.hasAttribute("data-vote")) {
+      ev.preventDefault();
+      vote(form);
       return;
     }
     const ids = (form.dataset.inplace || "").split(/\s+/).filter(Boolean);

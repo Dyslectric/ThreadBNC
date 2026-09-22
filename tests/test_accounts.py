@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -7,7 +9,7 @@ from threadbnc.accounts import AccountError, Poster
 from threadbnc.vault import TokenVault
 from threadbnc.web import create_app
 
-from .conftest import DOMAIN
+from .conftest import DOMAIN, FakeAdapter
 
 HOME = "home.test"
 
@@ -112,6 +114,35 @@ def test_vote_and_unvote(server, bouncer, poster, thread):
     assert poster.my_votes(account, [ap]) == {ap: 1} and server.votes[("dave", "post:1")] == 1
     poster.vote(account, post_oid, 0)
     assert poster.my_votes(account, [ap]) == {}
+
+
+def test_vote_from_another_server_keeps_the_source_counts(server, bouncer, poster, thread, monkeypatch):
+    """dave's server only just fetched the post, so it knows of 1 upvote (his);
+    that must not replace the 500 the thread's own server reports."""
+    server.posts["1"] = dataclasses.replace(server.posts["1"], upvotes=500, downvotes=20, score=480)
+    bouncer.sync_thread(thread, force=True)
+    real = FakeAdapter.vote_post
+    monkeypatch.setattr(FakeAdapter, "vote_post", lambda self, token, pid, score: dataclasses.replace(
+        real(self, token, pid, score), upvotes=1, downvotes=0, score=1))
+    account = poster.add(HOME, "dave", "hunter2")
+    oid = one(bouncer, "SELECT root_object_id FROM archived_threads WHERE id=?", thread)[0]
+    counts = lambda: tuple(one(bouncer, "SELECT upvotes, downvotes, score FROM objects WHERE id=?", oid))
+    poster.vote(account, oid, 1)
+    assert counts() == (501, 20, 481)  # the vote counted in, until the next sync
+    poster.vote(account, oid, -1)
+    assert counts() == (500, 21, 479)
+    poster.vote(account, oid, 0)
+    assert counts() == (500, 20, 480)
+
+
+def test_vote_on_the_source_server_takes_its_counts(server, bouncer, poster, thread, monkeypatch):
+    real = FakeAdapter.vote_post
+    monkeypatch.setattr(FakeAdapter, "vote_post", lambda self, token, pid, score: dataclasses.replace(
+        real(self, token, pid, score), upvotes=42, downvotes=3, score=39))
+    account = poster.add(DOMAIN, "dave", "hunter2")
+    oid = one(bouncer, "SELECT root_object_id FROM archived_threads WHERE id=?", thread)[0]
+    poster.vote(account, oid, 1)
+    assert tuple(one(bouncer, "SELECT upvotes, downvotes, score FROM objects WHERE id=?", oid)) == (42, 3, 39)
 
 
 def test_submit_creates_a_kept_thread(server, bouncer, poster, thread):

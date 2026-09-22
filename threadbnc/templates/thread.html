@@ -59,18 +59,20 @@
   {% set owned = o.a_ap == who.actor_ap_id %}
   {% set powers = powers_by_community.get(o.community_id) %}
   <div class="obj-actions small" id="a{{ o.id }}">
-    <form method="post" action="/o/{{ o.id }}/vote" class="inline" data-inplace="a{{ o.id }}">
+    <form method="post" action="/o/{{ o.id }}/vote" class="inline" data-inplace="a{{ o.id }}" data-vote>
       <input type="hidden" name="score" value="{{ 0 if mine == 1 else 1 }}">
       {% for m in also %}<input type="hidden" name="also" value="{{ m.o.id }}">{% endfor %}
       {% set label = ('Remove upvote' if mine == 1 else 'Upvote') ~ ' as ' ~ as_whom ~ every %}
       <button class="vote up {{ 'on' if mine == 1 }}" title="{{ label }}" aria-pressed="{{ 'true' if mine == 1 else 'false' }}"
+        data-on="Remove upvote as {{ as_whom ~ every }}" data-off="Upvote as {{ as_whom ~ every }}"
         aria-label="{{ label }}{{ (', ' ~ n.agg.upvotes ~ ' so far') if n.agg.upvotes is not none }}"><span aria-hidden="true">▲ {{ n.agg.upvotes if n.agg.upvotes is not none else '' }}</span></button>
     </form>
-    <form method="post" action="/o/{{ o.id }}/vote" class="inline" data-inplace="a{{ o.id }}">
+    <form method="post" action="/o/{{ o.id }}/vote" class="inline" data-inplace="a{{ o.id }}" data-vote>
       <input type="hidden" name="score" value="{{ 0 if mine == -1 else -1 }}">
       {% for m in also %}<input type="hidden" name="also" value="{{ m.o.id }}">{% endfor %}
       {% set label = ('Remove downvote' if mine == -1 else 'Downvote') ~ ' as ' ~ as_whom ~ every %}
       <button class="vote down {{ 'on' if mine == -1 }}" title="{{ label }}" aria-pressed="{{ 'true' if mine == -1 else 'false' }}"
+        data-on="Remove downvote as {{ as_whom ~ every }}" data-off="Downvote as {{ as_whom ~ every }}"
         aria-label="{{ label }}{{ (', ' ~ n.agg.downvotes ~ ' so far') if n.agg.downvotes is not none }}"><span aria-hidden="true">▼ {{ n.agg.downvotes if n.agg.downvotes is not none else '' }}</span></button>
     </form>
     {% if not is_post %}

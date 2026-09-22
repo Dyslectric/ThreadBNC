@@ -507,6 +507,11 @@ class Poster:
         result = self._run(account, act)
         now = utcnow()
         with self.db.transaction() as conn:
+            before = conn.execute("SELECT score FROM my_votes WHERE account_id=? AND object_ap_id=?",
+                                  (account.id, obj["canonical_ap_id"])).fetchone()
+            old = before["score"] if before else 0
+            source = conn.execute("SELECT source_domain FROM archived_threads WHERE id=?",
+                                  (obj["thread_id"],)).fetchone()
             if score == 0:
                 conn.execute("DELETE FROM my_votes WHERE account_id=? AND object_ap_id=?",
                              (account.id, obj["canonical_ap_id"]))
@@ -514,10 +519,16 @@ class Poster:
                 conn.execute("INSERT INTO my_votes(account_id, object_ap_id, score, voted_at) VALUES (?,?,?,?) "
                              "ON CONFLICT(account_id, object_ap_id) DO UPDATE SET score=excluded.score, "
                              "voted_at=excluded.voted_at", (account.id, obj["canonical_ap_id"], score, now))
-            # The account's server counts may lag the community's; only take them if present.
-            if getattr(result, "upvotes", None) is not None:
+            # Stored counts are the thread's source server's. Take the answer's counts
+            # only from that server: any other server has its own, often far lower,
+            # view (e.g. one that only just fetched the post to vote on it). Else
+            # count the vote in until the next sync brings the source's counts.
+            if source and source["source_domain"] == account.domain and getattr(result, "upvotes", None) is not None:
                 conn.execute("UPDATE objects SET upvotes=?, downvotes=?, score=? WHERE id=?",
                              (result.upvotes, result.downvotes, result.score, object_id))
+            elif score != old:
+                conn.execute("UPDATE objects SET upvotes=upvotes+?, downvotes=downvotes+?, score=score+? WHERE id=?",
+                             ((score == 1) - (old == 1), (score == -1) - (old == -1), score - old, object_id))
 
     def my_votes(self, account: Account | None, ap_ids: list[str]) -> dict[str, int]:
         if account is None or not ap_ids:
