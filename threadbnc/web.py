@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import urlencode, urlparse
+from urllib.parse import quote, urlencode, urlparse
 
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import (
@@ -730,6 +730,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                 "ORDER BY c.name, c.canonical_ap_id, COALESCE(t.promoted_at, t.retained_at) DESC"
             ).fetchall()
             changes = recent_changes(conn, limit=20)
+            kept_articles = conn.execute("SELECT id, title, site_name, url, kept_at FROM articles "
+                                         "WHERE kept_at IS NOT NULL ORDER BY kept_at DESC").fetchall()
         groups: dict[int, dict[str, Any]] = {}
         for r in rows:
             groups.setdefault(r["cid"], {"cid": r["cid"], "name": r["cname"], "ap": r["c_ap"], "threads": []})
@@ -738,7 +740,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         return render(request, "kept.html", jobs=[dict(j, payload=json.loads(j["payload_json"]),
                                                        result=json.loads(j["result_json"] or "null"))
                                                   for j in jobs],
-                      groups=list(groups.values()), total=len(rows), changes=changes, pending=pending)
+                      groups=list(groups.values()), total=len(rows), changes=changes, pending=pending,
+                      kept_articles=kept_articles)
 
     def recent_changes(conn: Any, limit: int = 30, community_id: int | None = None,
                        thread_id: int | None = None) -> list[dict[str, Any]]:
@@ -1686,6 +1689,21 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         out.sort(key=lambda c: (c["rank"], c["name"].lower(), c["host"]))
         return out
 
+    def picked_community(community_id: str, community: str) -> int:
+        """The community a post form chose: from its list, or typed as
+        !name@host (looked up, not followed), which wins."""
+        cid = int(community_id) if community_id.strip().isdigit() else None
+        if community.strip():
+            try:
+                _ref, found = bouncer.resolve_community(community)
+            except (RemoteError, ValueError) as exc:
+                raise AccountError(f"Couldn't find {community.strip()}: {exc}") from exc
+            with db.transaction() as conn:
+                cid = store.upsert_community(conn, found, utcnow())
+        if not cid:
+            raise AccountError("Pick a community to post it in.")
+        return cid
+
     @app.get("/t/{tid}/repost", response_class=HTMLResponse)
     def repost_form(request: Request, tid: int):
         with db.connect() as conn:
@@ -1701,7 +1719,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         targets = repost_targets(me, poster.reddit_account())
         last = request.session.get("repost_to")
         chosen = last if any(c["id"] == last for c in targets) else (targets[0]["id"] if targets else None)
-        return render(request, "repost.html", t=t, draft=draft, targets=targets, chosen=chosen)
+        return render(request, "repost.html", t=t, draft=draft, targets=targets, chosen=chosen,
+                      action=f"/t/{tid}/repost")
 
     @app.post("/t/{tid}/repost")
     def repost(request: Request, tid: int, title: str = Form(...), url: str = Form(""), body: str = Form(""),
@@ -1709,16 +1728,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         """Post a copy in one of your communities: picked from the list, or
         typed as !name@host (looked up, not followed)."""
         def act(account: Account) -> RedirectResponse:
-            cid = int(community_id) if community_id.strip().isdigit() else None
-            if community.strip():
-                try:
-                    _ref, found = bouncer.resolve_community(community)
-                except (RemoteError, ValueError) as exc:
-                    raise AccountError(f"Couldn't find {community.strip()}: {exc}") from exc
-                with db.transaction() as conn:
-                    cid = store.upsert_community(conn, found, utcnow())
-            if not cid:
-                raise AccountError("Pick a community to post it in.")
+            cid = picked_community(community_id, community)
             new_tid = poster.repost(account, tid, cid, title, body, url)
             request.session["repost_to"] = cid
             return RedirectResponse(f"/t/{new_tid}", status_code=303)
@@ -1934,6 +1944,30 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                       n_copies=max(len(copies), 1),
                       all_kept=all(th["retention"] == "manual" for th in threads.values()))
 
+    def read_href(url: str) -> str:
+        """Where a link to an article goes to be read here."""
+        return "/read?url=" + quote(url, safe="")
+
+    def article_view(request: Request, a: Any, t: Any = None, o: Any = None) -> HTMLResponse:
+        """An article in the reader: a post's (t, o) or one opened from a link.
+        Links in it to other articles are read here too."""
+        with db.connect() as conn:
+            table = {**(media_mod.lookup_for_objects(conn, [o["id"]]) if o else {}),
+                     **articles.media_lookup(conn, a["id"])}
+            discussed = conn.execute(  # posts that link here, besides this one
+                "SELECT t.id, r.title, c.name, c.canonical_ap_id FROM article_refs ar "
+                "JOIN archived_threads t ON t.root_object_id=ar.object_id AND t.trashed_at IS NULL "
+                "JOIN objects o ON o.id=t.root_object_id JOIN revisions r ON r.object_id=o.id AND r.seq=o.revision_count "
+                "JOIN communities c ON c.id=t.community_id WHERE ar.article_id=? AND t.id!=? ORDER BY t.id DESC LIMIT 10",
+                (a["id"], t["id"] if t else 0)).fetchall()
+        lead = table.get(a["lead_image_url"] or "")
+        shown = lead and lead.status == "ok" and (lead.content_type or "").startswith("image/") \
+            and lead.content_type != "image/svg+xml"
+        content = articles.render(a["content_html"], table.get, a["fetched_from"] or a["url"], read_href) \
+            if a["status"] == "ok" else None
+        return render(request, "article.html", t=t, o=o, a=a, content=content, lead=lead if shown else None,
+                      discussed=discussed)
+
     @app.get("/t/{tid}/article", response_class=HTMLResponse)
     def article_page(request: Request, tid: int):
         """The article the post links to, as the bouncer read it."""
@@ -1944,14 +1978,81 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             o = conn.execute("SELECT o.*, r.title, r.url FROM objects o JOIN revisions r ON r.object_id=o.id "
                              "AND r.seq=o.revision_count WHERE o.id=?", (t["root_object_id"],)).fetchone()
             a = articles.for_object(conn, o["id"], o["url"]) if o else None
-            if not a or a["status"] != "ok":
-                raise HTTPException(404)
-            table = media_mod.lookup_for_objects(conn, [o["id"]])
-        lead = table.get(a["lead_image_url"] or "")
-        shown = lead and lead.status == "ok" and (lead.content_type or "").startswith("image/") \
-            and lead.content_type != "image/svg+xml"
-        return render(request, "article.html", t=t, o=o, a=a, content=articles.render(a["content_html"], table.get),
-                      lead=lead if shown else None)
+        if not a or a["status"] != "ok":
+            raise HTTPException(404)
+        return article_view(request, a, t, o)
+
+    @app.get("/read")
+    def read_link(url: str = ""):
+        """A link to an article, read here: fetched the first time (you're
+        waiting for it, so now rather than in the background), then shown."""
+        if not safe_url(url):
+            raise HTTPException(400, "Not a web address")
+        if not articles.candidate(url):  # a picture, a video, a social site: the page itself
+            return RedirectResponse(url, status_code=303)
+        with db.transaction() as conn:
+            a = articles.ensure(conn, url, utcnow())
+        if a["status"] == "pending":
+            bouncer.articles.fetch_one(a)
+        return RedirectResponse(f"/a/{a['id']}", status_code=303)
+
+    @app.get("/a/{aid}", response_class=HTMLResponse)
+    def article_by_id(request: Request, aid: int):
+        """An article opened from a link (or any saved article): read here, or
+        why it couldn't be."""
+        with db.connect() as conn:
+            a = conn.execute("SELECT * FROM articles WHERE id=?", (aid,)).fetchone()
+        if a is None:
+            raise HTTPException(404)
+        return article_view(request, a)
+
+    @app.post("/a/{aid}/retry")
+    def article_try_again(request: Request, aid: int):
+        with db.transaction() as conn:
+            conn.execute("UPDATE articles SET status='pending', attempts=0, next_attempt_at=?, error=NULL "
+                         "WHERE id=? AND status!='ok'", (utcnow(), aid))
+            a = conn.execute("SELECT * FROM articles WHERE id=?", (aid,)).fetchone()
+        if a is not None and a["status"] == "pending":
+            bouncer.articles.fetch_one(a)
+        return RedirectResponse(f"/a/{aid}", status_code=303)
+
+    @app.post("/a/{aid}/keep")
+    @app.post("/a/{aid}/unkeep")
+    def article_keep(request: Request, aid: int):
+        kept = request.url.path.endswith("/keep")
+        with db.transaction() as conn:
+            articles.keep(conn, aid, kept, utcnow())
+        flash(request, "Kept. It stays until you unkeep it; find it on the Kept page." if kept else
+              "No longer kept. It goes after a month without being opened, unless a post links to it.")
+        return RedirectResponse(back(request, f"/a/{aid}"), status_code=303)
+
+    def article_draft(a: Any) -> dict[str, str]:
+        excerpt = articles.excerpt(a["content_html"])
+        quoted = "\n".join(f"> {line}" if line.strip() else ">" for line in excerpt.splitlines())
+        return {"title": (a["title"] or "")[:200], "url": a["url"], "body": quoted, "source": a["url"]}
+
+    @app.get("/a/{aid}/post", response_class=HTMLResponse)
+    def article_post_form(request: Request, aid: int):
+        with db.connect() as conn:
+            a = conn.execute("SELECT * FROM articles WHERE id=? AND status='ok'", (aid,)).fetchone()
+        if a is None:
+            raise HTTPException(404)
+        targets = repost_targets(acting(request), poster.reddit_account())
+        last = request.session.get("repost_to")
+        chosen = last if any(c["id"] == last for c in targets) else (targets[0]["id"] if targets else None)
+        return render(request, "article_post.html", a=a, draft=article_draft(a), targets=targets, chosen=chosen,
+                      action=f"/a/{aid}/post")
+
+    @app.post("/a/{aid}/post")
+    def article_post(request: Request, aid: int, title: str = Form(...), url: str = Form(""), body: str = Form(""),
+                     community_id: str = Form(""), community: str = Form("")):
+        """Share an article read here as a link post in one of your communities."""
+        def act(account: Account) -> RedirectResponse:
+            cid = picked_community(community_id, community)
+            tid = poster.submit(account, cid, title, body, url)
+            request.session["repost_to"] = cid
+            return RedirectResponse(f"/t/{tid}", status_code=303)
+        return account_action(request, f"/a/{aid}/post", act, "Posted. It's kept automatically.")
 
     @app.post("/t/{tid}/article/retry")
     def article_retry(request: Request, tid: int):

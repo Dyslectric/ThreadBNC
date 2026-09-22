@@ -231,9 +231,20 @@ CREATE TABLE IF NOT EXISTS articles (
     next_attempt_at TEXT,
     error TEXT,
     first_seen_at TEXT NOT NULL,
-    fetched_at TEXT
+    fetched_at TEXT,
+    kept_at TEXT,             -- kept from the reader (an article opened from a link, not a post's)
+    opened_at TEXT            -- last read from a link in another article (kept a while after, see articles.py)
 );
 CREATE INDEX IF NOT EXISTS articles_pending ON articles(status, next_attempt_at);
+
+-- An article's pictures, whether or not a post links to the article (one read
+-- from a link in another article has none); media nothing else uses goes with it.
+CREATE TABLE IF NOT EXISTS article_media (
+    article_id INTEGER NOT NULL REFERENCES articles(id),
+    media_id INTEGER NOT NULL REFERENCES media(id),
+    PRIMARY KEY (article_id, media_id)
+);
+CREATE INDEX IF NOT EXISTS article_media_media ON article_media(media_id);
 
 -- Which posts (in any revision) linked to which articles.
 CREATE TABLE IF NOT EXISTS article_refs (
@@ -484,6 +495,8 @@ COLUMN_MIGRATIONS = [
     ("community_follows", "push_error", "TEXT"),
     ("community_follows", "push_changed_at", "TEXT"),
     ("community_follows", "last_push_at", "TEXT"),
+    ("articles", "kept_at", "TEXT"),
+    ("articles", "opened_at", "TEXT"),
 ]
 
 # Tables with an integer `id` key: inserts into these get `RETURNING id` on

@@ -770,3 +770,11 @@ fieldset.feed-picks input[type=checkbox] { flex: none; width: 16px; margin: 0; }
 .menu-item .grow.wrap { white-space: normal; }
 .feed-head h1 .icon-button { vertical-align: middle; }
 .danger-zone { margin-top: 24px; }
+
+/* ---- links to articles you can read here (in the reader) ---- */
+.article-link::before { content: ""; display: inline-block; width: 0.9em; height: 0.9em; margin-right: 0.22em;
+  vertical-align: -0.1em; background-color: currentColor;
+  -webkit-mask: url(article-link.svg) center / contain no-repeat; mask: url(article-link.svg) center / contain no-repeat; }
+.reader-actions { margin-top: 10px; }
+.reader-discussed { border-top: 1px solid var(--line); padding-top: 10px; margin-bottom: 16px; }
+.reader-discussed h2 { font-size: 0.95rem; margin: 0 0 4px; }

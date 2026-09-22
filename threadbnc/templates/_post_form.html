@@ -1,0 +1,27 @@
+{# The form that posts a copy or a link in one of your communities: repost.html
+   and article_post.html. Takes action, draft, targets, chosen. #}
+<section class="card">
+  {% if not acting and not reddit_me %}<p class="bad-text"><a href="/accounts">Add an account</a> first.</p>{% endif %}
+  <form method="post" action="{{ action }}" class="stack">
+    <label>Post in
+      <select name="community_id">
+        {% set ns = namespace(group=none) %}
+        {% for c in targets %}
+          {% if c.group != ns.group %}{% if ns.group is not none %}</optgroup>{% endif %}<optgroup label="{{ c.group }}">{% set ns.group = c.group %}{% endif %}
+          <option value="{{ c.id }}" {{ 'selected' if c.id == chosen }}>{{ c.label }}</option>
+        {% endfor %}
+        {% if ns.group is not none %}</optgroup>{% endif %}
+      </select>
+    </label>
+    <label>…or another community <span class="muted small">(overrides the list)</span>
+      <input name="community" placeholder="!name@your.server{{ '  or  r/name' if reddit_me }}"></label>
+    <label>Title <input name="title" required maxlength="200" value="{{ draft.title }}"></label>
+    <label>Link <span class="muted small">(optional)</span> <input type="url" name="url" placeholder="https://" value="{{ draft.url }}"></label>
+    <label>Text <span class="muted small">(Markdown)</span> <textarea name="body" rows="10">{{ draft.body }}</textarea></label>
+    <div class="row">
+      <button {{ 'disabled' if not (acting or reddit_me) }}>Post</button>
+      <span class="small muted">{% if acting %}Posted as {{ acting.handle }} (switch in the header){% endif %}{% if acting and reddit_me %}, or {% endif %}{% if reddit_me %}as {{ reddit_me.handle }} in a subreddit{% endif %}.
+        The new post is kept{{ ", and shown together with the original" if t is defined and t }}.</span>
+    </div>
+  </form>
+</section>

@@ -34,6 +34,12 @@ def fake_web(request: httpx.Request) -> httpx.Response:
     html = {"content-type": "text/html; charset=utf-8"}
     if path == "/story":
         return httpx.Response(200, content=page(), headers=html)
+    if path == "/linking":  # links to another article, a section page, and itself
+        return httpx.Response(200, content=page(extra='<p>See <a href="/2026/09/other-story-here">the other story</a>, '
+                                                      '<a href="/world">world news</a> and '
+                                                      '<a href="/linking#top">the top</a>.</p>'), headers=html)
+    if path == "/2026/09/other-story-here":
+        return httpx.Response(200, content=page("The other story"), headers=html)
     if path == "/moved":
         return httpx.Response(301, headers={"location": "/story"})
     if path == "/teaser":
@@ -186,6 +192,115 @@ def test_storage_page_counts_articles(server, abouncer, settings):
     with abouncer.db.connect() as conn:
         e = storage.overview(abouncer.db, conn, abouncer.media_dir)["everything"]
     assert e.media["pictures"] == [1, len(PNG)] and e.media["articles"] == [0, 0]
+
+
+def test_which_links_look_like_articles():
+    for url in ("https://news.test/2026/09/some-story", "https://news.test/world/rebuild-the-harbour-wall",
+                "https://news.test/story/123456", "https://news.test/a/b.html", "https://blog.test/my_long_post_title"):
+        assert articles.looks_like_article(url), url
+    for url in ("https://news.test/world", "https://news.test/", "https://news.test/about", "https://news.test/pic.jpg",
+                "https://www.youtube.com/watch?v=abcdefghijk", "https://lemmy.test/post/123456", "mailto:x@y.test"):
+        assert not articles.looks_like_article(url), url
+
+
+def test_links_to_articles_are_read_here():
+    html = ('<p><a href="https://news.test/2026/09/other-story">other</a> <a href="https://news.test/world">world</a> '
+            '<a href="https://news.test/2026/09/this-story#notes">notes</a></p>')
+    out = str(articles.render(html, {}.get, "https://news.test/2026/09/this-story", lambda u: "/read?url=" + u))
+    assert '<a href="/read?url=https://news.test/2026/09/other-story"' in out and 'class="article-link"' in out
+    assert 'href="https://news.test/world"' in out and 'target="_blank"' in out  # a section page: the site
+    assert 'href="https://news.test/2026/09/this-story#notes"' in out  # the same page: left alone
+    assert out.count("article-link") == 1
+
+
+def reader(settings, bouncer):
+    client = TestClient(create_app(settings, bouncer))
+    client.post("/login", data={"password": "pw"})
+    return client
+
+
+def test_article_links_open_in_the_reader(server, abouncer, settings):
+    tid = post_linking(server, abouncer, "https://news.test/linking")
+    abouncer.articles.fetch_pending()
+    client = reader(settings, abouncer)
+    page = client.get(f"/t/{tid}/article").text
+    link = "/read?url=https%3A%2F%2Fnews.test%2F2026%2F09%2Fother-story-here"
+    assert f'href="{link}"' in page and "Read here · news.test" in page
+    assert 'href="https://news.test/world"' in page
+    # Keep and Repost act on the post's thread here (kept already: it was saved by link).
+    assert f'action="/t/{tid}/unkeep"' in page
+    # Following the link reads that article now, and shows it here.
+    r = client.get(link, follow_redirects=False)
+    aid = one_article(abouncer, "https://news.test/2026/09/other-story-here")["id"]
+    assert r.status_code == 303 and r.headers["location"] == f"/a/{aid}"
+    other = client.get(f"/a/{aid}").text
+    assert "The other story" in other and "Paragraph 3." in other and f'action="/a/{aid}/keep"' in other
+    # Its pictures are archived as the article's own (no post links to it).
+    abouncer.media.fetch_pending()
+    with abouncer.db.connect() as conn:
+        pic = conn.execute("SELECT m.* FROM media m JOIN article_media am ON am.media_id=m.id "
+                           "WHERE am.article_id=?", (aid,)).fetchone()
+    assert pic["status"] == "ok" and f'src="/media/{pic["id"]}"' in client.get(f"/a/{aid}").text
+    # Read once: opening it again doesn't fetch it again.
+    assert client.get(link, follow_redirects=False).headers["location"] == f"/a/{aid}"
+
+
+def one_article(b, url):
+    with b.db.connect() as conn:
+        return conn.execute("SELECT * FROM articles WHERE url=?", (url,)).fetchone()
+
+
+def test_links_that_arent_readable(server, abouncer, settings):
+    client = reader(settings, abouncer)
+    # Not something we read (a picture): straight to it.
+    r = client.get("/read?url=https%3A%2F%2Fnews.test%2Fwall.png", follow_redirects=False)
+    assert r.headers["location"] == "https://news.test/wall.png"
+    assert client.get("/read?url=javascript%3Aalert(1)").status_code == 400
+    # Too little text to be an article: says so, with the original to open instead.
+    r = client.get("/read?url=https%3A%2F%2Fnews.test%2F2026%2Fteaser-of-a-story", follow_redirects=True)
+    assert "Couldn&#39;t read this page here" in r.text or "Couldn't read this page here" in r.text
+    assert "Open the original" in r.text
+
+
+def test_articles_read_from_links_can_be_kept_or_go_after_a_while(abouncer, settings):
+    from datetime import datetime, timedelta, timezone
+    from threadbnc.db import fmt_ts, utcnow
+    client = reader(settings, abouncer)
+    client.get("/read?url=https%3A%2F%2Fnews.test%2Fstory")
+    kept = one_article(abouncer, "https://news.test/story")
+    client.get("/read?url=https%3A%2F%2Fnews.test%2F2026%2F09%2Fother-story-here")
+    other = one_article(abouncer, "https://news.test/2026/09/other-story-here")
+    client.post(f"/a/{kept['id']}/keep")
+    assert "Harbour wall to be rebuilt" in client.get("/kept").text
+    long_ago = fmt_ts(datetime.now(timezone.utc) - timedelta(days=articles.STANDALONE_DAYS + 1))
+    with abouncer.db.transaction() as conn:
+        conn.execute("UPDATE articles SET opened_at=?", (long_ago,))
+        articles.collect_orphans(conn, utcnow())
+    assert one_article(abouncer, kept["url"]) is not None  # kept
+    assert one_article(abouncer, other["url"]) is None  # a month unopened, nothing links to it
+    with abouncer.db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM article_media WHERE article_id=?", (other["id"],)).fetchone()[0] == 0
+    client.post(f"/a/{kept['id']}/unkeep")
+    assert one_article(abouncer, kept["url"])["kept_at"] is None
+
+
+def test_an_article_read_here_can_be_posted(server, abouncer, settings):
+    settings.credentials_key = "test-key"
+    server.add_post("1", "Harbour news", "")
+    abouncer.ingest_url(f"https://{DOMAIN}/post/1")  # so there's a community to post in
+    client = reader(settings, abouncer)
+    client.post("/accounts", data={"server": "home.test", "username": "dave", "password": "hunter2"})
+    client.get("/read?url=https%3A%2F%2Fnews.test%2F2026%2F09%2Fother-story-here")
+    a = one_article(abouncer, "https://news.test/2026/09/other-story-here")
+    form = client.get(f"/a/{a['id']}/post").text
+    assert 'value="The other story"' in form and "&gt; The council voted" in form
+    with abouncer.db.connect() as conn:
+        cid = conn.execute("SELECT id FROM communities").fetchone()[0]
+    r = client.post(f"/a/{a['id']}/post", data={"title": "The other story", "url": a["url"], "body": "> excerpt",
+                                                "community_id": str(cid)}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"].startswith("/t/")
+    new = [p for p in server.posts.values() if p.title == "The other story"]
+    assert new and new[0].url == a["url"]
 
 
 def test_same_link_twice_is_read_once(server, abouncer):

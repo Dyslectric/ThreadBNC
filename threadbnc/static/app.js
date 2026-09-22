@@ -241,6 +241,15 @@ document.documentElement.classList.add("js");
     }
   });
 
+  // "Back" links (the reader, opened from a link in another article): back where
+  // you came from, when that's here; otherwise the link's own address.
+  document.addEventListener("click", (ev) => {
+    const link = ev.target.closest("a[data-back]");
+    if (!link || history.length < 2 || !document.referrer.startsWith(location.origin)) return;
+    ev.preventDefault();
+    history.back();
+  });
+
   // Panels that remember whether they're open (the Following list): the page
   // reads it back from the server, so it stays as you left it.
   document.addEventListener("toggle", (ev) => {

@@ -458,5 +458,5 @@ def purge_thread(conn: Conn, thread_id: int, now: str, media_dir: Path | None = 
     add_event(conn, reason, now, community_id=t["community_id"],
               metadata={"root_ap_id": root["canonical_ap_id"] if root else None, "retention": t["retention"],
                         "captured_at": t["retained_at"], "objects_purged": len(ids)})
-    articles.collect_orphans(conn)
+    articles.collect_orphans(conn, now)
     return media.collect_orphans(conn, media_dir) if media_dir else []

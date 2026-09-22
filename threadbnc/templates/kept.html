@@ -48,4 +48,17 @@
     {% if changes %}<a href="/changes" class="small">All changes →</a>{% endif %}
   </section>
 </div>
+
+{% if kept_articles %}
+<section class="card">
+  <h2>{{ kept_articles | length }} kept article{{ 's' if kept_articles | length != 1 }}</h2>
+  <p class="small muted">Articles you kept while reading, from links in other articles.</p>
+  <ul class="plain">
+  {% for k in kept_articles %}
+    <li><a href="/a/{{ k.id }}">{{ k.title or k.url }}</a>
+      <div class="small muted">{{ k.site_name or (k.url | host) }} · kept {{ when(k.kept_at) }}</div></li>
+  {% endfor %}
+  </ul>
+</section>
+{% endif %}
 {% endblock %}

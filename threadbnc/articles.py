@@ -15,10 +15,11 @@ to the original as before.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any
-from urllib.parse import urljoin, urlparse
+from typing import Any, Callable
+from urllib.parse import urldefrag, urljoin, urlparse
 
 import httpx
 import lxml.html
@@ -26,14 +27,16 @@ import nh3
 import trafilatura
 from markupsafe import Markup
 
-from .adapters.base import is_reddit_host, parse_thread_url
+from .adapters.base import host_of, is_reddit_host, parse_thread_url
 from .adapters.http import HostThrottle
 from .db import Conn, Database, fmt_ts, parse_ts, utcnow
 from .media import MAX_ATTEMPTS, MAX_REDIRECTS, MediaRejected, _assert_public_host
+from .media import media_id
 from .media import register as register_media
 from .render import ALLOWED_ATTRS, ALLOWED_TAGS, MediaLookup, _media_html, looks_like_media
 
 MAX_PAGE_BYTES = 5_000_000
+STANDALONE_DAYS = 30  # an article last opened from a link this long ago, not kept, no post linking to it, goes
 MIN_WORDS = 80  # less than this is a teaser, a paywall or not an article
 CHUNK = 64 * 1024
 
@@ -70,6 +73,23 @@ def candidate(url: str | None) -> str | None:
         return url
 
 
+_DATED = re.compile(r"/(?:19|20)\d\d/")
+_PAGE_EXT = (".html", ".htm", ".shtml", ".php", ".asp", ".aspx")
+
+
+def looks_like_article(url: str | None) -> bool:
+    """A link inside an article that is probably an article itself, to read
+    here: not just a page we'd read (candidate), but one whose address looks
+    like a story (a dated path, a slug, an id, a .html page) rather than a
+    section, tag or home page."""
+    if not candidate(url):
+        return False
+    path = urlparse(url).path.rstrip("/")
+    last = path.rsplit("/", 1)[-1].lower()
+    return bool(_DATED.search(path + "/") or last.endswith(_PAGE_EXT) or re.search(r"\d{4,}", last)
+                or last.count("-") >= 2 or last.count("_") >= 2)
+
+
 # --- registration (inside store transactions) ------------------------------
 
 def register(conn: Conn, object_id: int, url: str | None, now: str) -> None:
@@ -86,17 +106,53 @@ def register(conn: Conn, object_id: int, url: str | None, now: str) -> None:
 
 
 def register_all_existing(conn: Conn) -> None:
-    """Backfill links posted before articles were archived."""
+    """Backfill links posted before articles were archived, and the article
+    pictures recorded before articles had their own."""
     now = utcnow()
     for r in conn.execute("SELECT r.object_id, r.url FROM revisions r JOIN objects o ON o.id=r.object_id "
                           "WHERE o.object_type='post' AND r.url IS NOT NULL").fetchall():
         register(conn, r["object_id"], r["url"], now)
+    for a in conn.execute("SELECT id, images_json FROM articles a WHERE status='ok' AND images_json IS NOT NULL "
+                          "AND NOT EXISTS (SELECT 1 FROM article_media m WHERE m.article_id=a.id)").fetchall():
+        attach_pictures(conn, a["id"], pictures(a), now)
 
 
-def collect_orphans(conn: Conn) -> int:
-    """Delete articles no post links to any more (their pictures go with the media)."""
-    return conn.execute("DELETE FROM articles WHERE NOT EXISTS "
-                        "(SELECT 1 FROM article_refs r WHERE r.article_id=articles.id)").rowcount
+def attach_pictures(conn: Conn, article_id: int, urls: list[str], now: str) -> None:
+    for url in urls:
+        conn.execute("INSERT INTO article_media(article_id, media_id) VALUES (?,?) "
+                     "ON CONFLICT(article_id, media_id) DO NOTHING", (article_id, media_id(conn, url, now)))
+
+
+def collect_orphans(conn: Conn, now: str | None = None) -> int:
+    """Delete articles nothing wants any more: no post links to them, they
+    weren't kept, and they weren't opened from a link in the last
+    STANDALONE_DAYS. Their pictures go with the media, once nothing else uses them."""
+    cutoff = fmt_ts(parse_ts(now or utcnow()) - timedelta(days=STANDALONE_DAYS))  # type: ignore[operator]
+    unwanted = ("NOT EXISTS (SELECT 1 FROM article_refs r WHERE r.article_id=articles.id) AND kept_at IS NULL "
+                "AND (opened_at IS NULL OR opened_at < ?)")
+    conn.execute(f"DELETE FROM article_media WHERE article_id IN (SELECT id FROM articles WHERE {unwanted})",
+                 (cutoff,))
+    return conn.execute(f"DELETE FROM articles WHERE {unwanted}", (cutoff,)).rowcount
+
+
+def ensure(conn: Conn, url: str, now: str) -> Any:
+    """The article for a link (registered to be read if it's new), for reading
+    one on demand: a link inside another article."""
+    conn.execute("INSERT INTO articles(url, first_seen_at, next_attempt_at) VALUES (?,?,?) "
+                 "ON CONFLICT(url) DO NOTHING", (url, now, now))
+    conn.execute("UPDATE articles SET opened_at=? WHERE url=?", (now, url))
+    return conn.execute("SELECT * FROM articles WHERE url=?", (url,)).fetchone()
+
+
+def media_lookup(conn: Conn, article_id: int) -> dict[str, Any]:
+    """The article's pictures, by URL, as the renderer wants them."""
+    from .render import MediaInfo
+    return {r["url"]: MediaInfo(r["id"], r["status"], r["content_type"], r["error"]) for r in conn.execute(
+        "SELECT m.* FROM media m JOIN article_media a ON a.media_id=m.id WHERE a.article_id=?", (article_id,))}
+
+
+def keep(conn: Conn, article_id: int, kept: bool, now: str) -> None:
+    conn.execute("UPDATE articles SET kept_at=? WHERE id=?", (now if kept else None, article_id))
 
 
 def pictures(a: Any) -> list[str]:
@@ -124,8 +180,11 @@ def readable(conn: Conn, object_ids: list[int]) -> set[int]:
         f"WHERE a.status='ok' AND r.object_id IN ({marks})", object_ids)}
 
 
-def render(content_html: str | None, lookup: MediaLookup) -> Markup:
-    """Stored article HTML with its pictures swapped for the archived copies."""
+def render(content_html: str | None, lookup: MediaLookup, page_url: str | None = None,
+           read_link: Callable[[str], str] | None = None) -> Markup:
+    """Stored article HTML with its pictures swapped for the archived copies.
+    With `read_link`, links to other articles go to reading them here (marked
+    with the article-link class); other links open the site in a new tab."""
     if not content_html:
         return Markup("")
     root = lxml.html.fragment_fromstring(content_html, create_parent="div")
@@ -134,14 +193,40 @@ def render(content_html: str | None, lookup: MediaLookup) -> Markup:
         new = lxml.html.fragment_fromstring(_media_html(src, img.get("alt") or "", lookup(src)))
         new.tail = img.tail
         img.getparent().replace(img, new)
+    here = urldefrag(page_url or "")[0]
+    for a in root.iter("a"):
+        href = a.get("href") or ""
+        if read_link and urldefrag(href)[0] != here and looks_like_article(href) and not a.get("class"):
+            a.set("href", read_link(href))
+            a.set("class", "article-link")
+            a.set("title", f"Read here · {host_of(href)}")
+            a.attrib.pop("target", None)
+        elif not href.startswith("/"):
+            a.set("target", "_blank")
     return Markup(_clean(lxml.html.tostring(root, encoding="unicode")))
+
+
+def excerpt(content_html: str | None, limit: int = 300) -> str:
+    """The start of an article's text, for sharing it: whole paragraphs, up
+    to about `limit` characters."""
+    if not content_html:
+        return ""
+    out, total = [], 0
+    for p in lxml.html.fragment_fromstring(content_html, create_parent="div").iter("p"):
+        text = " ".join(p.text_content().split())
+        if not text:
+            continue
+        if total and total + len(text) > limit:
+            break
+        out.append(text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + "…")
+        total += len(text)
+    return "\n\n".join(out)
 
 
 def _clean(html: str) -> str:
     return nh3.clean(html, tags=TAGS, attributes=ALLOWED_ATTRS,
                      url_schemes={"http", "https", "mailto"}, link_rel="noopener noreferrer nofollow",
-                     strip_comments=True, set_tag_attribute_values={"a": {"target": "_blank"}},
-                     filter_style_properties={"text-align"})
+                     strip_comments=True, filter_style_properties={"text-align"})
 
 
 # --- extraction ---------------------------------------------------------------
@@ -284,6 +369,7 @@ class ArticleFetcher:
                 "error=NULL WHERE id=?",
                 (art.title, art.byline, art.site_name, art.published, art.lead_image, art.content_html,
                  json.dumps(pics), art.words, final_url, now, row["id"]))
+            attach_pictures(conn, row["id"], pics, now)
             for r in conn.execute("SELECT object_id FROM article_refs WHERE article_id=?", (row["id"],)).fetchall():
                 register_media(conn, r["object_id"], pics, now, from_article=True)
 

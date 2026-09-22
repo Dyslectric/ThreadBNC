@@ -208,15 +208,20 @@ def skip_unprobed_links(conn: Conn) -> int:
     return n
 
 
+def media_id(conn: Conn, url: str, now: str) -> int:
+    """The media row for a URL, registered (to be downloaded) if it's new."""
+    conn.execute("INSERT INTO media(url, first_seen_at, next_attempt_at) VALUES (?,?,?) "
+                 "ON CONFLICT(url) DO NOTHING", (url, now, now))
+    return conn.execute("SELECT id FROM media WHERE url=?", (url,)).fetchone()[0]
+
+
 def register(conn: Conn, object_id: int, urls: Iterable[str], now: str, from_article: bool = False) -> None:
     """`from_article`: pictures in the article the post links to (articles.py),
     which aren't shown as the post's own pictures in feeds."""
     # A picture that's the post's own as well as the article's counts as its own.
     on_conflict = "DO NOTHING" if from_article else "DO UPDATE SET from_article=0 WHERE media_refs.from_article=1"
     for url in urls:
-        conn.execute("INSERT INTO media(url, first_seen_at, next_attempt_at) VALUES (?,?,?) "
-                     "ON CONFLICT(url) DO NOTHING", (url, now, now))
-        mid = conn.execute("SELECT id FROM media WHERE url=?", (url,)).fetchone()[0]
+        mid = media_id(conn, url, now)
         conn.execute("INSERT INTO media_refs(object_id, media_id, first_seen_at, from_article) VALUES (?,?,?,?) "
                      f"ON CONFLICT(object_id, media_id) {on_conflict}", (object_id, mid, now, int(from_article)))
 
@@ -408,7 +413,8 @@ def collect_orphans(conn: Conn, media_dir: Path) -> list[Path]:
     """Delete media rows no object references; return files no row uses any more.
     The caller unlinks those files after the transaction commits."""
     orphans = conn.execute(
-        "SELECT id, storage_path FROM media m WHERE NOT EXISTS (SELECT 1 FROM media_refs r WHERE r.media_id=m.id)"
+        "SELECT id, storage_path FROM media m WHERE NOT EXISTS (SELECT 1 FROM media_refs r WHERE r.media_id=m.id) "
+        "AND NOT EXISTS (SELECT 1 FROM article_media a WHERE a.media_id=m.id)"
     ).fetchall()
     files: list[Path] = []
     for o in orphans:

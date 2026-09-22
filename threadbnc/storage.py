@@ -90,10 +90,13 @@ def overview(db: Database, conn: Conn, media_dir: Path) -> dict[str, Any]:
             transcoded += 1
             saved += max(0, r[3] - (r[1] or 0))
     # Files only linked articles use (not the posts themselves) are article pictures.
-    for r in conn.execute("SELECT m.storage_path FROM media m JOIN media_refs r ON r.media_id=m.id "
-                          "WHERE m.status='ok' AND m.storage_path IS NOT NULL "
-                          "GROUP BY m.storage_path HAVING MIN(r.from_article)=1"):
-        if r[0] in files:
+    # (Stored files are shared by URL, so it's decided per file: used by an article, shown by no post itself.)
+    own = {r[0] for r in conn.execute("SELECT m.storage_path FROM media m JOIN media_refs r ON r.media_id=m.id "
+                                      "WHERE r.from_article=0 AND m.storage_path IS NOT NULL")}
+    for r in conn.execute("SELECT m.storage_path FROM media m WHERE m.status='ok' AND m.storage_path IS NOT NULL "
+                          "AND (EXISTS (SELECT 1 FROM media_refs r WHERE r.media_id=m.id AND r.from_article=1) "
+                          "OR EXISTS (SELECT 1 FROM article_media a WHERE a.media_id=m.id))"):
+        if r[0] in files and r[0] not in own:
             files[r[0]] = (files[r[0]][0], "articles")
     everything = Usage()
     everything.add_files(set(files), files)

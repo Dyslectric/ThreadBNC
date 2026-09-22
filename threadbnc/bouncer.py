@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 import traceback
 from datetime import timedelta
 from typing import Any, Callable
@@ -95,6 +96,7 @@ class Bouncer:
         self.articles = articles.ArticleFetcher(db, settings.user_agent, enabled=settings.archive_articles,
                                                 timeout=max(settings.http_timeout, 30.0), throttle=self.http.throttle)
         self._media_backfilled = False
+        self._articles_swept = 0.0  # monotonic time of the last sweep of articles read from links
         self.wake = threading.Event()
         self._stop = threading.Event()
 
@@ -757,6 +759,10 @@ class Bouncer:
             orphan_files: list = []
             for r in rows:
                 orphan_files += store.purge_thread(conn, r["id"], now, self.media_dir, reason=r["reason"])
+            if time.monotonic() - self._articles_swept > 3600:  # articles read from links, no longer wanted
+                self._articles_swept = time.monotonic()
+                if articles.collect_orphans(conn, now):
+                    orphan_files += media.collect_orphans(conn, self.media_dir)
         for f in orphan_files:  # only after the purge committed
             f.unlink(missing_ok=True)
         return len(rows)
