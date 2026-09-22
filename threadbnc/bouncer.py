@@ -449,6 +449,7 @@ class Bouncer:
                 (now, now, _plus(now, minutes=self._thread_interval(
                     conn, t["community_id"], self._root_created(conn, t["root_object_id"]))), thread_id),
             )
+            self._server_answers(conn, t["community_id"], domain, now)
         if post is not None:
             self._enrich_moderation(adapter, result, post.community)
             if full:
@@ -482,6 +483,25 @@ class Bouncer:
                 conn.execute("UPDATE archived_threads SET source_domain=?, source_local_id=?, "
                              "last_full_fetch_at=NULL WHERE id=?", (new_domain, new_local, thread_id))
             log.info("thread %s now polled from %s (was %s)", thread_id, new_domain, domain)
+
+    @staticmethod
+    def _server_answers(conn: Any, community_id: int, domain: str, now: str) -> None:
+        """A thread synced from the server a failing community check is backed
+        off on: check the community again at its usual interval rather than
+        after the backoff (up to a day), so a warning that no longer applies clears."""
+        f = conn.execute("SELECT last_polled_at, poll_interval_minutes, next_poll_at FROM community_follows "
+                         "WHERE community_id=? AND active=1 AND consecutive_failures>0 AND source_domain=?",
+                         (community_id, domain)).fetchone()
+        if not f or not f["last_polled_at"]:
+            return
+        due = max(_plus(f["last_polled_at"], minutes=f["poll_interval_minutes"]), now)
+        if f["next_poll_at"] and f["next_poll_at"] > due:
+            conn.execute("UPDATE community_follows SET next_poll_at=? WHERE community_id=?", (due, community_id))
+
+    def check_follow_now(self, community_id: int) -> None:
+        with self.db.transaction() as conn:
+            conn.execute("UPDATE community_follows SET next_poll_at=? WHERE community_id=?", (utcnow(), community_id))
+        self.wake.set()
 
     def _sync_failed(self, t: Any, error: str) -> None:
         now = utcnow()
@@ -567,7 +587,8 @@ class Bouncer:
                 "INSERT INTO community_follows(community_id, active, followed_at, capture_since, "
                 "poll_interval_minutes, retention_days, source_domain, source_ref, next_poll_at) "
                 "VALUES (?,1,?,?,?,?,?,?,?) ON CONFLICT(community_id) DO UPDATE SET active=1, "
-                "unfollowed_at=NULL, poll_interval_minutes=excluded.poll_interval_minutes, "
+                "unfollowed_at=NULL, last_error=NULL, consecutive_failures=0, "
+                "poll_interval_minutes=excluded.poll_interval_minutes, "
                 "retention_days=excluded.retention_days, source_domain=excluded.source_domain, "
                 "source_ref=excluded.source_ref, capture_since=excluded.capture_since, next_poll_at=?",
                 (cid, now, "1970-01-01T00:00:00.000000Z" if backfill else now, interval, days,

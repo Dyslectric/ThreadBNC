@@ -50,7 +50,9 @@
     {% if following and follow.last_error %}
     <div class="flash error" role="alert">{{ icon('alert') }}
       <span><strong>Checking this community is failing.</strong> {{ follow.last_error }}
-        {% if follow.last_polled_at %}<span class="muted">Last checked {{ when(follow.last_polled_at) }}.</span>{% endif %}</span>
+        {% if follow.last_polled_at %}<span class="muted">Last checked {{ when(follow.last_polled_at) }}{% if follow.next_poll_at %};
+          trying again {{ when(follow.next_poll_at) }}{% endif %}.</span>{% endif %}</span>
+      <form method="post" action="/c/{{ c.id }}/check-now" class="inline"><button class="small">Check now</button></form>
     </div>
     {% endif %}
 

@@ -727,6 +727,13 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         flash(request, "Unfollowed. Already captured threads keep their expiry dates.")
         return RedirectResponse(back(request, f"/c/{cid}"), status_code=303)
 
+    @app.post("/c/{cid}/check-now")
+    def check_now(request: Request, cid: int):
+        """Check a community again now instead of waiting out the backoff after failures."""
+        bouncer.check_follow_now(cid)
+        flash(request, "Checking it now. Reload in a moment to see how it went.")
+        return RedirectResponse(back(request, f"/c/{cid}"), status_code=303)
+
     @app.get("/c/{cid}", response_class=HTMLResponse)
     def community(request: Request, cid: int, tab: str = "feed", sort: str = "new", t: str = "all",
                   unread: str = "", page: int = 1, live_sort: str = "Hot", view: str | None = None):

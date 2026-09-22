@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from fastapi.testclient import TestClient
 
 from threadbnc import feed
-from threadbnc.db import utcnow
+from threadbnc.adapters.base import RemoteError
+from threadbnc.db import fmt_ts, utcnow
 from threadbnc.web import create_app
 
 from .conftest import DOMAIN
@@ -12,6 +15,10 @@ from .conftest import DOMAIN
 def one(b, sql, *args):
     with b.db.connect() as conn:
         return conn.execute(sql, args).fetchone()
+
+
+def from_now(**delta):
+    return fmt_ts(datetime.now(timezone.utc) + timedelta(**delta))
 
 
 def followed_with_posts(server, bouncer, n=3):
@@ -196,3 +203,34 @@ def test_unread_filter_picks_unread_posts_or_new_comments(settings, server, boun
     assert "post 2" in html and "post 3" not in html and "unread=comments" in html
     client.post("/feed/mark-read")
     assert "No new comments on posts you" in client.get("/?unread=comments").text
+
+
+def test_stale_check_failure_clears_once_the_server_answers(settings, server, bouncer):
+    cid = followed_with_posts(server, bouncer)
+    tid = one(bouncer, "SELECT id FROM archived_threads ORDER BY id LIMIT 1")[0]
+    server.down = True
+    for _ in range(8):  # a long outage: the next check is backed off by up to a day
+        with bouncer.db.transaction() as conn:
+            conn.execute("UPDATE community_follows SET next_poll_at=? WHERE community_id=?", (utcnow(), cid))
+        try:
+            bouncer.poll_follow(cid)
+        except RemoteError:
+            pass
+    f = one(bouncer, "SELECT * FROM community_follows WHERE community_id=?", cid)
+    assert f["last_error"] and f["next_poll_at"] > from_now(hours=12)
+
+    client = TestClient(create_app(settings, bouncer))
+    client.post("/login", data={"password": "pw"})
+    assert "Checking this community is failing." in client.get(f"/c/{cid}").text
+
+    # Its server answers again: a thread syncing brings the check back to its usual interval.
+    server.down = False
+    bouncer.sync_thread(tid)
+    f = one(bouncer, "SELECT * FROM community_follows WHERE community_id=?", cid)
+    assert f["next_poll_at"] <= from_now(minutes=f["poll_interval_minutes"])
+
+    # Or check now, from the warning.
+    client.post(f"/c/{cid}/check-now")
+    assert one(bouncer, "SELECT next_poll_at FROM community_follows WHERE community_id=?", cid)[0] <= utcnow()
+    bouncer.poll_follow(cid)
+    assert "Checking this community is failing." not in client.get(f"/c/{cid}").text
