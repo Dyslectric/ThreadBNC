@@ -5,6 +5,7 @@
   <h1>Private archive</h1>
   <p class="muted">This archive is private. Sign in to continue.</p>
   {% if error %}<div class="flash error">{{ error }}</div>{% endif %}
+  {% if proxy_problem %}<div class="flash error">{{ proxy_problem }}</div>{% endif %}
   {% if not password_login %}
   <p>Sign in through your identity provider: open this archive at its usual address and you'll be asked to
     sign in there. Password sign-in is turned off.</p>

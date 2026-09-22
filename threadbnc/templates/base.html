@@ -28,6 +28,7 @@
           <button class="small secondary">Switch</button>
         </form>
       {% endif %}
+      {% if request.session.get('proxy_user') %}<span class="small muted" title="Signed in by your identity provider">via proxy as {{ request.session.get('proxy_user') }}</span>{% endif %}
       <form method="post" action="/logout" class="inline"><button class="link">Log out</button></form>
     </nav>
     {% endif %}

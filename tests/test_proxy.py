@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import html
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -105,3 +107,21 @@ def test_something_must_sign_people_in(settings, bouncer):
     settings.password = None
     with pytest.raises(SystemExit, match="never served unauthenticated"):
         create_app(settings, bouncer)
+
+
+@pytest.mark.parametrize("headers,why", [
+    ({"X-authentik-username": "dave"}, "has no X-ThreadBNC-Proxy-Secret header"),
+    (via_proxy(secret="wrong" * 8), "doesn't match THREADBNC_PROXY_SECRET"),
+])
+def test_the_login_page_says_why_a_proxy_sign_in_was_ignored(proxied, bouncer, headers, why):
+    client = TestClient(create_app(proxied, bouncer))
+    page = html.unescape(client.get("/login", headers=headers).text)
+    assert "says you're dave" in page and why in page
+
+
+def test_the_header_shows_a_proxy_session(proxied, bouncer):
+    client = TestClient(create_app(proxied, bouncer))
+    assert "via proxy as dave" in client.get("/", headers=via_proxy()).text
+    pw = TestClient(create_app(proxied, bouncer))
+    pw.post("/login", data={"password": "pw"})
+    assert "via proxy" not in pw.get("/").text

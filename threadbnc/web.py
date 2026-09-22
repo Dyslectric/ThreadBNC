@@ -252,13 +252,22 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
 
     def proxy_user(request: Request) -> str | None:
         """Who the reverse proxy says this is, if it really came through the
-        proxy (it carries the proxy's secret)."""
+        proxy (it carries the proxy's secret). When the user header comes
+        without a matching secret, say why on request.state.proxy_problem."""
         if not settings.proxy_auth_header:
             return None
         name = request.headers.get(settings.proxy_auth_header, "").strip()
         given = request.headers.get(PROXY_SECRET_HEADER, "")
         if name and given and hmac.compare_digest(given.encode(), settings.proxy_secret.encode()):  # type: ignore[union-attr]
             return name
+        if name:
+            problem = (f"{settings.proxy_auth_header} says you're {name}, but "
+                       + (f"the {PROXY_SECRET_HEADER} header doesn't match THREADBNC_PROXY_SECRET" if given else
+                          f"the request has no {PROXY_SECRET_HEADER} header")
+                       + ", so ThreadBNC can't trust it. Check that the proxy adds the header with the same "
+                         "secret the app has (see README).")
+            request.state.proxy_problem = problem
+            log.warning("proxy sign-in ignored: %s", problem)
         return None
 
     @app.middleware("http")
@@ -355,7 +364,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
 
     @app.get("/login", response_class=HTMLResponse)
     def login_form(request: Request, next: str = "/"):
-        return render(request, "login.html", error=None, next=local_path(next))
+        return render(request, "login.html", error=None, next=local_path(next),
+                      proxy_problem=getattr(request.state, "proxy_problem", None))
 
     @app.post("/login")
     def login(request: Request, password: str = Form(...), next: str = Form("/")):
