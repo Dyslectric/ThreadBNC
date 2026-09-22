@@ -12,7 +12,7 @@ import math
 import re
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlencode, urlparse
@@ -33,7 +33,7 @@ from . import media as media_mod
 from . import storage as storage_mod
 from .adapters import RemoteError, host_of, is_reddit_host, is_rss
 from .accounts import Account, AccountError, Poster
-from .bouncer import Bouncer
+from .bouncer import PUSHED_POLL_MINUTES, Bouncer
 from .inbox import KINDS as INBOX_KINDS, Inbox
 from .moderation import REGISTRATION_MODES, Moderation
 from .private import PrivateCommunities
@@ -44,7 +44,8 @@ from .sso import CALLBACK_PATH, SingleSignOn, callback_url
 # The reverse proxy adds this (with THREADBNC_PROXY_SECRET) to requests it has signed in.
 PROXY_SECRET_HEADER = "X-ThreadBNC-Proxy-Secret"
 from .config import Settings, load_settings
-from .db import open_database, parse_ts, utcnow
+from .federation import Federation, InboxRelay, summarize
+from .db import fmt_ts, open_database, parse_ts, utcnow
 from .render import MediaInfo, looks_like_media, render_markdown
 from .vault import TokenVault
 
@@ -306,18 +307,26 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     sso = SingleSignOn(poster)
     inbox = Inbox(poster, settings.inbox_poll_minutes)
     bouncer.hooks.append(inbox.sweep)
+    # Your own servers' inboxes, relayed through ThreadBNC so what they receive is pushed here too.
+    federation = Federation(poster, settings.relay_inboxes) if settings.relay_inboxes else None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         if settings.embedded_bouncer:
             bouncer.start_thread()
+            if federation:
+                federation.start_thread()
         yield
         bouncer.stop()
+        if federation:
+            federation.stop()
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     templates = Jinja2Templates(directory=str(HERE / "templates"))
     templates.env.filters.update(ago=ago, absolute=absolute, safe_url=safe_url, host=host_of,
                                  looks_like_media=looks_like_media, size=human_size)
+    # A Lemmy or PieFed community (not a subreddit or a feed): one that can be pushed.
+    templates.env.tests["is_federated"] = lambda ap_id: not is_rss(ap_id) and not is_reddit_host(host_of(ap_id))
     def static_url(name: str) -> str:
         # Cache-bust with the file's mtime so UI updates show up without a hard reload.
         return f"/static/{name}?v={int((HERE / 'static' / name).stat().st_mtime)}"
@@ -420,6 +429,13 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     app.add_middleware(SessionMiddleware, secret_key=settings.secret_key, same_site="strict",
                        https_only=settings.https_only_cookies, max_age=60 * 60 * 24 * 14,
                        session_cookie="threadbnc_session")
+    if federation:  # outermost: deliveries to your servers' inboxes never reach sessions or sign-in
+        app.add_middleware(InboxRelay, relays=settings.relay_inboxes, accept=federation.queue)
+    app.state.federation = federation
+
+    def push_handle() -> str | None:
+        account = federation.account() if federation else None
+        return account.handle if account else None
 
     def acting(request: Request) -> Account | None:
         """The account forms act as: the one picked in the header, else the
@@ -694,7 +710,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                         AND t.trashed_at IS NULL AND t.retention='manual'
                    WHERE c.id NOT IN (SELECT community_id FROM community_follows WHERE active=1)
                    GROUP BY c.id ORDER BY c.name""").fetchall()
-        return render(request, "communities.html", follows=follows, others=others,
+        return render(request, "communities.html", follows=follows, others=others, push_handle=push_handle(),
                       default_poll=settings.default_follow_poll_minutes, reddit_poll=settings.reddit_poll_minutes,
                       default_days=settings.default_follow_retention_days, reddit=bouncer.reddit.status())
 
@@ -726,6 +742,86 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         bouncer.unfollow(cid)
         flash(request, "Unfollowed. Already captured threads keep their expiry dates.")
         return RedirectResponse(back(request, f"/c/{cid}"), status_code=303)
+
+    @app.post("/c/{cid}/push")
+    def push_setting(request: Request, cid: int, on: str = Form("1")):
+        """Get this community's changes pushed through your own server, or stop."""
+        if federation is None:
+            raise HTTPException(404)
+        if on != "1":
+            federation.unsubscribe(cid)
+            flash(request, "Stopped pushes. The community is checked on its usual schedule again.")
+        else:
+            state = federation.subscribe(cid)
+            who = push_handle()
+            if state == "subscribed":
+                flash(request, f"Subscribed as {who}. Changes here now arrive as they happen.")
+            elif state == "pending":
+                flash(request, f"Asked to subscribe as {who}. Waiting for the community to accept; "
+                               "it's checked as usual until then.")
+            else:
+                with db.connect() as conn:
+                    row = conn.execute("SELECT push_error FROM community_follows WHERE community_id=?",
+                                       (cid,)).fetchone()
+                flash(request, "Couldn't subscribe" + (f": {row['push_error']}" if row and row["push_error"] else ".")
+                      + " The community is checked on its usual schedule.", "error")
+        return RedirectResponse(back(request, f"/c/{cid}"), status_code=303)
+
+    @app.post("/communities/push-all")
+    def push_all(request: Request):
+        if federation is None:
+            raise HTTPException(404)
+        ok, failed = federation.subscribe_all()
+        flash(request, f"Subscribed as {push_handle()} to {ok} communit{'y' if ok == 1 else 'ies'}."
+              + (f" {failed} couldn't be; they're checked as usual." if failed else ""),
+              "error" if failed and not ok else "info")
+        return RedirectResponse("/communities", status_code=303)
+
+    PUSH_STATUSES = {"done": "Recorded", "skipped": "Skipped", "failed": "Failed", "pending": "Waiting"}
+
+    @app.get("/pushes", response_class=HTMLResponse)
+    def pushes(request: Request, status: str = ""):
+        """What your own servers passed on: recent deliveries and what became
+        of them, and which communities are subscribed."""
+        if federation is None:
+            raise HTTPException(404)
+        status = status if status in PUSH_STATUSES else ""
+        day_ago = fmt_ts(datetime.now(timezone.utc) - timedelta(days=1))
+        with db.connect() as conn:
+            today = {r[0]: r[1] for r in conn.execute(
+                "SELECT status, COUNT(*) FROM ap_inbox WHERE received_at>=? GROUP BY status", (day_ago,))}
+            waiting = conn.execute("SELECT COUNT(*) FROM ap_inbox WHERE status='pending'").fetchone()[0]
+            failed = conn.execute("SELECT COUNT(*) FROM ap_inbox WHERE status='failed'").fetchone()[0]
+            last = conn.execute("SELECT MAX(received_at) FROM ap_inbox").fetchone()[0]
+            rows = conn.execute("SELECT * FROM ap_inbox" + (" WHERE status=?" if status else "")
+                                + " ORDER BY id DESC LIMIT 100", [status] if status else []).fetchall()
+            items = [{**dict(r), **summarize(r["body"])} for r in rows]
+            aps = sorted({i["object"] for i in items if i["object"]} | {i["community"] for i in items if i["community"]})
+            marks = ",".join("?" * len(aps))
+            objects = {r["canonical_ap_id"]: r for r in conn.execute(
+                f"SELECT id, canonical_ap_id, thread_id, object_type FROM objects WHERE canonical_ap_id IN ({marks})",
+                aps)} if aps else {}
+            communities = {r["canonical_ap_id"]: r for r in conn.execute(
+                f"SELECT id, name, canonical_ap_id FROM communities WHERE canonical_ap_id IN ({marks})", aps)} if aps else {}
+            follows = feed_mod.followed_communities(conn)
+        for i in items:
+            i["obj"] = objects.get(i["object"])
+            i["comm"] = communities.get(i["community"])
+        return render(request, "pushes.html", items=items, today=today, waiting=waiting, failed=failed, last=last,
+                      status=status, statuses=PUSH_STATUSES, follows=follows, push_handle=push_handle(),
+                      relays=settings.relay_inboxes)
+
+    @app.post("/pushes/retry")
+    def pushes_retry(request: Request):
+        """Try failed deliveries again (e.g. after your server was down)."""
+        if federation is None:
+            raise HTTPException(404)
+        with db.transaction() as conn:
+            n = conn.execute("UPDATE ap_inbox SET status='pending', attempts=0, processed_at=NULL "
+                             "WHERE status='failed'").rowcount
+        federation.wake.set()
+        flash(request, f"Trying {n} deliver{'y' if n == 1 else 'ies'} again.")
+        return RedirectResponse("/pushes", status_code=303)
 
     @app.post("/c/{cid}/check-now")
     def check_now(request: Request, cid: int):
@@ -786,6 +882,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             except RemoteError as exc:
                 live_error = str(exc)
         return render(request, "community.html", c=c, follow=follow_row, tab=tab, feed=fp, counts=counts,
+                      push_handle=push_handle(), pushed_poll=PUSHED_POLL_MINUTES,
                       events=cevents, live=live, live_error=live_error, sort=sort, window=t, unread=unread,
                       page=page, live_sort=live_sort, follows=follows, base_url=f"/c/{cid}",
                       community=c, powers=powers, mod_data=mod_data, view=shown, view_chosen=c["view_mode"],

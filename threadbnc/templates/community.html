@@ -35,6 +35,25 @@
             <p class="small muted">A number of days, or "forever". Posts you keep never expire.
               Checked via {{ follow.source_domain }}, last {{ when(follow.last_polled_at) if follow.last_polled_at else 'not yet' }}.
               {% if follow.last_error %}<span class="bad-text">{{ follow.last_error }}</span>{% endif %}</p>
+            {% if push_handle and not is_rss(c.canonical_ap_id) and not is_reddit(c.canonical_ap_id) %}
+            <div class="push-status small" id="push">
+              {% if follow.push_state == 'subscribed' %}
+                <p><span class="pill good">{{ icon('refresh') }} Pushed</span> Through {{ push_handle }}: posts, comments, edits
+                  and removals arrive as they happen{% if follow.last_push_at %}, last {{ when(follow.last_push_at) }}{% endif %}.
+                  Also checked every {{ [follow.poll_interval_minutes, pushed_poll] | max }} minutes, to catch anything missed.
+                  <a href="/pushes">Recent pushes</a></p>
+                <form method="post" action="/c/{{ c.id }}/push"><input type="hidden" name="on" value="0"><button class="small secondary">Stop pushes</button></form>
+              {% elif follow.push_state == 'pending' %}
+                <p><span class="pill warn">Waiting</span> {{ push_handle }} asked to subscribe; the community hasn't accepted yet.
+                  It's checked as usual until then.</p>
+                <form method="post" action="/c/{{ c.id }}/push"><input type="hidden" name="on" value="0"><button class="small secondary">Cancel</button></form>
+              {% else %}
+                <p class="muted">Get changes as they happen: {{ push_handle }} subscribes, and your server passes on
+                  what the community sends it.{% if follow.push_error %} <span class="bad-text">Last try: {{ follow.push_error }}</span>{% endif %}</p>
+                <form method="post" action="/c/{{ c.id }}/push"><input type="hidden" name="on" value="1"><button class="small">Get pushes</button></form>
+              {% endif %}
+            </div>
+            {% endif %}
             <form method="post" action="/c/{{ c.id }}/unfollow"><button class="small secondary">Unfollow</button></form>
           </div>
         </details>

@@ -282,8 +282,10 @@ def _upsert_object(conn: Conn, *, ap_id: str, object_type: str, thread_id: int,
                    community_id: int, created_at: str | None, updated_at: str | None,
                    score: int | None, reply_count: int | None, now: str, initial: bool,
                    result: ApplyResult, upvotes: int | None = None,
-                   downvotes: int | None = None) -> tuple[int, Any | None]:
+                   downvotes: int | None = None, keep_counts: bool = False) -> tuple[int, Any | None]:
     obj = conn.execute("SELECT * FROM objects WHERE canonical_ap_id=?", (ap_id,)).fetchone()
+    if obj is not None and keep_counts:  # another server's view of the counts; keep the source's
+        score, reply_count, upvotes, downvotes = obj["score"], obj["reply_count"], obj["upvotes"], obj["downvotes"]
     if obj is None:
         cur = conn.execute(
             "INSERT INTO objects(canonical_ap_id, object_type, parent_id, root_post_id, thread_id, author_id, "
@@ -318,14 +320,17 @@ def set_local_id(conn: Conn, object_id: int, domain: str, local_id: str) -> None
 
 
 def apply_post(conn: Conn, thread_id: int, post: NPost, source_domain: str, now: str,
-               initial: bool, result: ApplyResult) -> int:
+               initial: bool, result: ApplyResult, keep_counts: bool = False) -> int:
+    """`keep_counts`: the post was read from a server other than the thread's
+    source (a push, see federation.py), whose votes and comment counts are its
+    own partial view; keep the stored ones."""
     cid = upsert_community(conn, post.community, now)
     aid = upsert_actor(conn, post.author, now)
     oid, obj = _upsert_object(
         conn, ap_id=post.ap_id, object_type="post", thread_id=thread_id, parent_id=None,
         root_post_id=None, author_id=aid, community_id=cid, created_at=post.created_at,
         updated_at=post.updated_at, score=post.score, reply_count=post.comment_count, now=now,
-        initial=initial, result=result, upvotes=post.upvotes, downvotes=post.downvotes,
+        initial=initial, result=result, upvotes=post.upvotes, downvotes=post.downvotes, keep_counts=keep_counts,
     )
     conn.execute("UPDATE objects SET root_post_id=? WHERE id=?", (oid, oid))
     thumb = post.thumbnail_url if (post.thumbnail_url or "").startswith(("http://", "https://")) else None
@@ -391,14 +396,14 @@ def apply_comments(conn: Conn, thread_id: int, root_id: int, community_id: int,
 
 def apply_comment(conn: Conn, thread_id: int, root_id: int, community_id: int, c: NComment,
                   parent_id: int | None, source_domain: str, now: str, initial: bool,
-                  result: ApplyResult) -> int:
+                  result: ApplyResult, keep_counts: bool = False) -> int:
     """Record one observed comment whose parent object is already known."""
     aid = upsert_actor(conn, c.author, now)
     oid, obj = _upsert_object(
         conn, ap_id=c.ap_id, object_type="comment", thread_id=thread_id, parent_id=parent_id,
         root_post_id=root_id, author_id=aid, community_id=community_id, created_at=c.created_at,
         updated_at=c.updated_at, score=c.score, reply_count=c.reply_count, now=now,
-        initial=initial, result=result, upvotes=c.upvotes, downvotes=c.downvotes,
+        initial=initial, result=result, upvotes=c.upvotes, downvotes=c.downvotes, keep_counts=keep_counts,
     )
     _set_local_id(conn, oid, source_domain, c.local_id)
     created, withheld = record_revision(

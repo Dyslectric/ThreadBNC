@@ -24,8 +24,11 @@ class HostThrottle:
         self.min_interval = min_interval
         self._last: dict[str, float] = {}
         self._lock = threading.Lock()
+        self.exempt: set[str] = set()  # your own servers (federation.py): no need to be polite
 
     def wait(self, host: str) -> None:
+        if host in self.exempt:
+            return
         with self._lock:
             now = time.monotonic()
             slot = max(now, self._last.get(host, float("-inf")) + self.min_interval)

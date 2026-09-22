@@ -16,7 +16,7 @@ A private, feed-first reader for Lemmy, PieFed, Reddit and RSS/Atom feeds that k
 Stored observations aren't overwritten: edits add a new version, and removals and deletions become history entries. The archive can only keep what the bouncer actually saw, though, and it deletes some things on purpose.
 
 **What it can miss**
-- **Anything between checks.** The bouncer polls; it isn't notified of changes.
+- **Anything between checks.** The bouncer polls; it isn't notified of changes, except for communities pushed through your own Lemmy server (see [Pushes from your own server](#pushes-from-your-own-server)), where these gaps close.
   - A comment posted and deleted between two checks is never seen.
   - Several edits between checks show up as one change.
   - Threads are checked less often as they age: at the community's check interval for the first day (15 minutes by default, 30 for threads kept by link), then hourly, then every 6 hours after day 3.
@@ -396,6 +396,7 @@ API (each call with `Authorization: Bearer $THREADBNC_API_TOKEN`):
 | `THREADBNC_MEDIA_MAX_MB` | `25` | Largest single image or video file that will be archived; bigger files are skipped and linked to the original (the Storage page and each community can override this) |
 | `THREADBNC_MEDIA_TRANSCODE` | `0` | Default for communities that haven't chosen, unless set on the Storage page: `1` shrinks files over the size limit with ffmpeg instead of skipping them |
 | `THREADBNC_MEDIA_TRANSCODE_SOURCE_MAX_MB` | `1000` | Largest original downloaded to transcode; bigger files are skipped |
+| `THREADBNC_RELAY_INBOXES` | *(none)* | Your own Lemmy servers whose inboxes are routed through ThreadBNC, as `domain=Lemmy's address`, comma-separated (see [Pushes from your own server](#pushes-from-your-own-server)) |
 | `THREADBNC_ARTICLES` | `1` | Read the web pages posts link to and keep the article, for **Read article** (see [Linked articles](#linked-articles)); `0` turns it off |
 | `THREADBNC_PROXY_AUTH_HEADER` | unset | Header in which a signing-in reverse proxy passes the user's name, e.g. `X-authentik-username` |
 | `THREADBNC_PROXY_SECRET` | unset | Required with the above (16+ characters). The proxy must send it as `X-ThreadBNC-Proxy-Secret` |
@@ -464,6 +465,37 @@ New posts are captured automatically and tracked in full: revisions, events and 
 
 The community page has a **Live feed** tab, fetched from the remote server on demand, with a one-click **Keep** button. Posts in the live feed are not stored unless kept or auto-captured.
 
+## Pushes from your own server
+
+If you run your own Lemmy server, ThreadBNC can get a followed community's changes as they happen instead of polling for them. Your account on that server subscribes to the community, the community's home server pushes everything that happens in it to your server over ActivityPub, and your server's inbox is routed through ThreadBNC on the way.
+
+- **What arrives at once:** new posts and comments, edits, deletions and restorations, removals, locks and pins. A new post in a followed community is captured the moment it's posted.
+- **More complete:** each edit is kept, even when the next one follows seconds later, and a comment deleted soon after it was posted keeps its text, because the text comes from the delivery itself.
+- **How it works:** Traefik sends POSTs to your server's inboxes (`/inbox`, `/site_inbox`, `/u/…/inbox`, `/c/…/inbox`) to ThreadBNC. ThreadBNC passes each one unchanged to Lemmy and returns Lemmy's answer to the sender. Lemmy checks the signature, and only what it accepts is kept for the push worker. The worker re-reads the post or comment from your server, where it has just arrived, and records it like a polled check. Your server's copy is only used for content; vote counts still come from the community's home server.
+- **Subscribing:** once an account on a relayed server is added, following a Lemmy or PieFed community subscribes it there too, and unfollowing unsubscribes it. The **Following** menu on a community page shows whether it's **Pushed**, and has **Get pushes** and **Stop pushes**. For communities you followed earlier, use **Subscribe to all** on the Communities page. A private community's subscription waits until a moderator accepts it, and is checked again every half hour.
+- **Still polled, rarely:** pushed communities are checked every 6 hours (or their own interval, if longer) to catch anything a delivery missed. Subreddits, feeds, and communities your server isn't subscribed to are polled as before.
+- **If ThreadBNC is down,** deliveries to your server fail, and senders retry them later (Lemmy keeps retrying for a while), so the pushes arrive when ThreadBNC is back. Your server's incoming federation also pauses meanwhile.
+- **Only your own servers:** pushes go to the server of the subscribing account. For an account on someone else's server, they arrive there, and ThreadBNC can't see them.
+
+To set it up, list the server in `THREADBNC_RELAY_INBOXES` as `domain=Lemmy's address` (comma-separated for several), add a Traefik router that sends that domain's inbox POSTs to ThreadBNC with a higher priority than Lemmy's own router, and add your account on that server on the Accounts page:
+
+```yaml
+  app:
+    environment:
+      THREADBNC_RELAY_INBOXES: dyslectric.dev=http://lemmy-dyslectric:8536
+    labels:
+      traefik.http.routers.dyslectric-inbox.rule: >-
+        Host(`dyslectric.dev`) && Method(`POST`)
+        && (PathRegexp(`^/(site_)?inbox$$`) || PathRegexp(`^/(u|c)/[^/]+/inbox$$`))
+      traefik.http.routers.dyslectric-inbox.priority: "120"
+      traefik.http.routers.dyslectric-inbox.entrypoints: websecure
+      traefik.http.routers.dyslectric-inbox.tls: "true"
+      traefik.http.routers.dyslectric-inbox.tls.certresolver: letsencrypt
+      traefik.http.routers.dyslectric-inbox.service: threadbnc
+```
+
+ThreadBNC must be able to reach Lemmy's address (here, over a shared Docker network), and it calls your server's API without the usual per-server spacing.
+
 ## Trash (unkeeping)
 
 - **Unkeep → trash** works on kept threads, and **Discard → trash** on auto-captured ones.
@@ -528,5 +560,5 @@ When a post links to a web page, the bouncer reads the page and keeps the articl
 
 - Lemmy 1.0's `/api/v4` is not targeted yet. The adapter speaks v3, which 0.19.x serves.
 - PieFed moderation attribution is always `unknown` for now, because its modlog API varies between versions.
-- The bouncer polls; it does not listen for ActivityPub deliveries (Phase 5).
+- The bouncer polls, except for communities pushed through your own Lemmy server. ThreadBNC has no ActivityPub identity of its own.
 - Post pin/feature state, actor profile history, search, tags and notes are not implemented.

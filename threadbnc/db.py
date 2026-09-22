@@ -72,7 +72,14 @@ CREATE TABLE IF NOT EXISTS community_follows (
     last_polled_at TEXT,
     next_poll_at TEXT,
     last_error TEXT,
-    consecutive_failures INTEGER NOT NULL DEFAULT 0
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    -- Pushed through your own server (federation.py): its domain, and whether
+    -- your account there is subscribed ('subscribed' | 'pending'); NULL = polled only.
+    push_domain TEXT,
+    push_state TEXT,
+    push_error TEXT,
+    push_changed_at TEXT,
+    last_push_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS archived_threads (
@@ -370,6 +377,23 @@ CREATE TABLE IF NOT EXISTS app_settings (
     value TEXT
 );
 
+-- Activities your own servers accepted, relayed through ThreadBNC on their way
+-- in (federation.py), waiting for the push worker. Kept a few days once handled.
+CREATE TABLE IF NOT EXISTS ap_inbox (
+    id INTEGER PRIMARY KEY,
+    domain TEXT NOT NULL,          -- your server it was delivered to
+    path TEXT NOT NULL,
+    activity_id TEXT UNIQUE,       -- a retried delivery is kept once
+    activity_type TEXT,
+    body TEXT NOT NULL,
+    received_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',  -- pending | done | skipped | failed
+    outcome TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    processed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS ap_inbox_pending ON ap_inbox(status, id);
+
 CREATE TABLE IF NOT EXISTS jobs (
     id INTEGER PRIMARY KEY,
     kind TEXT NOT NULL,
@@ -438,13 +462,18 @@ COLUMN_MIGRATIONS = [
     ("media", "original_bytes", "INTEGER"),
     ("media", "original_type", "TEXT"),
     ("media_refs", "from_article", "INTEGER NOT NULL DEFAULT 0"),
+    ("community_follows", "push_domain", "TEXT"),
+    ("community_follows", "push_state", "TEXT"),
+    ("community_follows", "push_error", "TEXT"),
+    ("community_follows", "push_changed_at", "TEXT"),
+    ("community_follows", "last_push_at", "TEXT"),
 ]
 
 # Tables with an integer `id` key: inserts into these get `RETURNING id` on
 # Postgres so callers can keep using `cursor.lastrowid`.
 _ID_TABLES = {"instances", "actors", "communities", "archived_threads", "objects", "revisions",
               "state_events", "media", "jobs", "accounts", "mod_actions", "join_requests",
-              "inbox_items", "articles"}
+              "inbox_items", "articles", "ap_inbox"}
 _INSERT_RE = re.compile(r"^\s*INSERT\s+INTO\s+(\w+)", re.IGNORECASE)
 _PG_WRITE_LOCK = 727_001  # advisory lock id: one writer at a time, like SQLite's BEGIN IMMEDIATE
 

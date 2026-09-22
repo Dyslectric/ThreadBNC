@@ -181,7 +181,7 @@ def thumbnails(conn: Conn,
 def followed_communities(conn: Conn) -> list[dict[str, Any]]:
     rows = conn.execute(
         """SELECT c.id, c.name, c.title, c.canonical_ap_id, f.poll_interval_minutes, f.retention_days,
-                  f.last_polled_at, f.last_error, f.source_domain,
+                  f.last_polled_at, f.last_error, f.source_domain, f.push_state, f.push_error, f.last_push_at,
                   (SELECT COUNT(*) FROM archived_threads t WHERE t.community_id=c.id AND t.trashed_at IS NULL
                        AND t.last_viewed_at IS NULL) AS unread,
                   (SELECT COUNT(*) FROM archived_threads t WHERE t.community_id=c.id AND t.trashed_at IS NULL)

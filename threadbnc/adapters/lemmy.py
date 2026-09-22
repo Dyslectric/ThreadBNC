@@ -24,6 +24,7 @@ from .base import (
     RemoteNotFound,
     ThreadiverseAdapter,
     ThreadRef,
+    follow_state,
     host_of,
     parse_thread_url,
 )
@@ -195,6 +196,13 @@ class LemmyAdapter(ThreadiverseAdapter):
             ]
         return post
 
+    def fetch_comment(self, local_id: str) -> tuple[NComment, str]:
+        """One comment, and the local id of the post it's on."""
+        cv = (self._get("/comment", id=local_id) or {}).get("comment_view")
+        if not cv:
+            raise RemoteNotFound(f"comment {local_id} missing from response")
+        return self._comment(cv), str(cv["comment"]["post_id"])
+
     def _comment_page(self, post_local_id: str, page: int) -> list[dict[str, Any]]:
         data = self._get(
             "/comment/list", post_id=post_local_id, type_="All", sort="Old",
@@ -341,6 +349,12 @@ class LemmyAdapter(ThreadiverseAdapter):
 
     def logout(self, token: str) -> None:
         self._call("POST", "/user/logout", token, {})
+
+    def follow_community(self, token: str, community_id: str, follow: bool = True) -> str:
+        """Subscribe the account to a community (or unsubscribe it). Returns
+        subscribed, pending (waiting for the community to accept) or not_subscribed."""
+        data = self._call("POST", "/community/follow", token, {"community_id": int(community_id), "follow": follow})
+        return follow_state(((data or {}).get("community_view") or {}).get("subscribed"))
 
     def resolve_as(self, token: str, ap_id: str) -> dict[str, str]:
         """Local ids on this server for a post/comment/community ActivityPub id,

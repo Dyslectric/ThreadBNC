@@ -736,3 +736,12 @@ img.media.reader-lead { width: 100%; max-height: none; margin: 18px 0 0; }
   .reader-head h1 { font-size: 1.5rem; }
   .reader-body { font-size: 1.05rem; }
 }
+
+/* ---- pushes (federation.py) ---- */
+.push-status { border-top: 1px solid var(--line); margin-top: 10px; padding-top: 10px; }
+.push-status p { margin: 0 0 8px; }
+.push-status .pill .i { width: 0.9em; height: 0.9em; }
+.push-all { justify-content: space-between; gap: 8px 12px; margin: 0 0 10px; }
+.push-head { justify-content: space-between; align-items: center; }
+.push-head h2 { margin: 0; }
+ul.pushes code { overflow-wrap: anywhere; }

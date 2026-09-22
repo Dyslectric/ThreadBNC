@@ -70,6 +70,9 @@ class FakeServer:
         self.follows: list[list[str]] = []
         self.join_request_lists = 0
         self.members_only = False  # posts readable only with a session (a private community)
+        # Communities your account subscribed to (user, community local id), and what following answers.
+        self.subscriptions: set[tuple[str, str]] = set()
+        self.subscribe_answer = "subscribed"
         # Single sign-on (Lemmy 1.0): providers, (provider id, provider identity) -> username,
         # and codes the fake identity provider handed out: code -> (identity, PKCE challenge).
         self.oauth_providers: list[dict] = []
@@ -433,6 +436,21 @@ class FakeAdapter(ThreadiverseAdapter):
         self.s.votes[(user, comment_id)] = score
         pid, cs = self._find_comment(comment_id)
         return copy.deepcopy(cs[comment_id]) if cs else None
+
+    def fetch_comment(self, local_id):
+        self._check()
+        pid, cs = self._find_comment(local_id)
+        if cs is None:
+            raise RemoteNotFound(local_id)
+        return copy.deepcopy(cs[local_id]), pid
+
+    def follow_community(self, token, community_id, follow=True):
+        user = self._auth(token)
+        if follow:
+            self.s.subscriptions.add((user, community_id))
+            return self.s.subscribe_answer
+        self.s.subscriptions.discard((user, community_id))
+        return "not_subscribed"
 
     def vote_post(self, token, post_id, score):
         user = self._auth(token)

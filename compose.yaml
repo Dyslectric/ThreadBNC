@@ -40,6 +40,9 @@ services:
       # Read the web pages posts link to and keep the article (Read article).
       THREADBNC_ARTICLES: ${THREADBNC_ARTICLES:-1}
       THREADBNC_TRASH_DAYS: ${THREADBNC_TRASH_DAYS:-30}
+      # Your own Lemmy servers whose inboxes are routed through ThreadBNC, for pushes
+      # (see README, "Pushes from your own server"): domain=Lemmy's address, comma-separated.
+      THREADBNC_RELAY_INBOXES: ${THREADBNC_RELAY_INBOXES:-}
       # Signed in by a reverse proxy (e.g. Authentik forward auth); see README.
       THREADBNC_PROXY_AUTH_HEADER: ${THREADBNC_PROXY_AUTH_HEADER:-}
       THREADBNC_PROXY_SECRET: ${THREADBNC_PROXY_SECRET:-}

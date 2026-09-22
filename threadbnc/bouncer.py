@@ -55,6 +55,9 @@ REDDIT_RECHECK_TAPER = [(timedelta(days=1), 0), (timedelta(days=3), 120), (timed
 # re-fetching the comment tree -- but still do a full fetch at least this often,
 # since edits and some deletions don't change those counters.
 FULL_FETCH_EVERY = timedelta(hours=6)
+# Communities whose changes are pushed through your own server (federation.py)
+# are still checked this often, to catch anything a delivery missed.
+PUSHED_POLL_MINUTES = 360
 
 
 def _plus(ts: str, **delta: float) -> str:
@@ -78,6 +81,9 @@ class Bouncer:
         self._adapters: dict[str, tuple[ThreadiverseAdapter, str]] = {}  # domain -> (adapter, chosen at)
         # Extra work for each pass that needs accounts (e.g. private community join requests).
         self.hooks: list[Callable[[], Any]] = []
+        # Called with the community id after following / unfollowing (federation.py subscribes).
+        self.follow_hooks: list[Callable[[int], Any]] = []
+        self.unfollow_hooks: list[Callable[[int], Any]] = []
         # (domain, community id) -> a member's session token, for communities only
         # members can read (see private.py). None: read anonymously, as usual.
         self.read_token: Callable[[str, int], str | None] | None = None
@@ -347,12 +353,19 @@ class Bouncer:
     def _interval(self, conn: Any, community_id: int | None) -> int:
         if community_id:
             f = conn.execute(
-                "SELECT poll_interval_minutes FROM community_follows WHERE community_id=? AND active=1",
+                "SELECT poll_interval_minutes, push_state FROM community_follows WHERE community_id=? AND active=1",
                 (community_id,),
             ).fetchone()
             if f:
-                return f["poll_interval_minutes"]
+                return self._follow_every(f)
         return self.settings.default_sync_minutes
+
+    @staticmethod
+    def _follow_every(f: Any) -> int:
+        """Minutes between checks of a followed community: as set, or rarely once
+        its changes are pushed (federation.py), just to reconcile."""
+        every = f["poll_interval_minutes"]
+        return max(every, PUSHED_POLL_MINUTES) if f["push_state"] == "subscribed" else every
 
     def _slow_source(self, conn: Any, community_id: int | None) -> int | None:
         """The slowest re-check interval for threads from Reddit or a feed (None
@@ -601,7 +614,16 @@ class Bouncer:
                             metadata={"poll_interval_minutes": interval, "retention_days": days,
                                       "source_domain": ref.domain})
         self.wake.set()
+        self._run_hooks(self.follow_hooks, cid)
         return cid
+
+    @staticmethod
+    def _run_hooks(hooks: list[Callable[[int], Any]], community_id: int) -> None:
+        for hook in hooks:
+            try:
+                hook(community_id)
+            except Exception:  # following worked; a hook's trouble is its own
+                log.error("follow hook %s crashed: %s", getattr(hook, "__qualname__", hook), traceback.format_exc())
 
     def poll_interval(self, domain: str, asked: int | None) -> int:
         """How often to check a community: what was asked for, else the default
@@ -635,6 +657,7 @@ class Bouncer:
             conn.execute("UPDATE community_follows SET active=0, unfollowed_at=? WHERE community_id=?",
                          (now, community_id))
             store.add_event(conn, "unfollowed", now, community_id=community_id)
+        self._run_hooks(self.unfollow_hooks, community_id)
 
     @staticmethod
     def _reapply_expiry(conn: Any, community_id: int) -> None:
@@ -717,7 +740,7 @@ class Bouncer:
             conn.execute(
                 "UPDATE community_follows SET last_polled_at=?, last_error=NULL, consecutive_failures=0, "
                 "next_poll_at=? WHERE community_id=?",
-                (now, _plus(now, minutes=f["poll_interval_minutes"]), community_id),
+                (now, _plus(now, minutes=self._follow_every(f)), community_id),
             )
         return captured
 

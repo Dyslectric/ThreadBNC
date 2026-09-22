@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -13,6 +13,16 @@ RSS_MIN_POLL_MINUTES = 5  # likewise for a feed
 def _env_int(name: str, default: int) -> int:
     raw = os.environ.get(name)
     return int(raw) if raw else default
+
+
+def _relays(raw: str) -> dict[str, str]:
+    """"dyslectric.dev=http://lemmy-dyslectric:8536, ..." -> {domain: Lemmy's address}."""
+    out = {}
+    for part in raw.split(","):
+        domain, sep, upstream = part.partition("=")
+        if sep and domain.strip() and upstream.strip():
+            out[domain.strip().lower()] = upstream.strip().rstrip("/")
+    return out
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -60,6 +70,9 @@ class Settings:
     reddit_poll_minutes: int = 60
     reddit_min_request_interval: float = 2.0
     rss_poll_minutes: int = 60  # feeds rarely change faster, and conditional requests keep checks cheap
+    # Your own Lemmy servers whose inboxes are routed through ThreadBNC, so what
+    # they receive is pushed to it too (federation.py): domain -> Lemmy's own address.
+    relay_inboxes: dict[str, str] = field(default_factory=dict)
     inbox_poll_minutes: int = 5  # replies, mentions and messages; Reddit's at least REDDIT_MIN_POLL_MINUTES
 
 
@@ -114,4 +127,5 @@ def load_settings() -> Settings:
         reddit_min_request_interval=max(1.0, float(os.environ.get("THREADBNC_REDDIT_MIN_REQUEST_INTERVAL", "2.0"))),
         rss_poll_minutes=max(RSS_MIN_POLL_MINUTES, _env_int("THREADBNC_RSS_POLL_MINUTES", 60)),
         inbox_poll_minutes=max(1, _env_int("THREADBNC_INBOX_POLL_MINUTES", 5)),
+        relay_inboxes=_relays(os.environ.get("THREADBNC_RELAY_INBOXES", "")),
     )

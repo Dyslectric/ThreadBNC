@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% from "_macros.html" import when, icon %}
+{% block title %}Pushes{% endblock %}
+{% block content %}
+<h1>Pushes</h1>
+<p class="muted">What {{ relays | join(', ') }} passed on as it arrived: deliveries from the communities
+  {{ push_handle or 'your account there' }} subscribes to, and what became of each.
+  <a href="/communities">Communities →</a></p>
+
+<div class="stat-row">
+  <section class="card stat">
+    <div class="stat-label">Received today</div>
+    <div class="stat-value">{{ '{:,}'.format(today.values() | sum) }}</div>
+    <div class="small muted">last {{ when(last) if last else 'never' }}</div>
+  </section>
+  <section class="card stat">
+    <div class="stat-label">Recorded</div>
+    <div class="stat-value">{{ '{:,}'.format(today.get('done', 0)) }}</div>
+    <div class="small muted">new posts, comments, edits and removals</div>
+  </section>
+  <section class="card stat">
+    <div class="stat-label">Skipped</div>
+    <div class="stat-value">{{ '{:,}'.format(today.get('skipped', 0)) }}</div>
+    <div class="small muted">votes, and things not archived</div>
+  </section>
+  <section class="card stat">
+    <div class="stat-label">Failed</div>
+    <div class="stat-value {{ 'bad-text' if failed }}">{{ '{:,}'.format(failed) }}</div>
+    <div class="small muted">{% if waiting %}{{ waiting }} waiting{% else %}none waiting{% endif %}</div>
+  </section>
+</div>
+
+{% set pushed = follows | selectattr('push_state') | list %}
+{% set unpushed = follows | rejectattr('push_state') | selectattr('canonical_ap_id', 'is_federated') | list %}
+<section class="card">
+  <h2>Subscriptions</h2>
+  {% if not pushed %}<p class="muted">No community is pushed yet.</p>{% endif %}
+  <ul class="plain">
+  {% for f in pushed %}
+    <li class="row small-gap">
+      <a href="/c/{{ f.id }}"><strong>{{ chandle(f.name, f.canonical_ap_id) }}</strong></a>
+      {% if f.push_state == 'subscribed' %}<span class="pill good">pushed</span>
+      {% else %}<span class="pill warn">waiting to be accepted</span>{% endif %}
+      <span class="small muted">last push {{ when(f.last_push_at) if f.last_push_at else 'not yet' }}</span>
+    </li>
+  {% endfor %}
+  </ul>
+  {% if unpushed %}
+  <form method="post" action="/communities/push-all" class="row push-all small">
+    <span class="muted">{{ unpushed | length }} followed communit{{ 'y is' if unpushed | length == 1 else 'ies are' }} only
+      checked on a schedule{% set errs = unpushed | selectattr('push_error') | list %}{% if errs %}
+      ({{ errs | length }} couldn't be subscribed: {{ errs[0].push_error }}){% endif %}.</span>
+    <button class="small">Subscribe to all</button>
+  </form>
+  {% endif %}
+</section>
+
+<section class="card">
+  <div class="row push-head">
+    <h2>Recent deliveries</h2>
+    {% if failed %}<form method="post" action="/pushes/retry"><button class="small secondary">{{ icon('refresh') }} Try failed again</button></form>{% endif %}
+  </div>
+  <nav class="tabs small" aria-label="Show">
+    <a href="/pushes" class="{{ 'on' if not status }}">All</a>
+    {% for key, label in statuses.items() %}<a href="/pushes?status={{ key }}" class="{{ 'on' if status == key }}">{{ label }}</a>{% endfor %}
+  </nav>
+  {% if not items %}<p class="muted">Nothing {{ statuses.get(status, 'received') | lower }} yet. Deliveries show up here as soon as
+    {{ relays | join(', ') }} accepts them.</p>{% endif %}
+  <ul class="plain pushes">
+  {% for i in items %}
+    <li>
+      <div class="row small-gap">
+        <span class="pill {{ {'done': 'good', 'failed': 'bad', 'pending': 'warn'}.get(i.status, 'muted') }}">{{ statuses[i.status] }}</span>
+        <strong title="{{ i.types }}">{{ i.label }}</strong>
+        {% if i.obj and i.obj.thread_id %}<a href="/t/{{ i.obj.thread_id }}{{ ('#o' ~ i.obj.id) if i.obj.object_type == 'comment' }}">open</a>
+        {% elif i.object and i.object != i.community %}<code class="small">{{ i.object }}</code>{% endif %}
+        {% if i.comm %}<span class="small muted">in <a href="/c/{{ i.comm.id }}">{{ chandle(i.comm.name, i.comm.canonical_ap_id) }}</a></span>
+        {% elif i.community %}<span class="small muted">from {{ i.community | host }}</span>{% endif %}
+        <span class="grow"></span>
+        <span class="small muted">{{ when(i.received_at) }}</span>
+      </div>
+      {% if i.outcome %}<div class="small {{ 'bad-text' if i.status == 'failed' else 'muted' }}">{{ i.outcome }}{% if i.attempts > 1 %} · tried {{ i.attempts }} times{% endif %}</div>{% endif %}
+    </li>
+  {% endfor %}
+  </ul>
+  <p class="small muted">Only deliveries your server accepted are kept, for three days after they're handled. Votes are
+    skipped: counts come from each community's own server.</p>
+</section>
+{% endblock %}

@@ -31,6 +31,7 @@ from .base import (
     RemoteError,
     RemoteNotFound,
     ThreadRef,
+    follow_state,
     host_of,
     parse_thread_url,
 )
@@ -202,6 +203,12 @@ class Lemmy1Adapter(LemmyAdapter):
             post.community.moderator_ap_ids = [m.ap_id for m in self._moderators(data)]
         return post
 
+    def fetch_comment(self, local_id: str) -> tuple[NComment, str]:
+        cv = (self._call("GET", "/comment", None, id=local_id) or {}).get("comment_view")
+        if not cv:
+            raise RemoteNotFound(f"comment {local_id} missing from response")
+        return self._comment(cv), str(cv["comment"]["post_id"])
+
     def fetch_comments(self, post_local_id: str) -> list[NComment]:
         out: dict[str, NComment] = {}
         for batch in self._pages("/comment/list", None, MAX_COMMENT_PAGES, post_id=post_local_id,
@@ -267,6 +274,11 @@ class Lemmy1Adapter(LemmyAdapter):
         if data.get("type_") != "person" or not data.get("person"):
             raise RemoteNotFound(f"{self.domain} couldn't find {ref}")
         return str(data["person"]["id"]), self._actor(data["person"])
+
+    def follow_community(self, token: str, community_id: str, follow: bool = True) -> str:
+        data = self._call("POST", "/community/follow", token, {"community_id": int(community_id), "follow": follow})
+        view = (data or {}).get("community_view") or {}
+        return follow_state((view.get("community_actions") or {}).get("follow_state") or view.get("subscribed"))
 
     def _resolve_as(self, token: str, ap_id: str) -> dict[str, str]:
         data = self._resolve(token, ap_id)
