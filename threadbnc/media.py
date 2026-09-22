@@ -94,13 +94,38 @@ def community_ids_sql() -> str:
     return "SELECT r.media_id FROM media_refs r JOIN objects o ON o.id=r.object_id WHERE o.community_id=?"
 
 
-def requeue(conn: Conn, community_id: int) -> int:
-    """Try again the community's media that was too large or left out by its
-    settings, after those settings (or the server's) changed."""
+def requeue(conn: Conn, community_id: int | None = None) -> int:
+    """Try again the media that was too large or left out by settings, after
+    those settings changed: one community's, or (None) everything's."""
+    scope, args = (f"id IN ({community_ids_sql()}) AND ", [community_id]) if community_id is not None else ("", [])
     return conn.execute(
         "UPDATE media SET status='pending', attempts=0, next_attempt_at=?, error=NULL "
-        f"WHERE id IN ({community_ids_sql()}) AND ((status='failed' AND error LIKE 'too large%') "
-        "OR (status='skipped' AND error LIKE ?))", (utcnow(), community_id, f"%{POLICY_SUFFIX}")).rowcount
+        f"WHERE {scope}((status='failed' AND error LIKE 'too large%') "
+        "OR (status='skipped' AND error LIKE ?))", [utcnow(), *args, f"%{POLICY_SUFFIX}"]).rowcount
+
+
+# Server-wide defaults chosen on the Storage page, in app_settings; each one
+# unset follows the THREADBNC_MEDIA_* environment settings.
+DEFAULT_KEYS = ("media_archive", "media_max_mb", "media_transcode")
+
+
+def save_defaults(conn: Conn, archive: str | None, max_mb: int | None, transcode_: bool | None) -> None:
+    """None for a setting goes back to the environment's."""
+    for key, value in zip(DEFAULT_KEYS, (archive, max_mb, None if transcode_ is None else int(transcode_))):
+        if value is None:
+            conn.execute("DELETE FROM app_settings WHERE key=?", (key,))
+        else:
+            conn.execute("INSERT INTO app_settings(key, value) VALUES (?, ?) "
+                         "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, str(value)))
+
+
+def load_defaults(conn: Conn) -> tuple[str | None, int | None, int | None]:
+    """(archive, max MB, transcode) as saved; None where unset."""
+    marks = ",".join("?" * len(DEFAULT_KEYS))
+    saved = {r[0]: r[1] for r in conn.execute(f"SELECT key, value FROM app_settings WHERE key IN ({marks})",
+                                              DEFAULT_KEYS).fetchall()}
+    mb, tc = saved.get("media_max_mb"), saved.get("media_transcode")
+    return saved.get("media_archive"), int(mb) if mb else None, int(tc) if tc is not None else None
 
 
 def community_stats(conn: Conn, community_id: int) -> dict[str, Any]:
@@ -228,12 +253,19 @@ class MediaFetcher:
         self.db = db
         self.throttle = throttle or HostThrottle(1.0)
         self.media_dir = media_dir
-        self.default_policy = MediaPolicy("all", max_bytes, transcode_default)
+        self.env_policy = MediaPolicy("all", max_bytes, transcode_default)
         # Files are downloaded up to this size when they might be transcoded down.
         self.source_max_bytes = transcode_source_max_bytes
         self.check_host = check_host
         self.client = client or httpx.Client(timeout=timeout, headers={"User-Agent": user_agent},
                                              follow_redirects=False)
+
+    @property
+    def default_policy(self) -> MediaPolicy:
+        """What communities that haven't chosen get: the environment's settings
+        with the ones saved on the Storage page applied."""
+        with self.db.connect() as conn:
+            return self.env_policy.override(*load_defaults(conn))
 
     def can_transcode(self) -> bool:
         return transcode.available()
@@ -328,7 +360,7 @@ class MediaFetcher:
     def fetch_one(self, row: Any) -> None:
         now = utcnow()
         with self.db.connect() as conn:
-            policy = policy_for(conn, row["id"], self.default_policy)
+            policy = policy_for(conn, row["id"], self.env_policy.override(*load_defaults(conn)))
         try:
             if policy.archive == "off":
                 raise MediaSkipped(f"archiving is off {POLICY_SUFFIX}")

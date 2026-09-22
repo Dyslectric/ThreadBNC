@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_macros.html" import icon %}
 {% block title %}Storage{% endblock %}
 {% macro meter(value, top, label) -%}
   <svg class="meter" viewBox="0 0 100 6" preserveAspectRatio="none" role="img" aria-label="{{ label }}">
@@ -122,8 +123,40 @@
     </tbody>
   </table>
   </div>
-  <p class="small muted">Largest first. Open a community to change what it archives, its size limit and transcoding.
+  <p class="small muted">Largest first. Open a community to change what it archives, its size limit and transcoding, or set the
+    <a href="#media-defaults">defaults</a> for all of them.
     {% if u.shared %}Files used in more than one community ({{ u.shared | size }}) count in each, so these rows add up
     to more than the total.{% endif %}</p>
+</section>
+
+{% set on = saved.transcode if saved.transcode is not none else env.transcode %}
+<section class="card" id="media-defaults">
+  <h2>Media defaults</h2>
+  <form method="post" action="/storage/media-defaults" class="stack">
+    <label>Archive&nbsp;
+      <select name="archive">
+        <option value="default" {{ 'selected' if not saved.archive }}>Server setting: {{ archive_modes[env.archive] | lower }}</option>
+        {% for value, label in archive_modes.items() %}
+        <option value="{{ value }}" {{ 'selected' if saved.archive == value }}>{{ label }}</option>
+        {% endfor %}
+      </select></label>
+    <label>Largest file kept
+      <input name="max_mb" class="num" inputmode="numeric" value="{{ saved.max_mb or '' }}"
+             placeholder="{{ env.max_bytes // 1000000 }}" title="Blank = the server setting, {{ env.max_bytes | size }}"> MB</label>
+    <label>Files bigger than that&nbsp;
+      <select name="transcode">
+        <option value="default" {{ 'selected' if saved.transcode is none }}>Server setting: {{ 'transcode to fit' if env.transcode else 'leave out' }}</option>
+        <option value="on" {{ 'selected' if saved.transcode == 1 }}>Transcode to fit</option>
+        <option value="off" {{ 'selected' if saved.transcode == 0 }}>Leave out</option>
+      </select></label>
+    <button class="small">Save</button>
+  </form>
+  <p class="small muted">For every community that hasn't chosen its own in its Media tab. The server settings come from
+    the <code>THREADBNC_MEDIA_*</code> environment variables. Changing these tries again files the old settings left
+    out; files already archived stay as they are.</p>
+  {% if on and not can_transcode %}
+  <div class="flash error" role="alert">{{ icon('alert') }} <span>ffmpeg isn't installed on the server, so oversized files
+    are left out for now.</span></div>
+  {% endif %}
 </section>
 {% endblock %}

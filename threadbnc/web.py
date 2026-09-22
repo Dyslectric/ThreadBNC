@@ -949,7 +949,31 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     def storage_page(request: Request):
         with db.connect() as conn:
             usage = storage_mod.overview(db, conn, bouncer.media_dir)
-        return render(request, "storage.html", u=usage, nouns=storage_mod.NOUNS)
+            archive, max_mb, transcode = media_mod.load_defaults(conn)
+        return render(request, "storage.html", u=usage, nouns=storage_mod.NOUNS, env=bouncer.media.env_policy,
+                      saved={"archive": archive, "max_mb": max_mb, "transcode": transcode},
+                      archive_modes=media_mod.ARCHIVE_MODES, can_transcode=bouncer.media.can_transcode())
+
+    @app.post("/storage/media-defaults")
+    def media_defaults(request: Request, archive: str = Form("default"), max_mb: str = Form(""),
+                       transcode: str = Form("default")):
+        """Media settings for communities that haven't chosen their own; blank/"default"
+        choices follow the THREADBNC_MEDIA_* environment settings."""
+        try:
+            limit = int(max_mb) if max_mb.strip() else None
+        except ValueError:
+            limit = 0
+        if limit is not None and not 1 <= limit <= 100_000:
+            flash(request, "The size limit is a number of megabytes, or blank for the server setting.", "error")
+            return RedirectResponse("/storage#media-defaults", status_code=303)
+        with db.transaction() as conn:
+            media_mod.save_defaults(conn, archive if archive in media_mod.ARCHIVE_MODES else None, limit,
+                                    {"on": True, "off": False}.get(transcode))
+            n = media_mod.requeue(conn)
+        bouncer.wake.set()
+        flash(request, "Media defaults saved." + (f" Trying again {n} file{'s' if n != 1 else ''} "
+                                                  "the old settings left out." if n else ""))
+        return RedirectResponse("/storage#media-defaults", status_code=303)
 
     @app.get("/trash", response_class=HTMLResponse)
     def trash(request: Request):

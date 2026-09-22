@@ -422,3 +422,33 @@ def test_media_tab_lists_what_was_not_archived(settings, server, tbouncer):
     assert "Not archived" in page and "too large" in page and "1 couldn&#39;t be archived" in page
     r = client.post(f"/c/{cid}/media-retry")
     assert "Trying again 1 file" in r.text
+
+
+def test_media_defaults_from_the_storage_page(settings, server, tbouncer):
+    cid = community_with(server, tbouncer, "![a](https://img.test/cat.gif) ![v](https://img.test/small.mp4)")
+    client = logged_in(settings, tbouncer)
+    env = tbouncer.media.env_policy
+    assert 'action="/storage/media-defaults"' in client.get("/storage").text
+
+    r = client.post("/storage/media-defaults", data={"archive": "images", "max_mb": "40", "transcode": "on"})
+    assert "Media defaults saved." in r.text
+    assert tbouncer.media.default_policy == media.MediaPolicy("images", 40_000_000, True)
+    assert "Default: transcode to fit" in client.get(f"/c/{cid}?tab=media").text
+    tbouncer.media.fetch_pending()
+    assert media_rows(tbouncer)["https://img.test/small.mp4"]["status"] == "skipped"
+
+    # A community's own choice still wins over the defaults.
+    client.post(f"/c/{cid}/media-settings", data={"archive": "all", "max_mb": "", "transcode": "off"})
+    with tbouncer.db.connect() as conn:
+        mid = conn.execute("SELECT id FROM media WHERE url='https://img.test/small.mp4'").fetchone()[0]
+        assert media.policy_for(conn, mid, tbouncer.media.default_policy) == media.MediaPolicy("all", 40_000_000, False)
+    client.post(f"/c/{cid}/media-settings", data={"archive": "default", "max_mb": "", "transcode": "default"})
+
+    # Back to the server settings: the left-out video is tried again.
+    r = client.post("/storage/media-defaults", data={"archive": "default", "max_mb": "", "transcode": "default"})
+    assert tbouncer.media.default_policy == env
+    tbouncer.media.fetch_pending()
+    assert media_rows(tbouncer)["https://img.test/small.mp4"]["status"] == "ok"
+
+    r = client.post("/storage/media-defaults", data={"archive": "all", "max_mb": "lots", "transcode": "default"})
+    assert "number of megabytes" in r.text and tbouncer.media.default_policy == env

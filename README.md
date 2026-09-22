@@ -392,8 +392,8 @@ API (each call with `Authorization: Bearer $THREADBNC_API_TOKEN`):
 | `THREADBNC_RSS_POLL_MINUTES` | `60` | Default check interval for followed feeds (at least 5) |
 | `THREADBNC_INBOX_POLL_MINUTES` | `5` | How often each account's inbox is checked (Reddit's: at least 10) |
 | `THREADBNC_MEDIA_DIR` | `<data>/media` | Where archived images/videos are stored |
-| `THREADBNC_MEDIA_MAX_MB` | `25` | Largest single image or video file that will be archived; bigger files are skipped and linked to the original (each community can override this) |
-| `THREADBNC_MEDIA_TRANSCODE` | `0` | Default for communities that haven't chosen: `1` shrinks files over the size limit with ffmpeg instead of skipping them |
+| `THREADBNC_MEDIA_MAX_MB` | `25` | Largest single image or video file that will be archived; bigger files are skipped and linked to the original (the Storage page and each community can override this) |
+| `THREADBNC_MEDIA_TRANSCODE` | `0` | Default for communities that haven't chosen, unless set on the Storage page: `1` shrinks files over the size limit with ffmpeg instead of skipping them |
 | `THREADBNC_MEDIA_TRANSCODE_SOURCE_MAX_MB` | `1000` | Largest original downloaded to transcode; bigger files are skipped |
 | `THREADBNC_PROXY_AUTH_HEADER` | unset | Header in which a signing-in reverse proxy passes the user's name, e.g. `X-authentik-username` |
 | `THREADBNC_PROXY_SECRET` | unset | Required with the above (16+ characters). The proxy must send it as `X-ThreadBNC-Proxy-Secret` |
@@ -489,9 +489,11 @@ Posts and comments are rendered as Markdown: CommonMark plus tables, strikethrou
 - `/media/{id}` requires sign-in and is served sandboxed. SVGs are never shown inline.
 - Media is deleted only when every object that referenced it has been purged, which happens only when auto-captured threads expire.
 
+**Defaults** (the **Media defaults** section of the Storage page): the same three settings for every community that hasn't chosen its own. Each one left on "Server setting" follows the `THREADBNC_MEDIA_*` environment variables. Saving retries anything the old settings left out or found too large.
+
 **Per community** (the community's **Media** tab):
 - **Archive**: pictures and videos, pictures only, or nothing. Files already archived stay when you turn this down.
-- **Largest file kept**: overrides `THREADBNC_MEDIA_MAX_MB` for this community.
+- **Largest file kept**: overrides the default size limit for this community.
 - **Files bigger than that**: leave them out, or **transcode to fit**. Videos and animated GIFs become H.264/AAC MP4s at whatever bitrate fits (up to 1080p). Pictures are scaled down and saved as WebP. Videos too long to fit at a watchable bitrate are left out.
 - The tab also shows how much is archived, what was transcoded, and what couldn't be archived and why. **Try these again** retries them. Saving new settings retries anything the old settings left out or found too large.
 - A file posted in several communities gets the most generous of their settings.

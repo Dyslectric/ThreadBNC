@@ -141,7 +141,8 @@
         <p class="small muted">Transcoding turns videos and animated GIFs into MP4s at whatever quality fits the limit,
           and scales pictures down. It runs in the background and can take a few minutes per video.
           Files already archived stay as they are. Pictures and videos shared with another community
-          get the more generous of the two communities' settings.</p>
+          get the more generous of the two communities' settings. The defaults are set on the
+          <a href="/storage#media-defaults">Storage</a> page.</p>
         {% if on and not can_transcode %}
         <div class="flash error" role="alert">{{ icon('alert') }} <span>ffmpeg isn't installed on the server, so oversized files
           are left out for now.</span></div>
