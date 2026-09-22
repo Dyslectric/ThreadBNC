@@ -213,8 +213,39 @@ CREATE TABLE IF NOT EXISTS accounts (
     is_admin INTEGER NOT NULL DEFAULT 0,
     added_at TEXT NOT NULL,
     last_used_at TEXT,
-    last_error TEXT
+    last_error TEXT,
+    inbox_checked_at TEXT,    -- last look at the account's replies, mentions and messages
+    inbox_error TEXT
 );
+
+-- Replies, mentions and private messages to your accounts, as their servers
+-- report them. `unread` mirrors the server's own read state.
+CREATE TABLE IF NOT EXISTS inbox_items (
+    id INTEGER PRIMARY KEY,
+    account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind IN ('reply', 'mention', 'message')),
+    remote_id TEXT NOT NULL,       -- the server's id for this notification (marking it read needs it)
+    unread INTEGER NOT NULL DEFAULT 1,
+    author_ap_id TEXT,
+    author_name TEXT,
+    author_local_id TEXT,          -- the author's id on the account's server (to write back)
+    body TEXT,
+    subject TEXT,
+    created_at TEXT,
+    deleted INTEGER NOT NULL DEFAULT 0,
+    object_type TEXT,              -- comment | post | message
+    object_ap_id TEXT,
+    object_local_id TEXT,          -- ids on the account's server
+    post_ap_id TEXT,
+    post_local_id TEXT,
+    post_title TEXT,
+    community_ap_id TEXT,
+    community_name TEXT,
+    first_seen_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (account_id, kind, remote_id)
+);
+CREATE INDEX IF NOT EXISTS inbox_unread ON inbox_items(unread, created_at);
 
 -- Votes cast through ThreadBNC, per account (remote APIs are read anonymously,
 -- so this is how the UI knows what you voted).
@@ -360,12 +391,15 @@ COLUMN_MIGRATIONS = [
     ("objects", "cur_featured", "INTEGER NOT NULL DEFAULT 0"),
     ("objects", "dupe_key", "TEXT"),
     ("communities", "view_mode", "TEXT"),
+    ("accounts", "inbox_checked_at", "TEXT"),
+    ("accounts", "inbox_error", "TEXT"),
 ]
 
 # Tables with an integer `id` key: inserts into these get `RETURNING id` on
 # Postgres so callers can keep using `cursor.lastrowid`.
 _ID_TABLES = {"instances", "actors", "communities", "archived_threads", "objects", "revisions",
-              "state_events", "media", "jobs", "accounts", "mod_actions", "join_requests"}
+              "state_events", "media", "jobs", "accounts", "mod_actions", "join_requests",
+              "inbox_items"}
 _INSERT_RE = re.compile(r"^\s*INSERT\s+INTO\s+(\w+)", re.IGNORECASE)
 _PG_WRITE_LOCK = 727_001  # advisory lock id: one writer at a time, like SQLite's BEGIN IMMEDIATE
 
@@ -393,8 +427,8 @@ class Row:
         self._names = names
         self._values = values
 
-    def __getitem__(self, key: int | str) -> Any:
-        if isinstance(key, int):
+    def __getitem__(self, key: int | slice | str) -> Any:
+        if isinstance(key, (int, slice)):
             return self._values[key]
         try:
             return self._values[self._names.index(key)]
@@ -477,6 +511,7 @@ class Database:
         self.is_postgres = target.startswith(("postgres://", "postgresql://"))
         self.path = target
         self._pool: queue.LifoQueue[Any] = queue.LifoQueue(maxsize=pool_size)
+        self.search_backend = "like"  # set by _migrate: postgres, fts5, or like (SQLite without FTS5)
         if self.is_postgres:
             self._wait_for_postgres()
         # SQLite's executescript manages its own transaction; Postgres gets the
@@ -507,6 +542,8 @@ class Database:
         conn.execute("CREATE INDEX IF NOT EXISTS objects_dupe ON objects(dupe_key)")
         from .dupes import backfill
         backfill(conn)
+        from .search import install
+        self.search_backend = install(conn, self.is_postgres)
 
     def get_setting(self, key: str, default: str | None = None) -> str | None:
         with self.connect() as conn:

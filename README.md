@@ -40,6 +40,8 @@ Everything else stays, but the archive is only as durable as the disk and databa
 | **Community** (`/c/{id}`) | The same feed for one community, plus ★ Kept, **Live on server** (browse its full history, fetched live) and a log. Follow settings sit behind the "✓ Following" pill. |
 | **Communities** | Follow a community (starts with its current first page) and manage the check interval and retention for each one. |
 | **★ Kept** | Keep a post by link, see kept threads grouped by community, recent changes and the bouncer queue. |
+| **Search** (`/search`, and the box in the header) | Every version of every archived post and comment. See [Search](#search). |
+| **Inbox** | Replies, mentions and private messages for all your accounts. See [Inbox](#inbox). |
 | **Trash** | Hidden and unkept threads, restorable until the trash period ends. |
 | **Reddit** (`/reddit`, linked from Accounts) | Connect Reddit, and follow your Reddit subscriptions. |
 
@@ -53,6 +55,27 @@ Everything else stays, but the archive is only as durable as the disk and databa
 - **☆ Keep** holds a post with no expiry date.
 - **★ Kept** unkeeps it. A post that came from a followed community goes back into the feed and expires normally. A post you kept by link goes to the trash.
 - **Hide** moves a feed post to the trash.
+
+## Search
+
+Search covers every version of every post and comment the bouncer saved, so text that was later edited away,
+deleted or removed can still be found. Results show what the post or comment says now. When only an earlier
+version matched, the result says so, quotes that version, and links to the item's history.
+
+| Type | To find |
+|---|---|
+| `restic borg` | posts and comments with both words |
+| `"self hosted"` | that exact phrase |
+| `docker*` | words starting with docker |
+| `caddy OR nginx` | either word |
+| `backup -windows` | backup, leaving out anything that mentions windows |
+
+- Words are matched whole, ignoring case and accents. There's no stemming, since the archive holds many languages, so `backup` doesn't match `backups`; use `backup*`.
+- Titles rank above text, and text above links.
+- **Filters:** posts or comments, one community, one author (`name` or `name@server`), kept only, and only items that were deleted or removed, or edited. Sort by best match, newest or oldest.
+- Each community page has its own search box, limited to that community.
+- Threads in the trash aren't searched. Purged threads are dropped from the index along with the rest of their data.
+- The index is SQLite's FTS5 or a Postgres GIN index. It's built on first start after upgrading, which can take a while on a big archive, and kept up to date from then on. If your SQLite was built without FTS5, search still works, but more slowly, and it matches parts of words.
 
 ## Duplicates and crossposts
 
@@ -108,6 +131,7 @@ apps you created earlier, which keep working. Connect one on the **Reddit** page
 - **Disconnect** ends the sign-in on Reddit too. Followed subreddits and everything saved from them stay, but aren't checked until you connect again.
 - Reddit may require you to request API access before a new app works.
 - Reddit logins made before ThreadBNC could vote and comment can only read. The Reddit page marks them **read only**; log in again to allow writing.
+- Logins made before the [inbox](#inbox) existed can't read your Reddit inbox. Log in again to allow it. Cookie connections can already read it.
 
 ### Voting, commenting and posting on Reddit
 
@@ -209,6 +233,20 @@ On the **Accounts** page, add any Lemmy or PieFed account: the server, username,
   - A copy older than the latest known edit is ignored, not recorded as a revert.
   - A deletion you make is recorded as "deletion requested" until the community's server shows it deleted.
 - Edits and deletions of your own content follow the same rules as everyone else's: earlier versions stay in the archive's history.
+
+### Inbox
+
+The **Inbox** collects replies to your posts and comments, mentions, and private messages, for every account on the
+Accounts page, including your Reddit account. The header shows how many are unread.
+
+- **Checking:** the bouncer checks each account every 5 minutes (`THREADBNC_INBOX_POLL_MINUTES`), and Reddit every 10 at most. **↻ Check now** checks straight away. Each check fetches about the newest 50 items; older ones keep the read state they had when last seen.
+- **Read state is the server's.** Marking something read (or unread) here marks it on the account's server, and anything you read in another app shows as read here after the next check. **Mark all read** does the same for every account, or for the one you're viewing.
+- **Replying:**
+  - A reply goes under the comment or post, or a private message goes back to its sender. It's sent as the account the item came to, and the item is marked read.
+  - This works whether or not the thread is in the archive. When it is, your reply appears there straight away. Otherwise **☆ Keep thread** saves the thread.
+  - A Reddit reply needs a Reddit connection that can write.
+- **Where it's from:** Lemmy 0.19 and PieFed use their replies, mentions and messages lists. Lemmy 1.0 uses its notifications. Reddit uses its message inbox. Messages you sent aren't shown.
+- Removing an account removes its inbox here too. Nothing is deleted on the server.
 
 ### Moderating and administering
 
@@ -324,7 +362,10 @@ Other commands:
 | `python -m threadbnc sync` | Run one bouncer pass and exit |
 | `python -m pytest` | Run the tests |
 
-API: `POST /archive` with `{"url": "..."}` and `Authorization: Bearer $THREADBNC_API_TOKEN` returns a job id. Check its progress at `GET /api/jobs/{id}`.
+API (each call with `Authorization: Bearer $THREADBNC_API_TOKEN`):
+
+- `POST /archive` with `{"url": "..."}` returns a job id. Check its progress at `GET /api/jobs/{id}`.
+- `GET /api/search?q=...` searches the archive and returns JSON. It takes the same filters as the search page: `what` (`post` or `comment`), `community` (its id), `author`, `kept=1`, `only` (`gone` or `edited`), `sort` (`new` or `old`) and `page`.
 
 ### Configuration (environment)
 
@@ -345,6 +386,7 @@ API: `POST /archive` with `{"url": "..."}` and `Authorization: Bearer $THREADBNC
 | `THREADBNC_REDDIT_POLL_MINUTES` | `60` | Default check interval for followed subreddits (at least 10) |
 | `THREADBNC_REDDIT_MIN_REQUEST_INTERVAL` | `2.0` | Seconds between requests to Reddit (at least 1) |
 | `THREADBNC_RSS_POLL_MINUTES` | `60` | Default check interval for followed feeds (at least 5) |
+| `THREADBNC_INBOX_POLL_MINUTES` | `5` | How often each account's inbox is checked (Reddit's: at least 10) |
 | `THREADBNC_MEDIA_DIR` | `<data>/media` | Where archived images/videos are stored |
 | `THREADBNC_MEDIA_MAX_MB` | `25` | Largest single image or video file that will be archived; bigger files are skipped and linked to the original |
 | `THREADBNC_PROXY_AUTH_HEADER` | unset | Header in which a signing-in reverse proxy passes the user's name, e.g. `X-authentik-username` |
@@ -374,6 +416,8 @@ threadbnc/
   bouncer.py     ingestion, source selection, sync, follows, expiry, job queue, worker loop
   feed.py        feed queries: sorting, unread / new-comment counts, thumbnails
   dupes.py       duplicate recognition: link/text keys for posts, squashing repeated comments
+  search.py      full-text search over every revision (SQLite FTS5 / Postgres GIN), query syntax, snippets
+  inbox.py       replies, mentions and messages per account: polling, read state, replying
   render.py      Markdown -> sanitised HTML, archived-media substitution
   media.py       media download, content-addressed storage, cleanup
   web.py         FastAPI UI/API, auth guard, views

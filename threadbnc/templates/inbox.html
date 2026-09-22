@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% from "_macros.html" import when %}
+{% block title %}Inbox{% endblock %}
+{% block content %}
+{% set label = {'reply': 'Reply', 'mention': 'Mention', 'message': 'Message'} %}
+{% set qs = ('&kind=' ~ kind if kind else '') ~ ('&account=' ~ account_id if account_id else '') %}
+<header class="community-head">
+  <div>
+    <h1>Inbox</h1>
+    <p class="muted">Replies to your posts and comments, mentions, and private messages, for every account.
+      Marking something read here marks it read on its server too.</p>
+  </div>
+  <div class="row">
+    <form method="post" action="/inbox/check"><button class="small secondary">↻ Check now</button></form>
+    {% if status | selectattr('unread') | list %}
+    <form method="post" action="/inbox/read-all"><input type="hidden" name="account_id" value="{{ account_id or '' }}">
+      <button class="small">Mark all read</button></form>
+    {% endif %}
+  </div>
+</header>
+
+{% if not status %}
+<section class="card"><p class="muted">Add an account on the <a href="/accounts">Accounts</a> page and its
+  replies, mentions and messages show up here.</p></section>
+{% else %}
+<nav class="tabs" aria-label="Show">
+  <a href="/inbox?{{ qs[1:] }}" class="{{ 'on' if show == 'unread' }}">Unread</a>
+  <a href="/inbox?show=all{{ qs }}" class="{{ 'on' if show == 'all' }}">All</a>
+</nav>
+<div class="row inbox-filters small">
+  {% set sq = 'show=all&' if show == 'all' else '' %}
+  <a class="chip {{ 'on' if not kind }}" href="/inbox?{{ sq }}{{ ('account=' ~ account_id) if account_id }}">Everything</a>
+  {% for k, name in kinds.items() %}
+    <a class="chip {{ 'on' if kind == k }}" href="/inbox?{{ sq }}kind={{ k }}{{ ('&account=' ~ account_id) if account_id }}">{{ name }}</a>
+  {% endfor %}
+  {% if status | length > 1 %}
+  <form method="get" action="/inbox" class="row">
+    {% if show == 'all' %}<input type="hidden" name="show" value="all">{% endif %}
+    {% if kind %}<input type="hidden" name="kind" value="{{ kind }}">{% endif %}
+    <select name="account" aria-label="Account">
+      <option value="">Every account</option>
+      {% for s in status %}<option value="{{ s.account.id }}" {{ 'selected' if account_id == s.account.id }}>{{ s.account.handle }}{{ (' (' ~ s.unread ~ ')') if s.unread }}</option>{% endfor %}
+    </select>
+    <button class="small secondary">Show</button>
+  </form>
+  {% endif %}
+</div>
+
+{% if not items %}
+<section class="card"><p class="muted">{{ 'Nothing unread.' if show == 'unread' else 'Nothing here yet.' }}
+  {% if show == 'unread' %}<a href="/inbox?show=all{{ qs }}">See everything</a>.{% endif %}</p></section>
+{% endif %}
+
+<ol class="plain inbox-items">
+{% for i in items %}
+  <li class="card inbox-item {{ 'unread' if i.unread }}" id="i{{ i.id }}">
+    <div class="hit-head">
+      <span class="pill {{ 'new' if i.unread }}">{{ label[i.kind] }}</span>
+      <span class="author">{{ i.author_name or 'someone' }}</span>
+      {% if i.kind == 'message' %}
+        <span class="muted">sent you a message{% if i.subject %}: {{ i.subject }}{% endif %}</span>
+      {% else %}
+        <span class="muted">{{ 'replied' if i.kind == 'reply' else 'mentioned you' }} on</span>
+        {% if i.thread_id %}<a href="/t/{{ i.thread_id }}{{ ('#o' ~ i.archived_oid) if i.archived_oid }}">{{ i.post_title or 'a post' }}</a>
+        {% else %}<span>{{ i.post_title or 'a post' }}</span>{% endif %}
+        {% if i.community_name %}<span class="muted">in {{ chandle(i.community_name, i.community_ap_id) }}</span>{% endif %}
+      {% endif %}
+      {% if i.deleted %}<span class="pill warn">deleted</span>{% endif %}
+    </div>
+    <div class="md">{{ md(i.body) }}</div>
+    <div class="row small muted inbox-actions">
+      <span>{{ when(i.created_at or i.first_seen_at) }}</span>
+      {% if status | length > 1 and i.account %}<span>to {{ i.account.handle }}</span>{% endif %}
+      {% if i.object_type != 'message' and i.object_ap_id | safe_url %}<a href="{{ i.object_ap_id }}" rel="noreferrer noopener" target="_blank">on {{ i.object_ap_id | host }} ↗</a>{% endif %}
+      {% if i.object_type != 'message' and not i.thread_id and i.post_ap_id | safe_url %}
+        <form method="post" action="/archive" class="inline"><input type="hidden" name="url" value="{{ i.post_ap_id }}">
+          <button class="link small" title="Save the whole thread to the archive and keep it">☆ Keep thread</button></form>
+      {% endif %}
+      <form method="post" action="/inbox/{{ i.id }}/read" class="inline">
+        <input type="hidden" name="read" value="{{ '1' if i.unread else '0' }}">
+        <button class="link small">{{ 'Mark read' if i.unread else 'Mark unread' }}</button></form>
+    </div>
+    {% set reddit_blocked = i.account and i.account.is_reddit and not can_reply_reddit %}
+    {% if not i.deleted and not reddit_blocked %}
+    <details class="inbox-reply">
+      <summary class="small">{{ 'Reply to message' if i.kind == 'message' else 'Reply' }}{% if i.account %} as {{ i.account.handle }}{% endif %}</summary>
+      <form method="post" action="/inbox/{{ i.id }}/reply" class="stack">
+        <textarea name="body" rows="4" required aria-label="Your reply"></textarea>
+        <div><button class="small">Send</button></div>
+      </form>
+    </details>
+    {% endif %}
+  </li>
+{% endfor %}
+</ol>
+{% if page > 1 or more %}
+<nav class="row pager-row" aria-label="Pages">
+  {% if page > 1 %}<a class="chip" href="{{ page_url(page - 1) }}">← Newer</a>{% endif %}
+  {% if more %}<a class="chip" href="{{ page_url(page + 1) }}">Older →</a>{% endif %}
+</nav>
+{% endif %}
+
+<section class="card small">
+  <h2>Accounts</h2>
+  <ul class="plain">
+  {% for s in status %}
+    <li class="row">
+      <span class="author">{{ s.account.handle }}</span>
+      {% if s.unread %}<span class="pill new">{{ s.unread }} unread</span>{% endif %}
+      <span class="muted">checked {{ when(s.checked_at) if s.checked_at else 'not yet' }}</span>
+      {% if s.error %}<span class="bad-text">{{ s.error }}</span>{% endif %}
+    </li>
+  {% endfor %}
+  </ul>
+  <p class="muted">The bouncer checks every few minutes (Reddit every 10 minutes at most). Each check fetches the
+    newest 50 items or so; older ones keep the read state they had when last seen.</p>
+</section>
+{% endif %}
+{% endblock %}

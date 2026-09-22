@@ -26,11 +26,13 @@ from markupsafe import Markup
 from starlette.middleware.sessions import SessionMiddleware
 
 from . import dupes, store
+from . import search as search_mod
 from . import feed as feed_mod
 from . import media as media_mod
 from .adapters import RemoteError, host_of, is_reddit_host, is_rss
 from .accounts import Account, AccountError, Poster
 from .bouncer import Bouncer
+from .inbox import KINDS as INBOX_KINDS, Inbox
 from .moderation import REGISTRATION_MODES, Moderation
 from .private import PrivateCommunities
 from .reddit import CALLBACK_PATH as REDDIT_CALLBACK_PATH, RedditError
@@ -270,6 +272,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     bouncer.hooks.append(private.sweep)
     bouncer.read_token = private.read_token
     sso = SingleSignOn(poster)
+    inbox = Inbox(poster, settings.inbox_poll_minutes)
+    bouncer.hooks.append(inbox.sweep)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -291,7 +295,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             return conn.execute("SELECT COUNT(*) FROM archived_threads WHERE trashed_at IS NOT NULL").fetchone()[0]
 
     templates.env.globals.update(event_label=event_label, tone=lambda e: TONE.get(e["event_type"], ""),
-                                 static_url=static_url, trash_count=trash_count,
+                                 static_url=static_url, trash_count=trash_count, inbox_count=inbox.unread_count,
                                  password_login=bool(settings.password),
                                  proxy_login=bool(settings.proxy_auth_header), chandle=chandle,
                                  is_reddit=is_reddit, is_rss=is_rss)
@@ -1579,6 +1583,124 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         with db.connect() as conn:
             rows = recent_changes(conn, limit=200)
         return render(request, "changes.html", changes=rows)
+
+    # ---- search ---------------------------------------------------------------
+    def archived_communities() -> list[Any]:
+        with db.connect() as conn:
+            return conn.execute("SELECT DISTINCT c.id, c.name, c.canonical_ap_id FROM communities c "
+                                "JOIN archived_threads t ON t.community_id=c.id AND t.trashed_at IS NULL "
+                                "ORDER BY c.name, c.canonical_ap_id").fetchall()
+
+    def search_filters(what: str, community: str, author: str, kept: str, only: str,
+                       sort: str) -> search_mod.Filters:
+        return search_mod.Filters(kind=what if what in search_mod.KINDS else "all",
+                                  community_id=int(community) if community.strip().isdigit() else None,
+                                  author=author.strip(), kept_only=kept == "1",
+                                  only=only if only in search_mod.ONLY else "",
+                                  sort=sort if sort in search_mod.SORTS else "relevance")
+
+    @app.get("/search", response_class=HTMLResponse)
+    def search_page(request: Request, q: str = "", what: str = "all", community: str = "", author: str = "",
+                    kept: str = "", only: str = "", sort: str = "relevance", page: int = 1):
+        """Every version of every archived post and comment (not the trash)."""
+        f = search_filters(what, community, author, kept, only, sort)
+        results, error = None, None
+        if q.strip():
+            try:
+                with db.connect() as conn:
+                    results = search_mod.search(conn, db.search_backend, q, f, page)
+            except search_mod.SearchError as exc:
+                error = str(exc)
+        params = {"q": q, "what": f.kind if f.kind != "all" else "", "community": f.community_id or "",
+                  "author": f.author, "kept": "1" if f.kept_only else "", "only": f.only,
+                  "sort": f.sort if f.sort != "relevance" else ""}
+
+        def page_url(n: int) -> str:
+            return "/search?" + urlencode({**{k: v for k, v in params.items() if v}, "page": n})
+        return render(request, "search.html", q=q, f=f, results=results, error=error,
+                      communities=archived_communities(), kinds=search_mod.KINDS, sorts=search_mod.SORTS,
+                      only_options=search_mod.ONLY, page_url=page_url, backend=db.search_backend)
+
+    @app.get("/api/search")
+    def search_api(q: str = "", what: str = "all", community: str = "", author: str = "", kept: str = "",
+                   only: str = "", sort: str = "relevance", page: int = 1):
+        try:
+            with db.connect() as conn:
+                res = search_mod.search(conn, db.search_backend, q,
+                                        search_filters(what, community, author, kept, only, sort), page)
+        except search_mod.SearchError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return {"total": res.total, "page": res.page, "pages": res.pages, "results": [{
+            "id": h["id"], "type": h["object_type"], "thread_id": h["thread_id"],
+            "path": f"/t/{h['thread_id']}" + (f"#o{h['id']}" if h["object_type"] == "comment" else ""),
+            "title": h["title"] if h["object_type"] == "post" else h["thread_title"],
+            "community": chandle(h["cname"], h["c_ap"], plain=True) if h["cname"] else None,
+            "author": f"{h['username']}@{h['a_instance']}" if h["username"] else None,
+            "created_at": h["created_at"], "text": search_mod.plain(h["body"])[:500],
+            "matched_current_version": h["matched_current"], "deleted": bool(h["cur_deleted"]),
+            "removed": bool(h["cur_removed"]), "kept": h["retention"] == "manual",
+        } for h in res.hits]}
+
+    # ---- inbox ----------------------------------------------------------------
+    @app.get("/inbox", response_class=HTMLResponse)
+    def inbox_page(request: Request, show: str = "unread", kind: str = "", account: str = "", page: int = 1):
+        aid = int(account) if account.strip().isdigit() else None
+        kind = kind if kind in INBOX_KINDS else ""
+        show = "all" if show == "all" else "unread"
+        items, more = inbox.items(unread_only=show == "unread", kind=kind or None, account_id=aid, page=page)
+        params = {"show": show if show == "all" else "", "kind": kind, "account": aid or ""}
+
+        def page_url(n: int) -> str:
+            return "/inbox?" + urlencode({**{k: v for k, v in params.items() if v}, "page": n})
+        return render(request, "inbox.html", items=items, more=more, show=show, kind=kind, account_id=aid,
+                      page=page, page_url=page_url, status=inbox.status(), kinds=INBOX_KINDS, md=render_markdown,
+                      can_reply_reddit=poster.reddit_account() is not None)
+
+    @app.post("/inbox/check")
+    def inbox_check(request: Request):
+        new, errors, checked = 0, [], 0
+        for a in poster.list():
+            if inbox.can_check(a):
+                continue
+            try:
+                new += inbox.check(a)
+                checked += 1
+            except AccountError as exc:
+                errors.append(f"{a.handle}: {exc}")
+        if checked:
+            flash(request, f"Checked. {new} new." if new else "Checked. Nothing new.")
+        if errors:
+            flash(request, "Couldn't check " + "; ".join(errors), "error")
+        if not checked and not errors:
+            flash(request, "There's no inbox to check yet: add an account on the Accounts page.", "error")
+        return RedirectResponse(back(request, "/inbox"), status_code=303)
+
+    @app.post("/inbox/read-all")
+    def inbox_read_all(request: Request, account_id: str = Form("")):
+        try:
+            n = inbox.mark_all_read(int(account_id) if account_id.strip().isdigit() else None)
+            flash(request, f"Marked {n} as read." if n else "Nothing was unread.")
+        except AccountError as exc:
+            flash(request, str(exc), "error")
+        return RedirectResponse(back(request, "/inbox"), status_code=303)
+
+    @app.post("/inbox/{iid}/read")
+    def inbox_read(request: Request, iid: int, read: str = Form("1")):
+        try:
+            inbox.mark_read(iid, read == "1")
+        except AccountError as exc:
+            flash(request, str(exc), "error")
+        return RedirectResponse(back(request, "/inbox"), status_code=303)
+
+    @app.post("/inbox/{iid}/reply")
+    def inbox_reply(request: Request, iid: int, body: str = Form("")):
+        try:
+            oid = inbox.reply(iid, body)
+        except AccountError as exc:
+            flash(request, str(exc), "error")
+            return RedirectResponse(back(request, "/inbox", f"i{iid}"), status_code=303)
+        flash(request, "Reply sent. It's in the archived thread too." if oid else "Reply sent.")
+        return RedirectResponse(back(request, "/inbox"), status_code=303)
 
     app.state.bouncer = bouncer
     app.state.db = db

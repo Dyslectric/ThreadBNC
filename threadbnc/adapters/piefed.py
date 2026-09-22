@@ -17,6 +17,11 @@ class PieFedAdapter(LemmyAdapter):
     comment_body_field = "body"
     mods_only_field = "restricted_to_mods"
     supports_totp = False
+    # Mentions come back as comment replies, marked read the same way.
+    mentions_path = "/user/mentions"
+    mentions_key = "replies"
+    mention_record = "comment_reply"
+    mention_read = ("/comment/mark_as_read", "comment_reply_id")
 
     # PieFed splits bans/unbans into separate endpoints and can list bans.
     def ban_from_community(self, token: str, community_id: str, person_id: str, ban: bool,

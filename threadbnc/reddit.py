@@ -50,8 +50,9 @@ log = logging.getLogger("threadbnc.reddit")
 WWW = "https://www.reddit.com"
 API = "https://oauth.reddit.com"
 CALLBACK_PATH = "/reddit/callback"
-SCOPES = "identity read mysubreddits vote submit edit"
+SCOPES = "identity read mysubreddits vote submit edit privatemessages"
 WRITE_SCOPES = {"vote", "submit", "edit"}  # sign-ins from before these were asked for can only read
+INBOX_SCOPE = "privatemessages"  # replies, mentions and messages; older sign-ins lack it
 SETTING = "reddit_connection"
 PENDING_SETTING = "reddit_login_pending"
 PENDING = timedelta(minutes=15)
@@ -105,10 +106,12 @@ class RedditConnection:
         wait = self.paused_until - time.monotonic()
         granted = set((cfg.get("scope") or "").replace(",", " ").split())
         can_write = cfg["mode"] == "cookie" or (cfg["mode"] == "user" and WRITE_SCOPES <= granted)
+        can_inbox = cfg["mode"] == "cookie" or (cfg["mode"] == "user" and INBOX_SCOPE in granted)
         return {"mode": cfg["mode"], "client_id": cfg["client_id"], "username": cfg.get("username"),
                 "status": cfg.get("status", "ok"), "last_error": cfg.get("last_error"),
                 "connected_at": cfg.get("connected_at"), "paused_seconds": int(wait) if wait > 0 else 0,
-                "can_write": can_write, "has_account": cfg["mode"] in ("user", "cookie")}
+                "can_write": can_write, "can_inbox": can_inbox,
+                "has_account": cfg["mode"] in ("user", "cookie")}
 
     # -- connecting ---------------------------------------------------------------
     def connect_app(self, client_id: str, secret: str) -> dict[str, Any]:

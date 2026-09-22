@@ -25,6 +25,7 @@ from .base import (
     NActor,
     NComment,
     NCommunity,
+    NInboxItem,
     NPost,
     RemoteAuthError,
     RemoteError,
@@ -320,6 +321,43 @@ class Lemmy1Adapter(LemmyAdapter):
         data = self._call("POST", "/comment/like", token, {"comment_id": int(comment_id),
                                                            "is_upvote": self._vote(score)})
         return self._comment(data["comment_view"])
+
+    # -- the account's inbox ----------------------------------------------------
+    # 1.0 has one notification list; each item is marked read by its notification id.
+    def inbox(self, token: str, me_ap_id: str, limit: int = 50) -> list[NInboxItem]:
+        out = []
+        for batch in self._pages("/account/notification/list", token, max_pages=1, type_="all",
+                                 unread_only="false", limit=limit):
+            for item in batch:
+                n, data = item.get("notification") or {}, item.get("data") or {}
+                kind = {"reply": "reply", "mention": "mention", "private_message": "message"}.get(n.get("kind"))
+                if kind is None or n.get("id") is None:
+                    continue  # subscriptions and mod actions aren't inbox items here
+                record = {"id": n["id"], "read": n.get("read")}
+                if data.get("type_") == "comment":
+                    out.append(self._inbox_comment(kind, record, data))
+                elif data.get("type_") == "private_message":
+                    msg = self._inbox_message(data)
+                    msg.remote_id, msg.unread = str(n["id"]), not n.get("read")
+                    out.append(msg)
+                elif data.get("type_") == "post":  # mentioned in a post
+                    post = self._post(data)
+                    creator = data.get("creator") or {}
+                    out.append(NInboxItem(
+                        kind=kind, remote_id=str(n["id"]), unread=not n.get("read"), author=post.author,
+                        author_local_id=str(creator["id"]) if creator.get("id") is not None else None,
+                        body=post.body, created_at=post.created_at, deleted=post.deleted or post.removed,
+                        object_type="post", object_ap_id=post.ap_id, object_local_id=post.local_id,
+                        post_ap_id=post.ap_id, post_local_id=post.local_id, post_title=post.title,
+                        community=post.community))
+        return out
+
+    def mark_inbox_read(self, token: str, kind: str, remote_id: str, read: bool = True) -> None:
+        self._call("POST", "/account/notification/mark_as_read", token,
+                   {"notification_id": int(remote_id), "read": read})
+
+    def mark_all_inbox_read(self, token: str, items: list[tuple[str, str]]) -> None:
+        self._call("POST", "/account/notification/mark_as_read/all", token, {})
 
     # -- moderation ------------------------------------------------------------
     def community_moderators(self, token: str, community_id: str) -> list[NActor]:

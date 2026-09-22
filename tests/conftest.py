@@ -75,6 +75,10 @@ class FakeServer:
         self.oauth_providers: list[dict] = []
         self.oauth_links: dict[tuple[int, str], str] = {}
         self.oauth_codes: dict[str, tuple[str, str | None]] = {}
+        # Each user's inbox (NInboxItem), and private messages sent: (from, to local id, body, in reply to).
+        self.inboxes: dict[str, list] = {}
+        self.messages_sent: list[tuple[str, str, str, str | None]] = []
+        self.inbox_fetches = 0
 
     def ask_to_join(self, person_ap_id: str, community_ap_id: str) -> None:
         self.follows = [f for f in self.follows if f[:2] != [person_ap_id, community_ap_id]]
@@ -434,6 +438,26 @@ class FakeAdapter(ThreadiverseAdapter):
         user = self._auth(token)
         self.s.votes[(user, "post:" + post_id)] = score
         return copy.deepcopy(self.s.posts[post_id])
+
+    # -- inbox ---------------------------------------------------------------------
+    def inbox(self, token, me_ap_id, limit=50):
+        user = self._auth(token)
+        self._check()
+        self.s.inbox_fetches += 1
+        return copy.deepcopy(self.s.inboxes.get(user, []))
+
+    def mark_inbox_read(self, token, kind, remote_id, read=True):
+        user = self._auth(token)
+        for item in self.s.inboxes.get(user, []):
+            if (item.kind, item.remote_id) == (kind, remote_id):
+                item.unread = not read
+
+    def mark_all_inbox_read(self, token, items):
+        for item in self.s.inboxes.get(self._auth(token), []):
+            item.unread = False
+
+    def send_message(self, token, recipient_local_id, body, in_reply_to=None):
+        self.s.messages_sent.append((self._auth(token), recipient_local_id, body, in_reply_to))
 
     def create_post(self, token, community_id, title, body=None, url=None):
         user = self._auth(token)

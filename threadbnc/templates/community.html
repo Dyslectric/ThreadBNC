@@ -13,6 +13,10 @@
         {% if c.title %}<p class="muted">{{ c.title }}</p>{% endif %}
       </div>
       <div class="row">
+      <form method="get" action="/search" class="row" role="search">
+        <input type="hidden" name="community" value="{{ c.id }}">
+        <input type="search" name="q" placeholder="Search this community" aria-label="Search this community" class="community-search">
+      </form>
       {% if not is_rss(c.canonical_ap_id) and (reddit_me if is_reddit(c.canonical_ap_id) else acting) %}<a class="chip" href="/c/{{ c.id }}/submit">✎ New post</a>{% endif %}
       {% if following %}
         <details class="settings">

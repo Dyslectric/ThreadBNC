@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% from "_macros.html" import when, state_badges, votes %}
+{% block title %}{{ ('Search: ' ~ q) if q else 'Search' }}{% endblock %}
+{% block content %}
+<h1>Search the archive</h1>
+<form method="get" action="/search" class="card search-form" role="search">
+  <div class="row">
+    <input type="search" name="q" value="{{ q }}" placeholder='Words, "a phrase", prefix*, this OR that, -not' aria-label="Search for" autofocus>
+    <button>Search</button>
+  </div>
+  <div class="row search-filters">
+    <select name="what" aria-label="Look in">
+      {% for k, label in kinds.items() %}<option value="{{ k }}" {{ 'selected' if f.kind == k }}>{{ label }}</option>{% endfor %}
+    </select>
+    <select name="community" aria-label="Community">
+      <option value="">Every community</option>
+      {% for c in communities %}<option value="{{ c.id }}" {{ 'selected' if f.community_id == c.id }}>{{ chandle(c.name, c.canonical_ap_id, True) }}</option>{% endfor %}
+    </select>
+    <input name="author" value="{{ f.author }}" placeholder="By user@server" aria-label="Author" class="author-filter">
+    <select name="only" aria-label="Only">
+      {% for k, label in only_options.items() %}<option value="{{ k }}" {{ 'selected' if f.only == k }}>{{ label }}</option>{% endfor %}
+    </select>
+    <select name="sort" aria-label="Sort by">
+      {% for k, label in sorts.items() %}<option value="{{ k }}" {{ 'selected' if f.sort == k }}>{{ label }}</option>{% endfor %}
+    </select>
+    <label class="check small"><input type="checkbox" name="kept" value="1" {{ 'checked' if f.kept_only }}> Kept only</label>
+  </div>
+  <p class="small muted">Searches every version the bouncer saw, so text that was later edited away, deleted or
+    removed is found too. Threads in the trash aren't searched.{% if backend == 'like' %} This SQLite has no
+    full-text index (FTS5), so searching is slower and matches parts of words.{% endif %}</p>
+</form>
+
+{% if error %}<div class="flash error">{{ error }}</div>{% endif %}
+
+{% if results %}
+<p class="muted">{{ results.total }} result{{ 's' if results.total != 1 }}{% if results.pages > 1 %} · page {{ results.page }} of {{ results.pages }}{% endif %}</p>
+{% if not results.hits %}<section class="card"><p class="muted">Nothing in the archive matches that.{% if f.community_id or f.author or f.only or f.kept_only or f.kind != 'all' %} Try fewer filters.{% endif %}</p></section>{% endif %}
+<ol class="plain search-results">
+{% for h in results.hits %}
+  {% set link = '/t/' ~ h.thread_id ~ ('#o' ~ h.id if h.object_type == 'comment' else '') %}
+  <li class="card hit">
+    <div class="hit-head">
+      <span class="pill {{ 'new' if h.object_type == 'post' else '' }}">{{ h.object_type }}</span>
+      {% if h.object_type == 'post' %}
+        <a class="hit-title" href="{{ link }}">{{ h.title_html or '(untitled)' }}</a>
+      {% else %}
+        <span class="muted">on</span> <a class="hit-title" href="{{ link }}">{{ h.thread_title or '(untitled)' }}</a>
+      {% endif %}
+      {{ state_badges(h) }}
+      {% if h.retention == 'manual' %}<span class="pill good" title="Kept: never expires">★ kept</span>{% endif %}
+    </div>
+    {% if h.snippet %}<p class="hit-snippet">{{ h.snippet }}</p>{% endif %}
+    {% if h.url_matched %}<p class="small hit-url"><code>{{ h.url }}</code></p>{% endif %}
+    {% if not h.matched_current %}
+      <div class="hit-earlier small">
+        <a class="pill warn" href="/o/{{ h.id }}/history">Matched an earlier version · history</a>
+        {% if h.earlier %}<span class="muted">{{ h.earlier }}</span>{% endif %}
+      </div>
+    {% endif %}
+    <div class="small muted">
+      {% if h.cname %}<a href="/c/{{ h.cid }}">{{ chandle(h.cname, h.c_ap) }}</a> · {% endif %}
+      {% if h.username %}{{ h.username }}@{{ h.a_instance }} · {% endif %}
+      {{ when(h.created_at or h.first_seen_at) }}
+      {% if h.upvotes is not none or h.score is not none %} · {{ votes(h.upvotes, h.downvotes, h.score) }}{% endif %}
+    </div>
+  </li>
+{% endfor %}
+</ol>
+{% if results.pages > 1 %}
+<nav class="row pager-row" aria-label="Pages">
+  {% if results.page > 1 %}<a class="chip" href="{{ page_url(results.page - 1) }}">← Previous page</a>{% endif %}
+  {% if results.page < results.pages %}<a class="chip" href="{{ page_url(results.page + 1) }}">Next page →</a>{% endif %}
+</nav>
+{% endif %}
+{% elif not q %}
+<section class="card small muted">
+  <p><b>How to search</b></p>
+  <ul>
+    <li><code>tailscale headscale</code>: both words, anywhere in the post or comment</li>
+    <li><code>"self hosted"</code>: that exact phrase</li>
+    <li><code>docker*</code>: words starting with docker</li>
+    <li><code>caddy OR nginx</code>: either word</li>
+    <li><code>backup -restic</code>: leave out anything mentioning restic</li>
+  </ul>
+  <p>Words are matched whole, ignoring case and accents. Titles count most, then text, then links.</p>
+</section>
+{% endif %}
+{% endblock %}

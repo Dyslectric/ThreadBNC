@@ -17,9 +17,15 @@
       <a href="/" class="{{ 'on' if request.url.path == '/' }}">Feed</a>
       <a href="/communities" class="{{ 'on' if request.url.path.startswith('/communities') }}">Communities</a>
       <a href="/kept" class="{{ 'on' if request.url.path.startswith('/kept') }}">★ Kept</a>
+      {% set ic = inbox_count() %}<a href="/inbox" class="{{ 'on' if request.url.path.startswith('/inbox') }}">Inbox{% if ic %} <span class="pill new" aria-label="{{ ic }} unread">{{ ic }}</span>{% endif %}</a>
       <a href="/accounts" class="{{ 'on' if request.url.path.startswith('/accounts') }}">Accounts</a>
       {% if accounts and accounts | selectattr('is_admin') | list %}<a href="/admin" class="{{ 'on' if request.url.path.startswith('/admin') }}">Admin</a>{% endif %}
       {% set tc = trash_count() %}<a href="/trash" class="{{ 'on' if request.url.path.startswith('/trash') }}">Trash{% if tc %} ({{ tc }}){% endif %}</a>
+      {% if not request.url.path.startswith('/search') %}
+      <form method="get" action="/search" class="top-search" role="search">
+        <input type="search" name="q" placeholder="Search the archive" aria-label="Search the archive">
+      </form>
+      {% endif %}
       {% set switchable = accounts | rejectattr('is_reddit') | list if accounts else [] %}
       {% if switchable %}
         <form method="post" action="/accounts/act-as" class="act-as">

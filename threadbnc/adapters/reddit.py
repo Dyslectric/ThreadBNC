@@ -26,6 +26,7 @@ from .base import (
     NActor,
     NComment,
     NCommunity,
+    NInboxItem,
     NPost,
     RemoteNotFound,
     RemoteRejected,
@@ -45,6 +46,8 @@ SORTS: dict[str, tuple[str, dict[str, str]]] = {
 _BY_AUTHOR = {"deleted", "author"}
 _THING_PATH = re.compile(r"^/r/[^/]+/comments/([a-z0-9]+)(?:/[^/]*/([a-z0-9]+))?", re.I)
 _SUB_PATH = re.compile(r"^/r/([A-Za-z0-9_]+)/?$")
+# Inbox comment types -> ThreadBNC's kinds.
+_INBOX_KINDS = {"comment_reply": "reply", "post_reply": "reply", "username_mention": "mention"}
 
 
 class RedditReader(Protocol):
@@ -304,3 +307,46 @@ class RedditAdapter(ThreadiverseAdapter):
         if not deleted:
             raise RemoteRejected("Reddit can't bring back a deleted post.", "cant_restore")
         self.reader.post("/api/del", {"id": f"t3_{post_id}"})
+
+    # -- the connected account's inbox ----------------------------------------------------
+    def _inbox_item(self, child: dict[str, Any]) -> NInboxItem | None:
+        d = child.get("data") or {}
+        if not d.get("name"):
+            return None
+        common = {"remote_id": d["name"], "unread": bool(d.get("new")), "body": d.get("body"),
+                  "created_at": _ts(d.get("created_utc")), "deleted": d.get("body") in ("[deleted]", "[removed]")}
+        if child.get("kind") == "t4":  # a private message (or one from a subreddit's moderators)
+            return NInboxItem(kind="message", author=actor(d.get("author") or f"r/{d.get('subreddit') or '?'}"),
+                              object_type="message", object_ap_id=f"{WWW}/message/messages/{d.get('id')}",
+                              object_local_id=d["name"], subject=d.get("subject"), **common)
+        if child.get("kind") != "t1":
+            return None
+        m = _THING_PATH.match(urlparse(d.get("context") or "").path)
+        if not m or not m.group(2):
+            return None
+        sub, pid, cid = d.get("subreddit") or "?", m.group(1).lower(), m.group(2).lower()
+        return NInboxItem(kind=_INBOX_KINDS.get(d.get("type") or "", "reply"), author=actor(d.get("author")),
+                          object_type="comment", object_ap_id=f"{WWW}/r/{sub}/comments/{pid}/_/{cid}/",
+                          object_local_id=cid, post_ap_id=f"{WWW}/r/{sub}/comments/{pid}/", post_local_id=pid,
+                          post_title=d.get("link_title"),
+                          community=NCommunity(ap_id=subreddit_ap_id(sub), name=sub, domain=REDDIT_DOMAIN), **common)
+
+    def inbox(self, token: str, me_ap_id: str, limit: int = 50) -> list[NInboxItem]:
+        """Comment replies, username mentions and messages: one request."""
+        data = self.reader.get("/message/inbox", {"limit": limit}) or {}
+        items = (self._inbox_item(c) for c in (data.get("data") or {}).get("children") or [])
+        return [i for i in items if i]
+
+    def mark_inbox_read(self, token: str, kind: str, remote_id: str, read: bool = True) -> None:
+        self.reader.post("/api/read_message" if read else "/api/unread_message", {"id": remote_id})
+
+    def mark_all_inbox_read(self, token: str, items: list[tuple[str, str]]) -> None:
+        ids = [remote_id for _kind, remote_id in items]
+        for start in range(0, len(ids), 100):  # Reddit takes a comma-separated list
+            self.reader.post("/api/read_message", {"id": ",".join(ids[start:start + 100])})
+
+    def send_message(self, token: str, recipient_local_id: str, body: str, in_reply_to: str | None = None) -> None:
+        """Replies to a message, in its conversation."""
+        if not in_reply_to:
+            raise RemoteRejected("Only replies to Reddit messages are supported.", "no_thread")
+        self.reader.post("/api/comment", {"thing_id": in_reply_to, "text": body})

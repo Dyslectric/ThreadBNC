@@ -17,6 +17,7 @@ from .base import (
     NActor,
     NComment,
     NCommunity,
+    NInboxItem,
     NPost,
     RemoteAuthError,
     RemoteError,
@@ -402,6 +403,59 @@ class LemmyAdapter(ThreadiverseAdapter):
     def vote_comment(self, token: str, comment_id: str, score: int) -> NComment:
         data = self._call("POST", "/comment/like", token, {"comment_id": int(comment_id), "score": score})
         return self._comment(data["comment_view"])
+
+    # -- the account's inbox ------------------------------------------------
+    mentions_path = "/user/mention"
+    mentions_key = "mentions"
+    mention_record = "person_mention"
+    # How a mention is marked read: (path, id field).
+    mention_read = ("/user/mention/mark_as_read", "person_mention_id")
+
+    def _inbox_comment(self, kind: str, record: dict[str, Any], v: dict[str, Any]) -> NInboxItem:
+        c = self._comment(v)
+        p = v.get("post") or {}
+        return NInboxItem(
+            kind=kind, remote_id=str(record["id"]), unread=not record.get("read"), author=c.author,
+            author_local_id=str((v.get("creator") or {}).get("id") or "") or None,
+            body=c.body, created_at=c.created_at, deleted=c.deleted or c.removed, object_type="comment",
+            object_ap_id=c.ap_id, object_local_id=c.local_id,
+            post_ap_id=p.get("ap_id"), post_local_id=str(p["id"]) if p.get("id") is not None else None,
+            post_title=p.get("name") or p.get("title"), community=self._community(v.get("community") or {}))
+
+    def _inbox_message(self, v: dict[str, Any]) -> NInboxItem:
+        pm = v.get("private_message") or {}
+        creator = v.get("creator") or {}
+        return NInboxItem(
+            kind="message", remote_id=str(pm["id"]), unread=not pm.get("read"), author=self._actor(creator),
+            author_local_id=str(creator["id"]) if creator.get("id") is not None else None,
+            body=pm.get("content"), created_at=_ts(pm.get("published") or pm.get("published_at")),
+            deleted=bool(pm.get("deleted") or pm.get("removed")), object_type="message",
+            object_ap_id=pm.get("ap_id"), object_local_id=str(pm["id"]))
+
+    def inbox(self, token: str, me_ap_id: str, limit: int = 50) -> list[NInboxItem]:
+        """The newest replies, mentions and private messages, read and unread.
+        Messages you sent are left out."""
+        page = {"sort": "New", "page": 1, "limit": limit, "unread_only": "false"}
+        out = [self._inbox_comment("reply", v["comment_reply"], v)
+               for v in (self._call("GET", "/user/replies", token, **page) or {}).get("replies") or []]
+        data = self._call("GET", self.mentions_path, token, **page) or {}
+        out += [self._inbox_comment("mention", v[self.mention_record], v)
+                for v in data.get(self.mentions_key) or []]
+        data = self._call("GET", "/private_message/list", token, page=1, limit=limit, unread_only="false") or {}
+        out += [m for m in (self._inbox_message(v) for v in data.get("private_messages") or [])
+                if m.author.ap_id != me_ap_id]
+        return out
+
+    def mark_inbox_read(self, token: str, kind: str, remote_id: str, read: bool = True) -> None:
+        path, field = {"reply": ("/comment/mark_as_read", "comment_reply_id"), "mention": self.mention_read,
+                       "message": ("/private_message/mark_as_read", "private_message_id")}[kind]
+        self._call("POST", path, token, {field: int(remote_id), "read": read})
+
+    def mark_all_inbox_read(self, token: str, items: list[tuple[str, str]]) -> None:
+        self._call("POST", "/user/mark_all_as_read", token, {})
+
+    def send_message(self, token: str, recipient_local_id: str, body: str, in_reply_to: str | None = None) -> None:
+        self._call("POST", "/private_message", token, {"content": body, "recipient_id": int(recipient_local_id)})
 
     # -- moderation ------------------------------------------------------
     def _site_admins(self) -> set[str]:

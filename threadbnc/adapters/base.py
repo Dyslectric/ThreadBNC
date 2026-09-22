@@ -114,6 +114,29 @@ class NComment:
 
 
 @dataclass
+class NInboxItem:
+    """A reply, mention or private message to the logged-in account. Ids are
+    the account's server's own; `remote_id` is what marking it read takes."""
+
+    kind: str  # reply | mention | message
+    remote_id: str
+    unread: bool
+    author: NActor
+    body: str | None
+    created_at: str | None
+    object_type: str  # comment | post | message
+    object_ap_id: str | None = None
+    object_local_id: str | None = None
+    author_local_id: str | None = None
+    deleted: bool = False
+    subject: str | None = None
+    post_ap_id: str | None = None
+    post_local_id: str | None = None
+    post_title: str | None = None
+    community: NCommunity | None = None
+
+
+@dataclass
 class ModAction:
     """One moderation log entry relevant to an object.
 
@@ -305,3 +328,6 @@ class ThreadiverseAdapter(ABC):
     lock_post = feature_post = site_ban = site_banned = admin_settings = update_site = _unsupported
     create_post = edit_post = delete_post = vote_post = _unsupported
     create_comment = edit_comment = delete_comment = vote_comment = _unsupported
+    # the account's inbox: inbox(token, me_ap_id), mark_inbox_read(token, kind, remote_id, read),
+    # mark_all_inbox_read(token, [(kind, remote_id)]), send_message(token, recipient_local_id, body, in_reply_to)
+    inbox = mark_inbox_read = mark_all_inbox_read = send_message = _unsupported

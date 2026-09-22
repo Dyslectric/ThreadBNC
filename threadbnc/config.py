@@ -54,6 +54,7 @@ class Settings:
     reddit_poll_minutes: int = 60
     reddit_min_request_interval: float = 2.0
     rss_poll_minutes: int = 60  # feeds rarely change faster, and conditional requests keep checks cheap
+    inbox_poll_minutes: int = 5  # replies, mentions and messages; Reddit's at least REDDIT_MIN_POLL_MINUTES
 
 
 def _load_secret(data_dir: Path) -> str:
@@ -103,4 +104,5 @@ def load_settings() -> Settings:
         reddit_poll_minutes=max(REDDIT_MIN_POLL_MINUTES, _env_int("THREADBNC_REDDIT_POLL_MINUTES", 60)),
         reddit_min_request_interval=max(1.0, float(os.environ.get("THREADBNC_REDDIT_MIN_REQUEST_INTERVAL", "2.0"))),
         rss_poll_minutes=max(RSS_MIN_POLL_MINUTES, _env_int("THREADBNC_RSS_POLL_MINUTES", 60)),
+        inbox_poll_minutes=max(1, _env_int("THREADBNC_INBOX_POLL_MINUTES", 5)),
     )
