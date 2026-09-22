@@ -71,8 +71,11 @@ class FakeServer:
         self.join_request_lists = 0
         self.members_only = False  # posts readable only with a session (a private community)
         # Communities your account subscribed to (user, community local id), and what following answers.
+        # Following again resets the state to that answer, as Lemmy does for a remote community.
         self.subscriptions: set[tuple[str, str]] = set()
+        self.subscription_state: dict[tuple[str, str], str] = {}
         self.subscribe_answer = "subscribed"
+        self.follow_state_reads = 0
         # Single sign-on (Lemmy 1.0): providers, (provider id, provider identity) -> username,
         # and codes the fake identity provider handed out: code -> (identity, PKCE challenge).
         self.oauth_providers: list[dict] = []
@@ -448,9 +451,16 @@ class FakeAdapter(ThreadiverseAdapter):
         user = self._auth(token)
         if follow:
             self.s.subscriptions.add((user, community_id))
+            self.s.subscription_state[(user, community_id)] = self.s.subscribe_answer
             return self.s.subscribe_answer
         self.s.subscriptions.discard((user, community_id))
+        self.s.subscription_state.pop((user, community_id), None)
         return "not_subscribed"
+
+    def community_follow_state(self, token, community_id):
+        user = self._auth(token)
+        self.s.follow_state_reads += 1
+        return self.s.subscription_state.get((user, community_id), "not_subscribed")
 
     def vote_post(self, token, post_id, score):
         user = self._auth(token)

@@ -275,9 +275,8 @@ class Lemmy1Adapter(LemmyAdapter):
             raise RemoteNotFound(f"{self.domain} couldn't find {ref}")
         return str(data["person"]["id"]), self._actor(data["person"])
 
-    def follow_community(self, token: str, community_id: str, follow: bool = True) -> str:
-        data = self._call("POST", "/community/follow", token, {"community_id": int(community_id), "follow": follow})
-        view = (data or {}).get("community_view") or {}
+    @staticmethod
+    def _follow_state(view: dict[str, Any]) -> str:
         return follow_state((view.get("community_actions") or {}).get("follow_state") or view.get("subscribed"))
 
     def _resolve_as(self, token: str, ap_id: str) -> dict[str, str]:

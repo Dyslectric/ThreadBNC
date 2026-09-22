@@ -333,8 +333,9 @@ class ThreadiverseAdapter(ABC):
     # mark_all_inbox_read(token, [(kind, remote_id)]), send_message(token, recipient_local_id, body, in_reply_to)
     inbox = mark_inbox_read = mark_all_inbox_read = send_message = _unsupported
     # pushes through your own server (federation.py): fetch_comment(local_id) -> (NComment,
-    # post local id); follow_community(token, community_id, follow) -> subscribed | pending | not_subscribed
-    fetch_comment = follow_community = _unsupported
+    # post local id); follow_community(token, community_id, follow) -> subscribed | pending | not_subscribed;
+    # community_follow_state(token, community_id) -> the same, read without following again
+    fetch_comment = follow_community = community_follow_state = _unsupported
 
 
 # What following a community gave, from the several ways servers say it.

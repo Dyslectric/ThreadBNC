@@ -354,7 +354,17 @@ class LemmyAdapter(ThreadiverseAdapter):
         """Subscribe the account to a community (or unsubscribe it). Returns
         subscribed, pending (waiting for the community to accept) or not_subscribed."""
         data = self._call("POST", "/community/follow", token, {"community_id": int(community_id), "follow": follow})
-        return follow_state(((data or {}).get("community_view") or {}).get("subscribed"))
+        return self._follow_state((data or {}).get("community_view") or {})
+
+    def community_follow_state(self, token: str, community_id: str) -> str:
+        """Whether the account is subscribed, without asking again: following
+        again resets a remote community to pending and sends another Follow."""
+        data = self._call("GET", "/community", token, id=int(community_id)) or {}
+        return self._follow_state(data.get("community_view") or {})
+
+    @staticmethod
+    def _follow_state(view: dict[str, Any]) -> str:
+        return follow_state(view.get("subscribed"))
 
     def resolve_as(self, token: str, ap_id: str) -> dict[str, str]:
         """Local ids on this server for a post/comment/community ActivityPub id,

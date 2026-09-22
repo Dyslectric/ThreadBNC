@@ -349,6 +349,7 @@ class Federation:
                                     account.domain, now, False, result, keep_counts=True)
             conn.execute("UPDATE community_follows SET last_push_at=? WHERE community_id=?",
                          (now, thread["community_id"]))
+        self._mark_subscribed(thread["community_id"])  # its changes are arriving, whatever your server says
         self.bouncer._enrich_moderation(self.bouncer.adapter_for(account.domain), result, post.community)
         what = "comment" if comment is not None else "post"
         return "done", f"{what}: {result.new_revisions} new version(s), {result.new_events} event(s)"
@@ -405,6 +406,7 @@ class Federation:
         with self.db.transaction() as conn:
             conn.execute("UPDATE community_follows SET last_push_at=? WHERE community_id=?",
                          (utcnow(), f["community_id"]))
+        self._mark_subscribed(f["community_id"])
         return "done", f"captured as thread {tid}"
 
     # -- subscriptions ------------------------------------------------------------
@@ -486,8 +488,38 @@ class Federation:
             conn.execute("DELETE FROM ap_inbox WHERE status!='pending' AND received_at<?", (old,))
             waiting = [r[0] for r in conn.execute("SELECT community_id FROM community_follows "
                                                   "WHERE active=1 AND push_state='pending'")]
-        for cid in waiting:  # asking again tells whether the community has accepted
-            self.subscribe(cid)
+        for cid in waiting:
+            self.check_subscription(cid)
+
+    def check_subscription(self, community_id: int) -> str | None:
+        """Whether a pending subscription has been accepted yet, read from your
+        server. Only subscribes again when your server has no subscription."""
+        with self.db.connect() as conn:
+            row = conn.execute("SELECT c.canonical_ap_id, f.push_domain FROM communities c JOIN community_follows f "
+                               "ON f.community_id=c.id AND f.active=1 WHERE c.id=?", (community_id,)).fetchone()
+        account = self.account(row["push_domain"]) if row and row["push_domain"] else None
+        if account is None:
+            return None
+
+        def read(adapter: ThreadiverseAdapter, token: str) -> str:
+            local = adapter.resolve_as(token, row["canonical_ap_id"]).get("community")
+            return adapter.community_follow_state(token, local) if local else "not_subscribed"
+
+        try:
+            state = self.poster._run(account, read)
+        except AccountError as exc:
+            log.warning("checking %s's subscription to %s failed: %s", account.handle, row["canonical_ap_id"], exc)
+            return "pending"
+        if state == "not_subscribed":
+            return self.subscribe(community_id)
+        if state == "subscribed":
+            self._mark_subscribed(community_id)
+        return state
+
+    def _mark_subscribed(self, community_id: int) -> None:
+        with self.db.transaction() as conn:
+            conn.execute("UPDATE community_follows SET push_state='subscribed', push_error=NULL, push_changed_at=? "
+                         "WHERE community_id=? AND push_state='pending'", (utcnow(), community_id))
 
     def run_forever(self, idle_seconds: float = 60.0) -> None:
         log.info("push worker started for %s", ", ".join(self.relays))

@@ -349,3 +349,15 @@ def test_resolved_ids_are_remembered():
     a, http = adapter({("GET", "/resolve_object"): {}})  # not found: not remembered
     assert a.resolve_as("tok", ap) == {} and a.resolve_as("tok", ap) == {}
     assert len(http.called("GET", "/resolve_object")) == 2
+
+
+def test_follow_state_is_read_without_following_again():
+    views = iter([{"community_actions": {"follow_state": "Accepted"}},
+                  {"community_actions": {"follow_state": "Pending"}},
+                  {"subscribed": "Subscribed"},  # 0.19's shape
+                  {}])
+    a, http = adapter({("GET", "/community"): lambda p, b: {"community_view": next(views)}})
+    assert [a.community_follow_state("tok", "77") for _ in range(4)] == \
+        ["subscribed", "pending", "subscribed", "not_subscribed"]
+    assert http.called("GET", "/community")[0][0] == {"id": 77}
+    assert not http.called("POST", "/community/follow")

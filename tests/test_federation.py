@@ -210,8 +210,35 @@ def test_pending_subscription_polls_as_usual_until_accepted(fed, bouncer, server
     from threadbnc.db import parse_ts
     assert f["push_state"] == "pending"
     assert (parse_ts(f["next_poll_at"]) - parse_ts(f["last_polled_at"])).total_seconds() == 15 * 60
-    server.subscribe_answer = "subscribed"
+    # Still waiting: checked without following again (which would reset it to pending).
+    subscribed_before = set(server.subscriptions)
     fed.housekeeping()
+    assert server.follow_state_reads == 1 and server.subscriptions == subscribed_before
+    assert one(bouncer, "SELECT push_state FROM community_follows WHERE community_id=?", cid)[0] == "pending"
+    # Accepted: following again would still answer pending, but the check reads it.
+    server.subscription_state[("dave", "77")] = "subscribed"
+    fed._housekept = 0.0
+    fed.housekeeping()
+    assert one(bouncer, "SELECT push_state FROM community_follows WHERE community_id=?", cid)[0] == "subscribed"
+
+
+def test_pending_subscription_that_your_server_lost_is_asked_again(fed, bouncer, server):
+    server.subscribe_answer = "pending"
+    cid = bouncer.follow_community(f"!math@{DOMAIN}", 15, 30, False)
+    server.subscription_state.clear()
+    assert fed.check_subscription(cid) == "pending"
+    assert server.subscription_state == {("dave", "77"): "pending"}
+
+
+def test_a_push_arriving_shows_the_subscription_works(fed, bouncer, server):
+    server.subscribe_answer = "pending"  # e.g. your server never recorded the community's Accept
+    server.add_post("1", "Question", "body")
+    cid = bouncer.follow_community(f"!math@{DOMAIN}", 15, 30, True)
+    bouncer.poll_follow(cid)
+    assert one(bouncer, "SELECT push_state FROM community_follows WHERE community_id=?", cid)[0] == "pending"
+    server.add_comment("1", "10", "hello there", author=ALICE)
+    push(fed, announce(activity("Create", note(server, "1", "10"))))
+    assert last_push(bouncer)[0] == "done"
     assert one(bouncer, "SELECT push_state FROM community_follows WHERE community_id=?", cid)[0] == "subscribed"
 
 
