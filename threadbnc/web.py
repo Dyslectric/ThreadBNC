@@ -882,6 +882,14 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                            "normally; the others moved to the trash.")
         return RedirectResponse(back(request, f"/t/{tid}", safe_anchor(anchor)), status_code=303)
 
+    @app.post("/t/{tid}/read")
+    def set_thread_read(request: Request, tid: int, read: str = Form("1"), group: str | None = Form(None),
+                        anchor: str = Form("")):
+        """Mark a post (and its copies when `group`) read or, with read=0, unread."""
+        with db.transaction() as conn:
+            feed_mod.set_read(conn, utcnow(), group_of(tid, group), read == "1")
+        return RedirectResponse(back(request, f"/t/{tid}", safe_anchor(anchor)), status_code=303)
+
     @app.post("/t/{tid}/trash")
     def trash_thread(request: Request, tid: int, group: str | None = Form(None), anchor: str = Form("")):
         """`anchor`: the element to come back to (the next post), since this one leaves the page."""

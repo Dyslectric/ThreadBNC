@@ -155,3 +155,19 @@ def test_vote_counts_shown(settings, server, bouncer):
     assert "▲ 12" in page and "▲ 5" in page and "▼ 1" in page
     # vote changes are current state, not edits
     assert one(bouncer, "SELECT revision_count FROM objects WHERE object_type='post'")[0] == 1
+
+
+def test_mark_one_post_read_and_unread(settings, server, bouncer):
+    followed_with_posts(server, bouncer)
+    client = TestClient(create_app(settings, bouncer))
+    client.post("/login", data={"password": "pw"})
+    tid = one(bouncer, "SELECT id FROM archived_threads ORDER BY id DESC")[0]  # post 3
+    assert f'action="/t/{tid}/read"' in client.get("/").text
+    r = client.post(f"/t/{tid}/read", data={"read": "1", "anchor": f"p{tid}"},
+                    headers={"referer": "http://testserver/"}, follow_redirects=False)
+    assert r.headers["location"] == f"/#p{tid}"
+    unread = client.get("/?unread=1").text
+    assert "post 3" not in unread and "post 2" in unread
+    assert "Mark unread" in client.get("/").text
+    client.post(f"/t/{tid}/read", data={"read": "0"}, headers={"referer": "http://testserver/"})
+    assert "post 3" in client.get("/?unread=1").text

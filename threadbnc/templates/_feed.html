@@ -1,4 +1,4 @@
-{% from "_macros.html" import when, state_badges, votes, copy_where, icon, keep_button, trash_button %}
+{% from "_macros.html" import when, state_badges, votes, copy_where, icon, keep_button, read_button, trash_button %}
 {% from "_macros.html" import pager as load_more %}
 
 {# base: URL prefix ending in "?" or "&" that keeps any fixed params (e.g. tab) #}
@@ -117,6 +117,7 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
       {% if i.n_new %}<a href="/t/{{ i.id }}#comments" class="pill new">{{ i.n_new }} new</a>{% endif %}
       {{ votes(i.upvotes, i.downvotes, i.score, i.breakdown if i.group) }}
       <span class="grow"></span>
+      {{ read_button(i.id, i.unread, i.group, anchor='p' ~ i.id, short=True, refresh='p' ~ i.id) }}
       {{ keep_button(i.id, i.all_kept, i.group, anchor='p' ~ i.id, short=True, refresh='p' ~ i.id) }}
       {% if not i.all_kept %}{{ trash_button(i.id, i.group, ('p' ~ next_id) if next_id else '', short=True, refresh='p' ~ i.id) }}{% endif %}
       {{ repost_link(i, short=True) }}
@@ -153,6 +154,7 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
       <a class="act" href="/t/{{ i.id }}#comments">{{ icon('comment') }}<span>{{ i.n_comments }} comment{{ 's' if i.n_comments != 1 }}</span></a>
       {% if i.n_new %}<a href="/t/{{ i.id }}#comments" class="pill new">{{ i.n_new }} new</a>{% endif %}
       {{ votes(i.upvotes, i.downvotes, i.score, i.breakdown if i.group) }}
+      {{ read_button(i.id, i.unread, i.group, anchor='p' ~ i.id, refresh='p' ~ i.id) }}
       {{ keep_button(i.id, i.all_kept, i.group, anchor='p' ~ i.id, refresh='p' ~ i.id) }}
       {% if not i.all_kept %}
         {{ trash_button(i.id, i.group, ('p' ~ next_id) if next_id else '', refresh='p' ~ i.id) }}
@@ -181,6 +183,7 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
     <a class="act" href="/t/{{ i.id }}#comments">{{ icon('comment') }}<span>{{ i.n_comments }} comment{{ 's' if i.n_comments != 1 }}</span></a>
     {% if i.n_new %}<a href="/t/{{ i.id }}#comments" class="pill new">{{ i.n_new }} new</a>{% endif %}
     {{ votes(i.upvotes, i.downvotes, i.score, i.breakdown if i.group) }}
+    {{ read_button(i.id, i.unread, i.group, anchor='p' ~ i.id, refresh='p' ~ i.id) }}
     {{ keep_button(i.id, i.all_kept, i.group, anchor='p' ~ i.id, refresh='p' ~ i.id) }}
     {% if not i.all_kept %}{{ trash_button(i.id, i.group, ('p' ~ next_id) if next_id else '', refresh='p' ~ i.id) }}{% endif %}
     {{ repost_link(i) }}

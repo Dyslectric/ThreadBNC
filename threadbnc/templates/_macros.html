@@ -83,6 +83,17 @@
 </form>
 {%- endmacro %}
 
+{# Mark a post (and its copies when `group`) read, or unread again. #}
+{% macro read_button(tid, unread, group=False, anchor='', short=False, refresh='') -%}
+<form method="post" action="/t/{{ tid }}/read" class="inline" data-inplace="{{ refresh }}"{% if unread %} data-gone="Marked read"{% endif %}>
+  <input type="hidden" name="read" value="{{ '1' if unread else '0' }}">
+  {% if group %}<input type="hidden" name="group" value="1">{% endif %}
+  {% if anchor %}<input type="hidden" name="anchor" value="{{ anchor }}">{% endif %}
+  <button class="act" data-key="read" title="{{ 'Mark' ~ (' every copy' if group) ~ (' read' if unread else ' unread') }} (m)">
+    {{ icon('check' if unread else 'inbox') }}<span class="{{ 'sr-only' if short }}">{{ 'Mark read' if unread else 'Mark unread' }}</span></button>
+</form>
+{%- endmacro %}
+
 {# Move a thread (and its copies when `group`) to the trash. `next_anchor`: the
    element to come back to, since this one leaves the page. #}
 {% macro trash_button(tid, group=False, next_anchor='', short=False, refresh='') -%}

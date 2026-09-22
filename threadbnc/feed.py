@@ -209,6 +209,20 @@ def mark_seen(conn: Conn, now: str, thread_ids: list[int]) -> int:
     return n
 
 
+def set_read(conn: Conn, now: str, thread_ids: list[int], read: bool = True) -> None:
+    """Mark these posts read, as if opened, or unread again (as if never
+    opened, so they count as new and none of their comments are highlighted)."""
+    if not thread_ids:
+        return
+    marks = ",".join("?" * len(thread_ids))
+    if read:
+        conn.execute(f"UPDATE archived_threads SET last_viewed_at=? WHERE id IN ({marks}) AND last_viewed_at IS NULL",
+                     [now, *thread_ids])
+    else:
+        conn.execute(f"UPDATE archived_threads SET prev_viewed_at=last_viewed_at, last_viewed_at=NULL "
+                     f"WHERE id IN ({marks}) AND last_viewed_at IS NOT NULL", thread_ids)
+
+
 def media_share(conn: Conn, community_id: int) -> tuple[int, int]:
     """(posts with an archived image or video, posts) among a community's
     recent stored posts: what "auto" view uses to pick tiles for image-centric
