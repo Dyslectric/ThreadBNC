@@ -525,12 +525,13 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                              "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
 
     @app.get("/", response_class=HTMLResponse)
-    def home(request: Request, sort: str = "new", t: str = "all", unread: int = 0, page: int = 1,
+    def home(request: Request, sort: str = "new", t: str = "all", unread: str = "", page: int = 1,
              view: str | None = None):
         save_view("home_view", view)
         chosen = db.get_setting("home_view")
         with db.connect() as conn:
-            fp = feed_mod.load_feed(conn, sort=sort, window=t, unread=bool(unread), page=page)
+            unread = feed_mod.unread_mode(unread)
+            fp = feed_mod.load_feed(conn, sort=sort, window=t, unread=unread, page=page)
             follows = feed_mod.followed_communities(conn)
         # The home feed mixes communities, so "auto" goes by what's on this page.
         shown = feed_mod.pick_view(chosen, sum(1 for i in fp.items if i["thumb"]), len(fp.items))
@@ -728,7 +729,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
 
     @app.get("/c/{cid}", response_class=HTMLResponse)
     def community(request: Request, cid: int, tab: str = "feed", sort: str = "new", t: str = "all",
-                  unread: int = 0, page: int = 1, live_sort: str = "Hot", view: str | None = None):
+                  unread: str = "", page: int = 1, live_sort: str = "Hot", view: str | None = None):
         save_view("", view, cid)
         with db.connect() as conn:
             c = conn.execute("SELECT c.*, i.domain FROM communities c JOIN instances i ON i.id=c.instance_id "
@@ -738,7 +739,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             follow_row = conn.execute("SELECT * FROM community_follows WHERE community_id=?", (cid,)).fetchone()
             fp, shown = None, "list"
             if tab in ("feed", "kept"):
-                fp = feed_mod.load_feed(conn, community_id=cid, sort=sort, window=t, unread=bool(unread),
+                unread = feed_mod.unread_mode(unread)
+                fp = feed_mod.load_feed(conn, community_id=cid, sort=sort, window=t, unread=unread,
                                         kept_only=tab == "kept", page=page)
                 shown = feed_mod.pick_view(c["view_mode"], *feed_mod.media_share(conn, cid))
             counts = {r["k"]: r["n"] for r in conn.execute(

@@ -71,7 +71,7 @@
         <section class="card empty"><p class="muted">
           {% if tab == 'kept' %}Nothing kept from this community yet. Use Keep on a post.
           {% elif not following %}You're not following this community. Follow it to fill this feed, or browse the Live tab.
-          {% elif unread %}You're all caught up.{% else %}No posts captured yet.{% endif %}
+          {% elif unread == 'comments' %}No new comments on posts you've read.{% elif unread %}You're all caught up.{% else %}No posts captured yet.{% endif %}
         </p></section>
       {% endif %}
       {{ pager(feed, base, sort, window, unread) }}

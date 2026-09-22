@@ -81,8 +81,19 @@ LIMIT ? OFFSET ?
 """
 
 
+# The unread filter: posts not opened yet, read posts with new comments, or either.
+UNREAD = {"posts": "g_unread > 0", "comments": "g_new > 0", "any": "(g_unread > 0 OR g_new > 0)"}
+
+
+def unread_mode(value: Any) -> str:
+    """The unread filter named by a URL value; "1" (older links) means either."""
+    if value in UNREAD:
+        return value
+    return "any" if value is True or value == "1" else ""
+
+
 def load_feed(conn: Conn, *, community_id: int | None = None, sort: str = "new",
-              window: str = "all", unread: bool = False, kept_only: bool = False, page: int = 1,
+              window: str = "all", unread: str | bool = "", kept_only: bool = False, page: int = 1,
               per_page: int = 25) -> FeedPage:
     args: list[Any] = []
     if community_id is not None:
@@ -97,7 +108,8 @@ def load_feed(conn: Conn, *, community_id: int | None = None, sort: str = "new",
     if delta is not None:
         filters += " AND created_at >= ?"
         args.append(fmt_ts(datetime.now(timezone.utc) - delta))
-    group_filters = " AND (g_unread > 0 OR g_new > 0)" if unread else ""
+    mode = unread_mode(unread)
+    group_filters = f" AND {UNREAD[mode]}" if mode else ""
     order = SORTS.get(sort, SORTS["new"])
     page = max(1, page)
     rows = conn.execute(_BASE.format(scope=scope, filters=filters, group_filters=group_filters, order=order),

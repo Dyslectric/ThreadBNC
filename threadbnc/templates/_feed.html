@@ -1,9 +1,10 @@
 {% from "_macros.html" import when, state_badges, votes, copy_where, icon, keep_button, read_button, trash_button %}
 {% from "_macros.html" import pager as load_more %}
 
-{# base: URL prefix ending in "?" or "&" that keeps any fixed params (e.g. tab) #}
+{# base: URL prefix ending in "?" or "&" that keeps any fixed params (e.g. tab).
+   unread: '', or the unread filter (posts, comments or any). #}
 {% macro feed_url(base, sort, window, unread, page=1) -%}
-{{ base }}sort={{ sort }}&t={{ window }}{% if unread %}&unread=1{% endif %}{% if page > 1 %}&page={{ page }}{% endif %}
+{{ base }}sort={{ sort }}&t={{ window }}{% if unread %}&unread={{ unread }}{% endif %}{% if page > 1 %}&page={{ page }}{% endif %}
 {%- endmacro %}
 
 {% macro controls(base, sort, window, unread, community_id=none, view='list', view_chosen=none) %}
@@ -28,8 +29,18 @@
     </div>
   </details>
   {% endif %}
-  <a href="{{ feed_url(base, sort, window, not unread) }}" class="toggle {{ 'on' if unread }}" aria-pressed="{{ 'true' if unread else 'false' }}">
-    <span class="dot" aria-hidden="true"></span>Unread only</a>
+  {# (value, menu item, button label). New comments: on posts already read. #}
+  {% set shows = [('', 'All posts', 'Unread'), ('posts', 'Unread posts', 'Unread posts'),
+                  ('comments', 'New comments', 'New comments'), ('any', 'Either', 'Unread or new')] %}
+  <details class="menu dropdown">
+    <summary class="toggle {{ 'on' if unread }}" aria-label="Show: {{ (shows | selectattr(0, 'eq', unread) | first)[1] }}">
+      <span class="dot" aria-hidden="true"></span>{{ (shows | selectattr(0, 'eq', unread) | first)[2] }}{{ icon('chevron-down', 'chev') }}</summary>
+    <div class="menu-panel">
+      {% for key, label, _ in shows %}
+        <a class="menu-item {{ 'on' if unread == key }}" href="{{ feed_url(base, sort, window, key) }}"><span class="tick">{% if unread == key %}{{ icon('check') }}{% endif %}</span>{{ label }}</a>
+      {% endfor %}
+    </div>
+  </details>
   <span class="grow"></span>
   <form method="post" action="/feed/mark-read" class="inline" data-inplace="items">
     {% if community_id %}<input type="hidden" name="community_id" value="{{ community_id }}">{% endif %}

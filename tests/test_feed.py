@@ -171,3 +171,28 @@ def test_mark_one_post_read_and_unread(settings, server, bouncer):
     assert "Mark unread" in client.get("/").text
     client.post(f"/t/{tid}/read", data={"read": "0"}, headers={"referer": "http://testserver/"})
     assert "post 3" in client.get("/?unread=1").text
+
+
+def test_unread_filter_picks_unread_posts_or_new_comments(settings, server, bouncer):
+    followed_with_posts(server, bouncer)
+    tid = one(bouncer, "SELECT t.id FROM archived_threads t JOIN objects o ON o.id=t.root_object_id "
+                       "WHERE o.canonical_ap_id=?", f"https://{DOMAIN}/post/2")[0]
+    with bouncer.db.transaction() as conn:
+        feed.set_read(conn, utcnow(), [tid])
+    server.add_comment("2", "20", "fresh")
+    bouncer.sync_thread(tid)
+
+    def titles(unread):
+        with bouncer.db.connect() as conn:
+            return [i["title"] for i in feed.load_feed(conn, unread=unread).items]
+    assert titles("posts") == ["post 3", "post 1"]
+    assert titles("comments") == ["post 2"]
+    assert titles("any") == titles(True) == ["post 3", "post 2", "post 1"]
+    assert feed.unread_mode("1") == "any" and feed.unread_mode("nonsense") == ""
+
+    client = TestClient(create_app(settings, bouncer))
+    client.post("/login", data={"password": "pw"})
+    html = client.get("/?unread=comments").text
+    assert "post 2" in html and "post 3" not in html and "unread=comments" in html
+    client.post("/feed/mark-read")
+    assert "No new comments on posts you" in client.get("/?unread=comments").text

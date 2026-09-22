@@ -24,7 +24,7 @@
       {{ posts(feed.items, view) }}
       {% if not feed.items %}
         <section class="card empty"><p class="muted">
-          {% if unread %}You're all caught up.{% elif window != 'all' %}Nothing in this time range.{% else %}No posts captured yet. The bouncer checks followed communities every few minutes.{% endif %}
+          {% if unread == 'comments' %}No new comments on posts you've read.{% elif unread %}You're all caught up.{% elif window != 'all' %}Nothing in this time range.{% else %}No posts captured yet. The bouncer checks followed communities every few minutes.{% endif %}
         </p></section>
       {% endif %}
       {{ pager(feed, "/?", sort, window, unread) }}

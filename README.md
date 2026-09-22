@@ -36,7 +36,7 @@ Everything else stays, but the archive is only as durable as the disk and databa
 
 | Page | What it's for |
 |---|---|
-| **Feed** (`/`) | Posts from every followed community. Sort by New, Active, Top or Most comments; filter by day, week, month or all time; show unread only; mark all read. The sidebar lists followed communities with unread counts. |
+| **Feed** (`/`) | Posts from every followed community. Sort by New, Active, Top or Most comments; filter by day, week, month or all time; show only unread posts, read posts with new comments, or either; mark posts read one at a time or all at once. The sidebar lists followed communities with unread counts. |
 | **Community** (`/c/{id}`) | The same feed for one community, plus ★ Kept, **Live on server** (browse its full history, fetched live), **Media** (what it archives, size limit, transcoding) and a log. Follow settings sit behind the "✓ Following" pill. |
 | **Communities** | Follow a community (starts with its current first page) and manage the check interval and retention for each one. |
 | **★ Kept** | Keep a post by link, see kept threads grouped by community, recent changes and the bouncer queue. |
