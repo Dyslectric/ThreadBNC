@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -18,6 +19,13 @@ SORTS = {  # NULLS LAST: Postgres otherwise puts NULLs first in DESC order
     "comments": "g_comments DESC, created_at DESC NULLS LAST, id DESC",
 }
 WINDOWS = {"day": timedelta(days=1), "week": timedelta(days=7), "month": timedelta(days=30), "all": None}
+VIEWS = ("list", "tiles")
+# "Auto" shows tiles when at least this share of recent posts have an image or video.
+TILES_WHEN = 0.6
+MEDIA_SAMPLE = 40  # recent posts looked at to decide
+TILES_MIN_POSTS = 4  # too few posts to tell: stay a list
+_VISUAL = ("m.status='ok' AND (m.content_type LIKE 'image/%' OR m.content_type LIKE 'video/%') "
+           "AND m.content_type != 'image/svg+xml'")
 
 _IMG = re.compile(r"!\[[^\]]*\]\([^)]*\)")
 _LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
@@ -53,7 +61,7 @@ SELECT * FROM (
            t.source_domain, o.id AS oid, o.created_at, o.score, o.cur_deleted, o.cur_removed, o.cur_locked,
            o.cur_missing, o.revision_count, o.thumbnail_url, o.upvotes, o.downvotes, o.dupe_key,
            COALESCE(o.dupe_key, 'thread:' || t.id) AS dkey,
-           r.title, r.body, r.url, a.username, a.instance AS a_instance,
+           r.title, r.body, r.url, r.metadata_json AS rmeta, a.username, a.instance AS a_instance,
            c.name AS cname, c.canonical_ap_id AS c_ap,
            (SELECT COUNT(*) FROM objects x WHERE x.thread_id=t.id AND x.object_type='comment') AS n_comments,
            (SELECT COUNT(*) FROM objects x WHERE x.thread_id=t.id AND x.discovered_late=1
@@ -100,6 +108,8 @@ def load_feed(conn: Conn, *, community_id: int | None = None, sort: str = "new",
     for i in items:
         i["excerpt"] = excerpt(i["body"])
         i["thumb"] = thumbs.get(i["oid"])
+        meta = json.loads(i.pop("rmeta") or "{}")
+        i["nsfw"], i["spoiler"] = bool(meta.get("nsfw")), bool(meta.get("spoiler"))
         attach_group(i, copies.get(i["dupe_key"]) or [])
     return FeedPage(items, page, len(rows) > per_page)
 
@@ -131,8 +141,7 @@ def _thumbnails(conn: Conn,
     marks = ",".join("?" * len(ids))
     rows = conn.execute(
         f"SELECT r.object_id, m.id, m.url, m.content_type FROM media_refs r JOIN media m ON m.id=r.media_id "
-        f"WHERE r.object_id IN ({marks}) AND m.status='ok' AND (m.content_type LIKE 'image/%' "
-        f"OR m.content_type LIKE 'video/%') AND m.content_type != 'image/svg+xml' ORDER BY m.id", ids,
+        f"WHERE r.object_id IN ({marks}) AND {_VISUAL} ORDER BY m.id", ids,
     ).fetchall()
     links = {oid: url for oid, url, _ in roots}
     previews = {oid: thumb for oid, _, thumb in roots}
@@ -166,3 +175,24 @@ def mark_read(conn: Conn, now: str, community_id: int | None = None) -> None:
     conn.execute(
         f"UPDATE archived_threads SET prev_viewed_at=last_viewed_at, last_viewed_at=? "
         f"WHERE trashed_at IS NULL AND {scope[0]}", [now, *scope[1]])
+
+
+def media_share(conn: Conn, community_id: int) -> tuple[int, int]:
+    """(posts with an archived image or video, posts) among a community's
+    recent stored posts: what "auto" view uses to pick tiles for image-centric
+    communities."""
+    row = conn.execute(
+        f"""SELECT COUNT(*) AS n, SUM(CASE WHEN EXISTS(
+                SELECT 1 FROM media_refs r JOIN media m ON m.id=r.media_id
+                WHERE r.object_id=x.root_object_id AND {_VISUAL}) THEN 1 ELSE 0 END) AS visual
+            FROM (SELECT root_object_id FROM archived_threads WHERE community_id=? AND trashed_at IS NULL
+                  AND root_object_id IS NOT NULL ORDER BY id DESC LIMIT ?) AS x""",
+        (community_id, MEDIA_SAMPLE)).fetchone()
+    return row["visual"] or 0, row["n"]
+
+
+def pick_view(chosen: str | None, visual: int, total: int) -> str:
+    """The view to show: the one you chose, else tiles for media-heavy feeds."""
+    if chosen in VIEWS:
+        return chosen
+    return "tiles" if total >= TILES_MIN_POSTS and visual >= TILES_WHEN * total else "list"

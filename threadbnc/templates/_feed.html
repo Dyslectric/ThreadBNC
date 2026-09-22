@@ -5,7 +5,7 @@
 {{ base }}sort={{ sort }}&t={{ window }}{% if unread %}&unread=1{% endif %}{% if page > 1 %}&page={{ page }}{% endif %}
 {%- endmacro %}
 
-{% macro controls(base, sort, window, unread, community_id=none) %}
+{% macro controls(base, sort, window, unread, community_id=none, view='list', view_chosen=none) %}
 <div class="feed-controls">
   <div class="seg">
     {% for key, label in [('new', 'New'), ('active', 'Active'), ('top', 'Top'), ('comments', 'Most comments')] %}
@@ -22,7 +22,62 @@
     {% if community_id %}<input type="hidden" name="community_id" value="{{ community_id }}">{% endif %}
     <button class="small secondary">Mark all read</button>
   </form>
+  <div class="view-switch">
+    <div class="seg" role="group" aria-label="Show posts as">
+      <a href="{{ base }}view=list" class="{{ 'on' if view == 'list' }}" title="One post per row">☰ List</a>
+      <a href="{{ base }}view=tiles" class="{{ 'on' if view == 'tiles' }}" title="A grid of images, for image-centric communities">▦ Tiles</a>
+    </div>
+    {% if view_chosen %}<a href="{{ base }}view=auto" class="small muted" title="Pick list or tiles by how much of the feed is images">auto</a>
+    {% else %}<span class="small muted" title="Chosen by how much of the feed is images; pick one to keep it">auto</span>{% endif %}
+  </div>
 </div>
+{% endmacro %}
+
+{# A post as a grid tile: its image or video, else a text card. NSFW and
+   spoiler media stays blurred until hovered or focused. #}
+{% macro post_tile(i, show_community=True) %}
+<article class="tile {{ 'unread' if i.unread }} {{ 'kept' if i.all_kept }} {{ 'veiled' if (i.nsfw or i.spoiler) and i.thumb }}">
+  <a class="tile-media" href="/t/{{ i.id }}" tabindex="-1" aria-hidden="true">
+    {% if i.thumb %}
+      {% if i.thumb.video %}<video src="/media/{{ i.thumb.id }}" muted preload="metadata"></video>
+      {% else %}<img src="/media/{{ i.thumb.id }}" alt="" loading="lazy">{% endif %}
+    {% else %}<span class="tile-text">{{ i.excerpt or i.title }}</span>{% endif %}
+    {% if i.thumb and i.thumb.video %}<span class="tile-badge right" title="Video">▶</span>{% endif %}
+    {% if i.group %}<span class="tile-badge" title="Posted {{ i.copies | length }} times">×{{ i.copies | length }}</span>{% endif %}
+    {% if (i.nsfw or i.spoiler) and i.thumb %}<span class="tile-veil">{{ 'NSFW' if i.nsfw else 'Spoiler' }}</span>{% endif %}
+  </a>
+  <div class="tile-body">
+    <h3 class="tile-title"><a href="/t/{{ i.id }}">{{ i.title }}</a></h3>
+    <div class="tile-meta small">
+      {% if show_community %}<a class="pc-community" href="/c/{{ i.community_id }}">{{ chandle(i.cname, i.c_ap) }}</a> · {% endif %}{{ when(i.created_at) }}
+      {% if i.nsfw %}<span class="pill bad">NSFW</span>{% endif %}
+    </div>
+    <div class="tile-actions small">
+      <a href="/t/{{ i.id }}#comments" title="{{ i.n_comments }} comment{{ 's' if i.n_comments != 1 }}">💬 {{ i.n_comments }}</a>
+      {% if i.n_new %}<a href="/t/{{ i.id }}#comments" class="pill new">{{ i.n_new }} new</a>{% endif %}
+      {{ votes(i.upvotes, i.downvotes, i.score, i.breakdown if i.group) }}
+      {% set g = '<input type="hidden" name="group" value="1">' | safe if i.group else '' %}
+      <span class="tile-buttons">
+      {% if i.all_kept %}
+        <form method="post" action="/t/{{ i.id }}/unkeep" class="inline">{{ g }}<button class="chip on" title="Kept permanently. Click to unkeep.">★</button></form>
+      {% else %}
+        <form method="post" action="/t/{{ i.id }}/keep" class="inline">{{ g }}<button class="chip" title="Keep permanently">☆</button></form>
+        <form method="post" action="/t/{{ i.id }}/trash" class="inline">{{ g }}<button class="chip ghost" title="Hide from feed">✕</button></form>
+      {% endif %}
+      {% if is_reddit(i.c_ap) %}<a class="chip" href="/t/{{ i.id }}/repost" title="Repost to one of your communities">↻</a>{% endif %}
+      </span>
+    </div>
+  </div>
+</article>
+{% endmacro %}
+
+{# The feed's posts, as a list or a grid of tiles. `empty` is shown when there are none. #}
+{% macro posts(items, view, show_community=True) %}
+{% if view == 'tiles' and items %}
+  <div class="tiles">{% for i in items %}{{ post_tile(i, show_community) }}{% endfor %}</div>
+{% else %}
+  {% for i in items %}{{ post_card(i, show_community) }}{% endfor %}
+{% endif %}
 {% endmacro %}
 
 {% macro post_card(i, show_community=True) %}

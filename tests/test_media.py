@@ -169,3 +169,57 @@ def test_pending_article_links_from_before_are_skipped(server, mbouncer):
     rows = media_rows(mbouncer)
     assert rows["https://news.test/story"]["status"] == "skipped"
     assert rows["https://img.test/embedded"]["status"] == "pending"  # embedded images still fetched
+
+
+def picture_community(server, bouncer, pictures=4, texts=0):
+    for k in range(pictures):
+        server.add_post(str(k + 1), f"picture {k + 1}", "")
+        server.edit_post(str(k + 1), url=f"https://img.test/cat.gif?n={k}", created_at=utcnow())  # distinct links
+    for k in range(texts):
+        server.add_post(str(100 + k), f"text {k + 1}", "just words", created=utcnow())
+    cid = bouncer.follow_community(f"!math@{DOMAIN}", 10, 7, backfill=True)
+    bouncer.poll_follow(cid)
+    bouncer.media.fetch_pending()
+    return cid
+
+
+def test_image_communities_show_as_tiles_automatically(settings, server, mbouncer):
+    cid = picture_community(server, mbouncer)
+    client = TestClient(create_app(settings, mbouncer))
+    client.post("/login", data={"password": "pw"})
+    page = client.get(f"/c/{cid}").text
+    assert 'class="tiles"' in page and page.count('class="tile ') == 4 and 'class="post-card' not in page
+    assert "▦ Tiles</a>" in page and '<span class="small muted" title="Chosen by' in page  # auto, not chosen
+    home = client.get("/").text
+    assert 'class="tiles"' in home
+
+
+def test_mostly_text_communities_stay_a_list(settings, server, mbouncer):
+    cid = picture_community(server, mbouncer, pictures=2, texts=3)
+    client = TestClient(create_app(settings, mbouncer))
+    client.post("/login", data={"password": "pw"})
+    assert 'class="tiles"' not in client.get(f"/c/{cid}").text
+
+
+def test_view_choice_is_remembered_per_community(settings, server, mbouncer):
+    cid = picture_community(server, mbouncer)
+    client = TestClient(create_app(settings, mbouncer))
+    client.post("/login", data={"password": "pw"})
+    assert 'class="tiles"' not in client.get(f"/c/{cid}?view=list").text
+    assert 'class="tiles"' not in client.get(f"/c/{cid}?tab=kept").text  # remembered, kept tab too
+    assert 'class="tiles"' in client.get("/").text  # the home feed has its own setting
+    client.get("/?view=list")
+    assert 'class="tiles"' not in client.get("/").text
+    client.get(f"/c/{cid}?view=auto")
+    assert 'class="tiles"' in client.get(f"/c/{cid}").text
+
+
+def test_nsfw_tiles_are_veiled(settings, server, mbouncer):
+    cid = picture_community(server, mbouncer)
+    server.edit_post("1", metadata={"nsfw": True})
+    tid = mbouncer.ingest_url(f"https://{DOMAIN}/post/1")
+    mbouncer.sync_thread(tid, force=True)
+    client = TestClient(create_app(settings, mbouncer))
+    client.post("/login", data={"password": "pw"})
+    page = client.get(f"/c/{cid}").text
+    assert page.count(" veiled") == 1 and '<span class="tile-veil">NSFW</span>' in page

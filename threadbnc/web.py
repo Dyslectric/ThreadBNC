@@ -453,13 +453,33 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             row = conn.execute("SELECT thread_id FROM objects WHERE id=?", (oid,)).fetchone()
         return f"/t/{row[0]}" if row and row[0] else "/"
 
+    def save_view(key: str, view: str | None, cid: int | None = None) -> None:
+        """Remember a List/Tiles choice ('auto' forgets it) for a community, or
+        for the home feed."""
+        if view not in (*feed_mod.VIEWS, "auto"):
+            return
+        value = None if view == "auto" else view
+        with db.transaction() as conn:
+            if cid is not None:
+                conn.execute("UPDATE communities SET view_mode=? WHERE id=?", (value, cid))
+            elif value is None:
+                conn.execute("DELETE FROM app_settings WHERE key=?", (key,))
+            else:
+                conn.execute("INSERT INTO app_settings(key, value) VALUES (?, ?) "
+                             "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
+
     @app.get("/", response_class=HTMLResponse)
-    def home(request: Request, sort: str = "new", t: str = "all", unread: int = 0, page: int = 1):
+    def home(request: Request, sort: str = "new", t: str = "all", unread: int = 0, page: int = 1,
+             view: str | None = None):
+        save_view("home_view", view)
+        chosen = db.get_setting("home_view")
         with db.connect() as conn:
             fp = feed_mod.load_feed(conn, sort=sort, window=t, unread=bool(unread), page=page)
             follows = feed_mod.followed_communities(conn)
+        # The home feed mixes communities, so "auto" goes by what's on this page.
+        shown = feed_mod.pick_view(chosen, sum(1 for i in fp.items if i["thumb"]), len(fp.items))
         return render(request, "feed.html", feed=fp, follows=follows, sort=sort, window=t, unread=unread,
-                      base_url="/", community=None)
+                      base_url="/", community=None, view=shown, view_chosen=chosen)
 
     @app.post("/feed/mark-read")
     def mark_read(request: Request, community_id: int | None = Form(None)):
@@ -610,17 +630,19 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
 
     @app.get("/c/{cid}", response_class=HTMLResponse)
     def community(request: Request, cid: int, tab: str = "feed", sort: str = "new", t: str = "all",
-                  unread: int = 0, page: int = 1, live_sort: str = "Hot"):
+                  unread: int = 0, page: int = 1, live_sort: str = "Hot", view: str | None = None):
+        save_view("", view, cid)
         with db.connect() as conn:
             c = conn.execute("SELECT c.*, i.domain FROM communities c JOIN instances i ON i.id=c.instance_id "
                              "WHERE c.id=?", (cid,)).fetchone()
             if not c:
                 raise HTTPException(404)
             follow_row = conn.execute("SELECT * FROM community_follows WHERE community_id=?", (cid,)).fetchone()
-            fp = None
+            fp, shown = None, "list"
             if tab in ("feed", "kept"):
                 fp = feed_mod.load_feed(conn, community_id=cid, sort=sort, window=t, unread=bool(unread),
                                         kept_only=tab == "kept", page=page)
+                shown = feed_mod.pick_view(c["view_mode"], *feed_mod.media_share(conn, cid))
             counts = {r["k"]: r["n"] for r in conn.execute(
                 "SELECT CASE WHEN trashed_at IS NOT NULL THEN 'trash' ELSE retention END AS k, COUNT(*) n "
                 "FROM archived_threads WHERE community_id=? GROUP BY 1", (cid,))}
@@ -658,7 +680,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         return render(request, "community.html", c=c, follow=follow_row, tab=tab, feed=fp, counts=counts,
                       events=cevents, live=live, live_error=live_error, sort=sort, window=t, unread=unread,
                       page=page, live_sort=live_sort, follows=follows, base_url=f"/c/{cid}",
-                      community=c, powers=powers, mod_data=mod_data)
+                      community=c, powers=powers, mod_data=mod_data, view=shown, view_chosen=c["view_mode"])
 
     # ---- media ----------------------------------------------------------
     media_root = (bouncer.media_dir).resolve()

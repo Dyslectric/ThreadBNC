@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% from "_macros.html" import when, votes %}
-{% from "_feed.html" import controls, post_card, pager, sidebar %}
+{% from "_feed.html" import controls, posts, pager, sidebar %}
 {% block title %}{{ chandle(c.name, c.canonical_ap_id, True) }}{% endblock %}
 {% block content %}
 {% set following = follow and follow.active %}
@@ -58,14 +58,15 @@
     </nav>
 
     {% if tab in ('feed', 'kept') %}
-      {{ controls(base, sort, window, unread, c.id) }}
-      {% for i in feed.items %}{{ post_card(i, show_community=False) }}{% else %}
+      {{ controls(base, sort, window, unread, c.id, view, view_chosen) }}
+      {{ posts(feed.items, view, show_community=False) }}
+      {% if not feed.items %}
         <section class="card empty"><p class="muted">
           {% if tab == 'kept' %}Nothing kept from this community yet. Use ☆ Keep on a post.
           {% elif not following %}You're not following this community. Follow it to fill this feed, or browse the Live tab.
           {% elif unread %}You're all caught up.{% else %}No posts captured yet.{% endif %}
         </p></section>
-      {% endfor %}
+      {% endif %}
       {{ pager(feed, base, sort, window, unread) }}
 
     {% elif tab == 'live' %}

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_feed.html" import controls, post_card, pager, sidebar %}
+{% from "_feed.html" import controls, posts, pager, sidebar %}
 {% block title %}Feed{% endblock %}
 {% block content %}
 <div class="layout">
@@ -18,13 +18,14 @@
     {% else %}
       <div class="feed-head">
         <h1>Your feed</h1>
-        {{ controls("/?", sort, window, unread) }}
+        {{ controls("/?", sort, window, unread, view=view, view_chosen=view_chosen) }}
       </div>
-      {% for i in feed.items %}{{ post_card(i) }}{% else %}
+      {{ posts(feed.items, view) }}
+      {% if not feed.items %}
         <section class="card empty"><p class="muted">
           {% if unread %}You're all caught up.{% elif window != 'all' %}Nothing in this time range.{% else %}No posts captured yet. The bouncer checks followed communities every few minutes.{% endif %}
         </p></section>
-      {% endfor %}
+      {% endif %}
       {{ pager(feed, "/?", sort, window, unread) }}
     {% endif %}
   </div>

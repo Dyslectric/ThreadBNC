@@ -49,7 +49,8 @@ CREATE TABLE IF NOT EXISTS communities (
     last_seen_at TEXT NOT NULL,
     cur_removed INTEGER NOT NULL DEFAULT 0,
     cur_deleted INTEGER NOT NULL DEFAULT 0,
-    moderators_json TEXT      -- last observed moderator actor ids (JSON list)
+    moderators_json TEXT,     -- last observed moderator actor ids (JSON list)
+    view_mode TEXT            -- feed shown as 'list' or 'tiles'; NULL = decide from how much media it has
 );
 
 -- A followed community: bouncer polls its new posts and auto-captures them
@@ -358,6 +359,7 @@ COLUMN_MIGRATIONS = [
     ("communities", "moderators_json", "TEXT"),
     ("objects", "cur_featured", "INTEGER NOT NULL DEFAULT 0"),
     ("objects", "dupe_key", "TEXT"),
+    ("communities", "view_mode", "TEXT"),
 ]
 
 # Tables with an integer `id` key: inserts into these get `RETURNING id` on

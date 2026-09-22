@@ -43,6 +43,12 @@ Everything else stays, but the archive is only as durable as the disk and databa
 | **Trash** | Hidden and unkept threads, restorable until the trash period ends. |
 | **Reddit** (`/reddit`, linked from Accounts) | Connect Reddit, and follow your Reddit subscriptions. |
 
+**List or tiles:** feeds can show posts as a list, or as a grid of tiles for image-centric communities.
+- Until you choose, each community picks for itself: tiles when at least 60% of its 40 most recent posts have an archived image or video (and it has at least 4 posts), a list otherwise. The home feed goes by what's on the page.
+- **☰ List / ▦ Tiles** in the feed controls overrides that. The choice is remembered per community, and separately for the home feed. **auto** goes back to deciding by itself.
+- Tiles show the image or video cropped square, with the title, community, comments, votes, and small ☆ Keep, ✕ Hide and ↻ Repost buttons. Posts without media become text tiles.
+- NSFW and spoiler images are blurred until you hover over or focus the tile.
+
 **Keep and Hide:**
 - **☆ Keep** holds a post with no expiry date.
 - **★ Kept** unkeeps it. A post that came from a followed community goes back into the feed and expires normally. A post you kept by link goes to the trash.
