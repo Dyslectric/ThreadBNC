@@ -15,10 +15,34 @@
 </li>
 {%- endmacro %}
 
-{# Up/down counts as last observed; falls back to score when a server omits them. #}
-{% macro votes(up, down, score=none) -%}
-{% if up is not none %}<span class="votes" title="{{ up }} upvotes, {{ down or 0 }} downvotes{{ (' · score ' ~ score) if score is not none }}"><span class="up">▲ {{ up }}</span>{% if down is not none %} <span class="down">▼ {{ down }}</span>{% endif %}</span>
+{# Up/down counts as last observed; falls back to score when a server omits them.
+   `breakdown` (one row per copy of a duplicated post or comment) adds a hover/focus
+   popover with the counts each server reported. #}
+{% macro votes(up, down, score=none, breakdown=none) -%}
+{% if breakdown and breakdown | length > 1 %}<span class="votes has-breakdown" tabindex="0" aria-label="{{ up or 0 }} upvotes, {{ down or 0 }} downvotes in total across {{ breakdown | length }} copies">
+  {%- if up is not none %}<span class="up">▲ {{ up }}</span>{% if down is not none %} <span class="down">▼ {{ down }}</span>{% endif %}
+  {%- elif score is not none %}<span class="muted">{{ score }} pts</span>{% endif %}
+  <span class="vote-breakdown" role="tooltip">
+    <span class="vb-title">Votes by server</span>
+    <table>
+      {% for b in breakdown %}<tr>
+        <td class="vb-where"><span class="vb-server">{{ b.server }}</span><span class="vb-community">!{{ b.community }}@{{ b.community_host }}</span></td>
+        {% if b.upvotes is not none %}<td class="up">▲ {{ b.upvotes }}</td><td class="down">{% if b.downvotes is not none %}▼ {{ b.downvotes }}{% endif %}</td>
+        {% else %}<td colspan="2" class="muted">{{ b.score if b.score is not none else '—' }}{% if b.score is not none %} pts{% endif %}</td>{% endif %}
+      </tr>{% endfor %}
+      <tr class="vb-total"><td>Total</td>
+        {% if up is not none %}<td class="up">▲ {{ up }}</td><td class="down">{% if down is not none %}▼ {{ down }}{% endif %}</td>
+        {% else %}<td colspan="2">{{ score if score is not none else '—' }}</td>{% endif %}</tr>
+    </table>
+  </span></span>
+{%- elif up is not none %}<span class="votes" title="{{ up }} upvotes, {{ down or 0 }} downvotes{{ (' · score ' ~ score) if score is not none }}"><span class="up">▲ {{ up }}</span>{% if down is not none %} <span class="down">▼ {{ down }}</span>{% endif %}</span>
 {%- elif score is not none %}<span class="votes muted">{{ score }} pts</span>{% endif %}
+{%- endmacro %}
+
+{# Where a duplicated post was posted: community and poster for each copy. #}
+{% macro copy_where(c) -%}
+<a href="/t/{{ c.id }}" class="copy-where"><span class="pc-community">!{{ c.cname }}<span class="muted">@{{ c.c_ap | host }}</span></span></a>
+<span class="muted">by</span> <span>{{ c.username }}@{{ c.a_instance }}</span>
 {%- endmacro %}
 
 {% macro state_badges(o) -%}

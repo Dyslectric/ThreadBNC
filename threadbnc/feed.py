@@ -7,13 +7,15 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from . import dupes
 from .db import Conn, fmt_ts
 
+# Posts of the same link or text are one feed entry; sorts use the group's totals.
 SORTS = {  # NULLS LAST: Postgres otherwise puts NULLs first in DESC order
     "new": "created_at DESC NULLS LAST, id DESC",
-    "active": "last_activity DESC NULLS LAST, id DESC",
-    "top": "score DESC NULLS LAST, created_at DESC NULLS LAST, id DESC",
-    "comments": "n_comments DESC, created_at DESC NULLS LAST, id DESC",
+    "active": "g_activity DESC NULLS LAST, id DESC",
+    "top": "g_score DESC NULLS LAST, created_at DESC NULLS LAST, id DESC",
+    "comments": "g_comments DESC, created_at DESC NULLS LAST, id DESC",
 }
 WINDOWS = {"day": timedelta(days=1), "week": timedelta(days=7), "month": timedelta(days=30), "all": None}
 
@@ -39,22 +41,33 @@ class FeedPage:
 
 _BASE = """
 SELECT * FROM (
-  SELECT t.id, t.retention, t.retained_at, t.promoted_at, t.expires_at, t.last_viewed_at, t.community_id,
-         o.id AS oid, o.created_at, o.score, o.cur_deleted, o.cur_removed, o.cur_locked, o.cur_missing,
-         o.revision_count, o.thumbnail_url, o.upvotes, o.downvotes, r.title, r.body, r.url, a.username, a.instance AS a_instance,
-         c.name AS cname, c.canonical_ap_id AS c_ap,
-         (SELECT COUNT(*) FROM objects x WHERE x.thread_id=t.id AND x.object_type='comment') AS n_comments,
-         (SELECT COUNT(*) FROM objects x WHERE x.thread_id=t.id AND x.discovered_late=1
-             AND t.last_viewed_at IS NOT NULL AND x.first_seen_at > t.last_viewed_at) AS n_new,
-         (SELECT MAX(COALESCE(x.created_at, x.first_seen_at)) FROM objects x WHERE x.thread_id=t.id)
-             AS last_activity
-  FROM archived_threads t
-  JOIN objects o ON o.id=t.root_object_id
-  JOIN revisions r ON r.object_id=o.id AND r.seq=o.revision_count
-  JOIN communities c ON c.id=t.community_id
-  LEFT JOIN actors a ON a.id=o.author_id
-  WHERE t.trashed_at IS NULL {scope}
-) AS feed WHERE 1=1 {filters}
+  SELECT feed.*,
+         ROW_NUMBER() OVER (PARTITION BY dkey ORDER BY created_at, id) AS g_rank,
+         SUM(score) OVER (PARTITION BY dkey) AS g_score,
+         SUM(n_comments) OVER (PARTITION BY dkey) AS g_comments,
+         SUM(n_new) OVER (PARTITION BY dkey) AS g_new,
+         SUM(CASE WHEN last_viewed_at IS NULL THEN 1 ELSE 0 END) OVER (PARTITION BY dkey) AS g_unread,
+         MAX(last_activity) OVER (PARTITION BY dkey) AS g_activity
+  FROM (
+    SELECT t.id, t.retention, t.retained_at, t.promoted_at, t.expires_at, t.last_viewed_at, t.community_id,
+           t.source_domain, o.id AS oid, o.created_at, o.score, o.cur_deleted, o.cur_removed, o.cur_locked,
+           o.cur_missing, o.revision_count, o.thumbnail_url, o.upvotes, o.downvotes, o.dupe_key,
+           COALESCE(o.dupe_key, 'thread:' || t.id) AS dkey,
+           r.title, r.body, r.url, a.username, a.instance AS a_instance,
+           c.name AS cname, c.canonical_ap_id AS c_ap,
+           (SELECT COUNT(*) FROM objects x WHERE x.thread_id=t.id AND x.object_type='comment') AS n_comments,
+           (SELECT COUNT(*) FROM objects x WHERE x.thread_id=t.id AND x.discovered_late=1
+               AND t.last_viewed_at IS NOT NULL AND x.first_seen_at > t.last_viewed_at) AS n_new,
+           (SELECT MAX(COALESCE(x.created_at, x.first_seen_at)) FROM objects x WHERE x.thread_id=t.id)
+               AS last_activity
+    FROM archived_threads t
+    JOIN objects o ON o.id=t.root_object_id
+    JOIN revisions r ON r.object_id=o.id AND r.seq=o.revision_count
+    JOIN communities c ON c.id=t.community_id
+    LEFT JOIN actors a ON a.id=o.author_id
+    WHERE t.trashed_at IS NULL {scope}
+  ) AS feed WHERE 1=1 {filters}
+) AS grouped WHERE g_rank=1 {group_filters}
 ORDER BY {order}
 LIMIT ? OFFSET ?
 """
@@ -76,19 +89,36 @@ def load_feed(conn: Conn, *, community_id: int | None = None, sort: str = "new",
     if delta is not None:
         filters += " AND created_at >= ?"
         args.append(fmt_ts(datetime.now(timezone.utc) - delta))
-    if unread:
-        filters += " AND (last_viewed_at IS NULL OR n_new > 0)"
+    group_filters = " AND (g_unread > 0 OR g_new > 0)" if unread else ""
     order = SORTS.get(sort, SORTS["new"])
     page = max(1, page)
-    rows = conn.execute(_BASE.format(scope=scope, filters=filters, order=order),
+    rows = conn.execute(_BASE.format(scope=scope, filters=filters, group_filters=group_filters, order=order),
                         [*args, per_page + 1, (page - 1) * per_page]).fetchall()
     items = [dict(r) for r in rows[:per_page]]
     thumbs = _thumbnails(conn, [(i["oid"], i["url"], i["thumbnail_url"]) for i in items])
+    copies = dupes.load_copies(conn, [i["dupe_key"] for i in items])
     for i in items:
         i["excerpt"] = excerpt(i["body"])
         i["thumb"] = thumbs.get(i["oid"])
-        i["unread"] = i["last_viewed_at"] is None
+        attach_group(i, copies.get(i["dupe_key"]) or [])
     return FeedPage(items, page, len(rows) > per_page)
+
+
+def attach_group(item: dict[str, Any], copies: list[dict[str, Any]]) -> None:
+    """Fold the other stored copies of a post (anywhere in the archive, not only
+    this feed's scope) into its feed entry: who posted it where, combined
+    votes with a per-server breakdown, combined comment counts."""
+    if not any(c["id"] == item["id"] for c in copies):
+        copies = [dict(item, a_ap=None), *copies]
+    item["copies"] = copies
+    item["group"] = len(copies) > 1
+    item["group_ids"] = [c["id"] for c in copies]
+    item.update(dupes.sum_votes(copies))
+    item["n_comments"] = sum(c["n_comments"] for c in copies)
+    item["n_new"] = sum(c["n_new"] for c in copies)
+    item["unread"] = any(c["last_viewed_at"] is None for c in copies)
+    item["all_kept"] = all(c["retention"] == "manual" for c in copies)
+    item["breakdown"] = [dupes.breakdown_row(c["cname"], c["c_ap"], c["source_domain"], c) for c in copies]
 
 
 def _thumbnails(conn: Conn,

@@ -122,7 +122,8 @@ CREATE TABLE IF NOT EXISTS objects (
     upvotes INTEGER,
     downvotes INTEGER,
     revision_count INTEGER NOT NULL DEFAULT 0,
-    last_changed_at TEXT
+    last_changed_at TEXT,
+    dupe_key TEXT        -- posts: same link / same text as other posts (see dupes.py)
 );
 CREATE INDEX IF NOT EXISTS objects_thread ON objects(thread_id);
 CREATE INDEX IF NOT EXISTS objects_parent ON objects(parent_id);
@@ -356,6 +357,7 @@ COLUMN_MIGRATIONS = [
     ("accounts", "is_admin", "INTEGER NOT NULL DEFAULT 0"),
     ("communities", "moderators_json", "TEXT"),
     ("objects", "cur_featured", "INTEGER NOT NULL DEFAULT 0"),
+    ("objects", "dupe_key", "TEXT"),
 ]
 
 # Tables with an integer `id` key: inserts into these get `RETURNING id` on
@@ -500,6 +502,9 @@ class Database:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {typ}")
             elif col not in {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+        conn.execute("CREATE INDEX IF NOT EXISTS objects_dupe ON objects(dupe_key)")
+        from .dupes import backfill
+        backfill(conn)
 
     def get_setting(self, key: str, default: str | None = None) -> str | None:
         with self.connect() as conn:

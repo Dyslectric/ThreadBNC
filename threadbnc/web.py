@@ -25,6 +25,7 @@ from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
 from starlette.middleware.sessions import SessionMiddleware
 
+from . import dupes
 from . import feed as feed_mod
 from . import media as media_mod
 from .adapters import RemoteError, host_of
@@ -124,13 +125,14 @@ def _hot(o: Any) -> float:  # Lemmy's formula: log(max(1, 3 + score)) / (hours +
 
 
 def comment_sort_key(sort: str) -> tuple[Callable[[Any], Any], bool]:
-    """(key, reverse) for sibling comments, using counts from the last observation."""
+    """(key, reverse) for sibling comments, using counts from the last observation
+    (combined across copies for squashed comments: see node["agg"])."""
     keys: dict[str, tuple[Callable[[Any], Any], bool]] = {
-        "hot": (lambda n: _hot(n["o"]), True),
-        "top": (lambda n: (_net_score(n["o"]), n["o"]["created_at"] or ""), True),
-        "new": (lambda n: n["o"]["created_at"] or "", True),
-        "old": (lambda n: n["o"]["created_at"] or "", False),
-        "controversial": (lambda n: (_controversy(n["o"]), _net_score(n["o"])), True),
+        "hot": (lambda n: _hot(n["agg"]), True),
+        "top": (lambda n: (_net_score(n["agg"]), n["agg"]["created_at"] or ""), True),
+        "new": (lambda n: n["agg"]["created_at"] or "", True),
+        "old": (lambda n: n["agg"]["created_at"] or "", False),
+        "controversial": (lambda n: (_controversy(n["agg"]), _net_score(n["agg"])), True),
     }
     return keys.get(sort, keys["hot"])
 
@@ -142,6 +144,31 @@ def sort_tree(node: dict[str, Any], sort: str) -> None:
         n = stack.pop()
         n["children"].sort(key=key, reverse=reverse)
         stack.extend(n["children"])
+
+
+def squash_comments(children: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Fold sibling comments that say the same thing, from the same person (a
+    comment repeated under each copy of a crosspost, or a double submit) into
+    one node whose `members` are the individual comments; their replies are
+    pooled and squashed in turn."""
+    out: list[dict[str, Any]] = []
+    seen: dict[tuple[str, str], dict[str, Any]] = {}
+    for n in children:
+        key = dupes.comment_key(n["o"]["a_ap"], n["o"]["body"])
+        first = seen.get(key) if key else None
+        if first is None:
+            if key:
+                seen[key] = n
+            out.append(n)
+            continue
+        first["members"].extend(n["members"])
+        first["children"].extend(n["children"])
+        first["events"] = sorted(first["events"] + n["events"], key=lambda e: e["observed_at"] or "")
+        first["is_new"] = first["is_new"] or n["is_new"]
+        first["is_changed"] = first["is_changed"] or n["is_changed"]
+    for n in out:
+        n["children"] = squash_comments(n["children"])
+    return out
 
 
 def _days(text: str) -> int | None:
@@ -639,27 +666,46 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         return md, media_for, preview
 
     # ---- threads --------------------------------------------------------
+    def group_of(tid: int, group: str | None) -> list[int]:
+        """The thread, plus its stored duplicates when the form asked for the group."""
+        if not group:
+            return [tid]
+        with db.connect() as conn:
+            row = conn.execute("SELECT o.dupe_key FROM archived_threads t JOIN objects o ON o.id=t.root_object_id "
+                               "WHERE t.id=?", (tid,)).fetchone()
+            copies = dupes.load_copies(conn, [row["dupe_key"]]).get(row["dupe_key"], []) if row else []
+        return [tid] + [c["id"] for c in copies if c["id"] != tid]
+
     @app.post("/t/{tid}/keep")
-    def keep(request: Request, tid: int):
-        bouncer.promote(tid)
-        flash(request, "Kept permanently. It won't expire.")
+    def keep(request: Request, tid: int, group: str | None = Form(None)):
+        ids = group_of(tid, group)
+        for t_id in ids:
+            bouncer.promote(t_id)
+        flash(request, "Kept permanently. It won't expire." if len(ids) == 1 else
+              f"Kept all {len(ids)} copies permanently. They won't expire.")
         return RedirectResponse(back(request, f"/t/{tid}"), status_code=303)
 
     @app.post("/t/{tid}/unkeep")
-    def unkeep(request: Request, tid: int):
-        outcome = bouncer.unkeep(tid)
-        if outcome == "auto":
+    def unkeep(request: Request, tid: int, group: str | None = Form(None)):
+        outcomes = {bouncer.unkeep(t_id) for t_id in group_of(tid, group)} - {"noop"}
+        if outcomes == {"auto"}:
             flash(request, "No longer kept. It stays in your feed and expires with the community's retention.")
-        elif outcome == "trash":
+        elif outcomes == {"trash"}:
             flash(request, "No longer kept. Moved to the trash; you can restore it from there.")
+        elif outcomes:
+            flash(request, "No longer kept. Copies from communities you follow stay in your feed and expire "
+                           "normally; the others moved to the trash.")
         return RedirectResponse(back(request, f"/t/{tid}"), status_code=303)
 
     @app.post("/t/{tid}/trash")
-    def trash_thread(request: Request, tid: int):
-        bouncer.move_to_trash(tid)
+    def trash_thread(request: Request, tid: int, group: str | None = Form(None)):
+        ids = group_of(tid, group)
+        for t_id in ids:
+            bouncer.move_to_trash(t_id)
         days = bouncer.trash_days()
         when = f"in {days} day{'s' if days != 1 else ''}" if days is not None else "only when you empty the trash"
-        flash(request, f"Moved to trash. It will be permanently deleted {when}; restore it from the Trash page.")
+        what = "Moved to trash" if len(ids) == 1 else f"Moved all {len(ids)} copies to trash"
+        flash(request, f"{what}. Permanently deleted {when}; restore from the Trash page.")
         return RedirectResponse(back(request, f"/t/{tid}"), status_code=303)
 
     @app.post("/t/{tid}/restore")
@@ -1041,15 +1087,72 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             back(request, fallback, anchor), status_code=303)
 
     @app.post("/t/{tid}/reply")
-    def reply(request: Request, tid: int, body: str = Form(...), parent_id: int | None = Form(None)):
+    def reply(request: Request, tid: int, body: str = Form(...), parent_id: int | None = Form(None),
+              to: list[int] = Form([]), choose: str | None = Form(None)):
+        """Comment on the thread (or reply to parent_id). With `choose`, `to` lists
+        the posts and comments to answer instead (a thread shown with its
+        duplicates): one comment is made under each, on its own thread."""
+        targets = list(dict.fromkeys(to)) if choose else [parent_id or 0]
+        with db.connect() as conn:
+            where: dict[int, tuple[int, int | None]] = {}
+            for oid in targets:
+                if not oid:
+                    where[oid] = (tid, None)
+                    continue
+                row = conn.execute("SELECT thread_id, object_type FROM objects WHERE id=?", (oid,)).fetchone()
+                if row and row["thread_id"]:
+                    where[oid] = (row["thread_id"], None if row["object_type"] == "post" else oid)
+        if not where:
+            flash(request, "Pick at least one post to comment on.", "error")
+            return RedirectResponse(back(request, f"/t/{tid}"), status_code=303)
+
         def act(account: Account) -> RedirectResponse:
-            oid = poster.reply(account, tid, body, parent_id)
-            return RedirectResponse(f"/t/{tid}#o{oid}", status_code=303)
-        return account_action(request, f"/t/{tid}", act, "Comment posted.")
+            made, failed = [], []
+            for thread_id, parent in where.values():
+                try:
+                    made.append(poster.reply(account, thread_id, body, parent))
+                except AccountError as exc:
+                    if len(where) == 1:
+                        raise
+                    failed.append(f"{thread_title_of(thread_id)}: {exc}")
+            if failed:
+                flash(request, f"Posted {len(made)} of {len(where)}. Failed: " + "; ".join(failed), "error")
+            elif len(made) > 1:
+                flash(request, f"Comment posted to {len(made)} copies.")
+            else:
+                flash(request, "Comment posted.")
+            if not made:
+                return RedirectResponse(back(request, f"/t/{tid}"), status_code=303)
+            return RedirectResponse(f"/t/{tid}#o{made[0]}", status_code=303)
+        return account_action(request, f"/t/{tid}", act)
+
+    def thread_title_of(thread_id: int) -> str:
+        with db.connect() as conn:
+            t = conn.execute("SELECT c.name, c.canonical_ap_id FROM archived_threads t "
+                             "JOIN communities c ON c.id=t.community_id WHERE t.id=?", (thread_id,)).fetchone()
+        return f"!{t['name']}@{host_of(t['canonical_ap_id'])}" if t else f"thread {thread_id}"
 
     @app.post("/o/{oid}/vote")
-    def vote(request: Request, oid: int, score: int = Form(...)):
-        return account_action(request, object_page(oid), lambda a: poster.vote(a, oid, score), anchor=f"o{oid}")
+    def vote(request: Request, oid: int, score: int = Form(...), also: list[int] = Form([])):
+        """Vote on an object, and on its duplicates (`also`) when shown squashed."""
+        ids = list(dict.fromkeys([oid, *also]))
+        if len(ids) == 1:
+            return account_action(request, object_page(oid), lambda a: poster.vote(a, oid, score),
+                                  anchor=f"o{oid}")
+
+        def act(account: Account) -> None:
+            errors = []
+            for i in ids:
+                try:
+                    poster.vote(account, i, score)
+                except AccountError as exc:
+                    errors.append(str(exc))
+            if len(errors) == len(ids):
+                raise AccountError(errors[0])
+            if errors:
+                flash(request, f"Voted on {len(ids) - len(errors)} of {len(ids)} copies. " + "; ".join(errors),
+                      "error")
+        return account_action(request, object_page(oid), act, anchor=f"o{oid}")
 
     @app.get("/o/{oid}/edit", response_class=HTMLResponse)
     def edit_form(request: Request, oid: int):
@@ -1098,71 +1201,109 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         flash(request, "Re-check queued.")
         return RedirectResponse(f"/t/{tid}", status_code=303)
 
+    THREAD_SQL = ("SELECT t.*, c.name AS cname, c.canonical_ap_id AS c_ap, c.id AS cid, "
+                  "f.retention_days FROM archived_threads t JOIN communities c ON c.id=t.community_id "
+                  "LEFT JOIN community_follows f ON f.community_id=c.id WHERE t.id=?")
+
     @app.get("/t/{tid}", response_class=HTMLResponse)
-    def thread(request: Request, tid: int, sort: str | None = None):
+    def thread(request: Request, tid: int, sort: str | None = None, merge: int = 1):
+        """A thread, shown together with its stored duplicates (the same link or
+        text posted elsewhere) unless merge=0: one post listing every copy,
+        every copy's comments in one tree, repeated comments squashed."""
         if sort in COMMENT_SORTS:
             request.session["comment_sort"] = sort
         sort = request.session.get("comment_sort", "hot") if sort not in COMMENT_SORTS else sort
         with db.connect() as conn:
-            t = conn.execute(
-                "SELECT t.*, c.name AS cname, c.canonical_ap_id AS c_ap, c.id AS cid, "
-                "f.retention_days FROM archived_threads t JOIN communities c ON c.id=t.community_id "
-                "LEFT JOIN community_follows f ON f.community_id=c.id WHERE t.id=?", (tid,)).fetchone()
+            t = conn.execute(THREAD_SQL, (tid,)).fetchone()
             if not t:
                 raise HTTPException(404)
+            key_row = conn.execute("SELECT dupe_key FROM objects WHERE id=?", (t["root_object_id"],)).fetchone()
+            key = key_row["dupe_key"] if key_row else None
+            copies = dupes.load_copies(conn, [key]).get(key, []) if key else []
+            others = [c["id"] for c in copies if c["id"] != tid] if merge else []
+            threads = {tid: t, **{i: conn.execute(THREAD_SQL, (i,)).fetchone() for i in others}}
+            tids = list(threads)
+            marks = ",".join("?" * len(tids))
             objs = conn.execute(
-                """SELECT o.*, a.username, a.instance AS a_instance, a.display_name, a.canonical_ap_id AS a_ap,
+                f"""SELECT o.*, a.username, a.instance AS a_instance, a.display_name, a.canonical_ap_id AS a_ap,
                           r.title, r.body, r.url, r.metadata_json AS rmeta
                    FROM objects o LEFT JOIN actors a ON a.id=o.author_id
                    JOIN revisions r ON r.object_id=o.id AND r.seq=o.revision_count
-                   WHERE o.thread_id=? ORDER BY o.created_at, o.id""", (tid,)).fetchall()
+                   WHERE o.thread_id IN ({marks}) ORDER BY o.created_at, o.id""", tids).fetchall()
             events: dict[int, list[Any]] = {}
             for e in conn.execute(
                 "SELECT e.*, a.username AS actor_name, a.instance AS actor_instance FROM state_events e "
                 "LEFT JOIN actors a ON a.id=e.actor_id JOIN objects o ON o.id=e.object_id "
-                "WHERE o.thread_id=? AND e.event_type!='discovered' ORDER BY e.observed_at", (tid,)):
+                f"WHERE o.thread_id IN ({marks}) AND e.event_type!='discovered' ORDER BY e.observed_at", tids):
                 events.setdefault(e["object_id"], []).append(e)
-            thread_events = conn.execute("SELECT * FROM state_events WHERE thread_id=? AND object_id IS NULL "
-                                         "ORDER BY id", (tid,)).fetchall()
             instance = conn.execute("SELECT * FROM instances WHERE domain=?", (t["source_domain"],)).fetchone()
-            since = t["last_viewed_at"]
-            conn.execute("UPDATE archived_threads SET prev_viewed_at=last_viewed_at, last_viewed_at=? WHERE id=?",
-                         (utcnow(), tid))
-        nodes = {o["id"]: {"o": o, "children": [], "events": events.get(o["id"], []),
-                           "is_new": bool(since and o["discovered_late"] and o["first_seen_at"] > since),
-                           "is_changed": bool(since and o["last_changed_at"] and o["last_changed_at"] > since)}
-                 for o in objs}
-        root, orphans = None, []
-        for oid, n in nodes.items():
+            seen_at = {i: th["last_viewed_at"] for i, th in threads.items()}
+            # Every copy's comments are on this page, so they all count as read.
+            conn.execute(f"UPDATE archived_threads SET prev_viewed_at=last_viewed_at, last_viewed_at=? "
+                         f"WHERE id IN ({marks})", [utcnow(), *tids])
+        since = t["last_viewed_at"]
+        srcs = {i: {"id": i, "cname": th["cname"], "c_ap": th["c_ap"], "server": th["source_domain"]}
+                for i, th in threads.items()}
+        nodes: dict[int, dict[str, Any]] = {}
+        for o in objs:
+            seen = seen_at.get(o["thread_id"])
+            n = {"o": o, "children": [], "events": events.get(o["id"], []), "src": srcs[o["thread_id"]],
+                 "is_new": bool(seen and o["discovered_late"] and o["first_seen_at"] > seen),
+                 "is_changed": bool(seen and o["last_changed_at"] and o["last_changed_at"] > seen)}
+            n["members"] = [n]
+            nodes[o["id"]] = n
+        roots: dict[int, dict[str, Any]] = {}
+        orphans: dict[int, list[dict[str, Any]]] = {}
+        for n in nodes.values():
             o = n["o"]
             if o["object_type"] == "post":
-                root = n
+                roots[o["thread_id"]] = n
             elif o["parent_id"] in nodes:
                 nodes[o["parent_id"]]["children"].append(n)
             else:
-                orphans.append(n)
-        if root is not None:
-            root["children"].extend(orphans)
-            sort_tree(root, sort)
+                orphans.setdefault(o["thread_id"], []).append(n)
+        root = roots.get(tid)
 
-        def count_descendants(n: dict[str, Any]) -> int:
-            n["descendants"] = sum(1 + count_descendants(c) for c in n["children"])
+        def finish(n: dict[str, Any]) -> int:
+            """Combined votes, where it's from and the vote breakdown; returns descendants."""
+            members = [m["o"] for m in n["members"]]
+            n["agg"] = {**dupes.sum_votes(members), "created_at": min(m["created_at"] or "" for m in members)}
+            n["sources"] = list({m["src"]["id"]: m["src"] for m in n["members"]}.values())
+            n["breakdown"] = [dupes.breakdown_row(m["src"]["cname"], m["src"]["c_ap"], m["src"]["server"], m["o"])
+                              for m in n["members"]]
+            n["descendants"] = sum(1 + finish(c) for c in n["children"])
             return n["descendants"]
 
+        displayed: list[dict[str, Any]] = []
         if root is not None:
-            count_descendants(root)
-        total_comments = sum(1 for o in objs if o["object_type"] == "comment")
-        new_count = sum(1 for n in nodes.values() if n["is_new"])
-        changed_count = sum(1 for n in nodes.values() if n["is_changed"] and not n["is_new"])
+            # Every copy's comments hang off the post being viewed.
+            root["children"] = squash_comments([c for i in tids if i in roots
+                                                for c in roots[i]["children"] + orphans.get(i, [])])
+            root["members"] = [roots[i] for i in tids if i in roots]
+            finish(root)
+            sort_tree(root, sort)
+            stack = list(root["children"])
+            while stack:
+                n = stack.pop()
+                displayed.append(n)
+                stack.extend(n["children"])
+        raw_comments = sum(1 for o in objs if o["object_type"] == "comment")
+        new_count = sum(1 for n in displayed if n["is_new"])
+        changed_count = sum(1 for n in displayed if n["is_changed"] and not n["is_new"])
         md, media_for, preview = md_for(list(nodes))
         me = acting(request)
         my_votes = poster.my_votes(me, [o["canonical_ap_id"] for o in objs])
-        powers = mod.powers(me, t["cid"])
-        return render(request, "thread.html", t=t, root=root, total_comments=total_comments, md=md,
-                      media_for=media_for, preview=preview, my_votes=my_votes, me=me, powers=powers,
-                      new_count=new_count, changed_count=changed_count, comment_sort=sort,
-                      comment_sorts=COMMENT_SORTS,
-                      thread_events=thread_events, instance=instance, since=since)
+        powers = {th["cid"]: mod.powers(me, th["cid"]) for th in threads.values()}
+        counts = {c["id"]: c["n_comments"] for c in copies}
+        post_copies = [{"t": threads[i], "o": roots[i]["o"], "n_comments": counts.get(i, raw_comments)}
+                       for i in tids if i in roots]
+        return render(request, "thread.html", t=t, root=root, total_comments=len(displayed),
+                      raw_comments=raw_comments, md=md, media_for=media_for, preview=preview, my_votes=my_votes,
+                      me=me, powers_by_community=powers, new_count=new_count, changed_count=changed_count,
+                      comment_sort=sort, comment_sorts=COMMENT_SORTS, instance=instance, since=since,
+                      grouped=len(tids) > 1, post_copies=post_copies, merge=merge,
+                      n_copies=max(len(copies), 1),
+                      all_kept=all(th["retention"] == "manual" for th in threads.values()))
 
     @app.get("/o/{oid}/history", response_class=HTMLResponse)
     def history(request: Request, oid: int):

@@ -47,6 +47,25 @@ Everything else stays, but the archive is only as durable as the disk and databa
 - **★ Kept** unkeeps it. A post that came from a followed community goes back into the feed and expires normally. A post you kept by link goes to the trash.
 - **Hide** moves a feed post to the trash.
 
+## Duplicates and crossposts
+
+When the same link or the same text post shows up more than once, whether reposted by different people or crossposted to several communities, ThreadBNC shows it once.
+
+**What counts as the same post**
+- **Links** match after normalising: `http`/`https`, `www.` and `m.`, trailing slashes, `#fragments` and tracking parameters (`utm_*`, `fbclid`, `si`, …) are ignored, and `youtu.be/ID`, `youtube.com/shorts/ID` and `youtube.com/watch?v=ID` are one video.
+- **Text posts** match on title and body, ignoring case, spacing, quoting and Lemmy's `cross-posted from:` line. A post with a title and no body never counts as a duplicate, so recurring "Weekly thread" posts aren't merged.
+
+**In the feed** the copies make one card. It lists every community and poster, and adds up the comments and votes. Hover over (or focus) the votes to see what each server reported. **Keep** and **Hide** act on every copy.
+
+**On the thread page** the post lists each copy with its own title, votes and comment count. Comments from every copy form one tree:
+- Each comment is tagged with the community it was posted under.
+- If the same person posted the same text more than once (for example under each crosspost, or by double-submitting), it's squashed into one comment marked **×N**. Its votes are added up, with a per-server breakdown on hover, and replies to every copy appear under it.
+- **Comment** has a checkbox for each copy of the post. Every copy is ticked except locked, removed or deleted ones. One comment is made under each ticked copy.
+- **Reply** to a squashed comment works the same way, with a checkbox for each copy of that comment.
+- **Votes** on a combined post or squashed comment go to every copy.
+- **Mod** tools, **Edit** and **Delete** act on the first copy only; the Mod panel names which one.
+- Opening the thread marks every copy as read. **Show only this one** (`?merge=0`) shows a single copy on its own.
+
 ## Accounts and posting
 
 On the **Accounts** page, add any Lemmy or PieFed account: the server, username, password and, on Lemmy, a 2FA code if you use one. You can then act as that account from ThreadBNC. The header has a switcher for choosing which account to act as; the default is marked on the Accounts page.
@@ -241,6 +260,7 @@ threadbnc/
   store.py       append-only persistence: revisions, state events, missing detection, purge
   bouncer.py     ingestion, source selection, sync, follows, expiry, job queue, worker loop
   feed.py        feed queries: sorting, unread / new-comment counts, thumbnails
+  dupes.py       duplicate recognition: link/text keys for posts, squashing repeated comments
   render.py      Markdown -> sanitised HTML, archived-media substitution
   media.py       media download, content-addressed storage, cleanup
   web.py         FastAPI UI/API, auth guard, views

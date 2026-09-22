@@ -1,4 +1,4 @@
-{% from "_macros.html" import when, state_badges, votes %}
+{% from "_macros.html" import when, state_badges, votes, copy_where %}
 
 {# base: URL prefix ending in "?" or "&" that keeps any fixed params (e.g. tab) #}
 {% macro feed_url(base, sort, window, unread, page=1) -%}
@@ -26,7 +26,7 @@
 {% endmacro %}
 
 {% macro post_card(i, show_community=True) %}
-<article class="post-card {{ 'unread' if i.unread }} {{ 'kept' if i.retention == 'manual' }}">
+<article class="post-card {{ 'unread' if i.unread }} {{ 'kept' if i.all_kept }}">
   {% if i.thumb %}
     <a class="thumb" href="/t/{{ i.id }}" tabindex="-1" aria-hidden="true">
       {% if i.thumb.video %}<video src="/media/{{ i.thumb.id }}" muted preload="metadata"></video>
@@ -39,18 +39,25 @@
       <span>{{ i.username }}@{{ i.a_instance }}</span> · {{ when(i.created_at) }}
       {{ state_badges(i) }}
     </div>
+    {% if i.group %}
+    <div class="pc-copies small"><span class="pill new" title="The same {{ 'link' if i.url else 'text' }} was posted {{ i.copies | length }} times; shown once">×{{ i.copies | length }}</span>
+      <span class="muted">also</span>
+      {% for c in i.copies if c.id != i.id %}{{ copy_where(c) }}{{ ' · ' if not loop.last }}{% endfor %}
+    </div>
+    {% endif %}
     <h3 class="pc-title"><a href="/t/{{ i.id }}">{{ i.title }}</a></h3>
     {% if i.url | safe_url and not (i.thumb and i.thumb.is_link) %}<div class="pc-link small"><a href="{{ i.url | safe_url }}" target="_blank" rel="noreferrer noopener nofollow">{{ i.url | host }} ↗</a></div>{% endif %}
     {% if i.excerpt %}<p class="pc-excerpt">{{ i.excerpt }}</p>{% endif %}
     <div class="pc-actions small">
       <a href="/t/{{ i.id }}#comments">{{ i.n_comments }} comment{{ 's' if i.n_comments != 1 }}</a>
       {% if i.n_new %}<a href="/t/{{ i.id }}#comments" class="pill new">{{ i.n_new }} new</a>{% endif %}
-      {{ votes(i.upvotes, i.downvotes, i.score) }}
-      {% if i.retention == 'manual' %}
-        <form method="post" action="/t/{{ i.id }}/unkeep" class="inline"><button class="chip on" title="Kept permanently. Click to unkeep.">★ Kept</button></form>
+      {{ votes(i.upvotes, i.downvotes, i.score, i.breakdown if i.group) }}
+      {% set g = '<input type="hidden" name="group" value="1">' | safe if i.group else '' %}
+      {% if i.all_kept %}
+        <form method="post" action="/t/{{ i.id }}/unkeep" class="inline">{{ g }}<button class="chip on" title="Kept permanently{{ ' (every copy)' if i.group }}. Click to unkeep.">★ Kept</button></form>
       {% else %}
-        <form method="post" action="/t/{{ i.id }}/keep" class="inline"><button class="chip" title="Keep permanently">☆ Keep</button></form>
-        <form method="post" action="/t/{{ i.id }}/trash" class="inline"><button class="chip ghost" title="Hide from feed (moves to trash)">Hide</button></form>
+        <form method="post" action="/t/{{ i.id }}/keep" class="inline">{{ g }}<button class="chip" title="Keep permanently{{ ' (every copy)' if i.group }}">☆ Keep</button></form>
+        <form method="post" action="/t/{{ i.id }}/trash" class="inline">{{ g }}<button class="chip ghost" title="Hide from feed (moves {{ 'every copy ' if i.group }}to the trash)">Hide</button></form>
         {% if i.expires_at %}<span class="muted" title="Auto-captured; deleted {{ i.expires_at | absolute }} unless kept">expires {{ i.expires_at | ago }}</span>{% endif %}
       {% endif %}
     </div>

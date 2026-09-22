@@ -1,8 +1,8 @@
 {% extends "base.html" %}
-{% from "_macros.html" import when, state_badges, votes %}
+{% from "_macros.html" import when, state_badges, votes, copy_where %}
 {% block title %}{{ root.o.title if root else 'Thread' }}{% endblock %}
 
-{% macro event_list(events) -%}
+{% macro event_list(events, show_source=False) -%}
   {% for e in events %}
     <div class="event {{ tone(e) }}">
       [{{ event_label(e) }} · {{ when(e.observed_at) }}]
@@ -12,34 +12,67 @@
   {% endfor %}
 {%- endmacro %}
 
-{% macro byline(o) -%}
+{# Where a (possibly squashed) comment was seen: one pill per copy of the post. #}
+{% macro sources(n) -%}
+  {% if grouped %}
+    {% for s in n.sources %}<a class="pill src" href="/t/{{ s.id }}?merge=0" title="Under the copy in !{{ s.cname }}@{{ s.c_ap | host }}, read from {{ s.server }}">!{{ s.cname }}<span class="muted">@{{ s.c_ap | host }}</span></a>{% endfor %}
+  {% endif %}
+  {% if n.members | length > 1 %}<span class="pill new" title="Posted {{ n.members | length }} times with the same text; shown once">×{{ n.members | length }}</span>{% endif %}
+{%- endmacro %}
+
+{% macro byline(n) -%}
+  {% set o = n.o %}
   <span class="author" title="{{ o.a_ap }}">{{ o.username }}@{{ o.a_instance }}</span>
   · {{ when(o.created_at) }}
-  {% if o.upvotes is not none or o.score is not none %}· {{ votes(o.upvotes, o.downvotes, o.score) }}{% endif %}
+  {% if n.agg.upvotes is not none or n.agg.score is not none %}· {{ votes(n.agg.upvotes, n.agg.downvotes, n.agg.score, n.breakdown) }}{% endif %}
   {% if o.revision_count > 1 %}· <a href="/o/{{ o.id }}/history">Edited {{ o.revision_count - 1 }} time{{ 's' if o.revision_count > 2 }} · View history</a>
   {% else %}· <a href="/o/{{ o.id }}/history" class="muted">history</a>{% endif %}
 {%- endmacro %}
 
-{# Voting / replying / editing as the acting account (see header switcher). #}
-{% macro actions(o, is_post=False) -%}
+{# Checkboxes choosing which copies a comment goes to. `items`: (object id, label, checked). #}
+{% macro targets(items) -%}
+  <input type="hidden" name="choose" value="1">
+  <fieldset class="targets small">
+    <legend>Post to</legend>
+    {% for oid, label, checked in items %}
+      <label class="check"><input type="checkbox" name="to" value="{{ oid }}" {{ 'checked' if checked }}> {{ label }}</label>
+    {% endfor %}
+  </fieldset>
+{%- endmacro %}
+
+{# Voting / replying / editing as the acting account (see header switcher).
+   Votes go to every copy of a squashed comment or duplicated post. #}
+{% macro actions(n, is_post=False) -%}
 {% if me %}
-  {% set mine = my_votes.get(o.canonical_ap_id, 0) %}
+  {% set o = n.o %}
+  {% set ns = namespace(mine=0) %}
+  {% for m in n.members %}{% if not ns.mine %}{% set ns.mine = my_votes.get(m.o.canonical_ap_id, 0) %}{% endif %}{% endfor %}
+  {% set mine = ns.mine %}
+  {% set also = n.members[1:] %}
+  {% set every = (' on all ' ~ n.members | length ~ ' copies') if also else '' %}
   {% set owned = o.a_ap == me.actor_ap_id %}
+  {% set powers = powers_by_community.get(o.community_id) %}
   <div class="obj-actions small">
     <form method="post" action="/o/{{ o.id }}/vote" class="inline">
       <input type="hidden" name="score" value="{{ 0 if mine == 1 else 1 }}">
-      <button class="vote up {{ 'on' if mine == 1 }}" title="{{ 'Remove upvote' if mine == 1 else 'Upvote' }} as {{ me.handle }}">▲ {{ o.upvotes if o.upvotes is not none else '' }}</button>
+      {% for m in also %}<input type="hidden" name="also" value="{{ m.o.id }}">{% endfor %}
+      <button class="vote up {{ 'on' if mine == 1 }}" title="{{ 'Remove upvote' if mine == 1 else 'Upvote' }} as {{ me.handle }}{{ every }}">▲ {{ n.agg.upvotes if n.agg.upvotes is not none else '' }}</button>
     </form>
     <form method="post" action="/o/{{ o.id }}/vote" class="inline">
       <input type="hidden" name="score" value="{{ 0 if mine == -1 else -1 }}">
-      <button class="vote down {{ 'on' if mine == -1 }}" title="{{ 'Remove downvote' if mine == -1 else 'Downvote' }} as {{ me.handle }}">▼ {{ o.downvotes if o.downvotes is not none else '' }}</button>
+      {% for m in also %}<input type="hidden" name="also" value="{{ m.o.id }}">{% endfor %}
+      <button class="vote down {{ 'on' if mine == -1 }}" title="{{ 'Remove downvote' if mine == -1 else 'Downvote' }} as {{ me.handle }}{{ every }}">▼ {{ n.agg.downvotes if n.agg.downvotes is not none else '' }}</button>
     </form>
     {% if not is_post %}
       <details class="reply-box">
         <summary>Reply</summary>
         <form method="post" action="/t/{{ t.id }}/reply" class="stack">
-          <input type="hidden" name="parent_id" value="{{ o.id }}">
           <textarea name="body" rows="4" required placeholder="Reply as {{ me.handle }} (Markdown)"></textarea>
+          {% if also %}
+            {% set items = [] %}
+            {% for m in n.members %}{% set _ = items.append((m.o.id, 'Reply to the one in !' ~ m.src.cname ~ '@' ~ (m.src.c_ap | host), True)) %}{% endfor %}
+            {{ targets(items) }}
+          {% else %}<input type="hidden" name="parent_id" value="{{ o.id }}">{% endif %}
           <button class="small">Reply as {{ me.handle }}</button>
         </form>
       </details>
@@ -58,8 +91,9 @@
     {% endif %}
     {% if powers and powers.any %}
       <details class="reply-box mod-box">
-        <summary title="{{ 'Moderator' if powers.moderator else 'Server admin' }} tools">Mod</summary>
+        <summary title="{{ 'Moderator' if powers.moderator else 'Server admin' }} tools{{ (' for the copy in !' ~ n.src.cname) if grouped }}">Mod</summary>
         <div class="stack mod-panel">
+          {% if grouped %}<span class="small muted">Acts on the copy in !{{ n.src.cname }}@{{ n.src.c_ap | host }}.</span>{% endif %}
           <form method="post" action="/o/{{ o.id }}/mod" class="row">
             {% if o.cur_removed %}
               <button name="action" value="restore" class="small">Restore</button>
@@ -95,8 +129,9 @@
   {% set o = n.o %}
   <details open class="comment d{{ depth % 8 }} {{ 'is-new' if n.is_new }} {{ 'is-changed' if n.is_changed and not n.is_new }}" id="o{{ o.id }}">
     <summary class="meta small">
+      {% for m in n.members[1:] %}<span id="o{{ m.o.id }}"></span>{% endfor %}
       <span class="toggle" aria-hidden="true"></span>
-      {{ byline(o) }} {{ state_badges(o) }}
+      {{ byline(n) }} {{ state_badges(o) }} {{ sources(n) }}
       {% if n.is_new %}<span class="pill new">new since last visit</span>{% elif n.is_changed %}<span class="pill warn">changed since last visit</span>{% endif %}
       <span class="collapsed-note">{% if n.descendants %}{{ n.descendants }} repl{{ 'ies' if n.descendants != 1 else 'y' }} hidden{% else %}collapsed{% endif %}</span>
     </summary>
@@ -104,7 +139,7 @@
     <div class="content">
       <div class="md {{ 'faded' if o.cur_deleted or o.cur_removed or o.cur_missing }}">{{ md(o.body) }}</div>
       {{ event_list(n.events) }}
-      {{ actions(o) }}
+      {{ actions(n) }}
       {% if n.children %}<button type="button" class="replies-toggle" data-action="show-replies">Show {{ n.descendants }} repl{{ 'ies' if n.descendants != 1 else 'y' }}</button>
       <div class="replies">{% for child in n.children %}{{ comment(child, depth + 1) }}{% endfor %}</div>{% endif %}
     </div>
@@ -116,6 +151,7 @@
   <p class="muted">This thread has no stored root post.</p>
 {% else %}
 {% set o = root.o %}
+{% set g = '<input type="hidden" name="group" value="1">' | safe if grouped else '' %}
 {% if t.trashed_at %}
 <div class="flash warn-flash row">
   <span><strong>In the trash</strong> since {{ when(t.trashed_at) }} and not being monitored.
@@ -131,7 +167,32 @@
 </p>
 <article class="card post {{ 'is-changed' if root.is_changed }}" id="o{{ o.id }}">
   <h1>{{ o.title }}</h1>
-  <div class="meta small">{{ byline(o) }} {{ state_badges(o) }}</div>
+  <div class="meta small">{{ byline(root) }} {{ state_badges(o) }}</div>
+  {% if grouped %}
+  <section class="copies">
+    <div class="copies-head small"><strong>Posted {{ post_copies | length }} times</strong>
+      <span class="muted">· the same {{ 'link' if o.url else 'text' }}; votes and comments are combined below</span>
+      <a href="/t/{{ t.id }}?merge=0" class="muted">Show only this one</a></div>
+    <ul class="copy-list">
+      {% for pc in post_copies %}
+      <li class="{{ 'current' if pc.t.id == t.id }}">
+        <div class="small">{{ copy_where({'id': pc.t.id, 'cname': pc.t.cname, 'c_ap': pc.t.c_ap, 'username': pc.o.username, 'a_instance': pc.o.a_instance}) }}
+          · {{ when(pc.o.created_at) }} · {{ votes(pc.o.upvotes, pc.o.downvotes, pc.o.score) }}
+          · {{ pc.n_comments }} comment{{ 's' if pc.n_comments != 1 }}
+          {% if pc.t.retention == 'manual' %}<span class="pill good">★ kept</span>{% endif %}
+          {{ state_badges(pc.o) }}
+          {% if pc.t.id == t.id %}<span class="pill muted">this one</span>{% endif %}</div>
+        {% if pc.o.title != o.title %}<div class="copy-title">{{ pc.o.title }}</div>{% endif %}
+        {% if pc.o.body and pc.o.body != o.body and pc.t.id != t.id %}
+          <details class="copy-body small"><summary>Their post text</summary><div class="md">{{ md(pc.o.body) }}</div></details>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% elif n_copies > 1 %}
+  <p class="small copies-note"><span class="pill new">×{{ n_copies }}</span> The same {{ 'link' if o.url else 'text' }} was posted {{ n_copies - 1 }} other time{{ 's' if n_copies > 2 }}. <a href="/t/{{ t.id }}">Show them together</a></p>
+  {% endif %}
   {% if o.url | safe_url %}<p class="post-link"><a href="{{ o.url | safe_url }}" rel="noreferrer noopener nofollow" target="_blank">{{ o.url }}</a></p>
     {% set m = media_for(o.url) %}
     {% if m and m.status == 'ok' and m.content_type != 'image/svg+xml' %}
@@ -148,7 +209,7 @@
   {% endif %}
   {% if o.body %}<div class="md {{ 'faded' if o.cur_deleted or o.cur_removed }}">{{ md(o.body) }}</div>{% endif %}
   {{ event_list(root.events) }}
-  {{ actions(o, is_post=True) }}
+  {{ actions(root, is_post=True) }}
   <div class="row small">
     <a href="{{ o.canonical_ap_id | safe_url }}" rel="noreferrer noopener nofollow" target="_blank">Original ↗</a>
     <span class="muted">source {{ t.source_domain }} · checked {{ when(t.last_checked_at) }} · next check {{ when(t.next_check_at) }}</span>
@@ -156,11 +217,11 @@
     {% if instance and not instance.available %}<span class="pill bad">instance unreachable</span>{% endif %}
     <form method="post" action="/t/{{ t.id }}/sync" class="inline"><button class="small secondary">Re-check now</button></form>
     {% if not t.trashed_at %}
-      {% if t.retention == 'manual' %}
-        <form method="post" action="/t/{{ t.id }}/unkeep" class="inline"><button class="chip on" title="Click to unkeep">★ Kept</button></form>
+      {% if all_kept %}
+        <form method="post" action="/t/{{ t.id }}/unkeep" class="inline">{{ g }}<button class="chip on" title="Click to unkeep{{ ' every copy' if grouped }}">★ Kept</button></form>
       {% else %}
-        <form method="post" action="/t/{{ t.id }}/keep" class="inline"><button class="chip">☆ Keep</button></form>
-        <form method="post" action="/t/{{ t.id }}/trash" class="inline"><button class="chip ghost">Hide</button></form>
+        <form method="post" action="/t/{{ t.id }}/keep" class="inline">{{ g }}<button class="chip" title="Keep{{ ' every copy' if grouped }} permanently">☆ Keep</button></form>
+        <form method="post" action="/t/{{ t.id }}/trash" class="inline">{{ g }}<button class="chip ghost" title="Move{{ ' every copy' if grouped }} to the trash">Hide</button></form>
       {% endif %}
     {% endif %}
   </div>
@@ -170,6 +231,11 @@
 <section class="card compose">
   <form method="post" action="/t/{{ t.id }}/reply" class="stack">
     <textarea name="body" rows="4" required placeholder="Add a comment as {{ me.handle }} (Markdown)"></textarea>
+    {% if grouped %}
+      {% set items = [] %}
+      {% for pc in post_copies %}{% set _ = items.append((pc.o.id, '!' ~ pc.t.cname ~ '@' ~ (pc.t.c_ap | host) ~ ' (posted by ' ~ pc.o.username ~ ')' ~ (' · locked' if pc.o.cur_locked else ''), not (pc.o.cur_locked or pc.o.cur_removed or pc.o.cur_deleted))) %}{% endfor %}
+      {{ targets(items) }}
+    {% endif %}
     <div class="row"><button>Comment as {{ me.handle }}</button>
       {% if accounts | length > 1 %}<span class="small muted">Switch accounts in the header.</span>{% endif %}</div>
   </form>
@@ -180,11 +246,14 @@
 
 <section class="comments" id="comments">
   <div class="comments-head">
-    <h2>{{ total_comments }} comment{{ 's' if total_comments != 1 }}</h2>
+    <h2>{{ total_comments }} comment{{ 's' if total_comments != 1 }}
+      {% if grouped or raw_comments != total_comments %}<span class="small muted">
+        {% if grouped %}from {{ post_copies | length }} copies{% endif %}{% if raw_comments != total_comments %}{{ ' · ' if grouped }}{{ raw_comments - total_comments }} repeat{{ 's' if raw_comments - total_comments != 1 }} squashed{% endif %}
+      </span>{% endif %}</h2>
     {% if total_comments > 1 %}
     <nav class="seg" aria-label="Sort comments">
       {% for key, label in comment_sorts.items() %}
-        <a href="/t/{{ t.id }}?sort={{ key }}#comments" class="{{ 'on' if comment_sort == key }}">{{ label }}</a>
+        <a href="/t/{{ t.id }}?sort={{ key }}{{ '&merge=0' if not merge }}#comments" class="{{ 'on' if comment_sort == key }}">{{ label }}</a>
       {% endfor %}
     </nav>
     {% endif %}

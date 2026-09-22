@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import media
+from . import dupes, media
 from .adapters import NActor, NComment, NCommunity, NPost, host_of
 from .db import Conn, dumps
 
@@ -223,6 +223,8 @@ def record_revision(conn: Conn, object_id: int, now: str, *, title: str | None,
     else:
         conn.execute("UPDATE objects SET revision_count=?, last_changed_at=? WHERE id=?",
                      (seq, now, object_id))
+    if title is not None:  # a post: its link or text may now match other posts
+        dupes.refresh_key(conn, object_id)
     return True, withheld
 
 
