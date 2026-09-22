@@ -149,11 +149,13 @@ def test_relay_passes_deliveries_on_and_queues_what_lemmy_accepts():
 
 
 def test_relay_queues_nothing_lemmy_refused_and_asks_for_retries_when_down():
-    seen, queued = [], []
+    seen, queued, refusals = [], [], []
     refused = TestClient(InboxRelay(not_relayed, {HOME: UPSTREAM}, lambda *a: queued.append(a),
-                                    client=upstream_answering(401, seen)), base_url=f"https://{HOME}")
+                                    client=upstream_answering(401, seen), refuse=lambda *a: refusals.append(a)),
+                         base_url=f"https://{HOME}")
     assert refused.post("/inbox", content=b'{"type": "Create"}').status_code == 401  # e.g. a bad signature
     assert queued == []
+    assert refusals == [(HOME, "/inbox", b'{"type": "Create"}', 401, '{"ok":false}')]  # with Lemmy's answer
 
     def down(request):
         raise httpx.ConnectError("refused")
@@ -392,6 +394,27 @@ def test_pushes_page_lists_deliveries_and_retries_failures(settings, bouncer, se
     fed.process_pending()
     assert one(bouncer, "SELECT cur_deleted FROM objects WHERE id=?", oid)[0] == 0  # the server never deleted it
     assert one(bouncer, "SELECT COUNT(*) FROM ap_inbox WHERE status='failed'")[0] == 0
+
+
+def test_refused_deliveries_are_shown_with_the_reason_and_never_used(settings, bouncer, monkeypatch):
+    answers = iter([httpx.Response(400, json={"error": "invalid_signature"}), httpx.Response(202)])
+    upstream = httpx.AsyncClient(transport=httpx.MockTransport(lambda request: next(answers)))
+    monkeypatch.setattr(federation.httpx, "AsyncClient", lambda **kw: upstream)
+    settings.relay_inboxes = {HOME: UPSTREAM}
+    app = create_app(settings, bouncer)
+    act = json.dumps(announce(activity("Create", {"type": "Note", "id": f"https://{DOMAIN}/comment/1"}))).encode()
+    relay = TestClient(app, base_url=f"https://{HOME}")
+    assert relay.post("/inbox", content=act).status_code == 400
+    assert relay.post("/inbox", content=act).status_code == 202  # the sender's retry, accepted this time
+    with bouncer.db.connect() as conn:
+        rows = [tuple(r) for r in conn.execute("SELECT status, activity_id IS NULL FROM ap_inbox ORDER BY id")]
+    assert rows == [("refused", 1), ("pending", 0)]
+    app.state.federation.process_pending()
+    assert one(bouncer, "SELECT status FROM ap_inbox WHERE id=1")[0] == "refused"  # never processed
+    client = TestClient(app)
+    client.post("/login", data={"password": "pw"})
+    page = client.get("/pushes?status=refused").text
+    assert "Refused" in page and "invalid_signature" in page and "HTTP 400" in page
 
 
 def test_pushes_page_only_with_a_relayed_server(settings, bouncer):

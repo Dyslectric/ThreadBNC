@@ -62,11 +62,13 @@ POSTS_AND_COMMENTS = {"Note", "Page", "Article", "Question", "Video", "Image", "
 
 class InboxRelay:
     """ASGI middleware: a POST to an inbox on one of your servers goes to that
-    server's Lemmy, and what Lemmy accepts is queued. Everything else is the app's."""
+    server's Lemmy, and what Lemmy accepts is queued. What it refuses is passed
+    to `refuse` (with Lemmy's answer), for the pushes page. Everything else is the app's."""
 
     def __init__(self, app: Any, relays: dict[str, str], accept: Callable[[str, str, bytes], None],
-                 client: httpx.AsyncClient | None = None):
-        self.app, self.relays, self.accept = app, relays, accept
+                 client: httpx.AsyncClient | None = None,
+                 refuse: Callable[[str, str, bytes, int, str], None] | None = None):
+        self.app, self.relays, self.accept, self.refuse = app, relays, accept, refuse
         self.client = client or httpx.AsyncClient(timeout=60.0, follow_redirects=False)
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
@@ -100,6 +102,14 @@ class InboxRelay:
                 await run_in_threadpool(self.accept, host, scope["path"], bytes(body))
             except Exception:  # Lemmy has it either way; polling reconciles
                 log.error("couldn't queue an activity for %s: %s", host, traceback.format_exc())
+        else:
+            answer = resp.text[:500]
+            log.warning("%s refused a delivery to %s (HTTP %d): %s", host, scope["path"], resp.status_code, answer)
+            if self.refuse:
+                try:
+                    await run_in_threadpool(self.refuse, host, scope["path"], bytes(body), resp.status_code, answer)
+                except Exception:
+                    log.error("couldn't note a refused delivery: %s", traceback.format_exc())
         await _respond(send, resp.status_code, resp.content, resp.headers.get("content-type"))
 
 
@@ -249,6 +259,21 @@ class Federation:
                          (domain, path, _id(activity.get("id")), str(activity.get("type") or "")[:40],
                           body.decode("utf-8", "replace"), utcnow()))
         self.wake.set()
+
+    def refused(self, domain: str, path: str, body: bytes, status: int, answer: str) -> None:
+        """A delivery your server refused (InboxRelay's `refuse`): kept only to be
+        shown on the pushes page, never processed. Without its activity id, so a
+        later delivery of the same activity that is accepted still gets queued."""
+        try:
+            kind = str((json.loads(body) or {}).get("type") or "")[:40]
+        except (ValueError, AttributeError):
+            kind = ""
+        now = utcnow()
+        with self.db.transaction() as conn:
+            conn.execute("INSERT INTO ap_inbox(domain, path, activity_type, body, received_at, status, outcome, "
+                         "processed_at) VALUES (?,?,?,?,?,'refused',?,?)",
+                         (domain, path, kind, body.decode("utf-8", "replace"), now,
+                          f"{domain} answered HTTP {status}: {answer}"[:500], now))
 
     def process_pending(self, limit: int = 50) -> int:
         retry = fmt_ts(parse_ts(utcnow()) - RETRY_AFTER)  # type: ignore[operator]

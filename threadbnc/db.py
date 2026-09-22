@@ -387,7 +387,7 @@ CREATE TABLE IF NOT EXISTS ap_inbox (
     activity_type TEXT,
     body TEXT NOT NULL,
     received_at TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'pending',  -- pending | done | skipped | failed
+    status TEXT NOT NULL DEFAULT 'pending',  -- pending | done | skipped | failed | refused (by your server)
     outcome TEXT,
     attempts INTEGER NOT NULL DEFAULT 0,
     processed_at TEXT

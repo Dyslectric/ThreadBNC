@@ -430,7 +430,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                        https_only=settings.https_only_cookies, max_age=60 * 60 * 24 * 14,
                        session_cookie="threadbnc_session")
     if federation:  # outermost: deliveries to your servers' inboxes never reach sessions or sign-in
-        app.add_middleware(InboxRelay, relays=settings.relay_inboxes, accept=federation.queue)
+        app.add_middleware(InboxRelay, relays=settings.relay_inboxes, accept=federation.queue,
+                           refuse=federation.refused)
     app.state.federation = federation
 
     def push_handle() -> str | None:
@@ -777,7 +778,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
               "error" if failed and not ok else "info")
         return RedirectResponse("/communities", status_code=303)
 
-    PUSH_STATUSES = {"done": "Recorded", "skipped": "Skipped", "failed": "Failed", "pending": "Waiting"}
+    PUSH_STATUSES = {"done": "Recorded", "skipped": "Skipped", "failed": "Failed", "pending": "Waiting",
+                     "refused": "Refused"}
 
     @app.get("/pushes", response_class=HTMLResponse)
     def pushes(request: Request, status: str = ""):
