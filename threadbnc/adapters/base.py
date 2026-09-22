@@ -89,6 +89,7 @@ class NPost:
     score: int | None = None
     comment_count: int | None = None
     thumbnail_url: str | None = None  # server-generated preview (e.g. from og:image)
+    gallery: list[str] = field(default_factory=list)  # every image of a multi-image post, in order
     upvotes: int | None = None
     downvotes: int | None = None
     featured: bool = False  # pinned in the community or instance; sorts first regardless of age

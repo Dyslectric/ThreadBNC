@@ -8,6 +8,8 @@
 
 {% macro controls(base, sort, window, unread, community_id=none, view='list', view_chosen=none) %}
 {% set here = feed_url(base, sort, window, unread) %}
+{% set views = [('list', 'Posts: thumbnail, title and the start of the text', 'list'),
+                ('pictures', 'Pictures, one column', 'picture'), ('tiles', 'Pictures in a grid', 'tiles')] %}
 {% set windows = {'day': 'Past day', 'week': 'Past week', 'month': 'Past month', 'all': 'All time'} %}
 <div class="feed-controls">
   <nav class="seg" aria-label="Sort by">
@@ -33,15 +35,17 @@
     {% if community_id %}<input type="hidden" name="community_id" value="{{ community_id }}">{% endif %}
     <button class="act" title="Mark every post here as read">{{ icon('check-all') }}<span class="label">Mark all read</span></button>
   </form>
-  {% set other = 'list' if view == 'tiles' else 'tiles' %}
-  <a class="icon-button" href="{{ here }}&view={{ other }}" title="Show as {{ 'a list' if other == 'list' else 'tiles' }}"
-     aria-label="Show as {{ 'a list' if other == 'list' else 'tiles' }}">{{ icon(other) }}</a>
+  <nav class="seg view-seg" aria-label="Show posts as">
+    {% for key, label, glyph in views %}
+      <a href="{{ here }}&view={{ key }}" class="{{ 'on' if view == key }}" title="{{ label }}" aria-label="{{ label }}"{% if view == key %} aria-current="true"{% endif %}>{{ icon(glyph) }}</a>
+    {% endfor %}
+  </nav>
   <details class="menu">
     <summary class="icon-button" title="Feed options" aria-label="Feed options">{{ icon('settings') }}</summary>
     <div class="menu-panel">
       <div class="menu-section">
         <div class="menu-label">Show posts as</div>
-        {% for key, label in [('list', 'A list'), ('tiles', 'Tiles'), ('auto', 'Pick by how many have images')] %}
+        {% for key, label in [('list', 'Posts'), ('pictures', 'Pictures'), ('tiles', 'Grid'), ('auto', 'Pick by how many have images')] %}
           {% set on = (view_chosen == key) or (key == 'auto' and not view_chosen) %}
           <a class="menu-item {{ 'on' if on }}" href="{{ here }}&view={{ key }}"><span class="tick">{% if on %}{{ icon('check') }}{% endif %}</span>{{ label }}</a>
         {% endfor %}
@@ -67,20 +71,41 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
 {% elif is_rss(i.c_ap) %}<a class="act" href="/t/{{ i.id }}/repost" title="Post this article to one of your communities">{{ icon('share') }}<span class="{{ 'sr-only' if short }}">Post</span></a>{% endif %}
 {%- endmacro %}
 
-{# A post as a grid tile: its image or video, else a text card. NSFW and
+{# A post's pictures, swiped or stepped through with the arrows when there are several. #}
+{% macro gallery(i, veiled) %}
+{% set pics = i.thumb.pics %}
+<div class="gallery"{% if pics | length > 1 %} data-gallery{% endif %}>
+  <div class="gallery-track">
+    {% for p in pics %}
+    <a class="gallery-slide" href="/t/{{ i.id }}" tabindex="-1" aria-hidden="true"{% if veiled %} data-reveal{% endif %}>
+      {% if p.video %}<video src="/media/{{ p.id }}" muted preload="metadata"></video>
+      {% else %}<img src="/media/{{ p.id }}" alt="" loading="lazy">{% endif %}
+    </a>
+    {% endfor %}
+  </div>
+  {% if pics | length > 1 %}
+  <button type="button" class="gallery-nav prev" data-step="-1" aria-label="Previous picture">{{ icon('chevron-left') }}</button>
+  <button type="button" class="gallery-nav next" data-step="1" aria-label="Next picture">{{ icon('chevron-right') }}</button>
+  <span class="gallery-count"><span data-at>1</span>/{{ pics | length }}</span>
+  {% endif %}
+  {% if pics[0].video %}<span class="tile-badge right" title="Video">{{ icon('play') }}</span>{% endif %}
+  {% if i.group %}<span class="tile-badge" title="Posted {{ i.copies | length }} times">×{{ i.copies | length }}</span>{% endif %}
+  {% if veiled %}<span class="tile-veil">{{ 'NSFW' if i.nsfw else 'Spoiler' }}<span class="small">Tap to show</span></span>{% endif %}
+</div>
+{% endmacro %}
+
+{# A post as a grid tile: its pictures, else a text card. NSFW and
    spoiler media stays blurred until hovered, focused or tapped. #}
 {% macro post_tile(i, show_community=True, next_id=none) %}
 {% set veiled = (i.nsfw or i.spoiler) and i.thumb %}
 <article class="tile {{ 'unread' if i.unread }} {{ 'kept' if i.all_kept }} {{ 'veiled' if veiled }}" {{ entry_attrs(i) }}>
-  <a class="tile-media" href="/t/{{ i.id }}" tabindex="-1" aria-hidden="true"{% if veiled %} data-reveal{% endif %}>
-    {% if i.thumb %}
-      {% if i.thumb.video %}<video src="/media/{{ i.thumb.id }}" muted preload="metadata"></video>
-      {% else %}<img src="/media/{{ i.thumb.id }}" alt="" loading="lazy">{% endif %}
-    {% else %}<span class="tile-text">{{ i.excerpt or i.title }}</span>{% endif %}
-    {% if i.thumb and i.thumb.video %}<span class="tile-badge right" title="Video">{{ icon('play') }}</span>{% endif %}
+  {% if i.thumb %}<div class="tile-media">{{ gallery(i, veiled) }}</div>
+  {% else %}
+  <a class="tile-media" href="/t/{{ i.id }}" tabindex="-1" aria-hidden="true">
+    <span class="tile-text">{{ i.excerpt or i.title }}</span>
     {% if i.group %}<span class="tile-badge" title="Posted {{ i.copies | length }} times">×{{ i.copies | length }}</span>{% endif %}
-    {% if veiled %}<span class="tile-veil">{{ 'NSFW' if i.nsfw else 'Spoiler' }}<span class="small">Tap to show</span></span>{% endif %}
   </a>
+  {% endif %}
   <div class="tile-body">
     <h3 class="tile-title"><a href="/t/{{ i.id }}">{{ i.title }}</a></h3>
     <div class="tile-meta small">
@@ -106,6 +131,7 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
     <a class="thumb" href="/t/{{ i.id }}" tabindex="-1" aria-hidden="true">
       {% if i.thumb.video %}<video src="/media/{{ i.thumb.id }}" muted preload="metadata"></video>
       {% else %}<img src="/media/{{ i.thumb.id }}" alt="" loading="lazy">{% endif %}
+      {% if i.thumb.pics | length > 1 %}<span class="thumb-count" title="{{ i.thumb.pics | length }} pictures">{{ icon('picture') }}{{ i.thumb.pics | length }}</span>{% endif %}
     </a>
   {% endif %}
   <div class="pc-main">
@@ -138,12 +164,39 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
 </article>
 {% endmacro %}
 
-{# The feed's posts, as a list or a grid of tiles. #}
+{# A post in the one-column pictures view: its pictures at full width, else the start of its text. #}
+{% macro post_picture(i, show_community=True, next_id=none) %}
+{% set veiled = (i.nsfw or i.spoiler) and i.thumb %}
+<article class="picture-card {{ 'unread' if i.unread }} {{ 'kept' if i.all_kept }} {{ 'veiled' if veiled }}" {{ entry_attrs(i) }}>
+  <div class="pc-meta small">
+    {% if show_community %}<a class="pc-community" href="/c/{{ i.community_id }}">{{ chandle(i.cname, i.c_ap) }}</a> ·{% endif %}
+    <span>{{ i.username }}{% if not is_rss(i.c_ap) %}@{{ i.a_instance }}{% endif %}</span> · {{ when(i.created_at) }}
+    {{ state_badges(i) }}
+  </div>
+  <h3 class="pc-title"><a href="/t/{{ i.id }}">{{ i.title }}</a></h3>
+  {% if i.url | safe_url and not (i.thumb and i.thumb.is_link) %}<div class="pc-link small"><a href="{{ i.url | safe_url }}" target="_blank" rel="noreferrer noopener nofollow">{{ i.url | host }}{{ icon('external') }}</a></div>{% endif %}
+  {% if i.thumb %}<div class="picture-media">{{ gallery(i, veiled) }}</div>
+  {% elif i.excerpt %}<p class="pc-excerpt">{{ i.excerpt }}</p>{% endif %}
+  <div class="pc-actions actions small">
+    <a class="act" href="/t/{{ i.id }}#comments">{{ icon('comment') }}<span>{{ i.n_comments }} comment{{ 's' if i.n_comments != 1 }}</span></a>
+    {% if i.n_new %}<a href="/t/{{ i.id }}#comments" class="pill new">{{ i.n_new }} new</a>{% endif %}
+    {{ votes(i.upvotes, i.downvotes, i.score, i.breakdown if i.group) }}
+    {{ keep_button(i.id, i.all_kept, i.group, anchor='p' ~ i.id, refresh='p' ~ i.id) }}
+    {% if not i.all_kept %}{{ trash_button(i.id, i.group, ('p' ~ next_id) if next_id else '', refresh='p' ~ i.id) }}{% endif %}
+    {{ repost_link(i) }}
+  </div>
+</article>
+{% endmacro %}
+
+{# The feed's posts: as posts, pictures in one column, or a grid of pictures. #}
 {% macro posts(items, view, show_community=True) %}
-<div id="items" class="{{ 'tiles' if view == 'tiles' and items else 'cards' }}" data-items{% if mark_on_scroll() %} data-mark-on-scroll{% endif %}>
+{% set layout = {'tiles': 'tiles', 'pictures': 'pictures'}.get(view, 'cards') if items else 'cards' %}
+<div id="items" class="{{ layout }}" data-items{% if mark_on_scroll() %} data-mark-on-scroll{% endif %}>
 {% for i in items %}
   {% set next_id = loop.nextitem.id if loop.nextitem else none %}
-  {% if view == 'tiles' %}{{ post_tile(i, show_community, next_id) }}{% else %}{{ post_card(i, show_community, next_id) }}{% endif %}
+  {% if view == 'tiles' %}{{ post_tile(i, show_community, next_id) }}
+  {% elif view == 'pictures' %}{{ post_picture(i, show_community, next_id) }}
+  {% else %}{{ post_card(i, show_community, next_id) }}{% endif %}
 {% endfor %}
 </div>
 {% endmacro %}

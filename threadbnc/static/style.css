@@ -185,17 +185,26 @@ table.timeline td { padding: 6px 12px 6px 0; vertical-align: top; }
 .comment.d6 { --c: var(--d6); } .comment.d7 { --c: var(--d7); }
 
 .comments > .comment { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
-  padding: 8px 10px 8px 18px; margin: 10px 0 0; }
-.comment { position: relative; padding-left: 16px; margin-top: 8px; }
+  padding: 8px 10px 8px 21px; margin: 10px 0 0; }
+/* --rail: x of the thread line's centre, so the toggle knob sits on top of it */
+.comment { position: relative; padding-left: 19px; margin-top: 8px; --rail: 5.5px; --knob: 14px; }
+.comments > .comment { --rail: 9.5px; }
 .comment > summary { list-style: none; cursor: pointer; padding: 2px 6px 2px 0; border-radius: 6px;
-  margin-left: -16px; padding-left: 16px; }
-.comments > .comment > summary { margin-left: -18px; padding-left: 18px; }
+  margin-left: -19px; padding-left: 19px; position: relative; }
+.comments > .comment > summary { margin-left: -21px; padding-left: 21px; }
 .comment > summary::-webkit-details-marker { display: none; }
-.comment > summary .toggle { display: inline-block; width: 1em; color: var(--c); font-weight: 700; margin-left: -1em; }
-.comment > summary .toggle::before { content: "▾"; }
-.comment:not([open]) > summary .toggle::before { content: "▸"; }
+.comment > summary .fold { position: absolute; left: calc(var(--rail) - var(--knob) / 2); top: 4px;
+  width: var(--knob); height: var(--knob); border-radius: 50%; display: grid; place-items: center;
+  color: var(--c); background: var(--card); border: 1.5px solid color-mix(in srgb, var(--c) 55%, transparent);
+  box-sizing: border-box; transition: background .12s, color .12s, border-color .12s; }
+.comment > summary .fold .i { width: 10px; height: 10px; stroke-width: 3; transition: transform .15s; }
+.comment:not([open]) > summary .fold { background: color-mix(in srgb, var(--c) 16%, var(--card)); border-color: var(--c); }
+.comment:not([open]) > summary .fold .i { transform: rotate(-90deg); }
+.comment > summary:hover .toggle, .comment > summary:focus-visible .toggle {
+  background: var(--c); border-color: var(--c); color: var(--card); }
 .comment[open] > summary .collapsed-note { display: none; }
-.comment > summary .collapsed-note { color: var(--c); font-style: italic; margin-left: 4px; }
+.comment > summary .collapsed-note { display: inline-block; margin-left: 4px; padding: 0 7px; border-radius: 999px;
+  color: var(--c); background: color-mix(in srgb, var(--c) 12%, transparent); font-weight: 600; font-size: .92em; }
 .comment:not([open]) > summary { opacity: 0.85; }
 .comment > summary:hover { background: var(--bg); }
 .comment.kb-current > summary { box-shadow: inset 3px 0 0 var(--c); background: var(--hover); }
@@ -203,16 +212,20 @@ table.timeline td { padding: 6px 12px 6px 0; vertical-align: top; }
 /* the coloured bar: click to collapse */
 .comment > .bar { position: absolute; left: 0; top: 1.7em; bottom: 0; width: 12px; padding: 0; margin: 0;
   background: none; border: none; border-radius: 0; cursor: pointer; }
-.comments > .comment > .bar { left: 4px; bottom: 8px; }
+.comments > .comment > .bar { left: 4px; top: calc(1.7em + 8px); bottom: 8px; }
 .comment > .bar::before { content: ""; position: absolute; left: 4px; top: 0; bottom: 0; width: 3px;
   border-radius: 3px; background: var(--c); opacity: 0.55; transition: opacity .1s, width .1s, left .1s; }
 .comment > .bar:hover::before, .comment > .bar:focus-visible::before { opacity: 1; width: 5px; left: 3px; }
 .comment > .content > .md { margin-top: 2px; }
 
-.comment > .content > .replies-toggle { display: none; background: none; border: none; padding: 2px 0;
-  color: var(--c); font-size: 0.85em; font-weight: 600; cursor: pointer; }
+.comment > .content > .replies-toggle { display: none; align-items: center; gap: 4px; margin-top: 4px;
+  padding: 2px 10px 2px 7px; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--c) 40%, transparent);
+  background: color-mix(in srgb, var(--c) 8%, transparent); color: var(--c); font-size: 0.85em; font-weight: 600;
+  cursor: pointer; transition: background .12s; }
+.comment > .content > .replies-toggle:hover { background: color-mix(in srgb, var(--c) 18%, transparent); }
+.comment > .content > .replies-toggle .i { width: 12px; height: 12px; stroke-width: 2.5; }
 .comment.replies-hidden > .content > .replies { display: none; }
-.comment.replies-hidden > .content > .replies-toggle { display: inline-block; }
+.comment.replies-hidden > .content > .replies-toggle { display: inline-flex; }
 .comment.replies-hidden > .bar { display: none; }
 
 .comment.is-new > summary { background: var(--new-bg); }
@@ -224,10 +237,13 @@ table.timeline td { padding: 6px 12px 6px 0; vertical-align: top; }
   background: var(--bg); padding: 6px 0; }
 
 @media (max-width: 600px) {
-  .comment { padding-left: 11px; }
-  .comment > summary { margin-left: -11px; padding-left: 11px; }
-  .comments > .comment { padding-left: 14px; }
-  .comments > .comment > summary { margin-left: -14px; padding-left: 14px; }
+  .comment { padding-left: 13px; --rail: 4.5px; --knob: 12px; }
+  .comments > .comment { --rail: 8.5px; }
+  .comment > summary .fold { top: 5px; }
+  .comment > summary .fold .i { width: 8px; height: 8px; }
+  .comment > summary { margin-left: -13px; padding-left: 13px; }
+  .comments > .comment { padding-left: 16px; }
+  .comments > .comment > summary { margin-left: -16px; padding-left: 16px; }
   .comment > .bar { width: 9px; }
   .comment > .bar::before { left: 3px; }
 }
@@ -339,11 +355,15 @@ button.danger:hover { background: color-mix(in srgb, var(--bad) 85%, var(--text)
 /* Unread: an accent edge on the left, the same on cards, tiles, search hits and inbox items. */
 .post-card.unread, .inbox-item.unread { box-shadow: inset 3px 0 0 var(--accent), var(--shadow); }
 .post-card.unread:hover { box-shadow: inset 3px 0 0 var(--accent), var(--shadow-lift); }
-.post-card.seen, .tile.seen { transition: box-shadow .6s; }
-.kb-current.post-card, .kb-current.tile, .kb-current.inbox-item, .kb-current.hit {
+.post-card.seen, .tile.seen, .picture-card.seen { transition: box-shadow .6s; }
+.kb-current.post-card, .kb-current.tile, .kb-current.picture-card, .kb-current.inbox-item, .kb-current.hit {
   outline: 2px solid var(--ring); outline-offset: 2px; }
-.post-card .thumb { flex: 0 0 auto; width: 116px; height: 87px; border-radius: 8px; overflow: hidden; background: var(--bg);
-  border: 1px solid var(--line); }
+.post-card .thumb { position: relative; flex: 0 0 auto; width: 116px; height: 87px; border-radius: 8px; overflow: hidden;
+  background: var(--bg); border: 1px solid var(--line); }
+.thumb-count { position: absolute; right: 4px; bottom: 4px; display: inline-flex; align-items: center; gap: 3px;
+  padding: 1px 6px; border-radius: 999px; background: rgba(0, 0, 0, .62); color: #fff; font-size: 0.7em; font-weight: 700; }
+.thumb-count .i { width: 1.1em; height: 1.1em; }
+.view-seg a { padding: 4px 8px; }
 .post-card .thumb img, .post-card .thumb video { width: 100%; height: 100%; object-fit: cover; display: block; }
 .pc-main { flex: 1; min-width: 0; }
 .pc-meta { color: var(--muted); display: flex; flex-wrap: wrap; align-items: center; gap: 0 5px; }
@@ -492,20 +512,54 @@ fieldset.targets legend { color: var(--muted); padding: 0 4px; }
 .tile-badge { position: absolute; top: 8px; left: 8px; background: rgba(0, 0, 0, .62); color: #fff; font-size: 0.75em;
   font-weight: 700; padding: 2px 8px; border-radius: 999px; display: inline-flex; align-items: center; }
 .tile-badge.right { left: auto; right: 8px; }
-.tile.veiled .tile-media img, .tile.veiled .tile-media video { filter: blur(22px) saturate(.7); transform: scale(1.1); }
-.tile.veiled.revealed .tile-media img, .tile.veiled.revealed .tile-media video { filter: none; transform: none; }
+.veiled .gallery img, .veiled .gallery video { filter: blur(22px) saturate(.7); transform: scale(1.1); }
+.veiled.revealed .gallery img, .veiled.revealed .gallery video { filter: none; transform: none; }
 .tile-veil { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 2px; color: #fff; font-weight: 700; letter-spacing: .06em; text-shadow: 0 1px 3px rgba(0, 0, 0, .6);
   pointer-events: none; transition: opacity .2s; }
 .tile-veil .small { font-weight: 500; letter-spacing: 0; }
-.tile.veiled.revealed .tile-veil { opacity: 0; }
+.veiled.revealed .tile-veil { opacity: 0; }
 @media (hover: hover) {
-  .tile.veiled:hover .tile-media img, .tile.veiled:hover .tile-media video { filter: none; transform: none; }
-  .tile.veiled:hover .tile-veil { opacity: 0; }
+  .veiled:hover .gallery img, .veiled:hover .gallery video { filter: none; transform: none; }
+  .veiled:hover .tile-veil { opacity: 0; }
   .tile-veil .small { display: none; }
 }
-.tile.veiled:focus-within .tile-media img, .tile.veiled:focus-within .tile-media video { filter: none; transform: none; }
-.tile.veiled:focus-within .tile-veil { opacity: 0; }
+.veiled:focus-within .gallery img, .veiled:focus-within .gallery video { filter: none; transform: none; }
+.veiled:focus-within .tile-veil { opacity: 0; }
+
+/* ---- galleries: a post's pictures side by side, one showing; swipe or use the arrows ---- */
+.gallery { position: relative; }
+.tile-media .gallery, .tile-media .gallery-track { height: 100%; }
+.gallery-track { display: flex; overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: none;
+  overscroll-behavior-x: contain; }
+.gallery-track::-webkit-scrollbar { display: none; }
+.gallery-slide { flex: 0 0 100%; scroll-snap-align: start; overflow: hidden; display: flex; align-items: center;
+  justify-content: center; }
+.gallery-nav { position: absolute; top: 50%; translate: 0 -50%; z-index: 1; width: 32px; height: 32px; padding: 0;
+  display: grid; place-items: center; border: none; border-radius: 50%; cursor: pointer;
+  background: rgba(0, 0, 0, .55); color: #fff; opacity: 0; transition: opacity .15s, background .15s; }
+.gallery-nav:hover { background: rgba(0, 0, 0, .75); }
+.gallery-nav .i { width: 18px; height: 18px; stroke-width: 2.5; }
+.gallery-nav.prev { left: 8px; }
+.gallery-nav.next { right: 8px; }
+[data-gallery]:hover .gallery-nav, .gallery-nav:focus-visible, .kb-current [data-gallery] .gallery-nav { opacity: 1; }
+@media (hover: none) { .gallery-nav { display: none; } }
+.gallery-count { position: absolute; bottom: 8px; right: 8px; background: rgba(0, 0, 0, .62); color: #fff;
+  font-size: 0.75em; font-weight: 700; padding: 2px 8px; border-radius: 999px; pointer-events: none;
+  font-variant-numeric: tabular-nums; }
+
+/* ---- pictures, one column ---- */
+.picture-card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 16px 8px;
+  margin-bottom: 12px; box-shadow: var(--shadow); transition: border-color .15s, box-shadow .15s; }
+.picture-card:hover { border-color: color-mix(in srgb, var(--muted) 40%, var(--line)); box-shadow: var(--shadow-lift); }
+.picture-card.unread { box-shadow: inset 3px 0 0 var(--accent), var(--shadow); }
+.picture-card:not(.unread) .pc-title a { font-weight: 500; }
+.picture-card.unread .pc-title a { font-weight: 700; }
+.picture-media { margin: 8px -16px 2px; background: var(--bg); border-block: 1px solid var(--line); }
+.picture-media img, .picture-media video { display: block; width: 100%; height: auto; max-height: 80vh; object-fit: contain; }
+.picture-media [data-gallery] .gallery-track { aspect-ratio: var(--ratio, 4 / 3); max-height: 80vh; }
+.picture-media [data-gallery] img, .picture-media [data-gallery] video { height: 100%; }
+.picture-card .pc-excerpt { -webkit-line-clamp: 5; line-clamp: 5; }
 .tile-body { padding: 9px 11px 8px; display: flex; flex-direction: column; gap: 4px; flex: 1; }
 .tile-title { font-size: 0.93rem; margin: 0; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2;
   -webkit-box-orient: vertical; overflow: hidden; }
@@ -622,6 +676,8 @@ dialog.shortcuts::backdrop { background: rgba(0, 0, 0, .35); }
   main { padding-top: 14px; }
   h1 { font-size: 1.35rem; }
   .post-card { padding: 12px 12px 8px; gap: 12px; }
+  .picture-card { padding: 12px 12px 8px; }
+  .picture-media { margin-inline: -12px; }
   .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .tile-body { padding: 7px 8px 6px; }
   .vote-breakdown { min-width: 0; max-width: calc(100vw - 32px); white-space: normal; }

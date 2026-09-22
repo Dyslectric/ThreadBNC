@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 import httpx
 import pytest
 from fastapi.testclient import TestClient
@@ -189,7 +191,8 @@ def test_image_communities_show_as_tiles_automatically(settings, server, mbounce
     client.post("/login", data={"password": "pw"})
     page = client.get(f"/c/{cid}").text
     assert 'class="tiles"' in page and page.count('class="tile ') == 4 and 'class="post-card' not in page
-    assert 'aria-label="Show as a list"' in page and 'view=auto"><span class="tick"><svg' in page  # auto, not chosen
+    assert 'aria-label="Pictures in a grid" aria-current="true"' in page
+    assert 'view=auto"><span class="tick"><svg' in page  # auto, not chosen
     home = client.get("/").text
     assert 'class="tiles"' in home
 
@@ -212,6 +215,34 @@ def test_view_choice_is_remembered_per_community(settings, server, mbouncer):
     assert 'class="tiles"' not in client.get("/").text
     client.get(f"/c/{cid}?view=auto")
     assert 'class="tiles"' in client.get(f"/c/{cid}").text
+
+
+def test_pictures_view_is_a_third_choice(settings, server, mbouncer):
+    cid = picture_community(server, mbouncer)
+    client = TestClient(create_app(settings, mbouncer))
+    client.post("/login", data={"password": "pw"})
+    page = client.get(f"/c/{cid}?view=pictures").text
+    assert 'class="pictures"' in page and page.count('class="picture-card ') == 4
+    assert 'class="pictures"' in client.get(f"/c/{cid}").text  # remembered
+
+
+def test_posts_with_several_pictures_can_be_paged_through(settings, server, mbouncer):
+    server.add_post("1", "album", "![a](https://img.test/cat.gif?a) text ![b](https://img.test/cat.gif?b) "
+                                  "![c](https://img.test/cat.gif?c)", created=utcnow())
+    server.add_post("2", "single", "![a](https://img.test/cat.gif?single)", created=utcnow())
+    cid = mbouncer.follow_community(f"!math@{DOMAIN}", 10, 7, backfill=True)
+    mbouncer.poll_follow(cid)
+    mbouncer.media.fetch_pending()
+    client = TestClient(create_app(settings, mbouncer))
+    client.post("/login", data={"password": "pw"})
+    rows = media_rows(mbouncer)
+    album = [rows[u]["id"] for u in ("https://img.test/cat.gif?a", "https://img.test/cat.gif?b", "https://img.test/cat.gif?c")]
+    for view in ("tiles", "pictures"):
+        page = client.get(f"/c/{cid}?view={view}").text
+        assert page.count("data-gallery") == 1 and '<span data-at>1</span>/3' in page
+        srcs = [int(m) for m in re.findall(r'<img src="/media/(\d+)"', page)]
+        assert [s for s in srcs if s in album] == album  # in the order they appear in the post
+    assert 'title="3 pictures"' in client.get(f"/c/{cid}?view=list").text
 
 
 def test_nsfw_tiles_are_veiled(settings, server, mbouncer):

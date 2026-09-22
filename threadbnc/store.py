@@ -331,6 +331,7 @@ def apply_post(conn: Conn, thread_id: int, post: NPost, source_domain: str, now:
     if thumb:
         conn.execute("UPDATE objects SET thumbnail_url=? WHERE id=?", (thumb, oid))
         media.register(conn, oid, [thumb], now)
+    media.register(conn, oid, post.gallery, now)
     _set_local_id(conn, oid, source_domain, post.local_id)
     hidden = post.deleted or post.removed
     created, withheld = record_revision(

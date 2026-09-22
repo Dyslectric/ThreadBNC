@@ -70,6 +70,26 @@ def _abs(url: str | None) -> str | None:
     return url or None
 
 
+_MEDIA_ID = re.compile(r"^[A-Za-z0-9]+$")
+
+
+def gallery(d: dict[str, Any]) -> list[str]:
+    """A gallery post's images in order, as their stable i.redd.it URLs (the
+    preview URLs Reddit hands out are signed and change)."""
+    src = d if d.get("gallery_data") else next(iter(d.get("crosspost_parent_list") or []), {})
+    meta = src.get("media_metadata") or {}
+    out = []
+    for item in (src.get("gallery_data") or {}).get("items") or []:
+        mid = str(item.get("media_id") or "")
+        m = meta.get(mid) or {}
+        if not _MEDIA_ID.match(mid) or m.get("status") != "valid":
+            continue
+        kind = "gif" if m.get("e") == "AnimatedImage" else (m.get("m") or "").partition("/")[2]
+        if kind in ("jpg", "jpeg", "png", "gif", "webp"):
+            out.append(f"https://i.redd.it/{mid}.{kind}")
+    return out
+
+
 def actor(name: str | None) -> NActor:
     name = name or "[deleted]"
     return NActor(f"{WWW}/user/{name}", name, REDDIT_DOMAIN)
@@ -120,6 +140,7 @@ class RedditAdapter(ThreadiverseAdapter):
             comment_count=d.get("num_comments"),
             thumbnail_url=thumb if (thumb or "").startswith(("http://", "https://")) else None,
             featured=bool(d.get("stickied")),
+            gallery=gallery(d),
         )
 
     def _comment(self, d: dict[str, Any], sub: str, pid: str) -> NComment:

@@ -241,12 +241,40 @@ document.documentElement.classList.add("js");
     }
   });
 
+  // ---- galleries: swipe, or step with the arrows (wrapping round) ---------------------
+  function stepGallery(g, step) {
+    const track = g.querySelector(".gallery-track");
+    const n = track.children.length;
+    const at = Math.round(track.scrollLeft / track.clientWidth);
+    const to = (at + step + n) % n;
+    const smooth = Math.abs(to - at) === 1 && !matchMedia("(prefers-reduced-motion: reduce)").matches;
+    track.scrollTo({ left: to * track.clientWidth, behavior: smooth ? "smooth" : "instant" });
+  }
+  document.addEventListener("click", (ev) => {
+    const nav = ev.target.closest(".gallery-nav");
+    if (nav) stepGallery(nav.closest("[data-gallery]"), Number(nav.dataset.step));
+  });
+  document.addEventListener("scroll", (ev) => {
+    const track = ev.target;
+    if (!track.classList || !track.classList.contains("gallery-track")) return;
+    const count = track.parentElement.querySelector("[data-at]");
+    if (count) count.textContent = Math.round(track.scrollLeft / track.clientWidth) + 1;
+  }, true);
+  // In the pictures view a gallery takes the shape of its first picture, so paging doesn't resize it.
+  function shapeGallery(img) {
+    const g = img.closest(".picture-media [data-gallery]");
+    if (!g || img.parentElement !== g.querySelector(".gallery-slide") || !img.naturalWidth) return;
+    const ratio = Math.min(2.2, Math.max(0.6, img.naturalWidth / img.naturalHeight));
+    g.style.setProperty("--ratio", ratio);
+  }
+  document.addEventListener("load", (ev) => { if (ev.target.tagName === "IMG") shapeGallery(ev.target); }, true);
+
   // ---- touch: reveal blurred tiles, show vote breakdowns ----------------------------
   const noHover = window.matchMedia("(hover: none)");
   document.addEventListener("click", (ev) => {
     const veil = ev.target.closest("[data-reveal]");
     if (veil) {
-      const tile = veil.closest(".tile");
+      const tile = veil.closest(".veiled");
       if (tile && !tile.classList.contains("revealed") && noHover.matches) {
         ev.preventDefault();
         tile.classList.add("revealed");
@@ -337,13 +365,26 @@ document.documentElement.classList.add("js");
     current = el;
     if (!el) return;
     el.classList.add("kb-current");
-    if (scroll) {
-      const target = el.matches("details") ? el.querySelector(":scope > summary") || el : el;
-      target.scrollIntoView({ block: "nearest" });
-      const top = target.getBoundingClientRect().top;
-      const covered = parseFloat(getComputedStyle(document.documentElement).scrollPaddingTop) || 0;
-      if (top < covered) window.scrollBy(0, top - covered);
+    if (!scroll) return;
+    reveal(el);
+    // Lazy images can grow the item after we've scrolled; reveal again once they load.
+    for (const img of el.querySelectorAll("img")) {
+      if (!img.complete) img.addEventListener("load", () => { if (current === el) reveal(el); }, { once: true });
     }
+  }
+
+  // Scroll just enough to show the whole item (a comment without its replies), or its top if it can't fit.
+  function reveal(el) {
+    const box = el.getBoundingClientRect();
+    let bottom = box.bottom;
+    if (el.matches("details.comment")) {
+      const replies = el.open && el.querySelector(":scope > .content > .replies");
+      if (replies && replies.offsetParent) bottom = replies.getBoundingClientRect().top;
+    }
+    const covered = parseFloat(getComputedStyle(document.documentElement).scrollPaddingTop) || 0;
+    const room = window.innerHeight - 8;
+    if (box.top < covered || bottom - box.top > room - covered) window.scrollBy(0, box.top - covered);
+    else if (bottom > room) window.scrollBy(0, bottom - room);
   }
 
   function move(step) {
@@ -406,6 +447,16 @@ document.documentElement.classList.add("js");
         if (!current || !current.matches("details.comment") || t !== document.body) return;
         ev.preventDefault();
         current.open = !current.open;
+        break;
+      }
+      case "h":
+      case "l":
+      case "ArrowLeft":
+      case "ArrowRight": {
+        const g = current && current.isConnected && current.querySelector("[data-gallery]");
+        if (!g) return;
+        ev.preventDefault();
+        stepGallery(g, ev.key === "h" || ev.key === "ArrowLeft" ? -1 : 1);
         break;
       }
       case "s": if (press("[data-key=keep]")) ev.preventDefault(); break;

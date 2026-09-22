@@ -141,7 +141,7 @@
   <details open class="comment d{{ depth % 8 }} {{ 'is-new' if n.is_new }} {{ 'is-changed' if n.is_changed and not n.is_new }}" id="o{{ o.id }}">
     <summary class="meta small">
       {% for m in n.members[1:] %}<span id="o{{ m.o.id }}"></span>{% endfor %}
-      <span class="toggle" aria-hidden="true"></span>
+      <span class="fold" aria-hidden="true">{{ icon('chevron-down') }}</span>
       {{ byline(n) }} {{ state_badges(o) }} {{ sources(n) }}
       {% if n.is_new %}<span class="pill new">new since last visit</span>{% elif n.is_changed %}<span class="pill warn">changed since last visit</span>{% endif %}
       <span class="collapsed-note">{% if n.descendants %}{{ n.descendants }} repl{{ 'ies' if n.descendants != 1 else 'y' }} hidden{% else %}collapsed{% endif %}</span>
@@ -151,7 +151,7 @@
       <div class="md {{ 'faded' if o.cur_deleted or o.cur_removed or o.cur_missing }}">{{ md(o.body) }}</div>
       {{ event_list(n.events) }}
       {{ actions(n) }}
-      {% if n.children %}<button type="button" class="replies-toggle" data-action="show-replies">Show {{ n.descendants }} repl{{ 'ies' if n.descendants != 1 else 'y' }}</button>
+      {% if n.children %}<button type="button" class="replies-toggle" data-action="show-replies">{{ icon('chevron-down') }} Show {{ n.descendants }} repl{{ 'ies' if n.descendants != 1 else 'y' }}</button>
       <div class="replies">{% for child in n.children %}{{ comment(child, depth + 1) }}{% endfor %}</div>{% endif %}
     </div>
   </details>

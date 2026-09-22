@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from threadbnc.accounts import AccountError, Poster
 from threadbnc.adapters import RemoteUnavailable, parse_community_ref, parse_thread_url
+from threadbnc.adapters.reddit import gallery as reddit_gallery
 from threadbnc.reddit import RedditConnection
 from threadbnc.vault import TokenVault
 from threadbnc.web import create_app
@@ -244,6 +245,19 @@ def logged_in(settings, bouncer):
 def test_reddit_post_urls(url, local):
     ref = parse_thread_url(url)
     assert (ref.domain, ref.kind, ref.local_id) == ("reddit.com", "post", local)
+
+
+def test_gallery_images_in_order():
+    meta = {"b2": {"status": "valid", "e": "Image", "m": "image/png"},
+            "a1": {"status": "valid", "e": "Image", "m": "image/jpg"},
+            "c3": {"status": "valid", "e": "AnimatedImage", "m": "image/gif"},
+            "d4": {"status": "failed"}, "../x": {"status": "valid", "e": "Image", "m": "image/jpg"}}
+    items = [{"media_id": k} for k in ("a1", "b2", "d4", "../x", "c3")]
+    post = {"gallery_data": {"items": items}, "media_metadata": meta}
+    want = ["https://i.redd.it/a1.jpg", "https://i.redd.it/b2.png", "https://i.redd.it/c3.gif"]
+    assert reddit_gallery(post) == want
+    assert reddit_gallery({"crosspost_parent_list": [post]}) == want
+    assert reddit_gallery({"title": "not a gallery"}) == []
 
 
 def test_subreddit_refs():

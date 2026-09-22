@@ -19,7 +19,7 @@ SORTS = {  # NULLS LAST: Postgres otherwise puts NULLs first in DESC order
     "comments": "g_comments DESC, created_at DESC NULLS LAST, id DESC",
 }
 WINDOWS = {"day": timedelta(days=1), "week": timedelta(days=7), "month": timedelta(days=30), "all": None}
-VIEWS = ("list", "tiles")
+VIEWS = ("list", "pictures", "tiles")  # posts; pictures in one column; a grid of pictures
 # "Auto" shows tiles when at least this share of recent posts have an image or video.
 TILES_WHEN = 0.6
 MEDIA_SAMPLE = 40  # recent posts looked at to decide
@@ -134,7 +134,10 @@ def attach_group(item: dict[str, Any], copies: list[dict[str, Any]]) -> None:
 def thumbnails(conn: Conn,
                roots: list[tuple[int, str | None, str | None]]) -> dict[int, dict[str, Any]]:
     """Archived image/video for each post: its link if that is media, else the
-    server's preview image (article links), else the first embedded image."""
+    server's preview image (article links), else the first embedded image.
+    "pics" is every picture to page through: the link, then embedded and gallery
+    images in the order they were found; the preview only when there's nothing
+    else, as it is usually a smaller copy of one of them."""
     if not roots:
         return {}
     ids = [oid for oid, _, _ in roots]
@@ -146,13 +149,18 @@ def thumbnails(conn: Conn,
     links = {oid: url for oid, url, _ in roots}
     previews = {oid: thumb for oid, _, thumb in roots}
     out: dict[int, dict[str, Any]] = {}
+    found: dict[int, list[dict[str, Any]]] = {}
     for r in rows:
         oid = r["object_id"]
         is_link = r["url"] == links.get(oid)
         rank = 0 if is_link else 1 if r["url"] == previews.get(oid) else 2
+        pic = {"id": r["id"], "video": r["content_type"].startswith("video/"), "is_link": is_link, "rank": rank}
+        found.setdefault(oid, []).append(pic)
         if oid not in out or rank < out[oid]["rank"]:
-            out[oid] = {"id": r["id"], "video": r["content_type"].startswith("video/"),
-                        "is_link": is_link, "rank": rank}
+            out[oid] = dict(pic)
+    for oid, thumb in out.items():
+        pics = sorted((p for p in found[oid] if p["rank"] != 1), key=lambda p: p["rank"])
+        thumb["pics"] = pics or [p for p in found[oid] if p["rank"] == 1]
     return out
 
 

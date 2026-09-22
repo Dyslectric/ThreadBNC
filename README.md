@@ -45,10 +45,13 @@ Everything else stays, but the archive is only as durable as the disk and databa
 | **Trash** | Hidden and unkept threads, restorable until the trash period ends. |
 | **Reddit** (`/reddit`, linked from Accounts) | Connect Reddit, and follow your Reddit subscriptions. |
 
-**List or tiles:** feeds can show posts as a list, or as a grid of tiles for image-centric communities.
-- Until you choose, each community picks for itself: tiles when at least 60% of its 40 most recent posts have an archived image or video (and it has at least 4 posts), a list otherwise. The home feed goes by what's on the page.
-- **☰ List / ▦ Tiles** in the feed controls overrides that. The choice is remembered per community, and separately for the home feed. **auto** goes back to deciding by itself.
-- Tiles show the image or video cropped square, with the title, community, comments, votes, and small ☆ Keep, ✕ Hide and ↻ Repost buttons. Posts without media become text tiles.
+**Posts, pictures or grid:** feeds can show posts three ways.
+- **Posts** shows a thumbnail, the title and the start of the text.
+- **Pictures** shows one post per row, with its pictures at full width.
+- **Grid** shows tiles: the image or video cropped square, with the title, community, comments, votes, and small ☆ Keep, ✕ Hide and ↻ Repost buttons. Posts without media become text tiles.
+- Until you choose, each community picks for itself: the grid when at least 60% of its 40 most recent posts have an archived image or video (and it has at least 4 posts), posts otherwise. The home feed goes by what's on the page.
+- The three view buttons in the feed controls override that. The choice is remembered per community, and separately for the home feed. **auto** in the options menu goes back to deciding by itself.
+- **Several pictures:** posts with more than one picture (a Reddit gallery, or several images in the text) show a counter such as 1/4 in the Pictures and Grid views. Swipe, use the ‹ › buttons, or press **h** / **l** (or ← / →) on the selected post to go through them. In the Posts view the thumbnail shows how many there are.
 - NSFW and spoiler images are blurred until you hover over or focus the tile.
 
 **Keep and Hide:**
