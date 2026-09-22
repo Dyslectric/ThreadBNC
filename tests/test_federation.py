@@ -421,3 +421,32 @@ def test_pushes_page_only_with_a_relayed_server(settings, bouncer):
     client = TestClient(create_app(settings, bouncer))
     client.post("/login", data={"password": "pw"})
     assert client.get("/pushes").status_code == 404
+
+
+def test_relay_reads_lemmys_answer_whatever_the_sender_accepts():
+    """Senders (Cloudflare, here) may accept encodings the relay can't decode; it
+    asks Lemmy only for ones it can, so refusals are readable."""
+    import gzip
+    seen, refusals = [], []
+
+    def lemmy(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(400, content=gzip.compress(b'{"error":"unknown_community"}'),
+                              headers={"content-encoding": "gzip", "content-type": "application/json"})
+    relay = InboxRelay(not_relayed, {HOME: UPSTREAM}, lambda *a: None,
+                       client=httpx.AsyncClient(transport=httpx.MockTransport(lemmy)),
+                       refuse=lambda *a: refusals.append(a))
+    r = TestClient(relay, base_url=f"https://{HOME}").post("/inbox", content=b"{}",
+                                                           headers={"accept-encoding": "br, x-cloudflare-only"})
+    assert "x-cloudflare-only" not in seen[0].headers.get("accept-encoding", "")
+    assert refusals[0][4] == '{"error":"unknown_community"}'
+    # The sender gets the answer as sent to it: decoded, and not claiming to be compressed.
+    assert r.json() == {"error": "unknown_community"} and "content-encoding" not in r.headers
+
+
+def test_unreadable_answers_and_nul_bytes_are_stored_safely(fed, bouncer):
+    assert federation.readable(b"\x8b\x00\xff\xfe") == "(4 bytes that aren't text)"
+    assert federation.readable(b'{"error":"x\x00y"}') == '{"error":"xy"}'
+    fed.refused(HOME, "/inbox", b'{"type": "Create", "x": "a\x00b"}', 400, federation.readable(b"\x00\xff"))
+    row = one(bouncer, "SELECT status, body, outcome FROM ap_inbox")
+    assert row["status"] == "refused" and "\x00" not in row["body"] and "bytes that aren't text" in row["outcome"]

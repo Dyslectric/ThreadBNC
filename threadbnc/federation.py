@@ -47,8 +47,10 @@ log = logging.getLogger(__name__)
 INBOX_PATH = re.compile(r"^/(?:site_)?inbox$|^/(?:u|c)/[^/]+/inbox$")
 MAX_ACTIVITY_BYTES = 2_000_000
 # Headers about one connection rather than the request; the rest are passed on as they came.
+# Accept-Encoding too: the relay reads Lemmy's answer, so it asks only for encodings
+# it can decode (the sender's, e.g. Cloudflare's Brotli, may not be). Senders don't sign it.
 HOP_BY_HOP = {"connection", "keep-alive", "transfer-encoding", "te", "trailer", "upgrade", "content-length",
-              "proxy-authorization", "proxy-authenticate"}
+              "proxy-authorization", "proxy-authenticate", "accept-encoding"}
 MAX_ATTEMPTS = 5
 RETRY_AFTER = timedelta(minutes=2)
 KEEP_HANDLED = timedelta(days=3)
@@ -103,7 +105,7 @@ class InboxRelay:
             except Exception:  # Lemmy has it either way; polling reconciles
                 log.error("couldn't queue an activity for %s: %s", host, traceback.format_exc())
         else:
-            answer = resp.text[:500]
+            answer = readable(resp.content)
             log.warning("%s refused a delivery to %s (HTTP %d): %s", host, scope["path"], resp.status_code, answer)
             if self.refuse:
                 try:
@@ -111,6 +113,19 @@ class InboxRelay:
                 except Exception:
                     log.error("couldn't note a refused delivery: %s", traceback.format_exc())
         await _respond(send, resp.status_code, resp.content, resp.headers.get("content-type"))
+
+
+def readable(content: bytes, limit: int = 500) -> str:
+    """An answer as text fit to log and store (Postgres takes no NUL bytes)."""
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        return f"({len(content)} bytes that aren't text)"
+    return text.replace("\x00", "")[:limit]
+
+
+def _text(body: bytes) -> str:
+    return body.decode("utf-8", "replace").replace("\x00", "")
 
 
 async def _respond(send: Any, status: int, body: bytes, content_type: str | None) -> None:
@@ -257,7 +272,7 @@ class Federation:
             conn.execute("INSERT INTO ap_inbox(domain, path, activity_id, activity_type, body, received_at) "
                          "VALUES (?,?,?,?,?,?) ON CONFLICT(activity_id) DO NOTHING",
                          (domain, path, _id(activity.get("id")), str(activity.get("type") or "")[:40],
-                          body.decode("utf-8", "replace"), utcnow()))
+                          _text(body), utcnow()))
         self.wake.set()
 
     def refused(self, domain: str, path: str, body: bytes, status: int, answer: str) -> None:
@@ -272,8 +287,8 @@ class Federation:
         with self.db.transaction() as conn:
             conn.execute("INSERT INTO ap_inbox(domain, path, activity_type, body, received_at, status, outcome, "
                          "processed_at) VALUES (?,?,?,?,?,'refused',?,?)",
-                         (domain, path, kind, body.decode("utf-8", "replace"), now,
-                          f"{domain} answered HTTP {status}: {answer}"[:500], now))
+                         (domain, path, kind, _text(body), now,
+                          f"{domain} answered HTTP {status}: {answer}"[:500].replace("\x00", ""), now))
 
     def process_pending(self, limit: int = 50) -> int:
         retry = fmt_ts(parse_ts(utcnow()) - RETRY_AFTER)  # type: ignore[operator]
