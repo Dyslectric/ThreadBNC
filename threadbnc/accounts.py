@@ -1,7 +1,8 @@
 """Acting as Lemmy/PieFed accounts: login, posting, commenting, voting,
 editing and deleting your own content.
 
-Reddit: logging in with Reddit (reddit.py) adds your Reddit account here too.
+Reddit: logging in with Reddit, or connecting with your browser's Reddit
+cookie (reddit.py), adds your Reddit account here too.
 It isn't in the header switcher: anything on Reddit is done as it
 automatically, and everything else as the account picked in the switcher
 (see account_for).
@@ -132,7 +133,7 @@ class Poster:
         status = self.bouncer.reddit.status()
         keep = None
         with self.db.transaction() as conn:
-            if status and status["mode"] == "user" and status.get("username"):
+            if status and status["has_account"] and status.get("username"):
                 keep = f"https://www.reddit.com/user/{status['username']}"
                 conn.execute(
                     "INSERT INTO accounts(domain, software, username, actor_ap_id, status, is_default, is_admin, "

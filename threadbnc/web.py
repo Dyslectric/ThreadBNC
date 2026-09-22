@@ -1306,7 +1306,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     def reddit_page(request: Request, subs: int = 0):
         status = bouncer.reddit.status()
         subscriptions, subs_error = None, None
-        if subs and status and status["mode"] == "user":
+        if subs and status and status["has_account"]:
             try:
                 subscriptions = bouncer.reddit_adapter.subscriptions()
             except RemoteError as exc:
@@ -1328,6 +1328,17 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             bouncer.reddit.connect_app(client_id, client_secret)
             poster.sync_reddit_account()
             flash(request, "Connected to Reddit with your app (no Reddit account). Follow subreddits as r/name.")
+        except RedditError as exc:
+            flash(request, str(exc), "error")
+        return RedirectResponse("/reddit", status_code=303)
+
+    @app.post("/reddit/cookie")
+    def reddit_cookie(request: Request, cookie: str = Form(...)):
+        try:
+            cfg = bouncer.reddit.connect_cookie(cookie)
+            poster.sync_reddit_account()
+            flash(request, f"Connected to Reddit as u/{cfg['username']} with your browser's cookie. Logging out of "
+                           "Reddit in that browser ends it; then paste a fresh one here.")
         except RedditError as exc:
             flash(request, str(exc), "error")
         return RedirectResponse("/reddit", status_code=303)

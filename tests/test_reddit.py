@@ -46,6 +46,8 @@ class FakeReddit:
         self.votes: dict[str, int] = {}
         self.archived: set[str] = set()  # posts too old to reply to
         self.next_id = 0
+        self.session = "good-cookie"  # the valid reddit_session value
+        self.modhash = "mh1"
 
     @staticmethod
     def _post(pid, title, url=None, selftext="", created=0.0):
@@ -103,9 +105,24 @@ class FakeReddit:
             return httpx.Response(204)
         if url.host == "www.reddit.com" and url.path.startswith("/r/pics/s/"):
             return httpx.Response(301, headers={"location": "https://www.reddit.com/r/pics/comments/p2/x/"})
-        assert url.host == "oauth.reddit.com", url
-        assert request.headers["authorization"].startswith("bearer ")
         path, q = url.path, parse_qs(url.query.decode())
+        if url.host == "www.reddit.com":  # a browser session: .json pages and /api with a modhash
+            assert "authorization" not in request.headers
+            logged_in = f"reddit_session={self.session}" in request.headers.get("cookie", "")
+            if request.method == "GET":
+                assert path.endswith(".json"), path
+                path = path[:-5]
+            if path == "/api/me":
+                return httpx.Response(200, json={"kind": "t2", "data": {"name": "dave", "modhash": self.modhash}}
+                                      if logged_in else {}, headers=headers)
+            if request.method == "POST":
+                if not logged_in:
+                    return httpx.Response(200, json={"json": {"errors": [["USER_REQUIRED", "Please log in", None]]}})
+                if request.headers.get("x-modhash") != self.modhash:
+                    return httpx.Response(403, json={"error": 403}, headers=headers)
+        else:
+            assert url.host == "oauth.reddit.com", url
+            assert request.headers["authorization"].startswith("bearer ")
         if request.method == "POST":
             return self.write(path, {k: v[0] for k, v in parse_qs(request.content.decode()).items()}, headers)
         if path == "/api/v1/me":
@@ -582,3 +599,59 @@ def test_disconnecting_removes_the_reddit_account(settings, bouncer, reddit, pos
     login_with_reddit(bouncer, poster)
     poster.remove(poster.reddit_account().id)  # removing it on the Accounts page disconnects too
     assert bouncer.reddit.status() is None and col(bouncer, "SELECT username FROM accounts") == []
+
+
+# -- browser cookie ---------------------------------------------------------------------
+
+def test_connect_with_a_browser_cookie(settings, bouncer, reddit, poster):
+    client = logged_in(settings, bouncer)
+    client.post("/reddit/cookie", data={"cookie": "Cookie: reddit_session=good-cookie; other=1"})
+    status = bouncer.reddit.status()
+    assert status["mode"] == "cookie" and status["username"] == "dave" and status["can_write"]
+    raw = one(bouncer, "SELECT value FROM app_settings WHERE key='reddit_connection'")[0]
+    assert "good-cookie" not in raw
+    assert poster.reddit_account().handle == "u/dave"
+    assert "your browser cookie" in client.get("/reddit").text
+
+
+def test_a_bare_cookie_value_works_and_a_bad_one_is_refused(bouncer, reddit):
+    from threadbnc.reddit import RedditError
+    with pytest.raises(RedditError, match="didn't recognise"):
+        bouncer.reddit.connect_cookie("expired-cookie")
+    bouncer.reddit.connect_cookie("good-cookie")
+    assert bouncer.reddit.status()["username"] == "dave"
+
+
+def test_cookie_reads_use_reddit_json_pages(bouncer, reddit):
+    bouncer.reddit.connect_cookie("good-cookie")
+    cid = bouncer.follow_community("r/pics", None, 30, backfill=True)
+    assert bouncer.poll_follow(cid) == 2
+    assert all(r.split()[1].startswith("www.reddit.com/") for r in reddit.requests)
+    assert "GET www.reddit.com/r/pics/new.json" in reddit.requests
+
+
+def test_cookie_writes_send_the_modhash_and_refresh_it(bouncer, reddit, poster):
+    bouncer.reddit.connect_cookie("good-cookie")
+    poster.sync_reddit_account()
+    me = poster.reddit_account()
+    tid = bouncer.ingest_url(P1)
+    poster.vote(me, obj(bouncer, P1)["id"], 1)
+    assert reddit.votes == {"t3_p1": 1}
+    reddit.modhash = "mh2"  # Reddit rotated it: the write is retried with the new one
+    oid = poster.reply(me, tid, "via cookie")
+    assert one(bouncer, "SELECT canonical_ap_id FROM objects WHERE id=?", oid)[0].endswith("/_/n1/")
+
+
+def test_logged_out_cookie_waits_for_a_new_one(bouncer, reddit, poster):
+    bouncer.reddit.connect_cookie("good-cookie")
+    poster.sync_reddit_account()
+    me = poster.reddit_account()
+    bouncer.ingest_url(P1)
+    reddit.session = "someone-logged-out"
+    with pytest.raises(AccountError, match="logged out"):
+        poster.vote(me, obj(bouncer, P1)["id"], 1)
+    assert bouncer.reddit.status()["status"] == "needs_login"
+    before = len(reddit.requests)
+    with pytest.raises(RemoteUnavailable):
+        bouncer.reddit_adapter.fetch_post("p1")
+    assert len(reddit.requests) == before

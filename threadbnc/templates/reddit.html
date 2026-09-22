@@ -13,20 +13,20 @@
   <h2>Connected</h2>
   <div class="follow-row">
     <div>
-      {% if reddit.mode == 'user' %}<strong>{{ ('u/' ~ reddit.username) if reddit.username else 'Your Reddit account' }}</strong>
-        <span class="muted">· logged in with Reddit</span>
+      {% if reddit.has_account %}<strong>{{ ('u/' ~ reddit.username) if reddit.username else 'Your Reddit account' }}</strong>
+        <span class="muted">· {{ 'your browser cookie' if reddit.mode == 'cookie' else 'logged in with Reddit' }}</span>
       {% else %}<strong>App only</strong> <span class="muted">· no Reddit account, public subreddits</span>{% endif %}
       {% if reddit.status == 'ok' %}<span class="pill good">working</span>{% else %}<span class="pill bad">needs connecting again</span>{% endif %}
       {% if reddit.mode == 'user' and not reddit.can_write %}<span class="pill warn" title="Signed in before ThreadBNC asked to vote, comment and post">read only: connect again below</span>{% endif %}
       {% if reddit.paused_seconds %}<span class="pill warn" title="Reddit's rate limit">paused {{ reddit.paused_seconds }} s</span>{% endif %}
-      <div class="small muted">App <code>{{ reddit.client_id }}</code> · connected {{ when(reddit.connected_at) }}
+      <div class="small muted">{% if reddit.client_id %}App <code>{{ reddit.client_id }}</code> · {% endif %}connected {{ when(reddit.connected_at) }}
         {% if reddit.last_error %}<div class="bad-text">{{ reddit.last_error }}</div>{% endif %}</div>
     </div>
-    {% if reddit.mode == 'user' %}<a class="chip" href="/reddit?subs=1">Show my subscriptions</a>{% endif %}
+    {% if reddit.has_account %}<a class="chip" href="/reddit?subs=1">Show my subscriptions</a>{% endif %}
     <details class="reply-box">
       <summary class="small">Disconnect…</summary>
       <form method="post" action="/reddit/disconnect">
-        <p class="small muted">Forgets the app{{ ' and ends the sign-in on Reddit' if reddit.mode == 'user' }}.
+        <p class="small muted">{% if reddit.mode == 'cookie' %}Forgets the cookie here (your browser stays logged in).{% else %}Forgets the app{{ ' and ends the sign-in on Reddit' if reddit.mode == 'user' }}.{% endif %}
           Followed subreddits and everything saved from them stay; they're just not checked until you connect again.</p>
         <button class="small danger">Disconnect</button>
       </form>
@@ -65,8 +65,28 @@
 </section>
 {% endif %}
 
+<section class="card narrow-form">
+  <h2>{{ 'Connect with a different cookie' if reddit and reddit.mode == 'cookie' else 'Connect with your browser' }}</h2>
+  <p class="small">No Reddit app needed. Copy your Reddit session cookie from a browser that's logged in to Reddit:</p>
+  <ol class="small">
+    <li>Open reddit.com in that browser and press <kbd>F12</kbd>.</li>
+    <li>Chrome or Edge: <em>Application</em> → <em>Cookies</em> → <code>https://www.reddit.com</code>.
+      Firefox: <em>Storage</em> → <em>Cookies</em>.</li>
+    <li>Copy the <strong>Value</strong> of <code>reddit_session</code> and paste it below.</li>
+  </ol>
+  <form method="post" action="/reddit/cookie" class="stack" autocomplete="off">
+    <label>reddit_session <input type="password" name="cookie" required autocomplete="off"></label>
+    <button>Connect</button>
+  </form>
+  <p class="small muted">The cookie works like your password until that session ends, so it's stored encrypted and never
+    shown again. Logging out of Reddit in that browser ends it. Reddit's terms don't provide for this kind of access, so
+    there's some risk to the account, more so when voting and posting. ThreadBNC keeps to the polling limits below and
+    identifies itself honestly to Reddit.</p>
+</section>
+
 <section class="card">
-  <h2>{{ 'Connect a different way' if reddit else 'Connect' }}</h2>
+  <h2>{{ 'Connect with a Reddit app instead' if reddit else 'Or connect with a Reddit app' }}</h2>
+  <p class="small muted">Since late 2025 Reddit only issues new apps after approval, so this is mainly for apps you already have.</p>
   <p class="small">Reddit's API needs an app of your own:</p>
   <ol class="small">
     <li>Open <a href="https://www.reddit.com/prefs/apps" target="_blank" rel="noreferrer noopener">reddit.com/prefs/apps</a>

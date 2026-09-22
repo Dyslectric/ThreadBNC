@@ -78,8 +78,19 @@ your own server instead, **repost** it.
 
 ### Connecting
 
-Reddit's API needs an app of your own. Create one at [reddit.com/prefs/apps](https://www.reddit.com/prefs/apps),
-then connect it on the **Reddit** page in one of two ways:
+The simplest way is **your browser's cookie**, which needs no Reddit app:
+
+1. In a browser that's logged in to Reddit, open reddit.com and press F12.
+2. Chrome or Edge: *Application* → *Cookies* → `https://www.reddit.com`. Firefox: *Storage* → *Cookies*.
+3. Copy the value of `reddit_session` and paste it on the **Reddit** page.
+
+- ThreadBNC then reads through reddit.com's own `.json` pages as you, and votes, comments and posts through the endpoints old.reddit uses. Your subscriptions, the auto-used Reddit account and reposting all work the same.
+- The cookie is as powerful as your password until that session ends, so it's stored encrypted (`THREADBNC_CREDENTIALS_KEY`) and never shown again. Logging out of Reddit in that browser ends it. ThreadBNC then stops and asks for a fresh one, instead of retrying.
+- Reddit's terms don't provide for this kind of access, so there's some risk to the account, more so when voting and posting.
+- ThreadBNC keeps to the same polling limits. It identifies itself in its User-Agent rather than posing as a browser. If Reddit refuses such requests, ThreadBNC reports it.
+
+Alternatively, use a Reddit app. Since November 2025 Reddit only issues new apps after approval, so this is mainly for
+apps you created earlier, which keep working. Connect one on the **Reddit** page in one of two ways:
 
 | | App type | What you enter | What you get |
 |---|---|---|---|

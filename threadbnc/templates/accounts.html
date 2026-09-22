@@ -56,7 +56,7 @@
       {% if reddit.status != 'ok' %}<span class="pill bad">needs connecting again</span>{% endif %}
       · <a href="/reddit">Reddit settings</a></p>
     <p class="small muted">{% if reddit.can_write %}Votes, comments and posts on Reddit are made as u/{{ reddit.username }} automatically, whichever account is picked in the header.
-      {% elif reddit.mode == 'user' %}This sign-in can only read. Connect again on the Reddit page to vote, comment and post.
+      {% elif reddit.has_account %}This sign-in can only read. Connect again on the Reddit page to vote, comment and post.
       {% else %}An app-only connection can only read. Log in with Reddit to vote, comment and post.{% endif %}</p>
   {% else %}
     <p class="muted">Follow subreddits and repost from them to your own communities. <a href="/reddit">Connect Reddit →</a></p>

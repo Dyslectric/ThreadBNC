@@ -11,6 +11,12 @@ Two ways to connect:
   and is used automatically for anything on Reddit; see accounts.Poster).
 * **App only** (the app's id and secret, i.e. an API key): reads public
   subreddits without any Reddit account.
+* **Browser cookie**: your reddit_session cookie, copied from a browser that's
+  logged in to Reddit. No app needed (new apps need Reddit's approval since
+  late 2025). Reads go through reddit.com's own .json pages and writes through
+  the endpoints old.reddit uses, as your account. Reddit's terms don't provide
+  for this, so it carries some risk to that account. ThreadBNC still says
+  who it is in its User-Agent rather than passing itself off as a browser.
 
 Being polite matters more here than with Lemmy: Reddit allows an app about
 100 requests a minute and blocks clients that ignore that. So requests are
@@ -98,10 +104,11 @@ class RedditConnection:
             return None
         wait = self.paused_until - time.monotonic()
         granted = set((cfg.get("scope") or "").replace(",", " ").split())
+        can_write = cfg["mode"] == "cookie" or (cfg["mode"] == "user" and WRITE_SCOPES <= granted)
         return {"mode": cfg["mode"], "client_id": cfg["client_id"], "username": cfg.get("username"),
                 "status": cfg.get("status", "ok"), "last_error": cfg.get("last_error"),
                 "connected_at": cfg.get("connected_at"), "paused_seconds": int(wait) if wait > 0 else 0,
-                "can_write": cfg["mode"] == "user" and WRITE_SCOPES <= granted}
+                "can_write": can_write, "has_account": cfg["mode"] in ("user", "cookie")}
 
     # -- connecting ---------------------------------------------------------------
     def connect_app(self, client_id: str, secret: str) -> dict[str, Any]:
@@ -118,6 +125,30 @@ class RedditConnection:
             raise RedditError(f"Reddit didn't accept that app: {exc}") from exc
         self._replace(cfg, token, ttl)
         return cfg
+
+    def connect_cookie(self, text: str) -> dict[str, Any]:
+        """Connect with a browser's Reddit session cookie. Accepts the
+        reddit_session value on its own, or a whole Cookie header. Checked by
+        asking Reddit who it belongs to."""
+        cookie = _cookie_header(text)
+        if not cookie:
+            raise RedditError("Paste the value of your reddit_session cookie.")
+        cfg = {"mode": "cookie", "client_id": "", "cookie_enc": self.vault.encrypt(cookie), "status": "ok",
+               "last_error": None, "connected_at": utcnow()}
+        try:
+            me = self._whoami_cookie(cfg)
+        except (RemoteUnavailable, RemoteNotFound, RemoteRejected) as exc:
+            raise RedditError(f"Couldn't check that cookie with Reddit: {exc}") from exc
+        if not me.get("name"):
+            raise RedditError("Reddit didn't recognise that cookie: it may have expired, or be from a browser "
+                              "that's logged out.")
+        cfg.update(username=me["name"], modhash=me.get("modhash") or "")
+        self._replace(cfg, None, 0)
+        return cfg
+
+    def _whoami_cookie(self, cfg: dict[str, Any]) -> dict[str, Any]:
+        data = self._cookie_api("GET", "/api/me", {}, cfg=cfg, retry=False) or {}
+        return data.get("data") or {} if isinstance(data, dict) else {}
 
     def start_login(self, client_id: str, secret: str, redirect_uri: str) -> str:
         """Begin "log in with Reddit". Returns the reddit.com page to approve on."""
@@ -176,11 +207,11 @@ class RedditConnection:
         who = f"u/{cfg['username']}" if cfg.get("username") else "your Reddit account"
         return True, f"Connected to Reddit as {who}."
 
-    def _replace(self, cfg: dict[str, Any], token: str, ttl: float) -> None:
+    def _replace(self, cfg: dict[str, Any], token: str | None, ttl: float) -> None:
         old = self.config()
         self._save(SETTING, cfg)
         with self._lock:
-            self._token = (token, time.monotonic() + ttl - 60)
+            self._token = (token, time.monotonic() + ttl - 60) if token else None
             self.paused_until = 0.0
         if old and old.get("refresh_enc") and old.get("refresh_enc") != cfg.get("refresh_enc"):
             self._revoke(old)
@@ -285,11 +316,16 @@ class RedditConnection:
         errors = ((data or {}).get("json") or {}).get("errors") if isinstance(data, dict) else None
         if errors:
             code, message = (list(errors[0]) + ["", ""])[:2]
+            if str(code) == "USER_REQUIRED":  # the cookie's session has ended
+                self._mark("needs_login", "Reddit says you're logged out")
+                raise RemoteUnavailable("Reddit says you're logged out; paste a fresh cookie on the Reddit page.")
             raise RemoteRejected(f"Reddit refused: {message or code}", str(code))
         return data
 
     def _call(self, method: str, path: str, params: dict[str, Any]) -> Any:
         cfg = self._ready()
+        if cfg["mode"] == "cookie":
+            return self._cookie_api(method, path, params, cfg=cfg)
         try:
             return self._api(method, self._access_token(cfg), path, params, cfg=cfg)
         except _Expired:
@@ -315,9 +351,48 @@ class RedditConnection:
                 resp = self._http.post(API + path, data=clean, headers=headers)
         except httpx.HTTPError as exc:
             raise RemoteUnavailable(f"Reddit: {type(exc).__name__}: {exc}") from exc
-        self._note_limits(resp)
         if resp.status_code == 401:
+            self._note_limits(resp)
             raise _Expired()
+        return self._check(resp, method, path)
+
+    def _cookie_api(self, method: str, path: str, params: dict[str, Any], *, cfg: dict[str, Any],
+                    retry: bool = True) -> Any:
+        """A request as the browser session: reads from www.reddit.com's .json
+        pages, writes to its /api endpoints with the session's modhash (Reddit's
+        guard against cross-site requests)."""
+        self.throttle.wait("www.reddit.com")
+        clean = {"raw_json": 1, **{k: v for k, v in params.items() if v is not None}}
+        try:
+            headers = {**self._headers(cfg), "Cookie": self.vault.decrypt(cfg["cookie_enc"])}
+        except VaultError as exc:
+            self._mark("needs_login", str(exc))
+            raise RemoteUnavailable("Reddit: the stored cookie can't be decrypted; paste it again.") from exc
+        try:
+            if method == "GET":
+                resp = self._http.get(f"{WWW}{path}.json", params=clean, headers=headers, follow_redirects=True)
+            else:
+                resp = self._http.post(WWW + path, data=clean, headers={**headers, "X-Modhash": cfg.get("modhash", "")})
+        except httpx.HTTPError as exc:
+            raise RemoteUnavailable(f"Reddit: {type(exc).__name__}: {exc}") from exc
+        if resp.status_code == 401 or "/login" in resp.url.path:
+            self._note_limits(resp)
+            self._mark("needs_login", "Reddit stopped accepting the cookie")
+            raise RemoteUnavailable("Reddit stopped accepting the cookie; paste a fresh one on the Reddit page.")
+        if resp.status_code == 403 and method != "GET" and retry:
+            # A stale modhash looks like this: fetch the current one and try once more.
+            me = self._whoami_cookie(cfg)
+            if not me.get("name"):
+                self._mark("needs_login", "Reddit says you're logged out")
+                raise RemoteUnavailable("Reddit says you're logged out; paste a fresh cookie on the Reddit page.")
+            cfg["modhash"] = me.get("modhash") or ""
+            self._save(SETTING, cfg)
+            return self._cookie_api(method, path, params, cfg=cfg, retry=False)
+        return self._check(resp, method, path)
+
+    def _check(self, resp: httpx.Response, method: str, path: str) -> Any:
+        """Turn Reddit's answer into data, or the error the caller expects."""
+        self._note_limits(resp)
         if resp.status_code == 404:
             raise RemoteNotFound(f"Reddit {path}: 404")
         if resp.status_code == 403 and method != "GET":
@@ -333,7 +408,8 @@ class RedditConnection:
         try:
             return resp.json()
         except ValueError as exc:
-            raise RemoteUnavailable(f"Reddit {path}: non-JSON response") from exc
+            raise RemoteUnavailable(f"Reddit {path}: sent a web page instead of data (it may be refusing "
+                                    "automated requests right now)") from exc
 
     def _note_limits(self, resp: httpx.Response) -> None:
         """Obey Reddit's rate-limit headers: when the window is nearly used up
@@ -359,6 +435,17 @@ class RedditConnection:
 
     def close(self) -> None:
         self._http.close()
+
+
+def _cookie_header(text: str) -> str:
+    """A Cookie header from what was pasted: a bare reddit_session value, or
+    `reddit_session=...; other=...` (with or without a leading "Cookie:")."""
+    text = text.strip()
+    if text.lower().startswith("cookie:"):
+        text = text[7:].strip()
+    if not text:
+        return ""
+    return text if "=" in text else f"reddit_session={text}"
 
 
 class _Refused(RemoteUnavailable):
