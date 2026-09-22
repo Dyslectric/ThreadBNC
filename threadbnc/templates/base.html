@@ -10,7 +10,8 @@
 </head>
 <body>
   <header class="top">
-    <a class="brand" href="/">ThreadBNC</a>
+   <div class="top-inner">
+    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true">◆</span>ThreadBNC</a>
     {% if request.session.get('auth') %}
     <nav>
       <a href="/" class="{{ 'on' if request.url.path == '/' }}">Feed</a>
@@ -32,6 +33,7 @@
       <form method="post" action="/logout" class="inline"><button class="link">Log out</button></form>
     </nav>
     {% endif %}
+   </div>
   </header>
   <main>
     {% for kind, msg in request.session.pop('flash', []) %}

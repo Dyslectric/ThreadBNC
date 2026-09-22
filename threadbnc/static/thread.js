@@ -14,7 +14,9 @@
 
   function scrollIntoViewIfNeeded(el) {
     const r = el.getBoundingClientRect();
-    if (r.top < 0 || r.top > window.innerHeight) el.scrollIntoView({ block: "start" });
+    // Sticky header + toolbar cover the top of the viewport; see scroll-padding-top.
+    const covered = parseFloat(getComputedStyle(document.documentElement).scrollPaddingTop) || 0;
+    if (r.top < covered || r.top > window.innerHeight) el.scrollIntoView({ block: "start" });
   }
 
   root.addEventListener("click", (ev) => {
