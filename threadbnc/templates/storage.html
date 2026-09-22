@@ -32,6 +32,15 @@
     <div class="stat-value">{{ e.text | size }}</div>
     <div class="small muted">{{ '{:,}'.format(e.revisions) }} version{{ 's' if e.revisions != 1 }} of posts and comments</div>
   </section>
+  {% set ap = e.media['articles'] %}
+  {% if e.articles or ap[0] %}
+  <section class="card stat">
+    <div class="stat-label">Linked articles</div>
+    <div class="stat-value">{{ (e.article_text + ap[1]) | size }}</div>
+    <div class="small muted">{{ '{:,}'.format(e.articles) }} saved: {{ e.article_text | size }} text,
+      {{ '{:,}'.format(ap[0]) }} picture{{ 's' if ap[0] != 1 }} ({{ ap[1] | size }}){% if grand %} · {{ '%.0f' % (100 * (e.article_text + ap[1]) / grand) }}% of everything{% endif %}</div>
+  </section>
+  {% endif %}
   {% if u.database is not none %}
   <section class="card stat">
     <div class="stat-label">Database on disk</div>
@@ -57,7 +66,8 @@
     <tbody>
     {% for k in u.kinds %}
       <tr>
-        <th scope="row">{{ k.label }}{% if k.note %}<div class="small muted">{{ k.note }}</div>{% endif %}</th>
+        <th scope="row">{{ k.label }}{% if k.note %}<div class="small muted">{{ k.note }}</div>{% endif %}
+          {%- if k.parts %}<div class="small muted">{{ k.parts.text | size }} text, {{ '{:,}'.format(k.parts.pictures) }} picture{{ 's' if k.parts.pictures != 1 }} ({{ k.parts.picture_bytes | size }})</div>{% endif %}</th>
         <td class="n">{{ '{:,}'.format(k.count) }}</td>
         <td class="n">{{ k.bytes | size }}</td>
         <td class="n muted">{{ '%.0f' % (100 * k.bytes / grand) if grand else 0 }}%</td>
@@ -70,7 +80,9 @@
   </table>
   </div>
   <p class="small muted">Text is what was stored for every version of each post and comment: titles, bodies,
-    links and details such as scores. Edits keep the earlier versions, so heavily edited threads take more.</p>
+    links and details such as scores. Edits keep the earlier versions, so heavily edited threads take more.
+    Linked articles are the pages posts link to, saved for <strong>Read article</strong>: their text, and the pictures
+    only they use (a picture the post itself shows counts under Pictures).</p>
 </section>
 
 <section class="card">
@@ -84,7 +96,7 @@
       <tr>
         <th scope="row">{{ label }}</th>
         <td class="n">{{ '{:,}'.format(t.threads) if t.threads else '' }}</td>
-        <td class="n hide-narrow">{{ t.text | size }}</td>
+        <td class="n hide-narrow"{% if t.article_text %} title="{{ t.article_text | size }} of it from {{ t.articles }} linked article{{ 's' if t.articles != 1 }}"{% endif %}>{{ (t.text + t.article_text) | size }}</td>
         <td class="n hide-narrow" title="{{ media_note(t) }}">{{ t.media_bytes | size }}</td>
         <td class="n"><strong>{{ t.total | size }}</strong></td>
         <td class="bar-col">{{ meter(t.total, top, label ~ ': ' ~ (t.total | size)) }}</td>
@@ -112,7 +124,7 @@
         <th scope="row">{% if c %}<a href="/c/{{ c.id }}?tab=media" title="Media settings for this community">{{ chandle(c.name, c.canonical_ap_id) }}</a>{% else %}<span class="muted">No community</span>{% endif %}
           {% if t.media_files %}<div class="small muted">{{ media_note(t) }}</div>{% endif %}</th>
         <td class="n">{{ '{:,}'.format(t.threads) }}</td>
-        <td class="n hide-narrow">{{ t.text | size }}</td>
+        <td class="n hide-narrow"{% if t.article_text %} title="{{ t.article_text | size }} of it from {{ t.articles }} linked article{{ 's' if t.articles != 1 }}"{% endif %}>{{ (t.text + t.article_text) | size }}</td>
         <td class="n hide-narrow">{{ t.media_bytes | size }}</td>
         <td class="n"><strong>{{ t.total | size }}</strong></td>
         <td class="bar-col">{{ meter(t.total, top, (c.name if c else 'No community') ~ ': ' ~ (t.total | size)) }}</td>

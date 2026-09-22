@@ -4,7 +4,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from threadbnc import articles, feed, media
+from threadbnc import articles, feed, media, storage
 from threadbnc.render import MediaInfo
 from threadbnc.web import create_app
 
@@ -155,6 +155,37 @@ def test_article_pictures_survive_restart_cleanup(server, abouncer):
         media.register(conn, oid, ["https://cdn.test/pic/123"], "2026-09-01T00:00:00Z", from_article=True)
         media.skip_unprobed_links(conn)
         assert conn.execute("SELECT status FROM media WHERE url='https://cdn.test/pic/123'").fetchone()[0] == "pending"
+
+
+def test_storage_page_counts_articles(server, abouncer, settings):
+    tid = post_linking(server, abouncer, "https://news.test/story")
+    abouncer.articles.fetch_pending()
+    abouncer.media.fetch_pending()
+    with abouncer.db.connect() as conn:
+        u = storage.overview(abouncer.db, conn, abouncer.media_dir)
+        text = len(conn.execute("SELECT content_html FROM articles").fetchone()[0].encode())
+    e = u["everything"]
+    assert e.articles == 1 and e.article_text == text
+    assert e.media["articles"] == [1, len(PNG)] and e.media["pictures"] == [0, 0]  # only the article uses it
+    assert e.total == e.text + text + len(PNG)
+    [row] = [k for k in u["kinds"] if k["label"] == "Linked articles"]
+    assert row["count"] == 1 and row["bytes"] == text + len(PNG)
+    assert not any(k["label"] == "Article pictures" for k in u["kinds"])  # part of that row, not its own
+    [(_c, community)] = u["communities"]
+    assert community.article_text == text and community.media["articles"] == [1, len(PNG)]
+
+    client = TestClient(create_app(settings, abouncer))
+    client.post("/login", data={"password": "pw"})
+    page = client.get("/storage").text
+    assert "Linked articles" in page and "1 picture" in page
+    assert "of it from 1 linked article" in page  # in the community and thread Text columns
+
+    # Once the post itself shows the picture, it's one of the post's pictures.
+    server.edit_post("1", body="![wall](https://news.test/img/wall.png)")
+    abouncer.sync_thread(tid, force=True)
+    with abouncer.db.connect() as conn:
+        e = storage.overview(abouncer.db, conn, abouncer.media_dir)["everything"]
+    assert e.media["pictures"] == [1, len(PNG)] and e.media["articles"] == [0, 0]
 
 
 def test_same_link_twice_is_read_once(server, abouncer):

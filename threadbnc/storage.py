@@ -1,5 +1,6 @@
 """Where the archive's space goes, for the Storage page: archived media and stored
-text, broken down by kind of content, kind of thread and community.
+text, broken down by kind of content, kind of thread and community. Linked
+articles (articles.py) count as their text plus the pictures only they use.
 
 Media files are stored once however many posts use them (media.py), so each
 file counts once in a total. A file shared by two communities counts in both of
@@ -16,9 +17,10 @@ from typing import Any
 
 from .db import Conn, Database
 
-KINDS = {"pictures": "Pictures", "gifs": "GIFs", "videos": "Videos", "other": "Other files"}
+KINDS = {"pictures": "Pictures", "gifs": "GIFs", "videos": "Videos", "other": "Other files",
+         "articles": "Article pictures"}
 NOUNS = {"pictures": ("picture", "pictures"), "gifs": ("GIF", "GIFs"), "videos": ("video", "videos"),
-         "other": ("other file", "other files")}
+         "other": ("other file", "other files"), "articles": ("article picture", "article pictures")}
 THREAD_KINDS = {"manual": "Kept", "auto": "Auto-captured (followed communities)", "trash": "In the trash",
                 None: "Not in a thread"}
 
@@ -36,6 +38,8 @@ def media_kind(content_type: str | None) -> str:
 class Usage:
     """Space used by one slice of the archive (a community, a kind of thread)."""
     text: int = 0          # bytes of stored titles, bodies, links and metadata, every revision
+    article_text: int = 0  # bytes of linked articles' text
+    articles: int = 0
     revisions: int = 0
     threads: int = 0
     media: dict[str, list[int]] = field(default_factory=lambda: {k: [0, 0] for k in KINDS})  # kind -> [files, bytes]
@@ -50,7 +54,7 @@ class Usage:
 
     @property
     def total(self) -> int:
-        return self.text + self.media_bytes
+        return self.text + self.article_text + self.media_bytes
 
     def add_files(self, paths: set[str], files: dict[str, tuple[int, str]]) -> None:
         for p in paths:
@@ -85,6 +89,12 @@ def overview(db: Database, conn: Conn, media_dir: Path) -> dict[str, Any]:
         if r[3]:
             transcoded += 1
             saved += max(0, r[3] - (r[1] or 0))
+    # Files only linked articles use (not the posts themselves) are article pictures.
+    for r in conn.execute("SELECT m.storage_path FROM media m JOIN media_refs r ON r.media_id=m.id "
+                          "WHERE m.status='ok' AND m.storage_path IS NOT NULL "
+                          "GROUP BY m.storage_path HAVING MIN(r.from_article)=1"):
+        if r[0] in files:
+            files[r[0]] = (files[r[0]][0], "articles")
     everything = Usage()
     everything.add_files(set(files), files)
 
@@ -130,6 +140,19 @@ def overview(db: Database, conn: Conn, media_dir: Path) -> dict[str, Any]:
             seen[p] += 1
     shared = sum(files[p][0] for p, n in seen.items() if n > 1)
 
+    # Linked articles' text, counted once overall and once per community and kind of thread.
+    article_len = _octets(db, "a.content_html")
+    row = conn.execute(f"SELECT COUNT(*), SUM({article_len}) FROM articles a WHERE a.status='ok'").fetchone()
+    everything.articles, everything.article_text = row[0], row[1] or 0
+    for r in conn.execute(
+            f"SELECT x.community_id, x.k, COUNT(*) AS n, SUM({article_len}) AS bytes FROM articles a JOIN ("
+            f"SELECT DISTINCT o.community_id, {_thread_kind_sql()} AS k, ar.article_id FROM article_refs ar "
+            "JOIN objects o ON o.id=ar.object_id LEFT JOIN archived_threads t ON t.id=o.thread_id) x "
+            "ON x.article_id=a.id WHERE a.status='ok' GROUP BY x.community_id, x.k"):
+        for usage in (communities[r["community_id"]], threads.setdefault(r["k"], Usage())):
+            usage.articles += r["n"]
+            usage.article_text += r["bytes"] or 0
+
     for r in conn.execute(f"SELECT t.community_id, {_thread_kind_sql()} AS k, COUNT(*) AS n "
                           "FROM archived_threads t GROUP BY t.community_id, k"):
         communities[r["community_id"]].threads += r["n"]
@@ -140,7 +163,13 @@ def overview(db: Database, conn: Conn, media_dir: Path) -> dict[str, Any]:
                   key=lambda cu: -cu[1].total)
 
     kinds = [{"label": KINDS[k], "count": everything.media[k][0], "bytes": everything.media[k][1]}
-             for k in KINDS if everything.media[k][0]]
+             for k in KINDS if everything.media[k][0] and k != "articles"]
+    pictures = everything.media["articles"]
+    if everything.articles or pictures[0]:
+        kinds.append({"label": "Linked articles", "count": everything.articles,
+                      "bytes": everything.article_text + pictures[1],
+                      "parts": {"text": everything.article_text, "pictures": pictures[0],
+                                "picture_bytes": pictures[1]}})
     kinds += [{"label": "Posts" if t == "post" else "Comments", "count": by_type[t][0],
                "bytes": by_type[t][2],
                "note": f"{by_type[t][1]:,} version{'s' if by_type[t][1] != 1 else ''}"}
