@@ -709,6 +709,17 @@ def test_refresh_checks_a_subreddit_now(settings, bouncer, reddit):
                        follow_redirects=True).text
     assert "2 new posts." in page and "Link post" in page
     assert one(bouncer, "SELECT last_polled_at FROM community_follows")[0]
+    # Clicked again while a check is queued: that check is waited for, not another asked for.
+    other = bouncer.enqueue("poll", {"community_id": cid + 1000})
+    queued = bouncer.enqueue("poll", {"community_id": cid})
+
+    def two_jobs():
+        for _ in range(2):
+            worker()
+
+    threading.Thread(target=two_jobs, daemon=True).start()
+    assert "No new posts." in client.post(f"/c/{cid}/refresh", follow_redirects=True).text
+    assert col(bouncer, "SELECT id FROM jobs WHERE kind='poll' AND id>?", other - 1) == [other, queued]
     # Not checked on a schedule (or not followed): nothing to refresh.
     bouncer.unfollow(cid)
     assert client.post(f"/c/{cid}/refresh").status_code == 404

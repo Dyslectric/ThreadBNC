@@ -1161,10 +1161,11 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             if not f or not f["polling"]:
                 raise HTTPException(404)
             # Clicked twice: wait for the check already on its way rather than asking again.
-            job = conn.execute("SELECT id FROM jobs WHERE kind='poll' AND status IN ('queued', 'running') "
-                               "AND json_extract(payload_json, '$.community_id')=? ORDER BY id LIMIT 1",
-                               (cid,)).fetchone()
-        job_id = job["id"] if job else bouncer.enqueue("poll", {"community_id": cid})
+            # (Matched here, not in SQL: json_extract is SQLite's, and Postgres has none.)
+            pending = conn.execute("SELECT id, payload_json FROM jobs WHERE kind='poll' "
+                                   "AND status IN ('queued', 'running') ORDER BY id").fetchall()
+        job_id = next((j["id"] for j in pending if json.loads(j["payload_json"]).get("community_id") == cid),
+                      None) or bouncer.enqueue("poll", {"community_id": cid})
         deadline = time.monotonic() + REFRESH_WAIT_SECONDS
         while True:
             with db.connect() as conn:
