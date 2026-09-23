@@ -31,6 +31,7 @@ from . import search as search_mod
 from . import feed as feed_mod
 from . import media as media_mod
 from . import storage as storage_mod
+from . import thumbs as thumbs_mod
 from .adapters import RemoteError, host_of, is_reddit_host, is_rss
 from .accounts import Account, AccountError, Poster
 from .bouncer import PUSHED_POLL_MINUTES, Bouncer
@@ -359,7 +360,23 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     def following_collapsed() -> bool:
         return db.get_setting("following_collapsed") == "1"
 
+    # The width of the smaller copies of pictures for each way the feed shows
+    # them (thumbs.py), read now and then rather than for every picture.
+    thumb_cache: dict[str, Any] = {"at": -1e9, "widths": {}}
+
+    def thumb_widths() -> dict[str, int]:
+        if time.monotonic() - thumb_cache["at"] > 30:
+            with db.connect() as conn:
+                thumb_cache.update(widths=thumbs_mod.widths(conn), at=time.monotonic())
+        return thumb_cache["widths"]
+
+    def thumb(media_id: int, view: str) -> str:
+        """A picture's address for a view: its smaller copy for that view when there's a width for it."""
+        width = thumb_widths().get(view)
+        return f"/media/{media_id}?w={width}" if width else f"/media/{media_id}"
+
     templates.env.globals.update(event_label=event_label, tone=lambda e: TONE.get(e["event_type"], ""),
+                                 thumb=thumb,
                                  static_url=static_url, trash_count=trash_count, inbox_count=inbox.unread_count,
                                  mark_on_scroll=mark_on_scroll, themes=THEMES, custom_feeds=custom_feeds,
                                  following_collapsed=following_collapsed, feed_sorts=FEED_SORTS,
@@ -443,7 +460,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             "frame-ancestors 'none'"
         )
         if path.startswith("/media/") and resp.status_code == 200:
-            resp.headers["Cache-Control"] = "private, max-age=31536000, immutable"
+            if "cache-control" not in resp.headers:  # (a stand-in for a smaller copy says for how long)
+                resp.headers["Cache-Control"] = "private, max-age=31536000, immutable"
             resp.headers["Content-Security-Policy"] = "default-src 'none'; sandbox"
         elif not path.startswith("/static/"):
             resp.headers["Cache-Control"] = "no-store"
@@ -1350,17 +1368,29 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     media_root = (bouncer.media_dir).resolve()
 
     @app.get("/media/{mid}")
-    def media_file(mid: int):
+    def media_file(mid: int, w: int | None = None):
+        """An archived file. `w`: the feed wants a picture that wide (thumbs.py);
+        until there's a copy at that width, the file itself, cached only briefly
+        so the copy is fetched once it's made."""
         with db.connect() as conn:
             m = conn.execute("SELECT * FROM media WHERE id=? AND status='ok'", (mid,)).fetchone()
         if not m:
             raise HTTPException(404)
+        if w and w in thumb_widths().values():
+            small = thumbs_mod.find(media_root, m["sha256"], w)
+            if small:
+                return FileResponse(small, media_type="image/webp" if small.suffix == ".webp" else "image/jpeg",
+                                    content_disposition_type="inline")
         path = (media_root / m["storage_path"]).resolve()
         if not path.is_relative_to(media_root) or not path.is_file():
             raise HTTPException(404)
         ctype = m["content_type"] or "application/octet-stream"
         inline = ctype.startswith(("image/", "video/", "audio/")) and ctype != "image/svg+xml"
-        return FileResponse(path, media_type=ctype, content_disposition_type="inline" if inline else "attachment")
+        resp = FileResponse(path, media_type=ctype, content_disposition_type="inline" if inline else "attachment")
+        if w and w in thumb_widths().values() and thumbs_mod.eligible(ctype) \
+                and not thumbs_mod.settled(media_root, m["sha256"], w):
+            resp.headers["Cache-Control"] = "private, max-age=600"  # its copy is still to come: check back
+        return resp
 
     def md_for(object_ids: list[int]):
         with db.connect() as conn:
@@ -1480,12 +1510,38 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         with db.connect() as conn:
             usage = storage_mod.overview(db, conn, bouncer.media_dir)
             saved = media_mod.load_defaults(conn)
+            shrunk = {"widths": thumbs_mod.widths(conn), "saved": thumbs_mod.saved_widths(conn),
+                      "progress": thumbs_mod.progress(conn)}
             transcoding = {"working": bouncer.media.working, "progress": media_mod.conversion_progress(conn),
                   "recent": media_mod.recent_transcodes(conn), "failures": media_mod.transcode_failures(conn)}
         return render(request, "storage.html", u=usage, nouns=storage_mod.NOUNS, env=bouncer.media.env_policy,
                       saved=saved, media_kinds=media_mod.KINDS, transcoded=media_mod.TRANSCODED,
                       by_rate=media_mod.BY_RATE, can_transcode=bouncer.media.can_transcode(),
-                      transcoding=transcoding)
+                      transcoding=transcoding, thumbs=dict(shrunk, usage=thumbs_mod.usage(bouncer.media_dir)),
+                      thumb_views=thumbs_mod.VIEWS)
+
+    @app.post("/storage/thumbnails")
+    async def thumbnail_widths(request: Request):
+        """The widths of the smaller copies of pictures for browsing; blank: the default, 0: none."""
+        form = await request.form()
+        chosen: dict[str, int | None] = {}
+        for view, (label, _) in thumbs_mod.VIEWS.items():
+            raw = str(form.get(view, "")).strip()
+            try:
+                chosen[view] = int(raw) if raw else None
+            except ValueError:
+                chosen[view] = -1
+            if chosen[view] is not None and not 0 <= chosen[view] <= thumbs_mod.MAX_WIDTH:  # type: ignore[operator]
+                flash(request, f"{label}: a width in pixels, up to {thumbs_mod.MAX_WIDTH}; 0 for none, blank for "
+                               "the default.", "error")
+                return RedirectResponse("/storage#thumbnails", status_code=303)
+        with db.transaction() as conn:
+            thumbs_mod.save_widths(conn, chosen)
+        thumb_cache["at"] = -1e9
+        bouncer.wake.set()
+        flash(request, "Saved. Copies at the new widths are made in the background; until a picture has one, "
+                       "it's shown as it is.")
+        return RedirectResponse("/storage#thumbnails", status_code=303)
 
     @app.post("/storage/convert")
     def convert_archive(request: Request):
@@ -2088,7 +2144,11 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     def youtube_limits(request: Request, max_mb: int = Form(youtube.DEFAULT_MAX_MB),
                        max_height: int = Form(youtube.DEFAULT_MAX_HEIGHT)):
         bouncer.youtube.save_limits(max_mb, max_height)
-        flash(request, "Saved. Videos already downloaded aren't changed.")
+        with db.transaction() as conn:  # videos already saved at a higher resolution are scaled down
+            media_mod.request_conversion(conn)
+        bouncer.wake.set()
+        flash(request, f"Saved. Videos already saved at more than {bouncer.youtube.status()['max_height']}p are "
+                       "scaled down to it in the background; the Storage page shows how that's going.")
         return RedirectResponse("/youtube", status_code=303)
 
     # ---- Reddit --------------------------------------------------------------

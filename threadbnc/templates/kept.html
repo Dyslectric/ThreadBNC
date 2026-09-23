@@ -68,7 +68,7 @@
   {% for a in articles %}
     <article class="post-card article-card" id="a{{ a.id }}" data-entry data-open="/a/{{ a.id }}">
       {% if a.picture %}
-        <a class="thumb" href="/a/{{ a.id }}" tabindex="-1" aria-hidden="true"><img src="/media/{{ a.picture }}" alt="" loading="lazy"></a>
+        <a class="thumb" href="/a/{{ a.id }}" tabindex="-1" aria-hidden="true"><img src="{{ thumb(a.picture, 'list') }}" alt="" loading="lazy"></a>
       {% endif %}
       <div class="pc-main">
         <div class="pc-meta small">

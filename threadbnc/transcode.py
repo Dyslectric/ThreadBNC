@@ -2,7 +2,8 @@
 
 Videos (and animated GIFs) become H.264/AAC MP4s at a bitrate worked out from
 their length so the result fits the size limit (or, at_bitrate, at a bitrate
-chosen outright, whatever size that comes to), and audio AAC in an M4A the
+chosen outright, whatever size that comes to, or, to_height, scaled down to a
+resolution at a steady quality), and audio AAC in an M4A the
 same way; pictures are scaled down and
 re-encoded as WebP (JPEG if this ffmpeg has no WebP encoder). Nothing here
 touches the database: media.py decides when to call it and records the result.
@@ -137,6 +138,40 @@ def at_bitrate(src: Path, bps: int, workdir: Path, timeout: float = TIMEOUT) -> 
         raise
 
 
+VIDEO_CRF = 23  # x264's constant quality for to_height: its default, good for archiving
+
+
+def to_height(src: Path, height: int, workdir: Path, timeout: float = TIMEOUT) -> Path | None:
+    """Re-encode a video down to a resolution ("720p": its shorter side,
+    so upright phone videos and Shorts count the same way) at a steady
+    quality, as an H.264/AAC MP4 (the caller owns the new file). None when
+    it's no bigger than that already."""
+    if not available():
+        raise TranscodeError("ffmpeg is not installed")
+    info = probe(src)
+    streams = info.get("streams") or []
+    video = next((s for s in streams if s.get("codec_type") == "video"), None)
+    if not video:
+        raise TranscodeError("no video stream")
+    w, h = int(video.get("width") or 0), int(video.get("height") or 0)
+    if not w or not h:
+        raise TranscodeError("unknown size")
+    if min(w, h) <= height:
+        return None
+    scale = f"scale=-2:{height}" if w >= h else f"scale={height}:-2"
+    has_audio = any(s.get("codec_type") == "audio" for s in streams)
+    out = _tmp(workdir, ".mp4")
+    try:
+        args = ["-i", str(src), "-map", "0:v:0", "-vf", f"{scale},format=yuv420p", "-c:v", "libx264",
+                "-preset", "veryfast", "-crf", str(VIDEO_CRF)]
+        args += ["-map", "0:a:0", "-c:a", "aac", "-b:a", "128000"] if has_audio else ["-an"]
+        _run([*args, "-movflags", "+faststart", "-f", "mp4", str(out)], timeout)
+        return out
+    except BaseException:
+        out.unlink(missing_ok=True)
+        raise
+
+
 def _encode(src: Path, out: Path, video_bps: int, audio_bps: int, timeout: float) -> None:
     """H.264 at video_bps (no taller than suits that rate), AAC at audio_bps (0: no sound)."""
     height = 1080 if video_bps >= 2_500_000 else 720 if video_bps >= 1_000_000 else 480 if video_bps >= 400_000 \
@@ -169,6 +204,36 @@ def _audio(src: Path, limit: int, workdir: Path, timeout: float) -> Path:
             if out.stat().st_size <= limit:
                 return out
         raise TranscodeError(f"still over {limit // 1_000_000} MB after transcoding")
+    except BaseException:
+        out.unlink(missing_ok=True)
+        raise
+
+
+THUMB_QUALITY = 80  # WebP quality for thumbnails (thumbs.py)
+
+
+def thumbnail(src: Path, width: int, workdir: Path, timeout: float = 120) -> tuple[Path, str] | None:
+    """A picture scaled down to `width` pixels wide, for browsing (thumbs.py):
+    (new file, its content type), the caller owning the file. None when it's
+    no wider than that already."""
+    if not available():
+        raise TranscodeError("ffmpeg is not installed")
+    streams = probe(src).get("streams") or []
+    picture = next((s for s in streams if s.get("codec_type") == "video"), None)
+    if not picture or not picture.get("width"):
+        raise TranscodeError("unknown size")
+    if int(picture["width"]) <= width:
+        return None
+    webp = _has_encoder("libwebp")
+    out = _tmp(workdir, ".webp" if webp else ".jpg")
+    try:
+        args = ["-i", str(src), "-frames:v", "1", "-vf", f"scale={width}:-2"]
+        if webp:
+            args += ["-c:v", "libwebp", "-quality", str(THUMB_QUALITY), "-f", "webp"]
+        else:
+            args += ["-c:v", "mjpeg", "-q:v", "4", "-f", "image2"]
+        _run([*args, str(out)], timeout)
+        return out, "image/webp" if webp else "image/jpeg"
     except BaseException:
         out.unlink(missing_ok=True)
         raise

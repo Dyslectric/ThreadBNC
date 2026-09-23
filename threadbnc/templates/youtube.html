@@ -35,14 +35,16 @@
   {% endif %}
   <form method="post" action="/youtube/limits" class="row">
     <label>Largest video <input type="number" name="max_mb" min="10" max="50000" step="10" value="{{ yt.max_mb }}"> MB</label>
-    <label>Best quality
+    <label>Resolution
       <select name="max_height">{% for h in heights %}<option value="{{ h }}" {{ 'selected' if h == yt.max_height }}>{{ h }}p</option>{% endfor %}</select></label>
     <button class="small">Save</button>
   </form>
-  <p class="small muted">These say what's downloaded from YouTube. After that, a video bigger than it's kept as it
-    is up to is transcoded down (to a size or a bitrate) as the <a href="/storage#media-defaults">Storage</a>
-    settings, or its community's, say for videos; with neither, it's kept as it downloaded.
-    A community set to save pictures only, or nothing, doesn't save its YouTube videos either.</p>
+  <p class="small muted">YouTube videos are saved at up to this resolution, as YouTube encoded them, and aren't
+    transcoded otherwise: the Videos settings on the <a href="/storage#media-defaults">Storage</a> page and
+    communities' Media tabs are for other videos. Lowering it scales videos already saved at more than it down to it
+    (in the background: the <a href="/storage#transcoding">Storage</a> page shows how that's going); raising it
+    doesn't bring back what was scaled down. "720p" is the shorter side, so upright videos and Shorts count the same.
+    A community that doesn't archive videos doesn't save its YouTube videos either.</p>
 </section>
 
 <section class="card narrow-form">

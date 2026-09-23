@@ -172,7 +172,7 @@ def test_feed_fetches_articles_scrolled_to(server, abouncer, settings):
     assert "data-article-waiting" not in page_now and "data-gallery" not in page_now
     with abouncer.db.connect() as conn:
         wall = conn.execute("SELECT id FROM media WHERE url='https://news.test/img/wall.png'").fetchone()[0]
-    assert f'src="/media/{wall}"' in page_now
+    assert f'src="/media/{wall}?w=' in page_now
 
 
 def test_feed_waits_for_article_pictures_too(server, abouncer, settings):

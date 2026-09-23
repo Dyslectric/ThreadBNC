@@ -6,7 +6,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from threadbnc import media, transcode
+from threadbnc import media, thumbs, transcode
 from threadbnc.db import utcnow
 from threadbnc.render import MediaInfo, extract_media_urls, render_markdown
 from threadbnc.web import create_app
@@ -143,7 +143,7 @@ def test_article_preview_thumbnail(settings, server, mbouncer):
     client = TestClient(create_app(settings, mbouncer))
     client.post("/login", data={"password": "pw"})
     feed_html = client.get("/").text
-    assert f'<img src="/media/{mid}"' in feed_html and 'img.test<svg class="i"' in feed_html
+    assert f'<img src="/media/{mid}?w=320"' in feed_html and 'img.test<svg class="i"' in feed_html  # (list size)
     tid = client.get("/").text.split('href="/t/')[1].split('"')[0]
     thread_html = client.get(f"/t/{tid}").text
     assert 'class="link-preview"' in thread_html and f'/media/{mid}' in thread_html
@@ -240,7 +240,7 @@ def test_posts_with_several_pictures_can_be_paged_through(settings, server, mbou
     for view in ("tiles", "pictures"):
         page = client.get(f"/c/{cid}?view={view}").text
         assert page.count("data-gallery") == 1 and '<span data-at>1</span>/3' in page
-        srcs = [int(m) for m in re.findall(r'<img src="/media/(\d+)"', page)]
+        srcs = [int(m) for m in re.findall(r'<img src="/media/(\d+)\?w=\d+"', page)]
         assert [s for s in srcs if s in album] == album  # in the order they appear in the post
     assert 'title="3 pictures"' in client.get(f"/c/{cid}?view=list").text
 
@@ -535,6 +535,16 @@ def test_reencoding_at_a_bitrate(tmp_path):
     assert transcode.at_bitrate(out, 5_000_000, tmp_path) is None  # already lower
 
 
+@needs_ffmpeg
+def test_scaling_a_video_down_to_a_resolution(tmp_path):
+    src = tmp_path / "clip.mp4"
+    src.write_bytes(big_file("clip.mp4")[0])  # 1280x720
+    out = transcode.to_height(src, 480, tmp_path)
+    video = next(s for s in transcode.probe(out)["streams"] if s["codec_type"] == "video")
+    assert (video["width"], video["height"]) == (854, 480)
+    assert transcode.to_height(out, 720, tmp_path) is None  # no taller than that already
+
+
 def test_you_can_see_what_is_transcoded(settings, server, tbouncer, monkeypatch):
     fail = []
 
@@ -592,6 +602,86 @@ def test_you_can_see_what_is_transcoded(settings, server, tbouncer, monkeypatch)
 def one(b, sql, *args):
     with b.db.connect() as conn:
         return conn.execute(sql, args).fetchone()
+
+
+def test_the_feed_asks_for_pictures_at_each_view_s_width(settings, server, mbouncer):
+    cid = picture_community(server, mbouncer, pictures=1)
+    client = TestClient(create_app(settings, mbouncer))
+    client.post("/login", data={"password": "pw"})
+    mid = media_rows(mbouncer)["https://img.test/cat.gif?n=0"]["id"]
+    for view, width in (("list", 320), ("tiles", 640), ("pictures", 1280)):  # the defaults
+        assert f'<img src="/media/{mid}?w={width}"' in client.get(f"/c/{cid}?view={view}").text, view
+
+    r = client.post("/storage/thumbnails", data={"list": "200", "tile": "0", "picture": ""})
+    assert "Copies at the new widths are made in the background" in r.text
+    assert 'name="list" class="num" inputmode="numeric" value="200"' in r.text
+    assert f'<img src="/media/{mid}?w=200"' in client.get(f"/c/{cid}?view=list").text
+    assert f'<img src="/media/{mid}"' in client.get(f"/c/{cid}?view=tiles").text  # 0: as it is
+    assert f'<img src="/media/{mid}?w=1280"' in client.get(f"/c/{cid}?view=pictures").text
+    r = client.post("/storage/thumbnails", data={"list": "huge"})
+    assert "Thumbnails in the list view: a width in pixels" in r.text
+    with mbouncer.db.connect() as conn:
+        assert thumbs.widths(conn) == {"list": 200, "tile": 0, "picture": 1280}
+
+
+def test_smaller_copies_are_made_and_served_in_place(settings, server, tbouncer, monkeypatch):
+    made = []
+
+    def thumbnail(src, width, workdir):  # the picture is 1000px wide
+        made.append((src.read_bytes()[:8], width))
+        if width >= 1000:
+            return None
+        out = workdir / f".thumb-{len(made)}.webp"
+        out.write_bytes(b"RIFF\x00\x00\x00\x00WEBP%d" % width)
+        return out, "image/webp"
+
+    monkeypatch.setattr(media.transcode, "thumbnail", thumbnail)
+    monkeypatch.setattr(media.transcode, "available", lambda: True)
+    cid = community_with(server, tbouncer, "![p](https://img.test/fat.png) ![a](https://img.test/cat.gif)")
+    client = logged_in(settings, tbouncer)
+    client.post(f"/c/{cid}/media-settings", data={"image_keep": "2"})
+    tbouncer.media.fetch_pending()
+    rows = media_rows(tbouncer)
+    png, gif = rows["https://img.test/fat.png"], rows["https://img.test/cat.gif"]
+    # Made as the picture is downloaded: one for each width it's wider than. None of a GIF, so it still moves.
+    assert made == [(PNG[:8], 320), (PNG[:8], 640), (PNG[:8], 1280)]
+    r = client.get(f"/media/{png['id']}?w=1280")  # narrower than that: as it is, for good
+    assert r.content.startswith(PNG[:8]) and "immutable" in r.headers["cache-control"]
+
+    r = client.get(f"/media/{png['id']}?w=640")
+    assert r.content == b"RIFF\x00\x00\x00\x00WEBP640" and r.headers["content-type"] == "image/webp"
+    assert "immutable" in r.headers["cache-control"]
+    r = client.get(f"/media/{png['id']}?w=500")  # not a width used: the picture itself
+    assert r.content.startswith(PNG[:8]) and "immutable" in r.headers["cache-control"]
+    r = client.get(f"/media/{gif['id']}?w=320")  # none of it: as it is
+    assert r.content == GIF and "immutable" in r.headers["cache-control"]
+    r = client.get(f"/media/{png['id']}")
+    assert r.content.startswith(PNG[:8])
+
+    # New widths: copies of what's archived are made in the background, and ones no longer used go.
+    client.post("/storage/thumbnails", data={"list": "160", "tile": "0"})
+    assert "Making</span> copies of archived pictures" in client.get("/storage").text
+    r = client.get(f"/media/{png['id']}?w=160")  # not made yet: the picture, for now
+    assert r.content.startswith(PNG[:8]) and r.headers["cache-control"] == "private, max-age=600"
+    while media.thumbs.run_some(tbouncer.db, tbouncer.media_dir):
+        pass
+    assert made[3:] == [(PNG[:8], 160)]  # (1280 was settled already)
+    assert client.get(f"/media/{png['id']}?w=160").content == b"RIFF\x00\x00\x00\x00WEBP160"
+    names = sorted(p.name.split("-")[1] for p in (tbouncer.media_dir / "thumbs").glob("*/*"))
+    assert names == ["1280.same", "160.webp"]  # the 320 and 640 ones gone
+    page = client.get("/storage").text
+    assert "1 copy kept" in page and "Making</span>" not in page
+
+
+def test_a_pass_is_started_when_the_widths_are_new(bouncer):
+    with bouncer.db.transaction() as conn:
+        thumbs.request_pass_if_needed(conn)
+        assert thumbs.progress(conn) == {"checked": 0, "total": 0}
+    with bouncer.db.transaction() as conn:
+        conn.execute("DELETE FROM app_settings WHERE key=?", (thumbs.PASS_KEY,))
+        conn.execute("INSERT INTO app_settings(key, value) VALUES (?, ?)", (thumbs.DONE_KEY, "320,640,1280"))
+        thumbs.request_pass_if_needed(conn)  # done for these widths already
+        assert thumbs.progress(conn) is None
 
 
 def _write(workdir, data: bytes):

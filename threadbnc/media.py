@@ -16,7 +16,9 @@ Pictures (and video thumbnails, which are pictures) are downloaded as soon as
 they're seen. Full videos wait until a post showing them is opened or kept
 (`held`): most scroll past unwatched, and they're by far the biggest files.
 YouTube videos (`kept_only`) wait longer still: they're downloaded with yt-dlp
-only once a post linking to one is kept (see youtube.py). Audio files are held
+only once a post linking to one is kept (see youtube.py), and have settings of
+their own on the YouTube page (the resolution they're saved at) rather than
+the Videos ones. Audio files are held
 too, but a post linking to one fetches it as soon as the post is scrolled into
 view in a feed (Bouncer.fetch_audio), so it's ready to play from the post's
 player bar.
@@ -40,7 +42,7 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 
-from . import transcode, youtube
+from . import thumbs, transcode, youtube
 from .adapters.base import RemotePaused
 from .adapters.http import HostThrottle
 from .db import Conn, Database, fmt_ts, parse_ts, utcnow
@@ -407,7 +409,9 @@ def _noun(ctype: str) -> str:
     return {"image": "pictures", "audio": "audio files"}.get(kind_of(ctype) or "", "videos")
 
 
-def _how(target: int | None, bps: int | None) -> str:
+def _how(target: int | None, bps: int | None, height: int | None = None) -> str:
+    if height:
+        return f"down to {height}p"
     return f"at {bps / 1_000_000:g} Mbps" if bps else f"down to {(target or 0) // 1_000_000} MB"
 
 
@@ -681,11 +685,13 @@ class MediaFetcher:
         return Downloaded(out, ctype, out.stat().st_size, h.hexdigest(), dl.final_url, dl.size, dl.content_type)
 
     def convert_some(self) -> bool:
-        """Bring archived pictures and videos, YouTube's included, in line with the settings (after
+        """Bring archived pictures and videos in line with the settings (after
         they changed: request_conversion). Files over the size they're kept
-        as they are up to, with a size to transcode down to, are transcoded
-        from the stored copy, which the smaller one replaces. Files of a kind
-        no longer archived stay: nothing is deleted for that. At most one file
+        as they are up to, with a size or bitrate to transcode them to, are
+        transcoded from the stored copy, which the smaller one replaces.
+        YouTube videos go by the YouTube page instead: ones saved at a higher
+        resolution than it says are scaled down to it. Files of a kind no
+        longer archived stay: nothing is deleted for that. At most one file
         is transcoded per call; True while there's more to go through."""
         with self.db.connect() as conn:
             row = conn.execute("SELECT value FROM app_settings WHERE key=?", (CONVERT_KEY,)).fetchone()
@@ -693,13 +699,19 @@ class MediaFetcher:
                 return False
             after = int(row[0] or 0)
             default = self.default_policy
+            yt_height = self.youtube.status()["max_height"] if self.youtube else None
             rows = conn.execute(
-                f"SELECT id, url, content_type, size_bytes, storage_path FROM media WHERE id>? AND {_CONVERTIBLE} "
-                "ORDER BY id LIMIT ?", (after, CONVERT_SCAN)).fetchall()
+                f"SELECT id, url, content_type, size_bytes, storage_path, kept_only FROM media "
+                f"WHERE id>? AND {_CONVERTIBLE} ORDER BY id LIMIT ?", (after, CONVERT_SCAN)).fetchall()
             todo = None
             for r in rows:
                 after = r["id"]
                 kp = policy_for(conn, r["id"], default).for_type(r["content_type"])
+                if r["kept_only"]:  # YouTube's: to its resolution (to_height tells whether it's over)
+                    if kp and kp.save and yt_height:
+                        todo = (r, None, None, yt_height)
+                        break
+                    continue
                 if not (kp and kp.save and r["size_bytes"] > kp.keep_bytes):
                     continue
                 if kp.target_bps and r["content_type"].startswith("video/"):
@@ -717,21 +729,24 @@ class MediaFetcher:
             self._convert(*todo)
         return bool(rows)
 
-    def _convert(self, row: Any, target: int | None, bps: int | None) -> None:
+    def _convert(self, row: Any, target: int | None, bps: int | None, height: int | None = None) -> None:
         src = self.media_dir / row["storage_path"]
+        how = _how(target, bps, height)
         try:
-            with self._transcoding(row["id"], row["url"], row["size_bytes"], _how(target, bps)):
-                if bps:
+            with self._transcoding(row["id"], row["url"], row["size_bytes"], how):
+                if height:
+                    out, ctype = transcode.to_height(src, height, self.media_dir), "video/mp4"
+                elif bps:
                     out, ctype = transcode.at_bitrate(src, bps, self.media_dir), "video/mp4"
                 else:
                     out, ctype = transcode.shrink(src, row["content_type"], target, self.media_dir)
         except (transcode.TranscodeError, OSError) as exc:
-            log.warning("media %s: couldn't transcode it %s: %s", row["id"], _how(target, bps), exc)
+            log.warning("media %s: couldn't transcode it %s: %s", row["id"], how, exc)
             with self.db.transaction() as conn:
                 conn.execute("UPDATE media SET transcode_error=? WHERE id=?",
-                             (f"couldn't transcode it {_how(target, bps)}: {exc}", row["id"]))
+                             (f"couldn't transcode it {how}: {exc}", row["id"]))
             return
-        if out is None:  # at that rate or lower already
+        if out is None:  # at that rate or resolution, or lower, already
             with self.db.transaction() as conn:
                 conn.execute("UPDATE media SET transcode_error=NULL WHERE id=?", (row["id"],))
             return
@@ -749,8 +764,11 @@ class MediaFetcher:
                 (ctype, size, h.hexdigest(), rel, utcnow(), row["size_bytes"], row["content_type"], row["id"]))
             unused = rel != row["storage_path"] and not conn.execute(
                 "SELECT 1 FROM media WHERE storage_path=? LIMIT 1", (row["storage_path"],)).fetchone()
-        if unused:  # the bigger copy, replaced
+        if unused:  # the bigger copy, replaced, and the smaller copies of it for browsing
             src.unlink(missing_ok=True)
+            thumbs.remove_for(self.media_dir, src.stem)
+        if thumbs.eligible(ctype):
+            self.make_thumbs(rel, h.hexdigest())
         log.info("media %s: transcoded down from %.1f MB to %.1f MB", row["id"], row["size_bytes"] / 1e6, size / 1e6)
 
     @contextmanager
@@ -762,17 +780,13 @@ class MediaFetcher:
         finally:
             self.working = None
 
-    def _fit(self, dl: Downloaded, kp: KindPolicy, leave_out: bool = True,
-             media_id: int | None = None) -> Downloaded:
+    def _fit(self, dl: Downloaded, kp: KindPolicy, media_id: int | None = None) -> Downloaded:
         """A download bigger than it's kept as it is up to, transcoded as the
         settings say (to a size, or a video to a bitrate). With nothing to
-        transcode it down to, it's left out (MediaRejected), or kept as it is
-        when not `leave_out`."""
+        transcode it down to, it's left out (MediaRejected)."""
         if dl.size <= kp.keep_bytes:
             return dl
         if not (kp.transcodes and self.can_transcode()):
-            if not leave_out:
-                return dl
             dl.tmp_path.unlink(missing_ok=True)
             raise MediaRejected(f"too large ({dl.size / 1_000_000:.1f} MB)")
         if kp.target_bps and dl.content_type.startswith("video/"):
@@ -836,10 +850,9 @@ class MediaFetcher:
                     raise MediaSkipped(f"videos aren't archived {POLICY_SUFFIX}")
                 if not wanted:
                     raise MediaHeld()
-                # Its size and quality limits are the YouTube page's; then it's
-                # transcoded like any video, but never left out for its size.
-                dl = self._fit(self._download_youtube(row["url"]), policy.video, leave_out=False,
-                               media_id=row["id"])
+                # The YouTube page's settings, not the Videos ones: saved at
+                # the resolution it says, as YouTube encoded it.
+                dl = self._download_youtube(row["url"])
             else:
                 if not wanted and (looks_like_video(row["url"]) or looks_like_audio(row["url"])):
                     raise MediaHeld()
@@ -882,6 +895,16 @@ class MediaFetcher:
                 (dl.content_type, dl.size, dl.sha256, rel, dl.final_url, now, dl.original_size, dl.original_type,
                  now if dl.original_size else None, row["id"]),
             )
+        if thumbs.eligible(dl.content_type):
+            self.make_thumbs(rel, dl.sha256)
+
+    def make_thumbs(self, storage_path: str, sha: str) -> None:
+        """Smaller copies of a picture just stored, for browsing (thumbs.py)."""
+        if not self.can_transcode():
+            return
+        with self.db.connect() as conn:
+            want = thumbs.widths(conn)
+        thumbs.make(self.media_dir, self.media_dir / storage_path, sha, want)
 
 
 # --- garbage collection (only after purging expired auto threads) ----------

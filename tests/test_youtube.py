@@ -208,7 +208,7 @@ def test_videos_are_saved_only_when_kept(settings, bouncer, yt, downloads):
     assert f'<video class="media" src="/media/{m["id"]}" controls playsinline' in page  # with sound, no loop
 
 
-def test_youtube_videos_are_transcoded_like_other_videos(bouncer, yt, monkeypatch):
+def test_youtube_videos_go_by_the_youtube_resolution(settings, bouncer, yt, monkeypatch):
     big = MP4 + b"\x00" * 1_500_000
 
     def fake_download(url, workdir, session, max_bytes):
@@ -217,47 +217,47 @@ def test_youtube_videos_are_transcoded_like_other_videos(bouncer, yt, monkeypatc
         path.write_bytes(big)
         return path, 1080
 
-    rates = []
+    heights = []
 
-    def at_bitrate(src, bps, workdir):
-        rates.append(bps)
-        out = workdir / f".tc-{len(rates)}.mp4"
-        out.write_bytes(MP4 + b"lean%d" % len(rates))
+    def to_height(src, height, workdir):  # the downloads are 1080p
+        heights.append(height)
+        if height >= 1080:
+            return None
+        out = workdir / f".tc-yt{len(heights)}.mp4"
+        out.write_bytes(MP4 + b"%dp %d" % (height, len(heights)))
         return out
 
     monkeypatch.setattr(youtube, "download", fake_download)
-    monkeypatch.setattr(media.transcode, "at_bitrate", at_bitrate)
+    monkeypatch.setattr(media.transcode, "to_height", to_height)
+    monkeypatch.setattr(media.transcode, "at_bitrate", lambda *a: pytest.fail("not the Videos settings"))
+    monkeypatch.setattr(media.transcode, "shrink", lambda *a: pytest.fail("not the Videos settings"))
     monkeypatch.setattr(media.MediaFetcher, "can_transcode", lambda self: True)
     cid = bouncer.follow_community(f"https://www.youtube.com/channel/{CHANNEL}", None, 30, backfill=True)
     bouncer.poll_follow(cid)
-
-    def choose(policy):
-        with bouncer.db.transaction() as conn:
-            conn.execute("UPDATE communities SET media_policy=? WHERE id=?", (media.dump_choices(policy), cid))
-            media.request_conversion(conn)
-
-    # Nothing to transcode it down to: kept as it downloaded, not left out for its size.
-    choose({"video": {"keep_mb": 1, "target_mb": 0}})
+    client = logged_in(settings, bouncer)
+    # The Videos settings would re-encode anything over 1 MB: YouTube's aren't theirs.
+    client.post("/storage/media-defaults", data={"video_keep": "1", "video_bigger": "rate", "video_rate": "2"})
     with bouncer.db.transaction() as conn:
         conn.execute("UPDATE archived_threads SET retention='manual'")
     bouncer.media.fetch_pending()
-    m = video_media(bouncer)
-    assert (m["status"], m["size_bytes"], m["original_bytes"]) == ("ok", len(big), None) and not rates
-
-    # A bitrate chosen afterwards re-encodes the ones already saved (the channel's kept videos)...
-    saved = one(bouncer, "SELECT COUNT(*) FROM media WHERE kept_only=1 AND status='ok'")[0]
-    choose({"video": {"keep_mb": 1, "target_mbps": 2}})
     while bouncer.media.convert_some():
         pass
     m = video_media(bouncer)
-    assert saved and rates == [2_000_000] * saved and m["size_bytes"] < 1000 and m["original_bytes"] == len(big)
+    assert (m["status"], m["size_bytes"], m["original_bytes"]) == ("ok", len(big), None)
+    assert heights == [1080, 1080]  # looked at, at the resolution they were saved at: left as they are
+    saved = one(bouncer, "SELECT COUNT(*) FROM media WHERE kept_only=1 AND status='ok'")[0]
+    assert saved == 2
 
-    # ...and new downloads as they arrive.
-    with bouncer.db.transaction() as conn:
-        conn.execute("UPDATE media SET status='pending', attempts=0, original_bytes=NULL WHERE id=?", (m["id"],))
-    bouncer.media.fetch_pending()
+    # A lower resolution on the YouTube page scales down the ones saved at more than it.
+    r = client.post("/youtube/limits", data={"max_mb": "2000", "max_height": "720"})
+    assert "saved at more than 720p are scaled down to it" in r.text and '<option value="720" selected>' in r.text
+    while bouncer.media.convert_some():
+        pass
+    assert heights == [1080, 1080, 720, 720]
     m = video_media(bouncer)
-    assert rates == [2_000_000] * (saved + 1) and m["size_bytes"] < 1000 and m["original_bytes"] == len(big)
+    assert m["size_bytes"] < 1000 and m["original_bytes"] == len(big) and m["content_type"] == "video/mp4"
+    page = client.get("/storage").text
+    assert "Recently transcoded" in page
 
 
 def test_communities_saving_only_pictures_skip_videos(bouncer, yt, downloads):

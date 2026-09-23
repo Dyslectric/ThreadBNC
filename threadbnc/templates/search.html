@@ -78,7 +78,7 @@
     {% if h.thumb %}
       <a class="thumb" href="{{ link }}" tabindex="-1" aria-hidden="true">
         {% if h.thumb.video %}<video src="/media/{{ h.thumb.id }}" muted preload="metadata"></video>
-        {% else %}<img src="/media/{{ h.thumb.id }}" alt="" loading="lazy">{% endif %}
+        {% else %}<img src="{{ thumb(h.thumb.id, 'list') }}" alt="" loading="lazy">{% endif %}
       </a>
     {% endif %}
     <div class="pc-main">

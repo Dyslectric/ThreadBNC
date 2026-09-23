@@ -175,6 +175,30 @@
   {% endif %}
 </section>
 
+<section class="card" id="thumbnails">
+  <h2>Pictures for browsing</h2>
+  <p class="small muted">The feed shows smaller copies of archived pictures, from posts and from linked articles,
+    made at these widths, so browsing doesn't send them at full size. The archived pictures stay as they are, and
+    open in full from a post. Pictures no wider than a width, GIFs (so they still move) and SVGs are shown as they
+    are. Blank: the default; 0: no copies for that view.</p>
+  <form method="post" action="/storage/thumbnails" class="stack">
+    {% for view, (label, default) in thumb_views.items() %}
+    <label>{{ label }}
+      <input name="{{ view }}" class="num" inputmode="numeric" value="{{ thumbs.saved[view] if view in thumbs.saved else '' }}"
+             placeholder="{{ default }}" title="Blank = {{ default }}px"> px wide</label>
+    {% endfor %}
+    <div><button class="small">Save</button></div>
+  </form>
+  <ul class="plain small">
+    <li>{{ '{:,}'.format(thumbs.usage[0]) }} cop{{ 'y' if thumbs.usage[0] == 1 else 'ies' }} kept, {{ thumbs.usage[1] | size }}.</li>
+    {% if thumbs.progress %}<li><span class="pill new">Making</span> copies of archived pictures:
+      {{ '{:,}'.format(thumbs.progress.checked) }} of {{ '{:,}'.format(thumbs.progress.total) }} looked at{% if not can_transcode %},
+      waiting for ffmpeg{% endif %}.</li>{% endif %}
+    {% if not can_transcode %}<li class="bad-text">ffmpeg isn't installed on the server, so no copies are made: pictures
+      are shown as they are.</li>{% endif %}
+  </ul>
+</section>
+
 <section class="card" id="media-defaults">
   <h2>Media defaults</h2>
   {{ media_form('/storage/media-defaults', saved, env, 'Server setting', can_transcode, media_kinds, transcoded,

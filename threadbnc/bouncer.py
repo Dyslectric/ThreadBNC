@@ -23,7 +23,7 @@ import traceback
 from datetime import timedelta
 from typing import Any, Callable
 
-from . import articles, media, store
+from . import articles, media, store, thumbs
 from . import feed as feed_mod
 from .adapters import (
     CommunityRef,
@@ -1061,6 +1061,7 @@ class Bouncer:
                     orphan_files += media.collect_orphans(conn, self.media_dir)
         for f in orphan_files:  # only after the purge committed
             f.unlink(missing_ok=True)
+            thumbs.remove_for(self.media_dir, f.stem)  # its smaller copies too (files are named by hash)
         return len(rows)
 
     # -- jobs --------------------------------------------------------------
@@ -1189,6 +1190,7 @@ class Bouncer:
                 media.register_all_existing(conn)
                 media.skip_unprobed_links(conn)
                 media.register_youtube_links(conn)
+                thumbs.request_pass_if_needed(conn)
                 articles.register_all_existing(conn)
             self._media_backfilled = True
         # Linked articles aren't fetched in the background either: opening or
@@ -1199,6 +1201,10 @@ class Bouncer:
                 pass
         # Archived files over limits just lowered, transcoded down one at a time.
         while not self._stop.is_set() and self.media.convert_some():
+            while self.run_one_job():
+                pass
+        # Smaller copies of pictures for browsing, after their widths changed.
+        while not self._stop.is_set() and thumbs.run_some(self.db, self.media_dir):
             while self.run_one_job():
                 pass
         purged = self.purge_expired()
