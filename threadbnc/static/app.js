@@ -70,6 +70,7 @@ document.documentElement.classList.add("js");
     now.replaceWith(document.adoptNode(fresh));
     if (wasCurrent) select(fresh, false);
     watchUnread(fresh);
+    watchArticles(fresh);
     return true;
   }
 
@@ -294,7 +295,7 @@ document.documentElement.classList.add("js");
         added.push(document.adoptNode(item));
       }
       list.append(...added);
-      added.forEach((el) => watchUnread(el));
+      added.forEach((el) => { watchUnread(el); watchArticles(el); });
       const pager = link.closest(".pager");
       const next = $(".pager", doc);
       if (next) pager.replaceWith(document.adoptNode(next)); else pager.remove();
@@ -412,6 +413,96 @@ document.documentElement.classList.add("js");
   window.addEventListener("pagehide", () => {
     if (seenQueue.size && navigator.sendBeacon) navigator.sendBeacon("/feed/seen", seenBody());
   });
+
+  // ---- linked articles' pictures, fetched as posts are scrolled to -------------------
+  // A post whose linked article (or the pictures in it) isn't saved yet asks
+  // the server for it once it's on screen, then checks back until that's done.
+  // Pictures that arrive join the post's carousel while it's on screen, or
+  // when it's next scrolled to, so nothing changes size out of sight.
+  const asked = new Set();      // thread ids asked for on this page
+  const waitingOn = new Set();  // of those, the ones not done yet
+  const onScreen = new Set();   // entry element ids
+  const unshown = new Set();    // entry element ids with pictures still to show
+  let askQueue = [];
+  let askTimer = null;
+  let checkTimer = null;
+  let checkUntil = 0;
+  let articleObserver = null;
+
+  function watchArticles(root) {
+    if (!("IntersectionObserver" in window)) return;
+    articleObserver = articleObserver || new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        const id = e.target.id;
+        if (!e.isIntersecting || !e.target.isConnected) { onScreen.delete(id); continue; }
+        onScreen.add(id);
+        const tid = id.slice(1);
+        if (!asked.has(tid)) {
+          asked.add(tid);
+          askQueue.push(tid);
+          clearTimeout(askTimer);
+          askTimer = setTimeout(askArticles, 300);
+        }
+        if (unshown.has(id)) showPictures([id]);
+      }
+    });
+    const els = root.matches && root.matches("[data-article-waiting]") ? [root] : $$("[data-article-waiting]", root);
+    for (const el of els) articleObserver.observe(el);
+  }
+
+  async function askArticles() {
+    const ids = askQueue;
+    askQueue = [];
+    try {
+      await post("/feed/articles", { ids });
+    } catch (e) {
+      for (const id of ids) asked.delete(id);  // ask again when they're next on screen
+      return;
+    }
+    for (const id of ids) waitingOn.add(id);
+    checkUntil = Date.now() + 3 * 60000;  // then give up: the site may be refusing, or slow
+    if (!checkTimer) checkTimer = setTimeout(checkArticles, 2500);
+  }
+
+  async function checkArticles() {
+    checkTimer = null;
+    if (!waitingOn.size) return;
+    const ids = [...waitingOn];
+    const show = [];
+    try {
+      const r = await fetch("/feed/articles?" + new URLSearchParams(ids.map((id) => ["ids", id])),
+        { headers: FETCH, credentials: "same-origin" });
+      const data = await r.json();
+      const still = new Set(data.waiting.map(String));
+      for (const tid of ids) {
+        const el = document.getElementById("p" + tid);
+        if (!still.has(tid)) waitingOn.delete(tid);
+        if (!el) continue;
+        if ((data.pics[tid] || 0) > Number(el.dataset.pics || 0)) {
+          if (onScreen.has(el.id)) show.push(el.id); else unshown.add(el.id);
+        } else if (!still.has(tid)) {
+          articleObserver.unobserve(el);
+        }
+      }
+    } catch (e) { /* try again next time */ }
+    if (show.length) await showPictures(show);
+    if (waitingOn.size && Date.now() < checkUntil) checkTimer = setTimeout(checkArticles, 2500);
+  }
+
+  // Re-render the posts, keeping each carousel at the picture it was showing.
+  async function showPictures(ids) {
+    const at = new Map();
+    for (const id of ids) {
+      unshown.delete(id);
+      const track = $(`#${CSS.escape(id)} .gallery-track`);
+      if (track) at.set(id, track.scrollLeft);
+    }
+    try { await refresh(ids); } catch (e) { return; }
+    for (const [id, left] of at) {
+      const track = $(`#${CSS.escape(id)} .gallery-track`);
+      if (track && left) track.scrollTo({ left, behavior: "instant" });
+    }
+  }
 
   // ---- being here ---------------------------------------------------------------------
   // Subreddits are only checked while someone is using ThreadBNC: tell the
@@ -731,6 +822,7 @@ document.documentElement.classList.add("js");
 
   document.addEventListener("DOMContentLoaded", () => {
     watchUnread(document);
+    watchArticles(document);
     if (location.hash === "#follow") {
       const input = $("#follow input[name=community]");
       if (input) input.focus();

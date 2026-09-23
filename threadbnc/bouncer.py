@@ -5,7 +5,8 @@ It asks other servers as little as a browser would. Lemmy and PieFed posts
 arrive by push (federation.py); a community is only checked on a schedule
 when you turn that on, feeds and subreddits always are, and subreddits only
 while you're using ThreadBNC. A post's comments, linked article and videos
-are fetched when it's opened or kept (open_threads), and its votes on a
+are fetched when it's opened or kept (open_threads), its article when it's
+scrolled into view in a feed too (fetch_articles), and its votes on a
 schedule that slows with age and stops after a week (check_votes), from one
 community listing where it can. A server that answers 429 is left alone for
 as long as it asks (adapters/http.py)."""
@@ -540,6 +541,30 @@ class Bouncer:
         if a is not None and a["status"] == "pending" and self.articles.enabled:
             self.articles.fetch_one(a)
 
+    def fetch_articles(self, thread_ids: list[int]) -> None:
+        """Posts scrolled into view in a feed: the articles they link to, and
+        the pictures in them, so the feed can show those too. Only the posts
+        the reader looked at, as a browser showing link previews would."""
+        for tid in thread_ids:
+            if self._stop.is_set():
+                return
+            with self.db.connect() as conn:
+                t = conn.execute("SELECT root_object_id, trashed_at FROM archived_threads WHERE id=?",
+                                 (tid,)).fetchone()
+            if t is None or t["trashed_at"] or not t["root_object_id"]:
+                continue
+            self.fetch_article(t["root_object_id"])
+            a = self.article_for(t["root_object_id"])
+            if a is None or a["status"] != "ok":
+                continue
+            with self.db.connect() as conn:
+                pics = conn.execute(
+                    "SELECT m.* FROM article_media am JOIN media m ON m.id=am.media_id WHERE am.article_id=? "
+                    "AND m.status='pending' AND m.held=0 AND (m.next_attempt_at IS NULL OR m.next_attempt_at<=?) "
+                    "ORDER BY m.id", (a["id"], utcnow())).fetchall()
+            for m in pics:
+                self.media.fetch_one(m)
+
     def _aged_out(self, thread_id: int) -> None:
         """A feed article that's no longer in its feed: feeds only list their
         latest entries, so that's not deletion. Keep what we have and stop
@@ -1046,6 +1071,9 @@ class Bouncer:
             elif job["kind"] == "open":
                 self.open_threads(payload["thread_ids"])
                 self._finish_job(job["id"], "done", {"thread_ids": payload["thread_ids"]})
+            elif job["kind"] == "articles":
+                self.fetch_articles(payload["thread_ids"])
+                self._finish_job(job["id"], "done", {"thread_ids": payload["thread_ids"]})
             elif job["kind"] == "sync":
                 self.sync_thread(payload["thread_id"], force=True)
                 self._finish_job(job["id"], "done", {"thread_id": payload["thread_id"]})
@@ -1110,7 +1138,8 @@ class Bouncer:
                 articles.register_all_existing(conn)
             self._media_backfilled = True
         # Linked articles aren't fetched in the background either: opening or
-        # keeping a post saves its article (open_threads).
+        # keeping a post saves its article (open_threads), and so does
+        # scrolling to it in a feed (fetch_articles).
         while not self._stop.is_set() and self.media.fetch_pending(limit=10):
             while self.run_one_job():
                 pass

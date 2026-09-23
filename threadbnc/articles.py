@@ -1,8 +1,9 @@
 """Linked articles: a readable copy of the web page a post links to.
 
 A post's link is registered when its revision is recorded (like media), and
-the page is downloaded when the post is opened or kept (Bouncer.open_threads),
-never in the background, and the article pulled out of it with
+the page is downloaded when the post is opened or kept (Bouncer.open_threads)
+or scrolled into view in a feed (Bouncer.fetch_articles), never in the
+background, and the article pulled out of it with
 trafilatura: the text, headings, lists, quotes, links and pictures, without the
 site's navigation, ads and scripts. The pictures are registered as the post's
 media, so they follow its community's media settings and go when it's purged.
@@ -210,6 +211,21 @@ def readable(conn: Conn, object_ids: list[int]) -> set[int]:
     return {r[0] for r in conn.execute(
         f"SELECT r.object_id FROM article_refs r JOIN articles a ON a.id=r.article_id "
         f"WHERE a.status='ok' AND r.object_id IN ({marks})", object_ids)}
+
+
+def waiting(conn: Conn, links: list[tuple[int, str | None]]) -> set[int]:
+    """The posts, of these (object id, current link), whose article isn't read
+    yet, or is but has pictures still to download: what showing one in the
+    feed fetches (Bouncer.fetch_articles)."""
+    links = [(oid, url) for oid, url in links if candidate(url)]
+    if not links:
+        return set()
+    pairs = " OR ".join("(r.object_id=? AND a.url=?)" for _ in links)
+    return {r[0] for r in conn.execute(
+        f"SELECT r.object_id FROM article_refs r JOIN articles a ON a.id=r.article_id WHERE ({pairs}) "
+        f"AND (a.status='pending' OR (a.status='ok' AND EXISTS (SELECT 1 FROM article_media am "
+        f"JOIN media m ON m.id=am.media_id WHERE am.article_id=a.id AND m.status='pending' AND m.held=0)))",
+        [v for pair in links for v in pair])}
 
 
 def render(content_html: str | None, lookup: MediaLookup, page_url: str | None = None,

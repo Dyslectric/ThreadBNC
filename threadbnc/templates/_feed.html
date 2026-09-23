@@ -90,9 +90,12 @@
 </div>
 {% endmacro %}
 
-{# Attributes every feed entry has: what app.js needs for shortcuts and read-on-scroll. #}
+{# Attributes every feed entry has: what app.js needs for shortcuts and read-on-scroll,
+   and, while its linked article or the pictures in it aren't saved yet, to fetch
+   them once it's scrolled to and show the pictures (data-pics: how many it shows now). #}
 {% macro entry_attrs(i) -%}
 id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids or [i.id]) | join(' ') }}"
+{%- if i.article_waiting and reading_articles %} data-article-waiting data-pics="{{ i.thumb.pics | length if i.thumb else 0 }}"{% endif %}
 {%- endmacro %}
 
 {# The archived copy of the article a post links to, when the bouncer could read it. #}

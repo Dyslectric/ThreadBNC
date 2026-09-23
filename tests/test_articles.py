@@ -50,7 +50,7 @@ def fake_web(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=b"%PDF-1.7", headers={"content-type": "application/pdf"})
     if path == "/down":
         return httpx.Response(503)
-    if path == "/img/wall.png":
+    if path in ("/img/wall.png", "/img/own.png"):
         return httpx.Response(200, content=PNG, headers={"content-type": "image/png"})
     return httpx.Response(404)
 
@@ -134,21 +134,69 @@ def test_article_read_and_shown(server, abouncer, settings):
     assert f'src="/media/{pic["id"]}"' in r.text and "news.test/img" not in r.text
 
 
-def test_article_pictures_arent_the_posts_own(server, abouncer):
-    """They're shown in the article, not as the post's thumbnail or gallery."""
-    tid = post_linking(server, abouncer, "https://news.test/story")
+def test_article_pictures_follow_the_posts_own(server, abouncer):
+    """They're in the post's gallery, after its own pictures, but don't make
+    the feed pick the pictures view."""
+    server.add_post("1", "Harbour news", "![own](https://news.test/img/own.png)")
+    server.edit_post("1", url="https://news.test/story")
+    tid = abouncer.ingest_url(f"https://{DOMAIN}/post/1")
     abouncer.articles.fetch_pending()
     abouncer.media.fetch_pending()
     with abouncer.db.connect() as conn:
         cid = conn.execute("SELECT community_id FROM archived_threads WHERE id=?", (tid,)).fetchone()[0]
+        own, wall = (conn.execute("SELECT id FROM media WHERE url=?", (f"https://news.test/img/{n}.png",)).fetchone()[0]
+                     for n in ("own", "wall"))
         [item] = feed.load_feed(conn, community_id=cid).items
-        assert item["thumb"] is None and item["article"]
-        assert feed.media_share(conn, cid) == (0, 1)
-    # Once the post itself embeds the same picture, it is its own.
-    server.edit_post("1", body="![wall](https://news.test/img/wall.png)")
-    abouncer.sync_thread(tid, force=True)
+        assert item["article"] and item["thumb"]["id"] == own
+        assert [p["id"] for p in item["thumb"]["pics"]] == [own, wall]
+        assert feed.media_share(conn, cid) == (1, 1)
+
+
+def test_feed_fetches_articles_scrolled_to(server, abouncer, settings):
+    """A post shown in the feed with an unread article asks for it (app.js,
+    once it's on screen); the article and its pictures are fetched, and the
+    feed learns there's a picture to show."""
+    tid = post_linking(server, abouncer, "https://news.test/story")
     with abouncer.db.connect() as conn:
-        assert feed.load_feed(conn, community_id=cid).items[0]["thumb"] is not None
+        cid = conn.execute("SELECT community_id FROM archived_threads WHERE id=?", (tid,)).fetchone()[0]
+    client = TestClient(create_app(settings, abouncer))
+    client.post("/login", data={"password": "pw"})
+    assert 'data-article-waiting data-pics="0"' in client.get(f"/c/{cid}").text
+    assert client.get("/feed/articles", params={"ids": [tid]}).json() == {"waiting": [tid], "pics": {str(tid): 0}}
+
+    assert client.post("/feed/articles", data={"ids": [tid]}).json()["ok"]
+    assert abouncer.run_one_job()
+    assert article_row(abouncer, "https://news.test/story")["status"] == "ok"
+    assert client.get("/feed/articles", params={"ids": [tid]}).json() == {"waiting": [], "pics": {str(tid): 1}}
+    page_now = client.get(f"/c/{cid}").text
+    assert "data-article-waiting" not in page_now and "data-gallery" not in page_now
+    with abouncer.db.connect() as conn:
+        wall = conn.execute("SELECT id FROM media WHERE url='https://news.test/img/wall.png'").fetchone()[0]
+    assert f'src="/media/{wall}"' in page_now
+
+
+def test_feed_waits_for_article_pictures_too(server, abouncer, settings):
+    """An article read (by opening the post) whose pictures aren't downloaded yet still waits."""
+    tid = post_linking(server, abouncer, "https://news.test/story")
+    abouncer.articles.fetch_pending()
+    with abouncer.db.connect() as conn:
+        oid = conn.execute("SELECT root_object_id FROM archived_threads WHERE id=?", (tid,)).fetchone()[0]
+        assert articles.waiting(conn, [(oid, "https://news.test/story")]) == {oid}
+    abouncer.fetch_articles([tid])
+    with abouncer.db.connect() as conn:
+        assert articles.waiting(conn, [(oid, "https://news.test/story")]) == set()
+
+
+def test_feed_doesnt_ask_when_articles_are_off(server, bouncer, settings):
+    tid = post_linking(server, bouncer, "https://news.test/story")
+    bouncer.articles.enabled = False
+    with bouncer.db.connect() as conn:
+        cid = conn.execute("SELECT community_id FROM archived_threads WHERE id=?", (tid,)).fetchone()[0]
+    client = TestClient(create_app(settings, bouncer))
+    client.post("/login", data={"password": "pw"})
+    assert "data-article-waiting" not in client.get(f"/c/{cid}").text
+    client.post("/feed/articles", data={"ids": [tid]})
+    assert not bouncer.run_one_job()
 
 
 def test_article_pictures_survive_restart_cleanup(server, abouncer):

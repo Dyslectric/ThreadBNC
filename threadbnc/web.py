@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote, urlencode, urlparse
 
-from fastapi import FastAPI, Form, HTTPException, Request
+from fastapi import FastAPI, Form, HTTPException, Query, Request
 from fastapi.responses import (
     FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response,
 )
@@ -356,7 +356,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                                  feed_windows=FEED_WINDOWS, feed_shows=FEED_SHOWS,
                                  password_login=bool(settings.password),
                                  proxy_login=bool(settings.proxy_auth_header), chandle=chandle,
-                                 is_reddit=is_reddit, is_rss=is_rss)
+                                 is_reddit=is_reddit, is_rss=is_rss, reading_articles=bouncer.articles.enabled)
     app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
 
     # The SSO return page comes from the identity provider's site, so the
@@ -692,6 +692,33 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         with db.transaction() as conn:
             n = feed_mod.mark_seen(conn, utcnow(), ids[:200])
         return {"ok": True, "marked": n}
+
+    @app.post("/feed/articles")
+    def feed_articles(ids: list[int] = Form([])):
+        """Posts app.js scrolled into view whose linked article (or its
+        pictures) isn't saved yet: fetch them (Bouncer.fetch_articles)."""
+        if ids and bouncer.articles.enabled:
+            bouncer.enqueue("articles", {"thread_ids": ids[:50]})
+        return {"ok": True}
+
+    @app.get("/feed/articles")
+    def feed_articles_status(ids: list[int] = Query([])):
+        """How those posts are getting on: which are still waiting on their
+        article or its pictures, and how many pictures each has to show."""
+        ids = ids[:50]
+        if not ids:
+            return {"waiting": [], "pics": {}}
+        marks = ",".join("?" * len(ids))
+        with db.connect() as conn:
+            rows = conn.execute(
+                f"SELECT t.id, o.id AS oid, r.url, o.thumbnail_url FROM archived_threads t "
+                f"JOIN objects o ON o.id=t.root_object_id JOIN revisions r ON r.object_id=o.id "
+                f"AND r.seq=o.revision_count WHERE t.id IN ({marks})", ids).fetchall()
+            waiting = articles.waiting(conn, [(r["oid"], r["url"]) for r in rows]) \
+                if bouncer.articles.enabled else set()
+            thumbs = feed_mod.thumbnails(conn, [(r["oid"], r["url"], r["thumbnail_url"]) for r in rows])
+        return {"waiting": [r["id"] for r in rows if r["oid"] in waiting],
+                "pics": {r["id"]: len(thumbs[r["oid"]]["pics"]) if r["oid"] in thumbs else 0 for r in rows}}
 
     @app.post("/feed/settings")
     def feed_settings(request: Request, mark_read_on_scroll: str = Form("")):

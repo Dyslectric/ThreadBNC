@@ -212,10 +212,12 @@ def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: lis
     thumbs = thumbnails(conn, [(i["oid"], i["url"], i["thumbnail_url"]) for i in items])
     copies = dupes.load_copies(conn, [i["dupe_key"] for i in items])
     readable = articles.readable(conn, [i["oid"] for i in items])
+    waiting = articles.waiting(conn, [(i["oid"], i["url"]) for i in items])
     for i in items:
         i["excerpt"] = excerpt(i["body"])
         i["thumb"] = thumbs.get(i["oid"])
         i["article"] = i["oid"] in readable
+        i["article_waiting"] = i["oid"] in waiting
         meta = json.loads(i.pop("rmeta") or "{}")
         i["nsfw"], i["spoiler"] = bool(meta.get("nsfw")), bool(meta.get("spoiler"))
         attach_group(i, copies.get(i["dupe_key"]) or [])
@@ -244,15 +246,15 @@ def thumbnails(conn: Conn,
     """Archived image/video for each post: its link if that is media, else the
     server's preview image (article links), else the first embedded image.
     "pics" is every picture to page through: the link, then embedded and gallery
-    images in the order they were found; the preview only when there's nothing
-    else, as it is usually a smaller copy of one of them."""
+    images in the order they were found, then the linked article's; the preview
+    only when there's nothing else, as it is usually a smaller copy of one of them."""
     if not roots:
         return {}
     ids = [oid for oid, _, _ in roots]
     marks = ",".join("?" * len(ids))
     rows = conn.execute(
-        f"SELECT r.object_id, m.id, m.url, m.content_type FROM media_refs r JOIN media m ON m.id=r.media_id "
-        f"WHERE r.object_id IN ({marks}) AND r.from_article=0 AND {_VISUAL} ORDER BY m.id", ids,
+        f"SELECT r.object_id, r.from_article, m.id, m.url, m.content_type FROM media_refs r "
+        f"JOIN media m ON m.id=r.media_id WHERE r.object_id IN ({marks}) AND {_VISUAL} ORDER BY m.id", ids,
     ).fetchall()
     links = {oid: url for oid, url, _ in roots}
     previews = {oid: thumb for oid, _, thumb in roots}
@@ -261,7 +263,7 @@ def thumbnails(conn: Conn,
     for r in rows:
         oid = r["object_id"]
         is_link = r["url"] == links.get(oid)
-        rank = 0 if is_link else 1 if r["url"] == previews.get(oid) else 2
+        rank = 0 if is_link else 1 if r["url"] == previews.get(oid) else 3 if r["from_article"] else 2
         pic = {"id": r["id"], "video": r["content_type"].startswith("video/"), "is_link": is_link, "rank": rank}
         found.setdefault(oid, []).append(pic)
         if oid not in out or rank < out[oid]["rank"]:
