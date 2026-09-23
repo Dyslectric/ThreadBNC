@@ -46,13 +46,11 @@ SOFTWARE_RECHECK = timedelta(days=1)
 MAX_BACKOFF = timedelta(hours=24)
 AUTO_CAPTURE_PAGE = 30
 MAX_POLL_PAGES = 5  # read further back until we reach known posts, up to this many pages
-# Re-check threads often while they're new, then back off: most comments arrive
-# in a post's first day or two. (post age limit, minimum minutes between checks)
-RECHECK_TAPER = [(timedelta(days=1), 0), (timedelta(days=3), 60), (None, 360)]
-# Reddit threads back off further (its request budget is shared by everything),
-# and so do feed articles (they rarely change): every 2 hours until day 3,
-# twice a day until day 7, then daily.
-REDDIT_RECHECK_TAPER = [(timedelta(days=1), 0), (timedelta(days=3), 120), (timedelta(days=7), 720), (None, 1440)]
+# How often a post's votes are updated, by its age: (age under, minutes
+# between checks). Most votes come in a post's first hours. Past the last age,
+# they aren't updated any more, except when the post is opened.
+VOTE_SCHEDULE = [(timedelta(minutes=30), 5), (timedelta(hours=1), 10), (timedelta(hours=6), 30),
+                 (timedelta(days=1), 60), (timedelta(days=7), 1440)]
 # When a post's comment count and newest-comment time are unchanged, skip
 # re-fetching the comment tree -- but still do a full fetch at least this often,
 # since edits and some deletions don't change those counters.
@@ -66,6 +64,16 @@ OPEN_CACHE = timedelta(minutes=5)
 
 def _plus(ts: str, **delta: float) -> str:
     return fmt_ts(parse_ts(ts) + timedelta(**delta))  # type: ignore[operator]
+
+
+def vote_minutes(created_at: str | None, now: str) -> int | None:
+    """Minutes until the votes on a post this old are next updated (see
+    VOTE_SCHEDULE), or None when it's too old for them to be."""
+    created = parse_ts(created_at)
+    if created is None:
+        return None
+    age = parse_ts(now) - created  # type: ignore[operator]
+    return next((every for limit, every in VOTE_SCHEDULE if age < limit), None)
 
 
 class Bouncer:
@@ -255,8 +263,7 @@ class Bouncer:
             conn.execute(
                 "UPDATE archived_threads SET root_object_id=?, community_id=?, expires_at=?, next_check_at=? "
                 "WHERE id=?",
-                (root_id, cid, expires, _plus(now, minutes=self._thread_interval(conn, cid, post.created_at)),
-                 tid),
+                (root_id, cid, expires, self._next_vote_check(conn, cid, post.created_at, now), tid),
             )
             store.add_event(conn, "retained" if retention == "manual" else "auto_captured", now,
                             thread_id=tid, metadata={"source_url": source_url, "source_domain": src_domain})
@@ -367,16 +374,6 @@ class Bouncer:
         return len(ids)
 
     # -- scheduling helpers -----------------------------------------------
-    def _interval(self, conn: Any, community_id: int | None) -> int:
-        if community_id:
-            f = conn.execute(
-                "SELECT poll_interval_minutes, push_state FROM community_follows WHERE community_id=? AND active=1",
-                (community_id,),
-            ).fetchone()
-            if f:
-                return self._follow_every(f)
-        return self.settings.default_sync_minutes
-
     @staticmethod
     def _follow_every(f: Any) -> int:
         """Minutes between checks of a followed community: as set, or rarely once
@@ -384,30 +381,19 @@ class Bouncer:
         every = f["poll_interval_minutes"]
         return max(every, PUSHED_POLL_MINUTES) if f["push_state"] == "subscribed" else every
 
-    def _slow_source(self, conn: Any, community_id: int | None) -> int | None:
-        """The slowest re-check interval for threads from Reddit or a feed (None
-        for Lemmy/PieFed)."""
+    @staticmethod
+    def _votes_elsewhere(conn: Any, community_id: int | None) -> bool:
+        """Feed articles have no votes, and a subreddit's come with its listing
+        while you're using ThreadBNC (poll_follow): neither gets vote checks."""
         row = conn.execute("SELECT canonical_ap_id FROM communities WHERE id=?", (community_id,)).fetchone()
-        if not row:
-            return None
-        if is_reddit_host(host_of(row["canonical_ap_id"])):
-            return self.settings.reddit_poll_minutes
-        return self.settings.rss_poll_minutes if is_rss(row["canonical_ap_id"]) else None
+        return bool(row) and (is_rss(row["canonical_ap_id"]) or is_reddit_host(host_of(row["canonical_ap_id"])))
 
-    def _thread_interval(self, conn: Any, community_id: int | None, created_at: str | None) -> int:
-        """Minutes until a thread's next re-check: the community's interval while
-        the post is young, tapering to hourly and then every 6 hours (further
-        on Reddit and for feeds, see REDDIT_RECHECK_TAPER)."""
-        base, taper = self._interval(conn, community_id), RECHECK_TAPER
-        slow = self._slow_source(conn, community_id)
-        if slow:
-            base, taper = max(base, slow), REDDIT_RECHECK_TAPER
-        created = parse_ts(created_at)
-        age = parse_ts(utcnow()) - created if created else timedelta(days=365)  # type: ignore[operator]
-        for limit, floor in taper:
-            if limit is None or age < limit:
-                return max(base, floor)
-        return base
+    def _next_vote_check(self, conn: Any, community_id: int | None, created_at: str | None,
+                         now: str | None = None) -> str | None:
+        """When a thread's votes are next updated (VOTE_SCHEDULE), or None."""
+        now = now or utcnow()
+        minutes = None if self._votes_elsewhere(conn, community_id) else vote_minutes(created_at, now)
+        return _plus(now, minutes=minutes) if minutes else None
 
     def _root_created(self, conn: Any, root_object_id: int | None) -> str | None:
         row = conn.execute("SELECT created_at FROM objects WHERE id=?", (root_object_id,)).fetchone()
@@ -435,10 +421,11 @@ class Bouncer:
         return (post.comment_count == t["remote_comment_count"]
                 and post.newest_comment_at == t["remote_newest_comment_at"])
 
-    def sync_thread(self, thread_id: int, force: bool = False) -> store.ApplyResult:
+    def sync_thread(self, thread_id: int, force: bool = False, comments: bool = True) -> store.ApplyResult:
         """Re-observe a thread. The post is always fetched; the comment tree is
         skipped when the post's counters are unchanged, unless `force` or the
-        last full fetch is older than FULL_FETCH_EVERY."""
+        last full fetch is older than FULL_FETCH_EVERY, and always when not
+        `comments` (a vote check)."""
         with self.db.connect() as conn:
             t = conn.execute("SELECT * FROM archived_threads WHERE id=?", (thread_id,)).fetchone()
         if t is None:
@@ -456,8 +443,8 @@ class Bouncer:
             if post is None and getattr(adapter, "ages_out", False):
                 self._aged_out(thread_id)
                 return result
-            full = post is not None and (force or not self._comments_unchanged(t, post, now))
-            comments = adapter.fetch_comments(local) if full else []
+            full = comments and post is not None and (force or not self._comments_unchanged(t, post, now))
+            tree = adapter.fetch_comments(local) if full else []
         except RemotePaused as exc:  # the server asked us to wait: check again when it said
             with self.db.transaction() as conn:
                 conn.execute("UPDATE archived_threads SET next_check_at=? WHERE id=?",
@@ -473,8 +460,8 @@ class Bouncer:
             else:
                 root_id = store.apply_post(conn, thread_id, post, domain, now, False, result)
                 if full:
-                    store.apply_comments(conn, thread_id, root_id, t["community_id"], comments, domain, now,
-                                         False, getattr(comments, "complete", True), result)
+                    store.apply_comments(conn, thread_id, root_id, t["community_id"], tree, domain, now,
+                                         False, getattr(tree, "complete", True), result)
                     conn.execute(
                         "UPDATE archived_threads SET last_full_fetch_at=?, remote_comment_count=?, "
                         "remote_newest_comment_at=? WHERE id=?",
@@ -483,8 +470,8 @@ class Bouncer:
             conn.execute(
                 "UPDATE archived_threads SET last_checked_at=?, last_success_at=?, consecutive_failures=0, "
                 "last_error=NULL, next_check_at=? WHERE id=?",
-                (now, now, _plus(now, minutes=self._thread_interval(
-                    conn, t["community_id"], self._root_created(conn, t["root_object_id"]))), thread_id),
+                (now, now, self._next_vote_check(conn, t["community_id"],
+                                                 self._root_created(conn, t["root_object_id"]), now), thread_id),
             )
             self._server_answers(conn, t["community_id"], domain, now)
         if post is not None:
@@ -588,13 +575,16 @@ class Bouncer:
         with self.db.transaction() as conn:
             store.record_instance_contact(conn, t["source_domain"], now, False, error)
             failures = t["consecutive_failures"] + 1
-            base = timedelta(minutes=self._thread_interval(
-                conn, t["community_id"], self._root_created(conn, t["root_object_id"])))
-            delay = min(base * (2 ** min(failures, 10)), MAX_BACKOFF)
+            minutes = vote_minutes(self._root_created(conn, t["root_object_id"]), now)
+            if minutes is None or self._votes_elsewhere(conn, t["community_id"]):
+                nxt = None  # no more vote checks to back off from
+            else:
+                delay = min(timedelta(minutes=max(minutes, 5)) * (2 ** min(failures, 10)), MAX_BACKOFF)
+                nxt = fmt_ts(parse_ts(now) + delay)  # type: ignore[operator]
             conn.execute(
                 "UPDATE archived_threads SET last_checked_at=?, consecutive_failures=?, last_error=?, "
                 "next_check_at=? WHERE id=?",
-                (now, failures, error, fmt_ts(parse_ts(now) + delay), t["id"]),  # type: ignore[operator]
+                (now, failures, error, nxt, t["id"]),
             )
 
     def _enrich_moderation(self, adapter: ThreadiverseAdapter, result: store.ApplyResult,
@@ -827,6 +817,9 @@ class Bouncer:
                     (now, str(exc), fails, fmt_ts(parse_ts(now) + delay), community_id),  # type: ignore[operator]
                 )
             raise
+        with self.db.transaction() as conn:  # the listing's votes for posts already stored, free
+            for post in posts:
+                store.update_counts(conn, post, now)
         captured = 0
         for post in reversed(posts):  # oldest first, so feed order matches capture order
             created = parse_ts(post.created_at)
@@ -848,6 +841,90 @@ class Bouncer:
                 (now, _plus(now, minutes=self._follow_every(f)), community_id),
             )
         return captured
+
+    # -- votes ---------------------------------------------------------------
+    def check_votes(self, limit: int = 200) -> int:
+        """Update the votes on posts due for it (VOTE_SCHEDULE), asking as
+        little as possible: a pushed community's from your own server's copy,
+        a checked community's from one listing for all its due posts, and only
+        a post kept on its own (no followed community to list) by itself.
+        Returns how many posts were due."""
+        now = utcnow()
+        with self.db.connect() as conn:
+            due = conn.execute(
+                "SELECT t.id, t.community_id, t.source_domain, o.canonical_ap_id AS ap_id, o.created_at, "
+                "f.community_id AS followed, f.polling, f.push_state, f.push_domain "
+                "FROM archived_threads t JOIN objects o ON o.id=t.root_object_id "
+                "LEFT JOIN community_follows f ON f.community_id=t.community_id AND f.active=1 "
+                "WHERE t.active=1 AND t.trashed_at IS NULL AND t.next_check_at IS NOT NULL AND t.next_check_at<=? "
+                "ORDER BY t.next_check_at LIMIT ?", (now, limit)).fetchall()
+        by_community: dict[int, list[Any]] = {}
+        alone: list[int] = []
+        nowhere: list[Any] = []
+        for r in due:
+            if r["source_domain"] == RSS_DOMAIN or is_reddit_host(r["source_domain"]):
+                nowhere.append(r)  # their votes come another way (_votes_elsewhere)
+            elif r["followed"] is None:
+                alone.append(r["id"])
+            elif r["push_state"] == "subscribed" and r["push_domain"] or r["polling"]:
+                by_community.setdefault(r["community_id"], []).append(r)
+            else:
+                nowhere.append(r)  # followed, but neither pushed nor checked: nowhere to ask
+        if nowhere:
+            with self.db.transaction() as conn:
+                for r in nowhere:
+                    conn.execute("UPDATE archived_threads SET next_check_at=NULL WHERE id=?", (r["id"],))
+        for cid, rows in by_community.items():
+            if self._stop.is_set():
+                break
+            self._votes_from_listing(cid, rows)
+        for tid in alone:
+            if self._stop.is_set():
+                break
+            while self.run_one_job():  # opening a post jumps the queue
+                pass
+            try:
+                self.sync_thread(tid, comments=False)
+            except RemoteError as exc:
+                log.warning("vote check of thread %s failed: %s", tid, exc)
+        return len(due)
+
+    def _votes_from_listing(self, community_id: int, due: list[Any]) -> None:
+        """One community listing (newest first) for all its due posts: as your
+        own server has it when it's pushed, else from where it's checked."""
+        with self.db.connect() as conn:
+            f = conn.execute("SELECT * FROM community_follows WHERE community_id=?", (community_id,)).fetchone()
+        ref = self.community_ref(community_id)
+        if f["push_state"] == "subscribed" and f["push_domain"]:
+            ref = CommunityRef(f["push_domain"], ref.name, ref.home or ref.domain)
+        now = utcnow()
+        wanted = {r["ap_id"] for r in due}
+        oldest = min((r["created_at"] for r in due if r["created_at"]), default=None)
+        seen: dict[str, NPost] = {}
+        try:
+            adapter = self.reader(ref.domain, community_id)
+            size = getattr(adapter, "poll_page_size", AUTO_CAPTURE_PAGE)
+            for page in range(1, MAX_POLL_PAGES + 1):
+                batch = adapter.list_community_posts(ref, sort="New", page=page, limit=size)
+                seen.update((p.ap_id, p) for p in batch)
+                reached = [p.created_at for p in batch if not p.featured and p.created_at]
+                if wanted <= seen.keys() or len(batch) < size or (oldest and reached and min(reached) < oldest):
+                    break
+        except RemotePaused as exc:  # the server asked us to wait: ask again when it said
+            with self.db.transaction() as conn:
+                for r in due:
+                    conn.execute("UPDATE archived_threads SET next_check_at=? WHERE id=?",
+                                 (_plus(now, seconds=exc.seconds), r["id"]))
+            return
+        except RemoteError as exc:  # try at the next time on the schedule
+            log.warning("vote check of community %s failed: %s", community_id, exc)
+            seen = {}
+        with self.db.transaction() as conn:
+            for post in seen.values():
+                store.update_counts(conn, post, now)
+            for r in due:  # found or not (too far down the listing), each moves on to its next time
+                conn.execute("UPDATE archived_threads SET next_check_at=?, last_checked_at=? WHERE id=?",
+                             (self._next_vote_check(conn, community_id, r["created_at"], now), now, r["id"]))
 
     def purge_expired(self) -> int:
         now = utcnow()
@@ -967,7 +1044,10 @@ class Bouncer:
             except RemoteError as exc:
                 log.warning("poll of community %s failed: %s", cid, exc)
         # Comments are never checked in the background: they're read when a
-        # post is opened (open_threads, a job), like a browser would.
+        # post is opened (open_threads, a job), like a browser would. Votes are
+        # updated for a week, less often as posts age.
+        if not self._stop.is_set():
+            self.check_votes()
         if not self._media_backfilled:
             with self.db.transaction() as conn:
                 media.register_all_existing(conn)

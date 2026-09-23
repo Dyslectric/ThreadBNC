@@ -315,6 +315,19 @@ def _upsert_object(conn: Conn, *, ap_id: str, object_type: str, thread_id: int,
     return oid, obj
 
 
+def update_counts(conn: Conn, post: NPost, now: str) -> bool:
+    """New votes and comment count for a stored post, as a community listing
+    showed them. Nothing else about the post is taken from a listing. Returns
+    whether the post is stored."""
+    if post.score is None:
+        return False
+    cur = conn.execute(
+        "UPDATE objects SET score=?, upvotes=?, downvotes=?, reply_count=COALESCE(?, reply_count), last_seen_at=? "
+        "WHERE canonical_ap_id=? AND object_type='post'",
+        (post.score, post.upvotes, post.downvotes, post.comment_count, now, post.ap_id))
+    return cur.rowcount > 0
+
+
 def set_local_id(conn: Conn, object_id: int, domain: str, local_id: str) -> None:
     _set_local_id(conn, object_id, domain, local_id)
 

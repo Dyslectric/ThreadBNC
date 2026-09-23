@@ -231,7 +231,7 @@
   <div class="row small thread-foot">
     {% set original = (o.url if is_rss(o.canonical_ap_id) else o.canonical_ap_id) | safe_url %}
     {% if original %}<a href="{{ original }}" rel="noreferrer noopener nofollow" target="_blank">Original{{ icon('external') }}</a>{% endif %}
-    <span class="muted">source {{ t.source_domain }} · checked {{ when(t.last_checked_at) }} · next check {{ when(t.next_check_at) }}</span>
+    <span class="muted">source {{ t.source_domain }} · checked {{ when(t.last_checked_at) }}{% if t.next_check_at %} · votes next updated {{ when(t.next_check_at) }}{% endif %}</span>
     {% if t.last_error %}<span class="bad-text">last sync failed: {{ t.last_error }}</span>{% endif %}
     {% if instance and not instance.available %}<span class="pill bad">instance unreachable</span>{% endif %}
     <form method="post" action="/t/{{ t.id }}/sync" class="inline"><button class="small secondary">Re-check now</button></form>

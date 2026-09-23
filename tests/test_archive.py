@@ -180,7 +180,7 @@ def test_instance_outage_does_not_imply_deletion(server, bouncer):
     with pytest.raises(RemoteUnavailable):
         bouncer.sync_thread(tid)
     t = rows(bouncer, "SELECT * FROM archived_threads WHERE id=?", tid)[0]
-    assert t["consecutive_failures"] == 1 and t["next_check_at"] > utcnow()
+    assert t["consecutive_failures"] == 1 and t["last_error"]
     assert rows(bouncer, "SELECT event_type FROM state_events WHERE instance_id IS NOT NULL")[0][0] == \
         "instance_unavailable"
     assert rows(bouncer, "SELECT COUNT(*) FROM state_events WHERE object_id IS NOT NULL")[0][0] == 0

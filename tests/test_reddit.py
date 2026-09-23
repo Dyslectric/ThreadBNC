@@ -376,10 +376,8 @@ def test_follow_a_subreddit_conservatively(bouncer, reddit):
     bouncer.open_threads(col(bouncer, "SELECT id FROM archived_threads"))
     reply = one(bouncer, "SELECT parent_id FROM objects WHERE canonical_ap_id LIKE '%/_/c2/'")[0]
     assert reply == one(bouncer, "SELECT id FROM objects WHERE canonical_ap_id LIKE '%/_/c1/'")[0]
-    # New threads are re-checked no more often than the subreddit.
-    nxt = col(bouncer, "SELECT next_check_at FROM archived_threads")
-    from threadbnc.db import parse_ts, utcnow
-    assert all((parse_ts(n) - parse_ts(utcnow())).total_seconds() > 55 * 60 for n in nxt)
+    # No vote checks of their own: a subreddit's votes come with its listing.
+    assert col(bouncer, "SELECT next_check_at FROM archived_threads") == [None, None]
     # Can't be set faster than every 10 minutes.
     bouncer.update_follow(cid, 1, 30)
     assert one(bouncer, "SELECT poll_interval_minutes FROM community_follows")[0] == 10

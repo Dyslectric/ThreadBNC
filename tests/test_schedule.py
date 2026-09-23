@@ -15,30 +15,21 @@ def ago(**kw) -> str:
 def minutes_until_next_check(bouncer, tid):
     with bouncer.db.connect() as conn:
         nxt = conn.execute("SELECT next_check_at FROM archived_threads WHERE id=?", (tid,)).fetchone()[0]
-    return (parse_ts(nxt) - parse_ts(utcnow())).total_seconds() / 60
+    return None if nxt is None else (parse_ts(nxt) - parse_ts(utcnow())).total_seconds() / 60
 
 
-def test_recheck_interval_tapers_with_post_age(server, bouncer):
-    cid = bouncer.follow_community(f"!math@{DOMAIN}", 15, None)
-    expected = {"new": 15, "two_days": 60, "week": 360}
-    tids = {}
-    for pid, (key, created) in enumerate((("new", ago(hours=2)), ("two_days", ago(days=2)),
-                                          ("week", ago(days=7))), start=101):
-        server.add_post(str(pid), key, "b", created=created)
-        tids[key] = bouncer.ingest_url(f"https://{DOMAIN}/post/{pid}")
-    for key, tid in tids.items():
+def test_votes_are_checked_less_often_as_posts_age(server, bouncer):
+    expected = {"new": 5, "forty_minutes": 10, "two_hours": 30, "half_day": 60, "two_days": 1440, "week": None}
+    ages = {"new": ago(minutes=5), "forty_minutes": ago(minutes=40), "two_hours": ago(hours=2),
+            "half_day": ago(hours=12), "two_days": ago(days=2), "week": ago(days=7, minutes=1)}
+    for pid, key in enumerate(expected, start=101):
+        server.add_post(str(pid), key, "b", created=ages[key])
+        tid = bouncer.ingest_url(f"https://{DOMAIN}/post/{pid}")
         bouncer.sync_thread(tid)
-        assert abs(minutes_until_next_check(bouncer, tid) - expected[key]) < 1, key
-    # a slow community interval is never made faster by the taper
-    bouncer.update_follow(cid, 120, None)
-    bouncer.sync_thread(tids["two_days"])
-    assert abs(minutes_until_next_check(bouncer, tids["two_days"]) - 120) < 1
-
-
-def test_unfollowed_kept_threads_use_default_then_taper(server, bouncer):
-    server.add_post("1", "old kept", "b", created=ago(days=30))
-    tid = bouncer.ingest_url(f"https://{DOMAIN}/post/1")
-    assert abs(minutes_until_next_check(bouncer, tid) - 360) < 1
+        if expected[key] is None:
+            assert minutes_until_next_check(bouncer, tid) is None, key
+        else:
+            assert abs(minutes_until_next_check(bouncer, tid) - expected[key]) < 1, key
 
 
 class PagingAdapter(FakeAdapter):
