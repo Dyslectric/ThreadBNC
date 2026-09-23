@@ -3,8 +3,9 @@
 A private, feed-first reader for Lemmy, PieFed, Reddit and RSS/Atom feeds that keeps a history of what it observes. When a post or comment is edited, removed or deleted after the bouncer has seen it, the change is recorded alongside the earlier version instead of replacing it.
 
 **Following and reading:**
-- Follow communities. The **bouncer** checks each one for new posts and saves them along with their comments. It reads up to 5 pages back per check, so only an unusually large burst between checks could slip past.
-- Your **feed** is built from that saved copy. Posts you haven't opened stand out, opened posts show "N new comments", and you can sort by New, Active, Top or Most comments.
+- Follow communities. Lemmy and PieFed posts arrive as they're made, pushed through your own Lemmy server (see [Pushes from your own server](#pushes-from-your-own-server)); feeds and subreddits are checked on a schedule.
+- Your **feed** is built from the saved copy. Posts you haven't opened stand out, opened posts show "N new comments", and you can sort by New, Active, Top or Most comments.
+- **Opening a post** reads its comments and saves the article it links to, like a browser would. The page shows the saved copy at once and swaps in the fresh one.
 - The feed keeps working when an instance is down, and shows edits, removals and deletions as history instead of losing them.
 
 **Keeping:**
@@ -16,11 +17,11 @@ A private, feed-first reader for Lemmy, PieFed, Reddit and RSS/Atom feeds that k
 Stored observations aren't overwritten: edits add a new version, and removals and deletions become history entries. The archive can only keep what the bouncer actually saw, though, and it deletes some things on purpose.
 
 **What it can miss**
-- **Anything between checks.** The bouncer polls; it isn't notified of changes, except for communities pushed through your own Lemmy server (see [Pushes from your own server](#pushes-from-your-own-server)), where these gaps close.
-  - A comment posted and deleted between two checks is never seen.
-  - Several edits between checks show up as one change.
-  - Threads are checked less often as they age: at the community's check interval for the first day (15 minutes by default, 30 for threads kept by link), then hourly, then every 6 hours after day 3.
-  - When a post's comment count hasn't changed, the comment tree is re-read only every 6 hours. Edits to existing comments can take that long to show up.
+- **Comments in posts you don't open,** unless they're pushed. In a community pushed through your own server, every comment, edit, deletion and removal arrives as it happens. Everywhere else (subreddits, communities checked on a schedule, posts kept by link) comments are only read when you open the post, so:
+  - A comment posted and deleted between two of your visits is never seen.
+  - Several edits between visits show up as one change.
+- **Communities that aren't arriving.** A Lemmy or PieFed community your server can't subscribe to brings nothing new until you turn on checking it on a schedule (its **Following** menu says which).
+- **Subreddits while you're away.** They're only checked while you're using ThreadBNC, so posts made and deleted while you're away aren't seen, and a very busy subreddit can have gaps after a long absence.
 - **Content that was already gone.** If a comment was deleted or removed before the bouncer first saw it, only its placeholder is stored.
 - **Some media.** Images or videos over the size limit (25 MB by default, or set per community) and downloads that keep failing are not saved. A link to the original is kept instead. Communities that have transcoding turned on keep a smaller copy of oversized files instead (see [Media and Markdown](#media-and-markdown)).
 - **Some linked articles.** Paywalled pages, sites that refuse the bouncer, and pages with too little text aren't saved, and the article is kept as the bouncer first read it, not as later updated (see [Linked articles](#linked-articles)).
@@ -32,6 +33,18 @@ Stored observations aren't overwritten: edits add a new version, and removals an
 - Images that nothing else references, when those threads are deleted.
 
 Everything else stays, but the archive is only as durable as the disk and database it runs on. Back up both; see [Backups](#deploy-on-a-server-docker-compose--postgres).
+
+### What it asks of other servers
+
+ThreadBNC behaves like one more subscribed server, or like your own browser, never like a crawler:
+
+- **Pushed, not polled.** Lemmy and PieFed communities are subscribed to by your own server, and their home servers send each post, comment and edit once, as federation intends. Nothing is checked on a schedule unless you turn it on for a community that can't be pushed, and then it's one listing per check, never comments.
+- **Fetched when you open it.** A post's comments, its linked article and its full videos are fetched when you open or keep it, and reopening within 5 minutes uses the saved copy.
+- **Votes, cheaply.** Votes are updated every 5 minutes for a post's first half hour, then every 10, every 30 until 6 hours, hourly until a day, daily until a week, and then not at all (opening a post still updates them). A pushed community's come from your own server; a checked community's from one listing covering all its posts; only a post kept on its own is asked about by itself.
+- **Reddit only while you're here,** spread out, one subreddit at a time (see [Checking, conservatively](#checking-conservatively)).
+- **Pictures at once, videos later.** Pictures and thumbnails are downloaded as posts arrive; full videos wait until you open or keep a post showing them.
+- **One request at a time,** at least a second apart per server (two for Reddit). A server that answers 429 Too Many Requests isn't contacted again until its `Retry-After` has passed, and that isn't counted as a failure.
+- Feeds are checked on a schedule, as feeds are meant to be, with conditional requests.
 
 ## Pages
 
@@ -105,8 +118,9 @@ When the same link or the same text post shows up more than once, whether repost
 ## Reddit
 
 Subreddits work like any other community: follow `r/name` (or paste `https://www.reddit.com/r/name`) and its
-posts and comments land in your feed, with edits, removals and deletions kept as history. You can also keep a
-single Reddit post by pasting its link on the **Kept** page; share links from the Reddit app (`/r/name/s/…`) work too.
+posts land in your feed. Opening one reads its text and comments, and edits, removals and deletions seen then are
+kept as history. You can also keep a single Reddit post by pasting its link on the **Kept** page; share links from
+the Reddit app (`/r/name/s/…`) work too.
 
 Logged in with Reddit, you can also vote, comment, reply, post, edit and delete there. To discuss a Reddit post on
 your own server instead, **repost** it.
@@ -153,19 +167,19 @@ picked in the switcher, so you never switch just to upvote a Reddit comment.
 | **↻ Repost** | Post a copy to a subreddit you follow, as well as to your own communities |
 
 - On a group that mixes Reddit and Lemmy/PieFed copies, each copy gets its own account: one vote or comment goes to every copy, as your Reddit account on Reddit and as the picked account elsewhere.
-- What Reddit sends back is archived straight away, as with Lemmy. When the bouncer next checks the thread it recognises your comment rather than adding it again.
+- What Reddit sends back is archived straight away, as with Lemmy. When you next open the thread it recognises your comment rather than adding it again.
 - Reddit doesn't allow some things, and ThreadBNC says so instead of trying: changing a post's title or link (only its text), or restoring a deleted post or comment. Archived threads (usually older than six months) take no new comments or votes.
 - Reddit is stricter about writing through the API than about reading. A new API client that posts or votes a lot can be flagged as spam, so use this at a human pace.
 - Moderating subreddits from ThreadBNC isn't supported.
 
-### Polling, conservatively
+### Checking, conservatively
 
 One app gets about 100 requests a minute from Reddit, shared by everything ThreadBNC does, and Reddit blocks
-clients that go over. So Reddit is checked much less eagerly than Lemmy or PieFed:
+clients that go over. So Reddit is asked about the way you'd browse it:
 
-- **Subreddits** are checked every 60 minutes by default (`THREADBNC_REDDIT_POLL_MINUTES`), and never more often than every 10, whatever you set. Each check reads at most 2 pages of 25 new posts; the first check reads one.
-- **Threads** are re-checked at the subreddit's interval for their first day, then every 2 hours until day 3, twice a day until day 7, then daily.
-- **Unchanged threads cost one request.** When the comment count hasn't changed, only the post is re-read. The comment tree is re-read at most every 6 hours.
+- **Only while you're using ThreadBNC.** A tab that's visible and was used in the last half hour counts; the page tells the server at most once a minute. Away longer, nothing is asked of Reddit.
+- **Subreddits** are checked every 60 minutes by default (`THREADBNC_REDDIT_POLL_MINUTES`), and never more often than every 10, whatever you set. They're checked one at a time, spread across that interval, so coming back doesn't set off a burst. Each check reads at most 2 pages of 25 new posts (the first check reads one), and updates the votes on posts already here.
+- **Posts are stored as title, link and pictures.** Their text and comments are read when you open one, and again when you reopen it more than 5 minutes later. Filling in the text isn't recorded as an edit.
 - **Big threads**: each fetch reads the newest 200 comments. Reddit hides the rest behind "load more comments", which ThreadBNC doesn't expand. A comment that drops out of view isn't marked as gone; only a complete comment tree can show that.
 - **Spacing**: at most one request every 2 seconds (`THREADBNC_REDDIT_MIN_REQUEST_INTERVAL`). When Reddit's rate-limit headers say the allowance is nearly used, or it answers 429, ThreadBNC waits for the window to reset, or as long as Reddit's `Retry-After` asks if that's longer.
 - **Sign-in problems** stop everything until you reconnect, so a revoked or expired sign-in isn't retried against Reddit.
@@ -200,7 +214,7 @@ edits kept as history, keeping and expiry, duplicate grouping and tiles.
 - **Article text** is converted from HTML to Markdown: paragraphs, headings, emphasis, links, lists, quotes and code. Scripts and styles are dropped. Images in articles, and a feed's thumbnails, are archived like any other post's media, so photo feeds look good as tiles.
 - **↗ Post** (on feed articles in the feed, and on the article's page) shares one in one of your communities: a link post with the article's title and link, and a short quoted excerpt you can edit or remove. The copy you post is kept, and shown together with the article, because they share the link.
 - **Feeds have no comments or votes**, so article pages have no comment box. Once you post an article, its comments are on your copy, shown on the same page.
-- **Checking** is every 60 minutes by default (`THREADBNC_RSS_POLL_MINUTES`), and never more often than every 5. It uses conditional requests, so an unchanged feed costs one short "not modified" answer. One fetch serves every article from that feed for 5 minutes. Articles are re-checked for edits on the slower Reddit schedule.
+- **Checking** is every 60 minutes by default (`THREADBNC_RSS_POLL_MINUTES`), and never more often than every 5. It uses conditional requests, so an unchanged feed costs one short "not modified" answer. One fetch serves every article from that feed for 5 minutes. Articles aren't re-checked for edits once saved.
 - **Feeds only list their latest entries.** An article that drops out of its feed is kept as last seen and marked "Dropped out of its feed", not recorded as missing, and isn't checked any more.
 - Fetches follow at most 5 redirects, refuse private and local addresses, and stop at 5 MB.
 
@@ -385,8 +399,7 @@ API (each call with `Authorization: Bearer $THREADBNC_API_TOKEN`):
 | `THREADBNC_CREDENTIALS_KEY` | generated | Encrypts stored account tokens. If unset, a key is created in the data dir. Changing it means logging in to each account again. |
 | `THREADBNC_TRASH_DAYS` | `30` | Default days before trashed threads are permanently deleted (`forever` allowed) |
 | `THREADBNC_HTTPS_ONLY` | `0` (`1` in compose) | Only send login cookies over HTTPS |
-| `THREADBNC_SYNC_MINUTES` | `30` | Re-check interval for threads in communities you don't follow |
-| `THREADBNC_FOLLOW_POLL_MINUTES` | `15` | Default poll interval for followed communities |
+| `THREADBNC_FOLLOW_POLL_MINUTES` | `15` | Default check interval for Lemmy and PieFed communities checked on a schedule (only those you turn it on for) |
 | `THREADBNC_FOLLOW_RETENTION_DAYS` | `30` | Default retention for auto-captured posts (`forever` allowed) |
 | `THREADBNC_MIN_REQUEST_INTERVAL` | `1.0` | Seconds between requests to the same server. A server that answers 429 Too Many Requests isn't contacted again until its `Retry-After` has passed (a minute, doubling, when it doesn't say) |
 | `THREADBNC_REDDIT_POLL_MINUTES` | `60` | Default check interval for followed subreddits (at least 10) |
@@ -437,7 +450,7 @@ threadbnc/
 
 **Identity.** Objects are keyed by their ActivityPub id. Server-local API ids go in `object_local_ids`, keyed by domain. Communities with the same name on different instances stay separate.
 
-**Source selection.** A thread is polled from the community's home instance when it can be resolved there. That instance relays every comment and holds the moderation record. Otherwise the bouncer uses the author's instance, then the instance you linked.
+**Source selection.** A post that arrived by push is read from your own server, which has everything the community sent it. A post captured by checking a community is read from where it was checked. A post you keep by link is read from the community's home instance when it can be resolved there, since that instance relays every comment and holds the moderation record; otherwise from the author's instance, then the instance you linked.
 
 **Revisions.** A new revision is written only when the hash of title, body, URL and metadata changes. Scores and counts are stored as current values, not revisions.
 
@@ -454,10 +467,10 @@ threadbnc/
 
 Following a community sets two things:
 
-- **Poll interval**: how often the bouncer checks the community for new posts. Threads in that community are re-checked at the same interval. Each check reads further pages until it reaches posts it already has (up to 5 pages), so busy communities don't lose posts between checks.
-- **Retention**: how long *auto-captured* posts are kept (N days, or forever).
+- **How posts arrive**: Lemmy and PieFed communities are pushed through your own server. For one that can't be, turn on **Check it on a schedule** in its **Following** menu (or tick the box when following, or `follow --poll`), and set the **check interval**. Feeds and subreddits are always checked. Each check reads further pages until it reaches posts it already has (up to 5 pages), so busy communities don't lose posts between checks. Communities followed before checking became opt-in keep being checked.
+- **Retention**: how long *auto-captured* posts are kept (N days, or forever), comments and all.
 
-New posts are captured automatically and tracked in full: revisions, events and new comments. When their retention period ends, they are purged. Along with the trash (below), this is the only way anything gets deleted:
+New posts are captured as they arrive: the post itself, with its pictures. Its comments are read when you open it (and arrive as they're made in a pushed community). When their retention period ends, they are purged along with their comments. Along with the trash (below), this is the only way anything gets deleted:
 
 - `purge_thread` refuses to delete a kept thread unless it is in the trash, and a test covers this.
 - "Keep permanently", or archiving the same post by URL, turns an auto-captured thread into a kept one.
@@ -470,11 +483,11 @@ The community page has a **Live feed** tab, fetched from the remote server on de
 
 If you run your own Lemmy server, ThreadBNC can get a followed community's changes as they happen instead of polling for them. Your account on that server subscribes to the community, the community's home server pushes everything that happens in it to your server over ActivityPub, and your server's inbox is routed through ThreadBNC on the way.
 
-- **What arrives at once:** new posts and comments, edits, deletions and restorations, removals, locks and pins. A new post in a followed community is captured the moment it's posted.
+- **What arrives at once:** new posts and comments, edits, deletions and restorations, removals, locks and pins. A new post in a followed community is captured the moment it's posted. Without pushes, a Lemmy or PieFed community brings nothing new unless you have it checked on a schedule.
 - **More complete:** each edit is kept, even when the next one follows seconds later, and a comment deleted soon after it was posted keeps its text, because the text comes from the delivery itself.
-- **How it works:** Traefik sends POSTs to your server's inboxes (`/inbox`, `/site_inbox`, `/u/…/inbox`, `/c/…/inbox`) to ThreadBNC. ThreadBNC passes each one unchanged to Lemmy and returns Lemmy's answer to the sender. Lemmy checks the signature, and only what it accepts is kept for the push worker. The worker re-reads the post or comment from your server, where it has just arrived, and records it like a polled check. Your server's copy is only used for content; vote counts still come from the community's home server.
+- **How it works:** Traefik sends POSTs to your server's inboxes (`/inbox`, `/site_inbox`, `/u/…/inbox`, `/c/…/inbox`) to ThreadBNC. ThreadBNC passes each one unchanged to Lemmy and returns Lemmy's answer to the sender. Lemmy checks the signature, and only what it accepts is kept for the push worker. The worker re-reads the post or comment from your server, where it has just arrived, and records it like a polled check. Posts captured this way are read from your server from then on, votes included, so nothing is asked of the community's home server.
 - **Subscribing:** once an account on a relayed server is added, following a Lemmy or PieFed community subscribes it there too, and unfollowing unsubscribes it. The **Following** menu on a community page shows whether it's **Pushed**, and has **Get pushes** and **Stop pushes**. For communities you followed earlier, use **Subscribe to all** on the Communities page. A subscription shows **push pending** until the community accepts it (for a private community, until a moderator does). Every half hour ThreadBNC asks your server whether it has been accepted yet, and it counts as pushed as soon as a change from that community arrives.
-- **Still polled, rarely:** pushed communities are checked every 6 hours (or their own interval, if longer) to catch anything a delivery missed. Subreddits, feeds, and communities your server isn't subscribed to are polled as before.
+- **Looked over, rarely:** every 6 hours, ThreadBNC reads a pushed community as your own server has it, to catch anything a delivery missed. That asks nothing of the community's home server.
 - **If ThreadBNC is down,** deliveries to your server fail, and senders retry them later (Lemmy keeps retrying for a while), so the pushes arrive when ThreadBNC is back. Your server's incoming federation also pauses meanwhile.
 - **Only your own servers:** pushes go to the server of the subscribing account. For an account on someone else's server, they arrive there, and ThreadBNC can't see them.
 
@@ -517,7 +530,7 @@ Posts and comments are rendered as Markdown: CommonMark plus tables, strikethrou
 - a post's own link, when it turns out to be an image or video
 
 **How it works:**
-- Each new revision registers its media. The bouncer downloads it in the background, with retries.
+- Each new revision registers its media. The bouncer downloads pictures (and video thumbnails) in the background, with retries. Full videos wait until you open or keep a post showing them; most scroll past unwatched, and they're the biggest files by far.
 - Files are stored under `data/media/`, named by their SHA-256 hash, so identical files are kept once.
 - Pages show the archived copy, so images survive deletion upstream. Older revisions keep their images too.
 - Downloads refuse private or loopback addresses, cap redirects and file size, and check file types from their first bytes.
@@ -537,13 +550,13 @@ Transcoding needs `ffmpeg` and `ffprobe` on the `PATH`. The Docker image include
 
 ## Linked articles
 
-When a post links to a web page, the bouncer reads the page and keeps the article on it, so you can read it here and it outlives the site's copy.
+When a post links to a web page, the page is read when you open or keep the post, and the article on it is kept, so you can read it here and it outlives the site's copy. Nothing is fetched for posts you only scroll past.
 
 - Posts with a saved article get a **Read article** button: in the feed (all three views) and on the thread page. It opens the article in a clean reading view (`/t/{id}/article`) with its headline, author, date, text and pictures, and a link back to the comments.
 - The article is pulled out of the page with [trafilatura](https://trafilatura.readthedocs.io/): the text, headings, lists, quotes, tables, links and pictures, without the site's menus, ads, scripts and comments. It's cleaned with nh3 like everything else.
 - Its pictures are archived as the post's media, so they follow the community's media settings and are shown from the archive, never loaded from the site. They're kept out of the post's thumbnail and gallery in the feed.
 - Links that aren't articles aren't tried: images and videos (archived as media instead), home pages, Reddit, YouTube and other social or video sites, and links to other Lemmy or PieFed posts.
-- The page is read once, newest links first, a batch per bouncer check. Posts linking to the same page share one copy. Links posted before this existed are read in the background too.
+- The page is read once, when a post linking to it is first opened or kept. Posts linking to the same page share one copy.
 - **What can't be saved:** pages behind a paywall or login, sites that refuse the bouncer (it identifies itself as ThreadBNC rather than posing as a browser), pages with fewer than 80 words of text, and pages over 5 MB. The thread page says why, and offers **Try again** when the site was down or refused.
 - Articles are deleted with the last thread that links to them.
 - `THREADBNC_ARTICLES=0` stops reading pages; links are still noted, and read once it's turned back on.
@@ -561,5 +574,5 @@ When a post links to a web page, the bouncer reads the page and keeps the articl
 
 - Lemmy 1.0's `/api/v4` is not targeted yet. The adapter speaks v3, which 0.19.x serves.
 - PieFed moderation attribution is always `unknown` for now, because its modlog API varies between versions.
-- The bouncer polls, except for communities pushed through your own Lemmy server. ThreadBNC has no ActivityPub identity of its own.
+- ThreadBNC has no ActivityPub identity of its own: pushes need your own Lemmy server. Without one, Lemmy and PieFed communities have to be checked on a schedule.
 - Post pin/feature state, actor profile history, search, tags and notes are not implemented.

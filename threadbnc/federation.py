@@ -1,7 +1,9 @@
 """Pushes: what your own Lemmy servers receive, as it arrives.
 
-ThreadBNC normally polls. For your own servers (THREADBNC_RELAY_INBOXES, e.g.
-dyslectric.dev), their ActivityPub inbox is routed through ThreadBNC instead:
+This is how Lemmy and PieFed communities you follow arrive: they aren't checked
+on a schedule unless you ask (bouncer.py). For your own servers
+(THREADBNC_RELAY_INBOXES, e.g. dyslectric.dev), their ActivityPub inbox is
+routed through ThreadBNC:
 
 1. InboxRelay passes every delivery straight on to Lemmy, unchanged, and gives
    the sender Lemmy's answer. Lemmy checks each activity's signature, so the
@@ -10,16 +12,18 @@ dyslectric.dev), their ActivityPub inbox is routed through ThreadBNC instead:
 2. Your account on that server subscribes to the Lemmy and PieFed communities
    you follow, so their home servers deliver every post, comment, edit,
    deletion, removal, lock and pin to it the moment it happens. (Votes come
-   too; they're ignored, and counts still come from polling.)
+   too; they're ignored here, and read from your server's copy of the
+   community on the vote schedule instead, see Bouncer.check_votes.)
 3. The push worker takes each queued activity, re-reads the post or comment it
    is about from your own server, where it has just arrived, and records that
    like a polled observation. Created and edited text is taken from the
    activity itself, so a comment deleted seconds later, or an edit replaced by
    the next one, is still kept. A new post in a followed community is captured
-   at once.
+   at once, and read from your server from then on.
 
-Pushed communities are still checked every PUSHED_POLL_MINUTES (bouncer.py) to
-catch anything a delivery missed; everything else is polled as before.
+Every PUSHED_POLL_MINUTES (bouncer.py) your server's copy of a pushed community
+is looked over to catch anything a delivery missed; that asks nothing of the
+community's home server.
 """
 
 from __future__ import annotations

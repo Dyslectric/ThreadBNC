@@ -1,5 +1,14 @@
 """The bouncer: a long-running worker that observes retained threads and
-followed communities and appends what it sees to the archive."""
+followed communities and appends what it sees to the archive.
+
+It asks other servers as little as a browser would. Lemmy and PieFed posts
+arrive by push (federation.py); a community is only checked on a schedule
+when you turn that on, feeds and subreddits always are, and subreddits only
+while you're using ThreadBNC. A post's comments, linked article and videos
+are fetched when it's opened or kept (open_threads), and its votes on a
+schedule that slows with age and stops after a week (check_votes), from one
+community listing where it can. A server that answers 429 is left alone for
+as long as it asks (adapters/http.py)."""
 
 from __future__ import annotations
 

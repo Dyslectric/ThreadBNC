@@ -7,7 +7,7 @@
     {% if not follows and not custom %}
       <section class="card hero">
         <h1>Follow a community to start your feed</h1>
-        <p class="muted">The bouncer checks each community you follow and saves new posts, comments and edits. If something is later edited, removed or deleted, you still have what was there.</p>
+        <p class="muted">New posts in the communities you follow are saved as they arrive, and a post's comments when you open it. If something is later edited, removed or deleted, you still have what was there.</p>
         <form method="post" action="/follow" class="row">
           <input name="community" placeholder="!technology@lemmy.world" required aria-label="Community to follow">
           <input type="hidden" name="backfill" value="1">

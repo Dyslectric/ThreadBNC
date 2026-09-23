@@ -1,7 +1,8 @@
 """Linked articles: a readable copy of the web page a post links to.
 
-A post's link is registered when its revision is recorded (like media) and the
-bouncer later downloads the page and pulls the article out of it with
+A post's link is registered when its revision is recorded (like media), and
+the page is downloaded when the post is opened or kept (Bouncer.open_threads),
+never in the background, and the article pulled out of it with
 trafilatura: the text, headings, lists, quotes, links and pictures, without the
 site's navigation, ads and scripts. The pictures are registered as the post's
 media, so they follow its community's media settings and go when it's purged.
