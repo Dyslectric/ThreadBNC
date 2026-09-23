@@ -142,6 +142,39 @@
     to more than the total.{% endif %}</p>
 </section>
 
+<section class="card" id="transcoding">
+  <h2>Transcoding</h2>
+  {% set w = transcoding.working %}
+  <ul class="plain tc-status">
+    <li>{% if can_transcode %}<span class="pill good">ffmpeg</span> installed
+      {% else %}<span class="pill bad">ffmpeg</span> isn't installed on the server: nothing is transcoded, and files too
+      big to keep as they are are left out (YouTube videos are kept as they downloaded).{% endif %}</li>
+    <li>{% if w %}<span class="pill new">Now</span> transcoding a {{ w.size | size }} file {{ w.how }} (started
+      {{ w.since | ago }}): <a href="{{ w.url | safe_url }}" rel="noreferrer noopener nofollow" target="_blank">{{ w.url | host }}</a>
+      {% else %}<span class="pill">Idle</span> nothing is being transcoded right now{% endif %}</li>
+    <li>{% if transcoding.progress %}<span class="pill new">Checking</span> archived files against the settings:
+      {{ '{:,}'.format(transcoding.progress.checked) }} of {{ '{:,}'.format(transcoding.progress.total) }} looked at{% if not can_transcode %},
+      waiting for ffmpeg{% endif %}.
+      {% else %}Archived files are checked against the settings whenever you save them.{% endif %}
+      <form method="post" action="/storage/convert" class="inline"><button class="small">Check archived files now</button></form></li>
+  </ul>
+  {% if transcoding.recent %}
+  <h3>Recently transcoded</h3>
+  <ul class="plain small tc-list">{% for m in transcoding.recent %}
+    <li>{% if m.tid %}<a href="/t/{{ m.tid }}">{{ m.url | host }}</a>{% else %}{{ m.url | host }}{% endif %}
+      <span class="muted">· {{ m.original_bytes | size }} {{ (m.original_type or '').split('/')[-1] }} → {{ m.size_bytes | size }}
+      {{ (m.content_type or '').split('/')[-1] }} · {{ m.at | ago }}</span></li>
+  {% endfor %}</ul>
+  {% endif %}
+  {% if transcoding.failures %}
+  <h3>Couldn't transcode</h3>
+  <ul class="plain small tc-list">{% for m in transcoding.failures %}
+    <li>{% if m.tid %}<a href="/t/{{ m.tid }}">{{ m.url | host }}</a>{% else %}{{ m.url | host }}{% endif %}
+      <span class="muted">· {{ 'kept as it was' if m.status == 'ok' else 'not archived' }} · {{ m.why }}</span></li>
+  {% endfor %}</ul>
+  {% endif %}
+</section>
+
 <section class="card" id="media-defaults">
   <h2>Media defaults</h2>
   {{ media_form('/storage/media-defaults', saved, env, 'Server setting', can_transcode, media_kinds, transcoded,

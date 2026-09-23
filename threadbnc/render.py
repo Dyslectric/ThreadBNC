@@ -120,6 +120,10 @@ class MediaInfo:
     status: str  # pending | ok | failed | skipped
     content_type: str | None
     error: str | None = None
+    size_bytes: int | None = None
+    original_bytes: int | None = None  # transcoded down from this
+    original_type: str | None = None
+    transcode_error: str | None = None
 
 
 MediaLookup = Callable[[str], "MediaInfo | None"]

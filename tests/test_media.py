@@ -535,6 +535,65 @@ def test_reencoding_at_a_bitrate(tmp_path):
     assert transcode.at_bitrate(out, 5_000_000, tmp_path) is None  # already lower
 
 
+def test_you_can_see_what_is_transcoded(settings, server, tbouncer, monkeypatch):
+    fail = []
+
+    def shrink(src, ctype, limit, workdir):
+        if fail:
+            raise media.transcode.TranscodeError("ffmpeg: broken file")
+        return _write(workdir, b"RIFF\x00\x00\x00\x00WEBPsmall"), "image/webp"
+
+    monkeypatch.setattr(media.transcode, "shrink", shrink)
+    monkeypatch.setattr(media.MediaFetcher, "can_transcode", lambda self: True)
+    server.add_post("1", "a picture", "")
+    server.edit_post("1", url="https://img.test/fat.png")  # the post's link: shown with a note under it
+    tbouncer.ingest_url(f"https://{DOMAIN}/post/1")
+    cid = one(tbouncer, "SELECT id FROM communities")[0]
+    client = logged_in(settings, tbouncer)
+    page = client.get("/storage").text
+    assert 'id="transcoding"' in page and "ffmpeg</span> installed" in page and "Idle" in page
+    assert "Recently transcoded" not in page
+
+    # Checking what's already archived, when asked to, with nothing to do yet.
+    client.post(f"/c/{cid}/media-settings", data={"image_keep": "2"})
+    tbouncer.media.fetch_pending()
+    r = client.post("/storage/convert")
+    assert "Checking archived files against the media settings." in r.text
+    assert "0 of 1 looked at" in r.text
+
+    # A conversion that fails says why, on the Storage page and the post.
+    fail.append(1)
+    client.post(f"/c/{cid}/media-settings", data={"image_keep": "1", "image_bigger": "transcode"})
+    while tbouncer.media.convert_some():
+        pass
+    tid = one(tbouncer, "SELECT thread_id FROM objects WHERE object_type='post'")[0]
+    page = client.get("/storage").text
+    assert "<h3>Couldn't transcode</h3>" in page and "kept as it was" in page and "ffmpeg: broken file" in page
+    assert f'href="/t/{tid}"' in page
+    assert "couldn&#39;t transcode it down to 1 MB: ffmpeg: broken file" in client.get(f"/t/{tid}").text
+
+    # Then one that works: listed, and noted under the picture, the failure gone.
+    fail.clear()
+    client.post("/storage/convert")
+    while tbouncer.media.convert_some():
+        pass
+    page = client.get("/storage").text
+    assert "Recently transcoded" in page and "png →" in page and "<h3>Couldn't transcode" not in page
+    post = client.get(f"/t/{tid}").text
+    assert "transcoded from 1.5 MB" in post and "png to" in post and "broken file" not in post
+
+    # While it's working on one.
+    tbouncer.media.working = {"id": 1, "url": "https://img.test/big.mp4", "size": 80_000_000,
+                              "how": "at 2.5 Mbps", "since": utcnow()}
+    page = client.get("/storage").text
+    assert "transcoding a 80 MB file at 2.5 Mbps" in page and "img.test" in page
+
+
+def one(b, sql, *args):
+    with b.db.connect() as conn:
+        return conn.execute(sql, args).fetchone()
+
+
 def _write(workdir, data: bytes):
     import tempfile
     from pathlib import Path

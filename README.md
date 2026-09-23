@@ -558,6 +558,8 @@ Posts and comments are rendered as Markdown: CommonMark plus tables, strikethrou
 
 **Changing settings converts what's already archived.** After you save, on the Storage page or a Media tab, the bouncer goes through the archived pictures and videos in the background. Those now over the size they're kept as they are up to, with a size to transcode down to, are transcoded from the stored copy, one at a time, and the smaller file replaces the bigger one. Files of a kind you stop archiving aren't deleted. Raising a limit doesn't bring back originals that were already transcoded.
 
+**Seeing what's transcoded.** The **Transcoding** section of the Storage page says whether ffmpeg is installed, what's being transcoded right now, how far the check of archived files has got (**Check archived files now** starts one without changing settings), what was transcoded lately and what couldn't be, and why. A post's page notes under its archived file what it was transcoded from, or why it couldn't be.
+
 **Per community** (the community's **Media** tab): the same settings, each one left on "Default" (or blank) following the Storage page.
 - The tab also shows how much is archived, what was transcoded, and what couldn't be archived and why. **Try these again** retries them. Saving new settings retries anything the old settings left out or found too large.
 - A file posted in several communities gets the most generous of their settings.

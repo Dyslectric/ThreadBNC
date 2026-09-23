@@ -31,10 +31,11 @@ import logging
 import mimetypes
 import socket
 import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator
 from urllib.parse import urljoin, urlparse
 
 import httpx
@@ -283,6 +284,46 @@ def request_conversion(conn: Conn) -> None:
                  "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (CONVERT_KEY,))
 
 
+_CONVERTIBLE = ("status='ok' AND storage_path IS NOT NULL AND content_type != 'image/svg+xml' "
+                "AND (content_type LIKE 'image/%' OR content_type LIKE 'video/%')")
+
+
+def conversion_progress(conn: Conn) -> dict[str, int] | None:
+    """How far the pass over archived files (convert_some) has got: files
+    checked and files to check; None when it isn't running."""
+    row = conn.execute("SELECT value FROM app_settings WHERE key=?", (CONVERT_KEY,)).fetchone()
+    if row is None:
+        return None
+    after = int(row[0] or 0)
+    total = conn.execute(f"SELECT COUNT(*) FROM media WHERE {_CONVERTIBLE}").fetchone()[0]
+    done = conn.execute(f"SELECT COUNT(*) FROM media WHERE {_CONVERTIBLE} AND id<=?", (after,)).fetchone()[0]
+    return {"checked": done, "total": total}
+
+
+_THREAD_OF = ("(SELECT o.thread_id FROM media_refs r JOIN objects o ON o.id=r.object_id "
+              "WHERE r.media_id=m.id AND o.thread_id IS NOT NULL ORDER BY o.id LIMIT 1)")
+
+
+def recent_transcodes(conn: Conn, limit: int = 12) -> list[Any]:
+    """The files transcoded most recently, with a post each is in."""
+    return conn.execute(
+        f"SELECT m.id, m.url, m.content_type, m.size_bytes, m.original_bytes, m.original_type, "
+        f"COALESCE(m.transcoded_at, m.fetched_at) AS at, {_THREAD_OF} AS tid FROM media m "
+        "WHERE m.status='ok' AND m.original_bytes IS NOT NULL ORDER BY at DESC, m.id DESC LIMIT ?",
+        (limit,)).fetchall()
+
+
+def transcode_failures(conn: Conn, limit: int = 12) -> list[Any]:
+    """Files that couldn't be transcoded: left out when downloaded, or kept as
+    they were when converting them after settings changed failed."""
+    return conn.execute(
+        f"SELECT m.id, m.url, m.status, m.size_bytes, COALESCE(m.transcode_error, m.error) AS why, "
+        f"COALESCE(m.fetched_at, m.first_seen_at) AS at, {_THREAD_OF} AS tid FROM media m "
+        "WHERE (m.status='ok' AND m.transcode_error IS NOT NULL) "
+        "OR (m.status='failed' AND m.error LIKE '%couldn''t transcode%') ORDER BY at DESC, m.id DESC LIMIT ?",
+        (limit,)).fetchall()
+
+
 def migrate_legacy(conn: Conn) -> None:
     """Settings saved as one set for every kind (media_archive, media_max_mb,
     media_transcode) become the same choices for each kind."""
@@ -317,7 +358,8 @@ def community_stats(conn: Conn, community_id: int) -> dict[str, Any]:
         (community_id,)).fetchall()
     transcoded = conn.execute(
         f"SELECT id, url, content_type, size_bytes, original_bytes, original_type FROM media WHERE id IN ({ids}) "
-        "AND original_bytes IS NOT NULL ORDER BY fetched_at DESC LIMIT 10", (community_id,)).fetchall()
+        "AND original_bytes IS NOT NULL ORDER BY COALESCE(transcoded_at, fetched_at) DESC LIMIT 10",
+        (community_id,)).fetchall()
     return {"counts": counts, "problems": problems, "transcoded": transcoded}
 
 
@@ -363,6 +405,10 @@ def _content_type(head: bytes, declared: str, url: str) -> str:
 
 def _noun(ctype: str) -> str:
     return {"image": "pictures", "audio": "audio files"}.get(kind_of(ctype) or "", "videos")
+
+
+def _how(target: int | None, bps: int | None) -> str:
+    return f"at {bps / 1_000_000:g} Mbps" if bps else f"down to {(target or 0) // 1_000_000} MB"
 
 
 def _sha256(path: Path) -> str:
@@ -479,7 +525,8 @@ def lookup_for_objects(conn: Conn, object_ids: list[int]) -> dict[str, MediaInfo
         f"SELECT DISTINCT m.* FROM media m JOIN media_refs r ON r.media_id=m.id WHERE r.object_id IN ({marks})",
         object_ids,
     ).fetchall()
-    return {r["url"]: MediaInfo(r["id"], r["status"], r["content_type"], r["error"]) for r in rows}
+    return {r["url"]: MediaInfo(r["id"], r["status"], r["content_type"], r["error"], r["size_bytes"],
+                                r["original_bytes"], r["original_type"], r["transcode_error"]) for r in rows}
 
 
 # --- downloading ------------------------------------------------------------
@@ -508,6 +555,7 @@ class MediaFetcher:
         self.env_policy = MediaPolicy.uniform(max_bytes, transcode_default)
         # Files are downloaded up to this size when they might be transcoded down.
         self.source_max_bytes = transcode_source_max_bytes
+        self.working: dict[str, Any] | None = None  # the file being transcoded now (_transcoding)
         self.check_host = check_host
         self.client = client or httpx.Client(timeout=timeout, headers={"User-Agent": user_agent},
                                              follow_redirects=False)
@@ -646,10 +694,8 @@ class MediaFetcher:
             after = int(row[0] or 0)
             default = self.default_policy
             rows = conn.execute(
-                "SELECT id, content_type, size_bytes, storage_path FROM media WHERE id>? AND status='ok' "
-                "AND storage_path IS NOT NULL AND content_type != 'image/svg+xml' "
-                "AND (content_type LIKE 'image/%' OR content_type LIKE 'video/%') ORDER BY id LIMIT ?",
-                (after, CONVERT_SCAN)).fetchall()
+                f"SELECT id, url, content_type, size_bytes, storage_path FROM media WHERE id>? AND {_CONVERTIBLE} "
+                "ORDER BY id LIMIT ?", (after, CONVERT_SCAN)).fetchall()
             todo = None
             for r in rows:
                 after = r["id"]
@@ -674,15 +720,20 @@ class MediaFetcher:
     def _convert(self, row: Any, target: int | None, bps: int | None) -> None:
         src = self.media_dir / row["storage_path"]
         try:
-            if bps:
-                out, ctype = transcode.at_bitrate(src, bps, self.media_dir), "video/mp4"
-                if out is None:  # at that rate or lower already
-                    return
-            else:
-                out, ctype = transcode.shrink(src, row["content_type"], target, self.media_dir)
+            with self._transcoding(row["id"], row["url"], row["size_bytes"], _how(target, bps)):
+                if bps:
+                    out, ctype = transcode.at_bitrate(src, bps, self.media_dir), "video/mp4"
+                else:
+                    out, ctype = transcode.shrink(src, row["content_type"], target, self.media_dir)
         except (transcode.TranscodeError, OSError) as exc:
-            want = f"{bps / 1_000_000:g} Mbps" if bps else f"{target // 1_000_000} MB"
-            log.warning("media %s: couldn't transcode it to %s: %s", row["id"], want, exc)
+            log.warning("media %s: couldn't transcode it %s: %s", row["id"], _how(target, bps), exc)
+            with self.db.transaction() as conn:
+                conn.execute("UPDATE media SET transcode_error=? WHERE id=?",
+                             (f"couldn't transcode it {_how(target, bps)}: {exc}", row["id"]))
+            return
+        if out is None:  # at that rate or lower already
+            with self.db.transaction() as conn:
+                conn.execute("UPDATE media SET transcode_error=NULL WHERE id=?", (row["id"],))
             return
         h = hashlib.sha256()
         with out.open("rb") as f:
@@ -692,16 +743,27 @@ class MediaFetcher:
         size = (self.media_dir / rel).stat().st_size
         with self.db.transaction() as conn:
             conn.execute(
-                "UPDATE media SET content_type=?, size_bytes=?, sha256=?, storage_path=?, "
-                "original_bytes=COALESCE(original_bytes, ?), original_type=COALESCE(original_type, ?) WHERE id=?",
-                (ctype, size, h.hexdigest(), rel, row["size_bytes"], row["content_type"], row["id"]))
+                "UPDATE media SET content_type=?, size_bytes=?, sha256=?, storage_path=?, transcoded_at=?, "
+                "transcode_error=NULL, original_bytes=COALESCE(original_bytes, ?), "
+                "original_type=COALESCE(original_type, ?) WHERE id=?",
+                (ctype, size, h.hexdigest(), rel, utcnow(), row["size_bytes"], row["content_type"], row["id"]))
             unused = rel != row["storage_path"] and not conn.execute(
                 "SELECT 1 FROM media WHERE storage_path=? LIMIT 1", (row["storage_path"],)).fetchone()
         if unused:  # the bigger copy, replaced
             src.unlink(missing_ok=True)
         log.info("media %s: transcoded down from %.1f MB to %.1f MB", row["id"], row["size_bytes"] / 1e6, size / 1e6)
 
-    def _fit(self, dl: Downloaded, kp: KindPolicy, leave_out: bool = True) -> Downloaded:
+    @contextmanager
+    def _transcoding(self, media_id: int | None, url: str, size: int, how: str) -> Iterator[None]:
+        """What's being transcoded, while it is (`working`, for the Storage page)."""
+        self.working = {"id": media_id, "url": url, "size": size, "how": how, "since": utcnow()}
+        try:
+            yield
+        finally:
+            self.working = None
+
+    def _fit(self, dl: Downloaded, kp: KindPolicy, leave_out: bool = True,
+             media_id: int | None = None) -> Downloaded:
         """A download bigger than it's kept as it is up to, transcoded as the
         settings say (to a size, or a video to a bitrate). With nothing to
         transcode it down to, it's left out (MediaRejected), or kept as it is
@@ -714,9 +776,11 @@ class MediaFetcher:
             dl.tmp_path.unlink(missing_ok=True)
             raise MediaRejected(f"too large ({dl.size / 1_000_000:.1f} MB)")
         if kp.target_bps and dl.content_type.startswith("video/"):
-            return self._reencode(dl, kp.target_bps)
+            with self._transcoding(media_id, dl.final_url, dl.size, _how(None, kp.target_bps)):
+                return self._reencode(dl, kp.target_bps)
         if kp.target_bytes and dl.size > kp.target_bytes:  # (already small enough otherwise)
-            return self._shrink(dl, kp.target_bytes)
+            with self._transcoding(media_id, dl.final_url, dl.size, _how(kp.target_bytes, None)):
+                return self._shrink(dl, kp.target_bytes)
         return dl
 
     def _reencode(self, dl: Downloaded, bps: int) -> Downloaded:
@@ -774,14 +838,15 @@ class MediaFetcher:
                     raise MediaHeld()
                 # Its size and quality limits are the YouTube page's; then it's
                 # transcoded like any video, but never left out for its size.
-                dl = self._fit(self._download_youtube(row["url"]), policy.video, leave_out=False)
+                dl = self._fit(self._download_youtube(row["url"]), policy.video, leave_out=False,
+                               media_id=row["id"])
             else:
                 if not wanted and (looks_like_video(row["url"]) or looks_like_audio(row["url"])):
                     raise MediaHeld()
                 dl = self._download(row["url"], policy, wanted)
                 kp = policy.for_type(dl.content_type)
                 if kp is not None:
-                    dl = self._fit(dl, kp)
+                    dl = self._fit(dl, kp, media_id=row["id"])
             rel = self._store(dl)
         except MediaRejected as exc:
             with self.db.transaction() as conn:
@@ -812,10 +877,10 @@ class MediaFetcher:
         with self.db.transaction() as conn:
             conn.execute(
                 "UPDATE media SET status='ok', content_type=?, size_bytes=?, sha256=?, storage_path=?, "
-                "fetched_from=?, fetched_at=?, attempts=attempts+1, error=NULL, original_bytes=?, original_type=? "
-                "WHERE id=?",
+                "fetched_from=?, fetched_at=?, attempts=attempts+1, error=NULL, original_bytes=?, original_type=?, "
+                "transcoded_at=?, transcode_error=NULL WHERE id=?",
                 (dl.content_type, dl.size, dl.sha256, rel, dl.final_url, now, dl.original_size, dl.original_type,
-                 row["id"]),
+                 now if dl.original_size else None, row["id"]),
             )
 
 

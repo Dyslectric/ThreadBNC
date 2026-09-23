@@ -219,7 +219,9 @@
       {% elif m.content_type.startswith('video/') %}<video class="media" src="/media/{{ m.id }}" controls loop muted playsinline preload="metadata"></video>
       {% elif m.content_type.startswith('audio/') %}<audio class="media" src="/media/{{ m.id }}" controls preload="metadata"></audio>
       {% else %}<a href="/media/{{ m.id }}" target="_blank"><img class="media" src="/media/{{ m.id }}" alt="" loading="lazy"></a>{% endif %}
-      <div class="small muted">Archived copy</div>
+      <div class="small muted">Archived copy{% if m.original_bytes %} · transcoded from {{ m.original_bytes | size }}
+        {{ (m.original_type or '').split('/')[-1] }} to {{ m.size_bytes | size }}{% endif %}
+        {%- if m.transcode_error %} · <span class="bad-text">{{ m.transcode_error }}</span>{% endif %}</div>
       </div>
     {% elif preview(o) %}{% set pm = preview(o) %}
       <a class="link-preview" href="{{ o.url | safe_url }}" rel="noreferrer noopener nofollow" target="_blank">

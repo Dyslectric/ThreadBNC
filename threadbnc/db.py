@@ -204,6 +204,8 @@ CREATE TABLE IF NOT EXISTS media (
     fetched_at TEXT,
     original_bytes INTEGER,   -- set when the stored file was transcoded down from a bigger one
     original_type TEXT,
+    transcoded_at TEXT,       -- when it was transcoded (downloaded, or converted after settings changed)
+    transcode_error TEXT,     -- why converting it after settings changed failed (it stays as it was)
     held INTEGER NOT NULL DEFAULT 0,  -- 1 = a video, waiting until a post showing it is opened or kept
     kept_only INTEGER NOT NULL DEFAULT 0  -- 1 = a YouTube video (see youtube.py): saved only for kept posts
 );
@@ -518,6 +520,8 @@ COLUMN_MIGRATIONS = [
     ("archived_threads", "opened_at", "TEXT"),
     ("media", "held", "INTEGER NOT NULL DEFAULT 0"),
     ("media", "kept_only", "INTEGER NOT NULL DEFAULT 0"),
+    ("media", "transcoded_at", "TEXT"),
+    ("media", "transcode_error", "TEXT"),
     # Follows from before polling was opt-in keep being checked, so upgrading doesn't empty anyone's feed.
     ("community_follows", "polling", "INTEGER NOT NULL DEFAULT 1"),
 ]

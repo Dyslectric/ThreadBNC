@@ -1480,9 +1480,21 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         with db.connect() as conn:
             usage = storage_mod.overview(db, conn, bouncer.media_dir)
             saved = media_mod.load_defaults(conn)
+            transcoding = {"working": bouncer.media.working, "progress": media_mod.conversion_progress(conn),
+                  "recent": media_mod.recent_transcodes(conn), "failures": media_mod.transcode_failures(conn)}
         return render(request, "storage.html", u=usage, nouns=storage_mod.NOUNS, env=bouncer.media.env_policy,
                       saved=saved, media_kinds=media_mod.KINDS, transcoded=media_mod.TRANSCODED,
-                      by_rate=media_mod.BY_RATE, can_transcode=bouncer.media.can_transcode())
+                      by_rate=media_mod.BY_RATE, can_transcode=bouncer.media.can_transcode(),
+                      transcoding=transcoding)
+
+    @app.post("/storage/convert")
+    def convert_archive(request: Request):
+        """Go through what's archived with the media settings as they are (as saving them does)."""
+        with db.transaction() as conn:
+            media_mod.request_conversion(conn)
+        bouncer.wake.set()
+        flash(request, "Checking archived files against the media settings.")
+        return RedirectResponse("/storage#transcoding", status_code=303)
 
     @app.post("/storage/media-defaults")
     async def media_defaults(request: Request):
