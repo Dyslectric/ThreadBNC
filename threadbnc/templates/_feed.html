@@ -95,10 +95,24 @@
 
 {# Attributes every feed entry has: what app.js needs for shortcuts and read-on-scroll,
    and, while its linked article or the pictures in it aren't saved yet, to fetch
-   them once it's scrolled to and show the pictures (data-pics: how many it shows now). #}
+   them once it's scrolled to and show the pictures (data-pics: how many it shows now);
+   the same for the audio file it links to (data-audio), to show its player. #}
 {% macro entry_attrs(i) -%}
 id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids or [i.id]) | join(' ') }}"
 {%- if i.article_waiting and reading_articles %} data-article-waiting data-pics="{{ i.thumb.pics | length if i.thumb else 0 }}"{% endif %}
+{%- if i.audio and i.audio.status == 'pending' %} data-audio="pending"{% endif %}
+{%- endmacro %}
+
+{# A player for the audio file a post links to. It's downloaded once the post is
+   scrolled to; until then a bar the player's size says so. #}
+{% macro audio_bar(i) -%}
+{% if i.audio %}
+<div class="audio-bar">
+  {% if i.audio.status == 'ok' %}<audio src="/media/{{ i.audio.id }}" controls preload="metadata"></audio>
+  {% elif i.audio.status == 'pending' %}<span class="audio-note small muted">{{ icon('play') }}Fetching the audio…</span>
+  {% else %}<span class="audio-note small bad-text" title="{{ i.audio.error or '' }}">{{ icon('alert') }}Couldn't save the audio{% if i.audio.error %}: {{ i.audio.error }}{% endif %}</span>{% endif %}
+</div>
+{% endif %}
 {%- endmacro %}
 
 {# The archived copy of the article a post links to, when the bouncer could read it. #}
@@ -148,6 +162,7 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
   {% endif %}
   <div class="tile-body">
     <h3 class="tile-title"><a href="/t/{{ i.id }}">{{ i.title }}</a></h3>
+    {{ audio_bar(i) }}
     <div class="tile-meta small">
       {% if show_community %}<a class="pc-community" href="/c/{{ i.community_id }}">{{ chandle(i.cname, i.c_ap) }}</a> · {% endif %}{{ when(i.created_at) }}
       {% if i.nsfw %}<span class="pill bad">NSFW</span>{% endif %}
@@ -190,6 +205,7 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
     {% endif %}
     <h3 class="pc-title"><a href="/t/{{ i.id }}">{{ i.title }}</a></h3>
     {% if i.url | safe_url and not (i.thumb and i.thumb.is_link) %}<div class="pc-link small"><a href="{{ i.url | safe_url }}" target="_blank" rel="noreferrer noopener nofollow">{{ i.url | host }}{{ icon('external') }}</a></div>{% endif %}
+    {{ audio_bar(i) }}
     {% if i.change_summary %}
     <a class="pc-changes small" href="/t/{{ i.id }}{{ i.change_anchor }}" title="What changed lately">
       {{ icon('refresh') }}{% for ch in i.change_summary %}<span class="pill {{ ch.tone }}">{{ ch.label }}{% if ch.n > 1 %} ×{{ ch.n }}{% endif %}</span>{% endfor %}
@@ -224,6 +240,7 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
   </div>
   <h3 class="pc-title"><a href="/t/{{ i.id }}">{{ i.title }}</a></h3>
   {% if i.url | safe_url and not (i.thumb and i.thumb.is_link) %}<div class="pc-link small"><a href="{{ i.url | safe_url }}" target="_blank" rel="noreferrer noopener nofollow">{{ i.url | host }}{{ icon('external') }}</a></div>{% endif %}
+  {{ audio_bar(i) }}
   {% if i.thumb %}<div class="picture-media">{{ gallery(i, veiled) }}</div>
   {% elif i.excerpt %}<p class="pc-excerpt">{{ i.excerpt }}</p>{% endif %}
   <div class="pc-actions actions small">

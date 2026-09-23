@@ -66,12 +66,24 @@ document.documentElement.classList.add("js");
     const src = now.dataset.src;
     if (src) fresh.dataset.src = src;
     if (now.tagName === "DETAILS" && now.open) fresh.open = true;
+    document.adoptNode(fresh);
+    keepPlaying(now, fresh);
     const wasCurrent = now === current;
-    now.replaceWith(document.adoptNode(fresh));
+    now.replaceWith(fresh);
     if (wasCurrent) select(fresh, false);
     watchUnread(fresh);
     watchArticles(fresh);
     return true;
+  }
+
+  // A post's audio that's playing (or part played) carries on in its re-rendered
+  // self: the same player is moved across, in the same task, so it isn't paused.
+  function keepPlaying(now, fresh) {
+    for (const old of $$("audio", now)) {
+      if (old.paused && !old.currentTime) continue;
+      const slot = [...$$("audio", fresh)].find((a) => a.getAttribute("src") === old.getAttribute("src"));
+      if (slot) slot.replaceWith(old);
+    }
   }
 
   function swapLive(doc) {
@@ -414,11 +426,12 @@ document.documentElement.classList.add("js");
     if (seenQueue.size && navigator.sendBeacon) navigator.sendBeacon("/feed/seen", seenBody());
   });
 
-  // ---- linked articles' pictures, fetched as posts are scrolled to -------------------
-  // A post whose linked article (or the pictures in it) isn't saved yet asks
-  // the server for it once it's on screen, then checks back until that's done.
-  // Pictures that arrive join the post's carousel while it's on screen, or
-  // when it's next scrolled to, so nothing changes size out of sight.
+  // ---- linked articles' pictures and audio, fetched as posts are scrolled to ---------
+  // A post whose linked article (or the pictures in it) isn't saved yet, or
+  // whose linked audio file isn't downloaded, asks the server for it once it's
+  // on screen, then checks back until that's done. Pictures that arrive join
+  // the post's carousel, and a downloaded audio file becomes its player, while
+  // it's on screen or when it's next scrolled to, so nothing changes size out of sight.
   const asked = new Set();      // thread ids asked for on this page
   const waitingOn = new Set();  // of those, the ones not done yet
   const onScreen = new Set();   // entry element ids
@@ -446,7 +459,8 @@ document.documentElement.classList.add("js");
         if (unshown.has(id)) showPictures([id]);
       }
     });
-    const els = root.matches && root.matches("[data-article-waiting]") ? [root] : $$("[data-article-waiting]", root);
+    const waits = "[data-article-waiting], [data-audio]";
+    const els = root.matches && root.matches(waits) ? [root] : $$(waits, root);
     for (const el of els) articleObserver.observe(el);
   }
 
@@ -478,7 +492,9 @@ document.documentElement.classList.add("js");
         const el = document.getElementById("p" + tid);
         if (!still.has(tid)) waitingOn.delete(tid);
         if (!el) continue;
-        if ((data.pics[tid] || 0) > Number(el.dataset.pics || 0)) {
+        const morePics = "pics" in el.dataset && (data.pics[tid] || 0) > Number(el.dataset.pics);
+        const audio = (data.audio || {})[tid];
+        if (morePics || (el.dataset.audio && audio && audio !== el.dataset.audio)) {
           if (onScreen.has(el.id)) show.push(el.id); else unshown.add(el.id);
         } else if (!still.has(tid)) {
           articleObserver.unobserve(el);

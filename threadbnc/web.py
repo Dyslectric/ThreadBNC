@@ -704,32 +704,46 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             n = feed_mod.mark_seen(conn, utcnow(), ids[:200])
         return {"ok": True, "marked": n}
 
+    def feed_roots(conn: Any, ids: list[int]) -> list[Any]:
+        """These threads' posts and their current links."""
+        if not ids:
+            return []
+        marks = ",".join("?" * len(ids))
+        return conn.execute(
+            f"SELECT t.id, o.id AS oid, r.url, o.thumbnail_url FROM archived_threads t "
+            f"JOIN objects o ON o.id=t.root_object_id JOIN revisions r ON r.object_id=o.id "
+            f"AND r.seq=o.revision_count WHERE t.id IN ({marks})", ids).fetchall()
+
     @app.post("/feed/articles")
     def feed_articles(ids: list[int] = Form([])):
         """Posts app.js scrolled into view whose linked article (or its
-        pictures) isn't saved yet: fetch them (Bouncer.fetch_articles)."""
+        pictures) isn't saved yet, or whose audio file isn't downloaded: fetch
+        them (Bouncer.fetch_articles, Bouncer.fetch_audio)."""
+        ids = ids[:50]
         if ids and bouncer.articles.enabled:
-            bouncer.enqueue("articles", {"thread_ids": ids[:50]})
+            bouncer.enqueue("articles", {"thread_ids": ids})
+        with db.connect() as conn:
+            rows = feed_roots(conn, ids)
+            sounds = feed_mod.audio(conn, [(r["oid"], r["url"]) for r in rows])
+        if audio_ids := [r["id"] for r in rows if sounds.get(r["oid"], {}).get("status") == "pending"]:
+            bouncer.enqueue("audio", {"thread_ids": audio_ids})
         return {"ok": True}
 
     @app.get("/feed/articles")
     def feed_articles_status(ids: list[int] = Query([])):
         """How those posts are getting on: which are still waiting on their
-        article or its pictures, and how many pictures each has to show."""
-        ids = ids[:50]
-        if not ids:
-            return {"waiting": [], "pics": {}}
-        marks = ",".join("?" * len(ids))
+        article, its pictures or their audio file, how many pictures each has
+        to show, and where each one's audio file is at."""
         with db.connect() as conn:
-            rows = conn.execute(
-                f"SELECT t.id, o.id AS oid, r.url, o.thumbnail_url FROM archived_threads t "
-                f"JOIN objects o ON o.id=t.root_object_id JOIN revisions r ON r.object_id=o.id "
-                f"AND r.seq=o.revision_count WHERE t.id IN ({marks})", ids).fetchall()
+            rows = feed_roots(conn, ids[:50])
             waiting = articles.waiting(conn, [(r["oid"], r["url"]) for r in rows]) \
                 if bouncer.articles.enabled else set()
             thumbs = feed_mod.thumbnails(conn, [(r["oid"], r["url"], r["thumbnail_url"]) for r in rows])
-        return {"waiting": [r["id"] for r in rows if r["oid"] in waiting],
-                "pics": {r["id"]: len(thumbs[r["oid"]]["pics"]) if r["oid"] in thumbs else 0 for r in rows}}
+            sounds = feed_mod.audio(conn, [(r["oid"], r["url"]) for r in rows])
+        return {"waiting": [r["id"] for r in rows if r["oid"] in waiting
+                            or sounds.get(r["oid"], {}).get("status") == "pending"],
+                "pics": {r["id"]: len(thumbs[r["oid"]]["pics"]) if r["oid"] in thumbs else 0 for r in rows},
+                "audio": {r["id"]: sounds[r["oid"]]["status"] for r in rows if r["oid"] in sounds}}
 
     @app.post("/feed/settings")
     def feed_settings(request: Request, mark_read_on_scroll: str = Form("")):
@@ -1135,6 +1149,38 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         flash(request, "Checking it now. Reload in a moment to see how it went.")
         return RedirectResponse(back(request, f"/c/{cid}"), status_code=303)
 
+    REFRESH_WAIT_SECONDS = 10.0
+
+    @app.post("/c/{cid}/refresh")
+    def refresh_community(request: Request, cid: int):
+        """Check a subreddit (or any checked community) for new posts now, and
+        wait a little for it so the page comes back with them."""
+        with db.connect() as conn:
+            f = conn.execute("SELECT polling FROM community_follows WHERE community_id=? AND active=1",
+                             (cid,)).fetchone()
+            if not f or not f["polling"]:
+                raise HTTPException(404)
+            # Clicked twice: wait for the check already on its way rather than asking again.
+            job = conn.execute("SELECT id FROM jobs WHERE kind='poll' AND status IN ('queued', 'running') "
+                               "AND json_extract(payload_json, '$.community_id')=? ORDER BY id LIMIT 1",
+                               (cid,)).fetchone()
+        job_id = job["id"] if job else bouncer.enqueue("poll", {"community_id": cid})
+        deadline = time.monotonic() + REFRESH_WAIT_SECONDS
+        while True:
+            with db.connect() as conn:
+                j = conn.execute("SELECT status, error, result_json FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if j["status"] in ("done", "failed") or time.monotonic() >= deadline:
+                break
+            time.sleep(0.25)
+        if j["status"] == "done":
+            n = (json.loads(j["result_json"] or "null") or {}).get("captured", 0)
+            flash(request, f"{n} new post{'' if n == 1 else 's'}." if n else "No new posts.")
+        elif j["status"] == "failed":
+            flash(request, f"Couldn't check it: {j['error']}", "error")
+        else:
+            flash(request, "Still checking. New posts will show when you reload.")
+        return RedirectResponse(back(request, f"/c/{cid}"), status_code=303)
+
     @app.get("/c/{cid}", response_class=HTMLResponse)
     def community(request: Request, cid: int, tab: str = "feed", sort: str | None = None, t: str | None = None,
                   unread: str | None = None, page: int = 1, live_sort: str = "Hot", view: str | None = None):
@@ -1243,7 +1289,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         if not path.is_relative_to(media_root) or not path.is_file():
             raise HTTPException(404)
         ctype = m["content_type"] or "application/octet-stream"
-        inline = ctype.startswith(("image/", "video/")) and ctype != "image/svg+xml"
+        inline = ctype.startswith(("image/", "video/", "audio/")) and ctype != "image/svg+xml"
         return FileResponse(path, media_type=ctype, content_disposition_type="inline" if inline else "attachment")
 
     def md_for(object_ids: list[int]):

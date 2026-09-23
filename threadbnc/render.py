@@ -19,8 +19,10 @@ from markdown_it.token import Token
 from markupsafe import Markup
 
 MEDIA_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".bmp", ".heic",
-                    ".mp4", ".webm", ".mov", ".m4v", ".gifv")
+                    ".mp4", ".webm", ".mov", ".m4v", ".gifv",
+                    ".mp3", ".m4a", ".aac", ".ogg", ".oga", ".opus", ".flac", ".wav")
 VIDEO_EXTENSIONS = (".mp4", ".webm", ".mov", ".m4v", ".gifv")
+AUDIO_EXTENSIONS = (".mp3", ".m4a", ".aac", ".ogg", ".oga", ".opus", ".flac", ".wav")
 
 _URL_RE = re.compile(r"https?://[^\s<>()\[\]\"']+[^\s<>()\[\]\"'.,;:!?*_~]", re.IGNORECASE)
 _SPOILER_RE = re.compile(r"^:::\s*spoiler\s*(.*?)\n(.*?)\n:::[ \t]*$", re.MULTILINE | re.DOTALL)
@@ -31,6 +33,10 @@ def looks_like_media(url: str | None) -> bool:
         return False
     path = urlparse(url).path.lower()
     return path.endswith(MEDIA_EXTENSIONS) or "/pictrs/image/" in path
+
+
+def looks_like_audio(url: str | None) -> bool:
+    return bool(url) and urlparse(url).path.lower().endswith(AUDIO_EXTENSIONS)
 
 
 def _linkify(state: Any) -> None:
@@ -120,13 +126,14 @@ MediaLookup = Callable[[str], "MediaInfo | None"]
 
 ALLOWED_TAGS = {
     "p", "br", "hr", "strong", "em", "del", "s", "code", "pre", "blockquote", "ul", "ol", "li", "a",
-    "img", "video", "h1", "h2", "h3", "h4", "h5", "h6", "table", "thead", "tbody", "tr", "th", "td",
+    "img", "video", "audio", "h1", "h2", "h3", "h4", "h5", "h6", "table", "thead", "tbody", "tr", "th", "td",
     "details", "summary", "sup", "sub", "span",
 }
 ALLOWED_ATTRS = {
     "a": {"href", "title", "class", "target"},
     "img": {"src", "alt", "title", "loading", "class"},
     "video": {"src", "controls", "loop", "muted", "playsinline", "preload", "class", "title"},
+    "audio": {"src", "controls", "preload", "class", "title"},
     "ol": {"start"},
     "th": {"style"},
     "td": {"style"},
@@ -144,6 +151,8 @@ def _media_html(url: str, alt: str, info: MediaInfo | None) -> str:
         if (info.content_type or "").startswith("video/"):
             return (f'<video class="media" src="{src}" controls loop muted playsinline preload="metadata" '
                     f'title="{esc_alt}"></video>')
+        if (info.content_type or "").startswith("audio/"):
+            return f'<audio class="media" src="{src}" controls preload="metadata" title="{esc_alt}"></audio>'
         if info.content_type == "image/svg+xml":  # never inline SVG
             return f'<a class="media-note" href="{src}" target="_blank">[SVG image: {esc_alt or host}]</a>'
         return f'<a href="{src}" target="_blank"><img class="media" src="{src}" alt="{esc_alt}" loading="lazy"></a>'
@@ -151,7 +160,8 @@ def _media_html(url: str, alt: str, info: MediaInfo | None) -> str:
         return f'<a href="{html.escape(url)}" target="_blank">{esc_alt or html.escape(url)}</a>'
     state = "not archived: " + html.escape(info.error or "failed") if info and info.status == "failed" \
         else "archiving pending"
-    kind = "video" if urlparse(url).path.lower().endswith(VIDEO_EXTENSIONS) else "image"
+    path = urlparse(url).path.lower()
+    kind = "video" if path.endswith(VIDEO_EXTENSIONS) else "audio" if path.endswith(AUDIO_EXTENSIONS) else "image"
     return (f'<a class="media-note" href="{html.escape(url)}" target="_blank">'
             f'[{kind}{": " + esc_alt if esc_alt else ""} · {host} · {state}]</a>')
 
