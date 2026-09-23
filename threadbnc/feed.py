@@ -30,21 +30,26 @@ _VISUAL = ("m.status='ok' AND (m.content_type LIKE 'image/%' OR m.content_type L
 
 
 
-def _ext_sql(extensions: tuple[str, ...]) -> str:
-    """mm.url ends in one of these, before any query string (looks_like_audio in SQL)."""
-    return "(" + " OR ".join(f"LOWER(mm.url) LIKE '%{e}' OR LOWER(mm.url) LIKE '%{e}?%'" for e in extensions) + ")"
+def _ext_sql(extensions: tuple[str, ...]) -> tuple[str, list[str]]:
+    """mm.url ends in one of these, before any query string (looks_like_audio in
+    SQL). The patterns are parameters: a literal "?" in the SQL would be taken
+    for a placeholder on Postgres (db.py)."""
+    return ("(" + " OR ".join("LOWER(mm.url) LIKE ? OR LOWER(mm.url) LIKE ?" for _ in extensions) + ")",
+            [p for e in extensions for p in (f"%{e}", f"%{e}?%")])
 
 
 # Posts that are a video or a piece of audio (the Kept page's tabs): a video
 # archived with the post (its link or embedded), a YouTube video saved when
 # kept, or a video link not downloaded yet; audio as the feed's player finds it
 # (audio()). o and r are the post and its current revision in _BASE.
+# Each is (SQL, its parameters).
 _HAS_MEDIA = "EXISTS (SELECT 1 FROM media_refs mr JOIN media mm ON mm.id=mr.media_id WHERE mr.object_id=o.id AND "
+_VIDEO_EXT, _AUDIO_EXT = _ext_sql(VIDEO_EXTENSIONS), _ext_sql(AUDIO_EXTENSIONS)
 MEDIA_KINDS = {
-    "video": _HAS_MEDIA + ("mr.from_article=0 AND (mm.content_type LIKE 'video/%' OR mm.kept_only=1 OR "
-                           f"(mm.content_type IS NULL AND {_ext_sql(VIDEO_EXTENSIONS)})))"),
-    "audio": _HAS_MEDIA + ("mm.url=r.url AND mm.status != 'skipped' AND (mm.content_type LIKE 'audio/%' OR "
-                           f"(mm.status != 'ok' AND {_ext_sql(AUDIO_EXTENSIONS)})))"),
+    "video": (_HAS_MEDIA + ("mr.from_article=0 AND (mm.content_type LIKE 'video/%' OR mm.kept_only=1 OR "
+                            f"(mm.content_type IS NULL AND {_VIDEO_EXT[0]})))"), _VIDEO_EXT[1]),
+    "audio": (_HAS_MEDIA + ("mm.url=r.url AND mm.status != 'skipped' AND (mm.content_type LIKE 'audio/%' OR "
+                            f"(mm.status != 'ok' AND {_AUDIO_EXT[0]})))"), _AUDIO_EXT[1]),
 }
 
 _IMG = re.compile(r"!\[[^\]]*\]\([^)]*\)")
@@ -228,7 +233,9 @@ def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: lis
     if kept_only:
         scope += " AND t.retention='manual'"
     if media in MEDIA_KINDS:
-        scope += " AND " + MEDIA_KINDS[media]
+        sql, params = MEDIA_KINDS[media]
+        scope += " AND " + sql
+        args += params
     filters = ""
     delta = WINDOWS.get(window)
     if delta is not None:
@@ -260,10 +267,11 @@ def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: lis
 
 def count_kept_media(conn: Conn, media: str) -> int:
     """How many kept posts are a video, or audio (MEDIA_KINDS)."""
+    sql, params = MEDIA_KINDS[media]
     return conn.execute(
         "SELECT COUNT(*) FROM archived_threads t JOIN objects o ON o.id=t.root_object_id "
         "JOIN revisions r ON r.object_id=o.id AND r.seq=o.revision_count "
-        f"WHERE t.retention='manual' AND t.trashed_at IS NULL AND {MEDIA_KINDS[media]}").fetchone()[0]
+        f"WHERE t.retention='manual' AND t.trashed_at IS NULL AND {sql}", params).fetchone()[0]
 
 
 def attach_group(item: dict[str, Any], copies: list[dict[str, Any]]) -> None:

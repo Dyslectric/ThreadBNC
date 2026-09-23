@@ -166,3 +166,10 @@ def test_kept_page_has_video_and_audio_tabs(settings, server, aubouncer):
     assert 'aria-current="page"' in audio and "/kept?tab=audio&amp;sort=" in audio
     videos = client.get("/kept?tab=videos").text
     assert "A talk" in videos and "Episode" not in videos and "Just words" not in videos
+
+
+def test_media_filters_have_no_literal_question_marks():
+    """On Postgres every "?" becomes a placeholder (db.py), even inside a
+    quoted LIKE pattern, so the patterns must be parameters."""
+    for sql, params in feed.MEDIA_KINDS.values():
+        assert sql.count("?") == len(params)
