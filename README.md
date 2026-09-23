@@ -419,8 +419,8 @@ API (each call with `Authorization: Bearer $THREADBNC_API_TOKEN`):
 | `THREADBNC_RSS_POLL_MINUTES` | `60` | Default check interval for followed feeds (at least 5) |
 | `THREADBNC_INBOX_POLL_MINUTES` | `5` | How often each account's inbox is checked (Reddit's: at least 10) |
 | `THREADBNC_MEDIA_DIR` | `<data>/media` | Where archived images/videos are stored |
-| `THREADBNC_MEDIA_MAX_MB` | `25` | Largest single image or video file that will be archived; bigger files are skipped and linked to the original (the Storage page and each community can override this) |
-| `THREADBNC_MEDIA_TRANSCODE` | `0` | Default for communities that haven't chosen, unless set on the Storage page: `1` shrinks files over the size limit with ffmpeg instead of skipping them |
+| `THREADBNC_MEDIA_MAX_MB` | `25` | Largest picture, video or audio file archived as it is; bigger files are skipped and linked to the original (the Storage page and each community can set this for each kind of file) |
+| `THREADBNC_MEDIA_TRANSCODE` | `0` | `1`: pictures and videos over the size limit are shrunk to fit it with ffmpeg instead of skipped, unless the Storage page or a community says otherwise |
 | `THREADBNC_MEDIA_TRANSCODE_SOURCE_MAX_MB` | `1000` | Largest original downloaded to transcode; bigger files are skipped |
 | `THREADBNC_RELAY_INBOXES` | *(none)* | Your own Lemmy servers whose inboxes are routed through ThreadBNC, as `domain=Lemmy's address`, comma-separated (see [Pushes from your own server](#pushes-from-your-own-server)) |
 | `THREADBNC_ARTICLES` | `1` | Read the web pages posts link to and keep the article, for **Read article** (see [Linked articles](#linked-articles)); `0` turns it off |
@@ -549,12 +549,16 @@ Posts and comments are rendered as Markdown: CommonMark plus tables, strikethrou
 - `/media/{id}` requires sign-in and is served sandboxed. SVGs are never shown inline.
 - Media is deleted only when every object that referenced it has been purged, which happens only when auto-captured threads expire.
 
-**Defaults** (the **Media defaults** section of the Storage page): the same three settings for every community that hasn't chosen its own. Each one left on "Server setting" follows the `THREADBNC_MEDIA_*` environment variables. Saving retries anything the old settings left out or found too large.
+**Settings for each kind of file.** Pictures, videos and audio each have their own:
+- **Archive**: yes or no. Files already archived stay when you turn this off.
+- **Kept as they are up to**: the largest file saved unchanged.
+- **Bigger ones** (pictures and videos): leave them out, or **transcode down to** a size of their own (blank: the size they're kept as they are up to). Videos and animated GIFs become H.264/AAC MP4s at whatever bitrate fits (up to 1080p). Pictures are scaled down and saved as WebP. Videos too long to fit at a watchable bitrate are left out. Audio isn't transcoded: files over its limit are left out.
 
-**Per community** (the community's **Media** tab):
-- **Archive**: pictures and videos, pictures only, or nothing. Files already archived stay when you turn this down.
-- **Largest file kept**: overrides the default size limit for this community.
-- **Files bigger than that**: leave them out, or **transcode to fit**. Videos and animated GIFs become H.264/AAC MP4s at whatever bitrate fits (up to 1080p). Pictures are scaled down and saved as WebP. Videos too long to fit at a watchable bitrate are left out.
+**Defaults** (the **Media defaults** section of the Storage page): these settings for every community that hasn't chosen its own. Each one left on "Server setting" (or blank) follows the `THREADBNC_MEDIA_*` environment variables. Saving retries anything the old settings left out or found too large.
+
+**Changing settings converts what's already archived.** After you save, on the Storage page or a Media tab, the bouncer goes through the archived pictures and videos in the background. Those now over the size they're kept as they are up to, with a size to transcode down to, are transcoded from the stored copy, one at a time, and the smaller file replaces the bigger one. Files of a kind you stop archiving aren't deleted. Raising a limit doesn't bring back originals that were already transcoded.
+
+**Per community** (the community's **Media** tab): the same settings, each one left on "Default" (or blank) following the Storage page.
 - The tab also shows how much is archived, what was transcoded, and what couldn't be archived and why. **Try these again** retries them. Saving new settings retries anything the old settings left out or found too large.
 - A file posted in several communities gets the most generous of their settings.
 

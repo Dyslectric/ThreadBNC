@@ -5,10 +5,12 @@ bouncer (never while holding the DB write lock). Files are content-addressed
 under <data_dir>/media and are only ever removed when every object referencing
 them has been purged (expired auto-captured threads).
 
-Each community can say what gets archived (everything, pictures only, nothing),
-how big a file may be, and whether files over that are transcoded down to fit
-(see transcode.py) instead of given up on. Media shared between communities gets
-the most generous of their settings.
+Pictures, videos and audio each have their own settings (MediaPolicy): whether
+they're archived at all, the largest file kept as it is, and for pictures and
+videos, a size bigger ones are transcoded down to (see transcode.py) instead of
+being left out. The server's defaults are set on the Storage page and each
+community can choose its own. Media shared between communities gets the most
+generous of their settings.
 
 Pictures (and video thumbnails, which are pictures) are downloaded as soon as
 they're seen. Full videos wait until a post showing them is opened or kept
@@ -25,6 +27,7 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import json
+import logging
 import mimetypes
 import socket
 import tempfile
@@ -41,6 +44,8 @@ from .adapters.base import RemotePaused
 from .adapters.http import HostThrottle
 from .db import Conn, Database, fmt_ts, parse_ts, utcnow
 from .render import VIDEO_EXTENSIONS, MediaInfo, extract_media_urls, looks_like_audio, looks_like_media
+
+log = logging.getLogger(__name__)
 
 MAX_ATTEMPTS = 5
 MAX_REDIRECTS = 5
@@ -84,41 +89,124 @@ def looks_like_video(url: str) -> bool:
     return urlparse(url).path.lower().endswith(VIDEO_EXTENSIONS)
 
 
-_BIG = ("video/", "audio/")  # held until wanted, and not archived with "Pictures only"
+_BIG = ("video/", "audio/")  # held until wanted
 
 
-ARCHIVE_MODES = {"all": "Pictures, videos and audio", "images": "Pictures only", "off": "Nothing"}
-_RANK = {"off": 0, "images": 1, "all": 2}
+# What's archived is chosen per kind of file. Pictures and videos up to a size
+# are kept as they are; bigger ones are transcoded down to a target size (see
+# transcode.py), or left out when there's no target. Audio is only ever kept
+# as it is, up to its size limit.
+KINDS = {"image": "Pictures", "video": "Videos", "audio": "Audio"}
+TRANSCODED = ("image", "video")  # the kinds that can be transcoded down
 # Errors that a change of settings can fix; requeue() retries these.
 POLICY_SUFFIX = "for this community"
 
 
+def kind_of(ctype: str) -> str | None:
+    """"image", "video" or "audio" for a content type; None for anything else.
+    Animated GIFs are pictures (transcoding one makes it an MP4)."""
+    for kind in KINDS:
+        if ctype.startswith(kind + "/"):
+            return kind
+    return None
+
+
+@dataclass(frozen=True)
+class KindPolicy:
+    save: bool = True
+    keep_bytes: int = 25_000_000  # kept as they are up to this
+    target_bytes: int | None = None  # bigger ones transcoded down to this; None = left out
+
+    def override(self, choice: dict[str, Any]) -> KindPolicy:
+        """This policy with the choices made (a missing or None field keeps it).
+        target_mb 0: bigger files are left out; "fit": transcoded down to the
+        size limit, whatever it is (settings from before, legacy_choices)."""
+        save, keep, target = choice.get("save"), choice.get("keep_mb"), choice.get("target_mb")
+        keep_bytes = keep * 1_000_000 if keep else self.keep_bytes
+        target_bytes = self.target_bytes if target is None else target * 1_000_000 or None
+        return KindPolicy(self.save if save is None else bool(save), keep_bytes,
+                          keep_bytes if choice.get("fit") else target_bytes)
+
+    def merge(self, other: KindPolicy) -> KindPolicy:
+        """The more generous of two policies, for media several communities share."""
+        targets = [t for t in (self.target_bytes, other.target_bytes) if t]
+        return KindPolicy(self.save or other.save, max(self.keep_bytes, other.keep_bytes),
+                          max(targets) if targets else None)
+
+
 @dataclass(frozen=True)
 class MediaPolicy:
-    archive: str = "all"  # all | images | off
-    max_bytes: int = 25_000_000
-    transcode: bool = False  # shrink files over max_bytes with ffmpeg
+    image: KindPolicy = KindPolicy()
+    video: KindPolicy = KindPolicy()
+    audio: KindPolicy = KindPolicy()
 
-    def override(self, archive: str | None, max_mb: int | None, transcode_: int | None) -> MediaPolicy:
-        """This policy with a community's own choices (NULL = keep the default) applied."""
-        return MediaPolicy(archive if archive in ARCHIVE_MODES else self.archive,
-                           max_mb * 1_000_000 if max_mb else self.max_bytes,
-                           self.transcode if transcode_ is None else bool(transcode_))
+    @classmethod
+    def uniform(cls, max_bytes: int, transcode_: bool) -> MediaPolicy:
+        """Every kind kept up to max_bytes, pictures and videos over that
+        transcoded to fit when transcode_ (the THREADBNC_MEDIA_* settings)."""
+        shrunk = KindPolicy(True, max_bytes, max_bytes if transcode_ else None)
+        return cls(shrunk, shrunk, KindPolicy(True, max_bytes, None))
+
+    def kind(self, name: str) -> KindPolicy:
+        return getattr(self, name)
+
+    def for_type(self, ctype: str) -> KindPolicy | None:
+        kind = kind_of(ctype)
+        return self.kind(kind) if kind else None
+
+    @property
+    def saves_any(self) -> bool:
+        return any(self.kind(k).save for k in KINDS)
+
+    def override(self, choices: dict[str, dict[str, Any]] | None) -> MediaPolicy:
+        """This policy with a community's (or the Storage page's) choices applied."""
+        choices = choices or {}
+        return MediaPolicy(**{k: self.kind(k).override(choices.get(k) or {}) for k in KINDS})
 
     def merge(self, other: MediaPolicy) -> MediaPolicy:
-        """The more generous of two policies, for media several communities share."""
-        return MediaPolicy(max(self.archive, other.archive, key=_RANK.__getitem__),
-                           max(self.max_bytes, other.max_bytes), self.transcode or other.transcode)
+        return MediaPolicy(**{k: self.kind(k).merge(other.kind(k)) for k in KINDS})
+
+
+def legacy_choices(archive: str | None, max_mb: int | None, transcode_: int | None) -> dict[str, dict[str, Any]]:
+    """The per-kind choices that the settings saved before there was one set
+    for each kind amount to: what was archived ("all"; "images", pictures
+    only; "off"), one size limit, and whether to transcode to fit it ("fit":
+    down to whatever the size limit is)."""
+    out: dict[str, dict[str, Any]] = {}
+    for kind in KINDS:
+        c: dict[str, Any] = {}
+        if archive in ("all", "images", "off"):
+            c["save"] = archive == "all" or (archive == "images" and kind == "image")
+        if max_mb:
+            c["keep_mb"] = max_mb
+        if transcode_ is not None and kind in TRANSCODED:
+            if not transcode_:
+                c["target_mb"] = 0
+            elif max_mb:
+                c["target_mb"] = max_mb
+            else:
+                c["fit"] = True
+        if c:
+            out[kind] = c
+    return out
+
+
+def parse_choices(raw: str | None) -> dict[str, dict[str, Any]]:
+    """Choices as saved (JSON): {kind: {save, keep_mb, target_mb}}, fields left out following the default."""
+    try:
+        data = json.loads(raw) if raw else {}
+    except ValueError:
+        return {}
+    return {k: v for k, v in data.items() if k in KINDS and isinstance(v, dict)} if isinstance(data, dict) else {}
 
 
 def policy_for(conn: Conn, media_id: int, default: MediaPolicy) -> MediaPolicy:
     rows = conn.execute(
-        "SELECT DISTINCT c.media_archive, c.media_max_mb, c.media_transcode FROM media_refs r "
-        "JOIN objects o ON o.id=r.object_id LEFT JOIN communities c ON c.id=o.community_id WHERE r.media_id=?",
-        (media_id,)).fetchall()
+        "SELECT DISTINCT c.media_policy FROM media_refs r JOIN objects o ON o.id=r.object_id "
+        "LEFT JOIN communities c ON c.id=o.community_id WHERE r.media_id=?", (media_id,)).fetchall()
     if not rows:
         return default
-    policies = [default.override(r[0], r[1], r[2]) for r in rows]
+    policies = [default.override(parse_choices(r[0])) for r in rows]
     result = policies[0]
     for p in policies[1:]:
         result = result.merge(p)
@@ -141,26 +229,63 @@ def requeue(conn: Conn, community_id: int | None = None) -> int:
 
 # Server-wide defaults chosen on the Storage page, in app_settings; each one
 # unset follows the THREADBNC_MEDIA_* environment settings.
-DEFAULT_KEYS = ("media_archive", "media_max_mb", "media_transcode")
+DEFAULTS_KEY = "media_policy"
+_LEGACY_KEYS = ("media_archive", "media_max_mb", "media_transcode")
 
 
-def save_defaults(conn: Conn, archive: str | None, max_mb: int | None, transcode_: bool | None) -> None:
-    """None for a setting goes back to the environment's."""
-    for key, value in zip(DEFAULT_KEYS, (archive, max_mb, None if transcode_ is None else int(transcode_))):
-        if value is None:
-            conn.execute("DELETE FROM app_settings WHERE key=?", (key,))
-        else:
-            conn.execute("INSERT INTO app_settings(key, value) VALUES (?, ?) "
-                         "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, str(value)))
+def dump_choices(choices: dict[str, dict[str, Any]]) -> str | None:
+    """Choices to save; None when every field follows the default."""
+    kept = {k: {f: v for f, v in c.items() if v is not None} for k, c in choices.items() if k in KINDS}
+    kept = {k: c for k, c in kept.items() if c}
+    return json.dumps(kept, sort_keys=True) if kept else None
 
 
-def load_defaults(conn: Conn) -> tuple[str | None, int | None, int | None]:
-    """(archive, max MB, transcode) as saved; None where unset."""
-    marks = ",".join("?" * len(DEFAULT_KEYS))
+def save_defaults(conn: Conn, choices: dict[str, dict[str, Any]]) -> None:
+    value = dump_choices(choices)
+    if value is None:
+        conn.execute("DELETE FROM app_settings WHERE key=?", (DEFAULTS_KEY,))
+    else:
+        conn.execute("INSERT INTO app_settings(key, value) VALUES (?, ?) "
+                     "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (DEFAULTS_KEY, value))
+
+
+def load_defaults(conn: Conn) -> dict[str, dict[str, Any]]:
+    """The Storage page's choices as saved: {kind: {field: value}}."""
+    row = conn.execute("SELECT value FROM app_settings WHERE key=?", (DEFAULTS_KEY,)).fetchone()
+    return parse_choices(row[0] if row else None)
+
+
+# After settings change, the files already archived are gone through (by id,
+# from here) and those now over their size limit transcoded down: convert_some.
+CONVERT_KEY = "media_convert_after"
+CONVERT_SCAN = 200  # rows looked at per call
+
+
+def request_conversion(conn: Conn) -> None:
+    """Go through what's archived again, from the start, with the settings as they are now."""
+    conn.execute("INSERT INTO app_settings(key, value) VALUES (?, '0') "
+                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (CONVERT_KEY,))
+
+
+def migrate_legacy(conn: Conn) -> None:
+    """Settings saved as one set for every kind (media_archive, media_max_mb,
+    media_transcode) become the same choices for each kind."""
+    marks = ",".join("?" * len(_LEGACY_KEYS))
     saved = {r[0]: r[1] for r in conn.execute(f"SELECT key, value FROM app_settings WHERE key IN ({marks})",
-                                              DEFAULT_KEYS).fetchall()}
-    mb, tc = saved.get("media_max_mb"), saved.get("media_transcode")
-    return saved.get("media_archive"), int(mb) if mb else None, int(tc) if tc is not None else None
+                                              _LEGACY_KEYS).fetchall()}
+    if saved:
+        mb, tc = saved.get("media_max_mb"), saved.get("media_transcode")
+        choices = legacy_choices(saved.get("media_archive"), int(mb) if mb else None,
+                                 int(tc) if tc is not None else None)
+        if not load_defaults(conn):
+            save_defaults(conn, choices)
+        conn.execute(f"DELETE FROM app_settings WHERE key IN ({marks})", _LEGACY_KEYS)
+    for r in conn.execute("SELECT id, media_archive, media_max_mb, media_transcode FROM communities WHERE "
+                          "media_archive IS NOT NULL OR media_max_mb IS NOT NULL OR media_transcode IS NOT NULL"
+                          ).fetchall():
+        conn.execute("UPDATE communities SET media_policy=?, media_archive=NULL, media_max_mb=NULL, "
+                     "media_transcode=NULL WHERE id=?",
+                     (dump_choices(legacy_choices(r[1], r[2], r[3])), r[0]))
 
 
 def community_stats(conn: Conn, community_id: int) -> dict[str, Any]:
@@ -221,7 +346,7 @@ def _content_type(head: bytes, declared: str, url: str) -> str:
 
 
 def _noun(ctype: str) -> str:
-    return "audio files" if ctype.startswith("audio/") else "videos"
+    return {"image": "pictures", "audio": "audio files"}.get(kind_of(ctype) or "", "videos")
 
 
 def _after(now: str, seconds: float) -> str:
@@ -356,7 +481,7 @@ class MediaFetcher:
         self.youtube = youtube_session
         self.throttle = throttle or HostThrottle(1.0)
         self.media_dir = media_dir
-        self.env_policy = MediaPolicy("all", max_bytes, transcode_default)
+        self.env_policy = MediaPolicy.uniform(max_bytes, transcode_default)
         # Files are downloaded up to this size when they might be transcoded down.
         self.source_max_bytes = transcode_source_max_bytes
         self.check_host = check_host
@@ -368,16 +493,21 @@ class MediaFetcher:
         """What communities that haven't chosen get: the environment's settings
         with the ones saved on the Storage page applied."""
         with self.db.connect() as conn:
-            return self.env_policy.override(*load_defaults(conn))
+            return self.env_policy.override(load_defaults(conn))
 
     def can_transcode(self) -> bool:
         return transcode.available()
 
+    def _cap(self, kp: KindPolicy) -> int:
+        """The largest file of a kind worth downloading: bigger than it's kept
+        as-is when it could be transcoded down."""
+        return max(kp.keep_bytes, self.source_max_bytes) if kp.target_bytes and self.can_transcode()             else kp.keep_bytes
+
     def _download(self, url: str, policy: MediaPolicy | None = None, wanted: bool = True) -> Downloaded:
         """`wanted` False: a video is held (MediaHeld) as soon as the server says it's one."""
         policy = policy or self.default_policy
-        shrinkable = policy.transcode and self.can_transcode()
-        cap = max(policy.max_bytes, self.source_max_bytes) if shrinkable else policy.max_bytes
+        # Until the server says what it is, the most any kind archived here allows.
+        cap = max((self._cap(policy.kind(k)) for k in KINDS if policy.kind(k).save), default=0)
         if urlparse(url).path.lower().endswith(".gifv"):  # imgur-style: the real file is .mp4
             url = url[: -len(".gifv")] + ".mp4"
         current = url
@@ -401,10 +531,13 @@ class MediaFetcher:
                 length = int(resp.headers.get("content-length") or 0)
                 if declared.startswith(("text/", "application/json", "application/xhtml")):
                     raise MediaSkipped(f"not media ({declared})")
-                if policy.archive == "images" and declared.startswith(_BIG):
+                kp = policy.for_type(declared)
+                if kp is not None and not kp.save:
                     raise MediaSkipped(f"{_noun(declared)} aren't archived {POLICY_SUFFIX}")
                 if not wanted and declared.startswith(_BIG):
                     raise MediaHeld()
+                if kp is not None:
+                    cap = self._cap(kp)
                 if length > cap:
                     raise MediaRejected(f"too large ({length / 1_000_000:.1f} MB)")
                 self.media_dir.mkdir(parents=True, exist_ok=True)
@@ -422,10 +555,13 @@ class MediaFetcher:
                             h.update(chunk)
                             tmp.write(chunk)
                     ctype = _content_type(head, declared, url)
-                    if not ctype.startswith(("image/", *_BIG)):
+                    kp = policy.for_type(ctype)
+                    if kp is None:
                         raise MediaSkipped(f"not media ({declared or 'unknown type'})")
-                    if policy.archive == "images" and ctype.startswith(_BIG):
+                    if not kp.save:
                         raise MediaSkipped(f"{_noun(ctype)} aren't archived {POLICY_SUFFIX}")
+                    if size > self._cap(kp):
+                        raise MediaRejected(f"too large ({size / 1_000_000:.1f} MB)")
                 except BaseException:
                     Path(tmp.name).unlink(missing_ok=True)
                     raise
@@ -470,6 +606,64 @@ class MediaFetcher:
                 h.update(chunk)
         return Downloaded(out, ctype, out.stat().st_size, h.hexdigest(), dl.final_url, dl.size, dl.content_type)
 
+    def convert_some(self) -> bool:
+        """Bring archived pictures and videos in line with the settings (after
+        they changed: request_conversion). Files over the size they're kept
+        as they are up to, with a size to transcode down to, are transcoded
+        from the stored copy, which the smaller one replaces. Files of a kind
+        no longer archived stay: nothing is deleted for that. At most one file
+        is transcoded per call; True while there's more to go through."""
+        with self.db.connect() as conn:
+            row = conn.execute("SELECT value FROM app_settings WHERE key=?", (CONVERT_KEY,)).fetchone()
+            if row is None or not self.can_transcode():
+                return False
+            after = int(row[0] or 0)
+            default = self.default_policy
+            rows = conn.execute(
+                "SELECT id, content_type, size_bytes, storage_path FROM media WHERE id>? AND status='ok' "
+                "AND kept_only=0 AND storage_path IS NOT NULL AND content_type != 'image/svg+xml' "
+                "AND (content_type LIKE 'image/%' OR content_type LIKE 'video/%') ORDER BY id LIMIT ?",
+                (after, CONVERT_SCAN)).fetchall()
+            todo = None
+            for r in rows:
+                after = r["id"]
+                kp = policy_for(conn, r["id"], default).for_type(r["content_type"])
+                if kp and kp.save and kp.target_bytes and r["size_bytes"] > max(kp.keep_bytes, kp.target_bytes):
+                    todo = (r, kp.target_bytes)
+                    break
+        with self.db.transaction() as conn:
+            if rows:
+                conn.execute("UPDATE app_settings SET value=? WHERE key=?", (str(after), CONVERT_KEY))
+            else:
+                conn.execute("DELETE FROM app_settings WHERE key=?", (CONVERT_KEY,))
+        if todo:
+            self._convert(*todo)
+        return bool(rows)
+
+    def _convert(self, row: Any, target: int) -> None:
+        src = self.media_dir / row["storage_path"]
+        try:
+            out, ctype = transcode.shrink(src, row["content_type"], target, self.media_dir)
+        except (transcode.TranscodeError, OSError) as exc:
+            log.warning("media %s: couldn't transcode it down to %d MB: %s", row["id"], target // 1_000_000, exc)
+            return
+        h = hashlib.sha256()
+        with out.open("rb") as f:
+            for chunk in iter(lambda: f.read(CHUNK), b""):
+                h.update(chunk)
+        rel = self._store(Downloaded(out, ctype, out.stat().st_size, h.hexdigest(), ""))
+        size = (self.media_dir / rel).stat().st_size
+        with self.db.transaction() as conn:
+            conn.execute(
+                "UPDATE media SET content_type=?, size_bytes=?, sha256=?, storage_path=?, "
+                "original_bytes=COALESCE(original_bytes, ?), original_type=COALESCE(original_type, ?) WHERE id=?",
+                (ctype, size, h.hexdigest(), rel, row["size_bytes"], row["content_type"], row["id"]))
+            unused = rel != row["storage_path"] and not conn.execute(
+                "SELECT 1 FROM media WHERE storage_path=? LIMIT 1", (row["storage_path"],)).fetchone()
+        if unused:  # the bigger copy, replaced
+            src.unlink(missing_ok=True)
+        log.info("media %s: transcoded down from %.1f MB to %.1f MB", row["id"], row["size_bytes"] / 1e6, size / 1e6)
+
     def _store(self, dl: Downloaded) -> str:
         ext = _EXT.get(dl.content_type) or mimetypes.guess_extension(dl.content_type) or ".bin"
         rel = Path(dl.sha256[:2]) / dl.sha256[2:4] / f"{dl.sha256}{ext}"
@@ -497,17 +691,17 @@ class MediaFetcher:
         opened yet (a post's audio, scrolled to in a feed)."""
         now = utcnow()
         with self.db.connect() as conn:
-            policy = policy_for(conn, row["id"], self.env_policy.override(*load_defaults(conn)))
+            policy = policy_for(conn, row["id"], self.env_policy.override(load_defaults(conn)))
             if row["kept_only"]:  # a YouTube video: only for kept posts, whoever asks
                 wanted = bool(conn.execute(f"SELECT {KEPT_SQL} FROM media WHERE id=?", (row["id"],)).fetchone()[0])
             else:
                 wanted = wanted or bool(conn.execute(f"SELECT {WANTED_SQL} FROM media WHERE id=?",
                                                      (row["id"],)).fetchone()[0])
         try:
-            if policy.archive == "off":
+            if not policy.saves_any:
                 raise MediaSkipped(f"archiving is off {POLICY_SUFFIX}")
             if row["kept_only"]:
-                if policy.archive == "images":
+                if not policy.video.save:
                     raise MediaSkipped(f"videos aren't archived {POLICY_SUFFIX}")
                 if not wanted:
                     raise MediaHeld()
@@ -516,8 +710,13 @@ class MediaFetcher:
                 if not wanted and (looks_like_video(row["url"]) or looks_like_audio(row["url"])):
                     raise MediaHeld()
                 dl = self._download(row["url"], policy, wanted)
-                if dl.size > policy.max_bytes:
-                    dl = self._shrink(dl, policy.max_bytes)
+                kp = policy.for_type(dl.content_type)
+                if kp is not None and dl.size > kp.keep_bytes:
+                    if not (kp.target_bytes and self.can_transcode()):
+                        dl.tmp_path.unlink(missing_ok=True)
+                        raise MediaRejected(f"too large ({dl.size / 1_000_000:.1f} MB)")
+                    if dl.size > kp.target_bytes:  # (already small enough otherwise)
+                        dl = self._shrink(dl, kp.target_bytes)
             rel = self._store(dl)
         except MediaRejected as exc:
             with self.db.transaction() as conn:

@@ -52,9 +52,10 @@ CREATE TABLE IF NOT EXISTS communities (
     moderators_json TEXT,     -- last observed moderator actor ids (JSON list)
     view_mode TEXT,           -- feed shown as 'list' or 'tiles'; NULL = decide from how much media it has
     -- Media archiving here (see media.MediaPolicy); NULL = the server-wide default.
-    media_archive TEXT,       -- 'all' | 'images' | 'off'
-    media_max_mb INTEGER,     -- largest file kept
-    media_transcode INTEGER   -- 1 = shrink files over the limit with ffmpeg instead of giving up
+    media_archive TEXT,       -- older single settings, moved into media_policy (media.migrate_legacy)
+    media_max_mb INTEGER,
+    media_transcode INTEGER,
+    media_policy TEXT         -- JSON: {kind: {save, keep_mb, target_mb}} for image, video, audio
 );
 
 -- A followed community: bouncer polls its new posts and auto-captures them
@@ -503,6 +504,7 @@ COLUMN_MIGRATIONS = [
     ("communities", "media_archive", "TEXT"),
     ("communities", "media_max_mb", "INTEGER"),
     ("communities", "media_transcode", "INTEGER"),
+    ("communities", "media_policy", "TEXT"),
     ("media", "original_bytes", "INTEGER"),
     ("media", "original_type", "TEXT"),
     ("media_refs", "from_article", "INTEGER NOT NULL DEFAULT 0"),
@@ -674,6 +676,8 @@ class Database:
         conn.execute("CREATE INDEX IF NOT EXISTS objects_dupe ON objects(dupe_key)")
         from .dupes import backfill
         backfill(conn)
+        from .media import migrate_legacy
+        migrate_legacy(conn)
         from .search import install
         self.search_backend = install(conn, self.is_postgres)
 

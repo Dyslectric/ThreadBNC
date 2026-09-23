@@ -1197,6 +1197,10 @@ class Bouncer:
         while not self._stop.is_set() and self.media.fetch_pending(limit=10):
             while self.run_one_job():
                 pass
+        # Archived files over limits just lowered, transcoded down one at a time.
+        while not self._stop.is_set() and self.media.convert_some():
+            while self.run_one_job():
+                pass
         purged = self.purge_expired()
         if purged:
             log.info("purged %d expired auto-captured threads", purged)

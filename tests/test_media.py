@@ -315,10 +315,14 @@ def logged_in(settings, b) -> TestClient:
     return client
 
 
+PICTURES_ONLY = {"video_save": "off", "audio_save": "off"}
+NOTHING = {"image_save": "off", "video_save": "off", "audio_save": "off"}
+
+
 def test_community_can_leave_out_videos_or_everything(settings, server, tbouncer):
     cid = community_with(server, tbouncer, "![a](https://img.test/cat.gif) ![v](https://img.test/small.mp4)")
     client = logged_in(settings, tbouncer)
-    client.post(f"/c/{cid}/media-settings", data={"archive": "images", "max_mb": "", "transcode": "default"})
+    client.post(f"/c/{cid}/media-settings", data=PICTURES_ONLY)
     tbouncer.media.fetch_pending()
     rows = media_rows(tbouncer)
     assert rows["https://img.test/cat.gif"]["status"] == "ok"
@@ -326,13 +330,13 @@ def test_community_can_leave_out_videos_or_everything(settings, server, tbouncer
     assert "for this community" in rows["https://img.test/small.mp4"]["error"]
 
     # Allowing videos again retries the one that was left out.
-    r = client.post(f"/c/{cid}/media-settings", data={"archive": "default", "max_mb": "", "transcode": "default"})
+    r = client.post(f"/c/{cid}/media-settings", data={})
     assert "Trying again 1 file" in r.text
     tbouncer.media.fetch_pending()
     assert media_rows(tbouncer)["https://img.test/small.mp4"]["status"] == "ok"
 
     server.add_post("2", "more", "![b](https://img.test/octet)")
-    client.post(f"/c/{cid}/media-settings", data={"archive": "off", "max_mb": "", "transcode": "default"})
+    client.post(f"/c/{cid}/media-settings", data=NOTHING)
     tbouncer.ingest_url(f"https://{DOMAIN}/post/2")
     tbouncer.media.fetch_pending()
     assert media_rows(tbouncer)["https://img.test/octet"]["status"] == "skipped"
@@ -342,20 +346,47 @@ def test_community_can_leave_out_videos_or_everything(settings, server, tbouncer
 def test_shared_media_gets_the_more_generous_setting(server, tbouncer):
     cid = community_with(server, tbouncer, "![v](https://img.test/small.mp4)")
     default = tbouncer.media.default_policy
+    off = media.KindPolicy(False, 1_000_000, None)
     with tbouncer.db.transaction() as conn:
-        conn.execute("UPDATE communities SET media_archive='off' WHERE id=?", (cid,))
+        conn.execute("UPDATE communities SET media_policy=? WHERE id=?", (media.dump_choices(
+            {k: {"save": False} for k in media.KINDS}), cid))
         mid = conn.execute("SELECT id FROM media").fetchone()[0]
-        assert media.policy_for(conn, mid, default) == media.MediaPolicy("off", 1_000_000, False)
-        # The same video posted in another community that keeps pictures only, up to 50 MB, transcoding.
+        assert media.policy_for(conn, mid, default) == media.MediaPolicy(off, off, off)
+        # The same video posted in another community that keeps pictures only, up to 50 MB, transcoding
+        # (as saved before there were settings for each kind).
         now = utcnow()
         other = conn.execute("INSERT INTO communities(canonical_ap_id, name, first_seen_at, last_seen_at, "
                              "media_archive, media_max_mb, media_transcode) "
                              "VALUES ('https://x.test/c/o', 'o', ?, ?, 'images', 50, 1)", (now, now)).lastrowid
+        media.migrate_legacy(conn)
         oid = conn.execute("INSERT INTO objects(canonical_ap_id, object_type, community_id, first_seen_at, "
                            "last_seen_at) VALUES ('https://x.test/post/9', 'post', ?, ?, ?)",
                            (other, now, now)).lastrowid
         media.register(conn, oid, ["https://img.test/small.mp4"], now)
-        assert media.policy_for(conn, mid, default) == media.MediaPolicy("images", 50_000_000, True)
+        assert media.policy_for(conn, mid, default) == media.MediaPolicy(
+            media.KindPolicy(True, 50_000_000, 50_000_000), media.KindPolicy(False, 50_000_000, 50_000_000),
+            media.KindPolicy(False, 50_000_000, None))
+
+
+def test_older_settings_become_the_same_for_each_kind(bouncer):
+    now = utcnow()
+    with bouncer.db.transaction() as conn:
+        for key, value in (("media_archive", "images"), ("media_transcode", "1")):
+            conn.execute("INSERT INTO app_settings(key, value) VALUES (?, ?)", (key, value))
+        cid = conn.execute("INSERT INTO communities(canonical_ap_id, name, first_seen_at, last_seen_at, "
+                           "media_max_mb, media_transcode) VALUES ('https://x.test/c/o', 'o', ?, ?, 30, 0)",
+                           (now, now)).lastrowid
+        media.migrate_legacy(conn)
+        saved = media.load_defaults(conn)
+        assert saved == {"image": {"save": True, "fit": True}, "video": {"save": False, "fit": True},
+                         "audio": {"save": False}}
+        row = conn.execute("SELECT * FROM communities WHERE id=?", (cid,)).fetchone()
+        assert row["media_max_mb"] is None and media.parse_choices(row["media_policy"]) == {
+            "image": {"keep_mb": 30, "target_mb": 0}, "video": {"keep_mb": 30, "target_mb": 0},
+            "audio": {"keep_mb": 30}}
+    # "Transcode to fit" whatever size limit applies.
+    policy = media.MediaPolicy.uniform(20_000_000, False).override(saved)
+    assert policy.image == media.KindPolicy(True, 20_000_000, 20_000_000) and not policy.video.save
 
 
 def test_oversized_without_transcoding_fails_then_retries_when_enabled(settings, server, tbouncer, monkeypatch):
@@ -368,11 +399,73 @@ def test_oversized_without_transcoding_fails_then_retries_when_enabled(settings,
     assert media_rows(tbouncer)["https://img.test/fat.png"]["error"].startswith("too large")
 
     client = logged_in(settings, tbouncer)
-    client.post(f"/c/{cid}/media-settings", data={"archive": "default", "max_mb": "", "transcode": "on"})
+    client.post(f"/c/{cid}/media-settings", data={"image_bigger": "transcode"})  # to fit the size limit
     tbouncer.media.fetch_pending()
     row = media_rows(tbouncer)["https://img.test/fat.png"]
     assert row["status"] == "ok" and row["content_type"] == "video/mp4"
     assert row["original_type"] == "image/png" and row["original_bytes"] == len(PNG) + 1_500_000
+
+
+def test_each_kind_has_its_own_size_limits(settings, server, tbouncer, monkeypatch):
+    shrunk = []
+    monkeypatch.setattr(media.transcode, "shrink", lambda src, ctype, limit, workdir: shrunk.append((ctype, limit)))
+    monkeypatch.setattr(media.MediaFetcher, "can_transcode", lambda self: True)
+    cid = community_with(server, tbouncer, "![v](https://img.test/fat.png)")
+    client = logged_in(settings, tbouncer)
+    # A bigger limit for videos, and transcoding them, doesn't reach pictures.
+    client.post(f"/c/{cid}/media-settings", data={"video_keep": "5", "video_bigger": "transcode"})
+    tbouncer.media.fetch_pending()
+    assert media_rows(tbouncer)["https://img.test/fat.png"]["error"].startswith("too large") and not shrunk
+    client.post(f"/c/{cid}/media-settings", data={"image_keep": "2"})
+    tbouncer.media.fetch_pending()
+    row = media_rows(tbouncer)["https://img.test/fat.png"]
+    assert row["status"] == "ok" and row["original_bytes"] is None and not shrunk  # kept as it is
+    # Audio is never transcoded, whatever the form says.
+    client.post(f"/c/{cid}/media-settings", data={"audio_bigger": "transcode", "audio_target": "1"})
+    with tbouncer.db.connect() as conn:
+        assert tbouncer.media.default_policy.override(media.parse_choices(conn.execute(
+            "SELECT media_policy FROM communities WHERE id=?", (cid,)).fetchone()[0])).audio.target_bytes is None
+
+
+def test_lowering_a_limit_transcodes_what_is_already_archived(settings, server, tbouncer, monkeypatch):
+    shrunk = []
+
+    def shrink(src, ctype, limit, workdir):
+        shrunk.append((src.read_bytes()[:8], ctype, limit))
+        return _write(workdir, b"RIFF\x00\x00\x00\x00WEBPsmall"), "image/webp"
+
+    monkeypatch.setattr(media.transcode, "shrink", shrink)
+    monkeypatch.setattr(media.MediaFetcher, "can_transcode", lambda self: True)
+    cid = community_with(server, tbouncer, "![p](https://img.test/fat.png) ![a](https://img.test/cat.gif)")
+    client = logged_in(settings, tbouncer)
+    client.post(f"/c/{cid}/media-settings", data={"image_keep": "2"})
+    tbouncer.media.fetch_pending()
+    before = media_rows(tbouncer)["https://img.test/fat.png"]
+    assert before["status"] == "ok" and before["original_bytes"] is None
+    while tbouncer.media.convert_some():  # nothing over the limits: nothing to do
+        pass
+    assert not shrunk
+
+    # Turning pictures off leaves them be; a lower limit with a size to transcode down to converts them.
+    client.post(f"/c/{cid}/media-settings", data={"image_save": "off", "image_keep": "1", "image_bigger": "transcode"})
+    while tbouncer.media.convert_some():
+        pass
+    assert not shrunk
+    client.post(f"/c/{cid}/media-settings", data={"image_keep": "1", "image_bigger": "transcode", "image_target": "1"})
+    while tbouncer.media.convert_some():
+        pass
+    assert shrunk == [(PNG[:8], "image/png", 1_000_000)]  # the big one only, from its stored copy
+    row = media_rows(tbouncer)["https://img.test/fat.png"]
+    assert (row["status"], row["content_type"], row["original_type"]) == ("ok", "image/webp", "image/png")
+    assert row["original_bytes"] == before["size_bytes"] and row["size_bytes"] < 100
+    assert (tbouncer.media_dir / row["storage_path"]).exists()
+    assert not (tbouncer.media_dir / before["storage_path"]).exists()  # the bigger copy is gone
+    assert tbouncer.db.get_setting(media.CONVERT_KEY) is None  # done
+
+    # Without ffmpeg it waits.
+    monkeypatch.setattr(media.MediaFetcher, "can_transcode", lambda self: False)
+    client.post(f"/c/{cid}/media-settings", data={})
+    assert not tbouncer.media.convert_some() and tbouncer.db.get_setting(media.CONVERT_KEY) == "0"
 
 
 def _write(workdir, data: bytes):
@@ -386,10 +479,13 @@ def _write(workdir, data: bytes):
 def test_bad_size_limit_is_refused(settings, server, tbouncer):
     cid = community_with(server, tbouncer, "")
     client = logged_in(settings, tbouncer)
-    r = client.post(f"/c/{cid}/media-settings", data={"archive": "all", "max_mb": "lots", "transcode": "on"})
-    assert "number of megabytes" in r.text
+    r = client.post(f"/c/{cid}/media-settings", data={"image_keep": "lots", "video_save": "off"})
+    assert "Pictures: sizes are a number of megabytes" in r.text
+    r = client.post(f"/c/{cid}/media-settings", data={"video_keep": "10", "video_bigger": "transcode",
+                                                       "video_target": "20"})
+    assert "Videos: transcode down to no more than" in r.text
     with tbouncer.db.connect() as conn:
-        assert conn.execute("SELECT media_archive FROM communities WHERE id=?", (cid,)).fetchone()[0] is None
+        assert conn.execute("SELECT media_policy FROM communities WHERE id=?", (cid,)).fetchone()[0] is None
 
 
 @needs_ffmpeg
@@ -397,7 +493,8 @@ def test_oversized_video_and_picture_are_transcoded_to_fit(settings, server, tbo
     cid = community_with(server, tbouncer, "![v](https://img.test/clip.mp4) ![p](https://img.test/noise.png)")
     assert len(big_file("clip.mp4")[0]) > 1_000_000 and len(big_file("noise.png")[0]) > 1_000_000
     client = logged_in(settings, tbouncer)
-    client.post(f"/c/{cid}/media-settings", data={"archive": "all", "max_mb": "1", "transcode": "on"})
+    client.post(f"/c/{cid}/media-settings", data={"image_keep": "1", "image_bigger": "transcode",
+                                                   "video_keep": "1", "video_bigger": "transcode", "video_target": "1"})
     tbouncer.media.fetch_pending()
     rows = media_rows(tbouncer)
     video, picture = rows["https://img.test/clip.mp4"], rows["https://img.test/noise.png"]
@@ -411,7 +508,7 @@ def test_oversized_video_and_picture_are_transcoded_to_fit(settings, server, tbo
 
     page = client.get(f"/c/{cid}?tab=media").text
     assert "2</strong> files" in page and "2 transcoded" in page and "Recently transcoded" in page
-    assert 'value="1"' in page and '<option value="on" selected>' in page
+    assert 'value="1"' in page and '<option value="transcode" selected>' in page
 
 
 def test_media_tab_lists_what_was_not_archived(settings, server, tbouncer):
@@ -430,25 +527,30 @@ def test_media_defaults_from_the_storage_page(settings, server, tbouncer):
     env = tbouncer.media.env_policy
     assert 'action="/storage/media-defaults"' in client.get("/storage").text
 
-    r = client.post("/storage/media-defaults", data={"archive": "images", "max_mb": "40", "transcode": "on"})
+    r = client.post("/storage/media-defaults", data={
+        **PICTURES_ONLY, "image_keep": "40", "image_bigger": "transcode", "image_target": "8",
+        "video_keep": "40", "video_bigger": "transcode", "audio_keep": "40"})
     assert "Media defaults saved." in r.text
-    assert tbouncer.media.default_policy == media.MediaPolicy("images", 40_000_000, True)
-    assert "Default: transcode to fit" in client.get(f"/c/{cid}?tab=media").text
+    assert tbouncer.media.default_policy == media.MediaPolicy(
+        media.KindPolicy(True, 40_000_000, 8_000_000), media.KindPolicy(False, 40_000_000, 40_000_000),
+        media.KindPolicy(False, 40_000_000, None))
+    assert "Default: transcode to 8" in client.get(f"/c/{cid}?tab=media").text
     tbouncer.media.fetch_pending()
     assert media_rows(tbouncer)["https://img.test/small.mp4"]["status"] == "skipped"
 
     # A community's own choice still wins over the defaults.
-    client.post(f"/c/{cid}/media-settings", data={"archive": "all", "max_mb": "", "transcode": "off"})
+    client.post(f"/c/{cid}/media-settings", data={"video_save": "on", "video_bigger": "leave"})
     with tbouncer.db.connect() as conn:
         mid = conn.execute("SELECT id FROM media WHERE url='https://img.test/small.mp4'").fetchone()[0]
-        assert media.policy_for(conn, mid, tbouncer.media.default_policy) == media.MediaPolicy("all", 40_000_000, False)
-    client.post(f"/c/{cid}/media-settings", data={"archive": "default", "max_mb": "", "transcode": "default"})
+        assert media.policy_for(conn, mid, tbouncer.media.default_policy).video == media.KindPolicy(
+            True, 40_000_000, None)
+    client.post(f"/c/{cid}/media-settings", data={})
 
     # Back to the server settings: the left-out video is tried again.
-    r = client.post("/storage/media-defaults", data={"archive": "default", "max_mb": "", "transcode": "default"})
+    r = client.post("/storage/media-defaults", data={})
     assert tbouncer.media.default_policy == env
     tbouncer.media.fetch_pending()
     assert media_rows(tbouncer)["https://img.test/small.mp4"]["status"] == "ok"
 
-    r = client.post("/storage/media-defaults", data={"archive": "all", "max_mb": "lots", "transcode": "default"})
+    r = client.post("/storage/media-defaults", data={"audio_keep": "lots"})
     assert "number of megabytes" in r.text and tbouncer.media.default_policy == env

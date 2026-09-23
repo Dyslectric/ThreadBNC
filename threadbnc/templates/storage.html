@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "_macros.html" import icon %}
+{% from "_media_form.html" import media_form %}
 {% block title %}Storage{% endblock %}
 {% macro meter(value, top, label) -%}
   <svg class="meter" viewBox="0 0 100 6" preserveAspectRatio="none" role="img" aria-label="{{ label }}">
@@ -141,34 +142,12 @@
     to more than the total.{% endif %}</p>
 </section>
 
-{% set on = saved.transcode if saved.transcode is not none else env.transcode %}
 <section class="card" id="media-defaults">
   <h2>Media defaults</h2>
-  <form method="post" action="/storage/media-defaults" class="stack">
-    <label>Archive&nbsp;
-      <select name="archive">
-        <option value="default" {{ 'selected' if not saved.archive }}>Server setting: {{ archive_modes[env.archive] | lower }}</option>
-        {% for value, label in archive_modes.items() %}
-        <option value="{{ value }}" {{ 'selected' if saved.archive == value }}>{{ label }}</option>
-        {% endfor %}
-      </select></label>
-    <label>Largest file kept
-      <input name="max_mb" class="num" inputmode="numeric" value="{{ saved.max_mb or '' }}"
-             placeholder="{{ env.max_bytes // 1000000 }}" title="Blank = the server setting, {{ env.max_bytes | size }}"> MB</label>
-    <label>Files bigger than that&nbsp;
-      <select name="transcode">
-        <option value="default" {{ 'selected' if saved.transcode is none }}>Server setting: {{ 'transcode to fit' if env.transcode else 'leave out' }}</option>
-        <option value="on" {{ 'selected' if saved.transcode == 1 }}>Transcode to fit</option>
-        <option value="off" {{ 'selected' if saved.transcode == 0 }}>Leave out</option>
-      </select></label>
-    <button class="small">Save</button>
-  </form>
+  {{ media_form('/storage/media-defaults', saved, env, 'Server setting', can_transcode, media_kinds, transcoded) }}
   <p class="small muted">For every community that hasn't chosen its own in its Media tab. The server settings come from
-    the <code>THREADBNC_MEDIA_*</code> environment variables. Changing these tries again files the old settings left
-    out; files already archived stay as they are.</p>
-  {% if on and not can_transcode %}
-  <div class="flash error" role="alert">{{ icon('alert') }} <span>ffmpeg isn't installed on the server, so oversized files
-    are left out for now.</span></div>
-  {% endif %}
+    the <code>THREADBNC_MEDIA_*</code> environment variables. Saving tries again files the old settings left out, and
+    goes through the files already archived: pictures and videos now over the size they're kept as they are up to are
+    transcoded down in the background, replacing the bigger copy. Files of a kind you stop archiving stay.</p>
 </section>
 {% endblock %}

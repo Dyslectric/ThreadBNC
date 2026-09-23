@@ -212,7 +212,7 @@ def test_communities_saving_only_pictures_skip_videos(bouncer, yt, downloads):
     cid = bouncer.follow_community(f"https://www.youtube.com/channel/{CHANNEL}", None, 30, backfill=True)
     bouncer.poll_follow(cid)
     with bouncer.db.transaction() as conn:
-        conn.execute("UPDATE communities SET media_archive='images' WHERE id=?", (cid,))
+        conn.execute("""UPDATE communities SET media_policy='{"video": {"save": false}}' WHERE id=?""", (cid,))
         conn.execute("UPDATE archived_threads SET retention='manual'")
     bouncer.media.fetch_pending()
     assert downloads == [] and video_media(bouncer)["status"] == "skipped"

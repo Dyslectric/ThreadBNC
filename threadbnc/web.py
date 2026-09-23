@@ -1274,25 +1274,50 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                       page=page, live_sort=live_sort, follows=follows, base_url=f"/c/{cid}",
                       community=c, powers=powers, mod_data=mod_data, view=shown, view_chosen=c["view_mode"],
                       media=media_data, media_default=bouncer.media.default_policy,
-                      archive_modes=media_mod.ARCHIVE_MODES, can_transcode=bouncer.media.can_transcode(),
+                      media_choices=media_mod.parse_choices(c["media_policy"]), media_kinds=media_mod.KINDS,
+                      transcoded=media_mod.TRANSCODED, can_transcode=bouncer.media.can_transcode(),
                       snapshot=snapshot)
 
+    def media_choices(form: Any) -> tuple[dict[str, dict[str, Any]], str | None]:
+        """The choices a media settings form sent, one set for each kind of
+        file ("default" and blanks follow the inherited settings), or what's wrong."""
+        choices: dict[str, dict[str, Any]] = {}
+        for kind, label in media_mod.KINDS.items():
+            c: dict[str, Any] = {"save": {"on": True, "off": False}.get(str(form.get(f"{kind}_save", "")))}
+            sizes = {}
+            for field in ("keep", "target"):
+                raw = str(form.get(f"{kind}_{field}", "")).strip()
+                try:
+                    sizes[field] = int(raw) if raw else None
+                except ValueError:
+                    sizes[field] = 0
+                if sizes[field] is not None and not 1 <= sizes[field] <= 100_000:
+                    return {}, f"{label}: sizes are a number of megabytes, or blank for the default."
+            c["keep_mb"] = sizes["keep"]
+            bigger = form.get(f"{kind}_bigger") if kind in media_mod.TRANSCODED else None
+            if bigger == "leave":
+                c["target_mb"] = 0
+            elif bigger == "transcode":
+                if sizes["target"] is None:
+                    c["fit"] = True  # down to the size they're kept as they are up to
+                elif sizes["keep"] is not None and sizes["target"] > sizes["keep"]:
+                    return {}, f"{label}: transcode down to no more than the size they're kept as they are up to."
+                else:
+                    c["target_mb"] = sizes["target"]
+            choices[kind] = {k: v for k, v in c.items() if v is not None}
+        return choices, None
+
     @app.post("/c/{cid}/media-settings")
-    def media_settings(request: Request, cid: int, archive: str = Form("default"), max_mb: str = Form(""),
-                       transcode: str = Form("default")):
-        """What gets archived from a community; blank/"default" choices follow the server's settings."""
-        try:
-            limit = int(max_mb) if max_mb.strip() else None
-        except ValueError:
-            limit = 0
-        if limit is not None and not 1 <= limit <= 100_000:
-            flash(request, "The size limit is a number of megabytes, or blank for the default.", "error")
+    async def media_settings(request: Request, cid: int):
+        """What gets archived from a community, for each kind of file."""
+        choices, error = media_choices(await request.form())
+        if error:
+            flash(request, error, "error")
             return RedirectResponse(f"/c/{cid}?tab=media", status_code=303)
         with db.transaction() as conn:
-            conn.execute("UPDATE communities SET media_archive=?, media_max_mb=?, media_transcode=? WHERE id=?",
-                         (archive if archive in media_mod.ARCHIVE_MODES else None, limit,
-                          {"on": 1, "off": 0}.get(transcode), cid))
+            conn.execute("UPDATE communities SET media_policy=? WHERE id=?", (media_mod.dump_choices(choices), cid))
             n = media_mod.requeue(conn, cid)
+            media_mod.request_conversion(conn)
         bouncer.wake.set()
         flash(request, "Media settings saved." + (f" Trying again {n} file{'s' if n != 1 else ''} "
                                                   "the old settings left out." if n else ""))
@@ -1444,27 +1469,23 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     def storage_page(request: Request):
         with db.connect() as conn:
             usage = storage_mod.overview(db, conn, bouncer.media_dir)
-            archive, max_mb, transcode = media_mod.load_defaults(conn)
+            saved = media_mod.load_defaults(conn)
         return render(request, "storage.html", u=usage, nouns=storage_mod.NOUNS, env=bouncer.media.env_policy,
-                      saved={"archive": archive, "max_mb": max_mb, "transcode": transcode},
-                      archive_modes=media_mod.ARCHIVE_MODES, can_transcode=bouncer.media.can_transcode())
+                      saved=saved, media_kinds=media_mod.KINDS, transcoded=media_mod.TRANSCODED,
+                      can_transcode=bouncer.media.can_transcode())
 
     @app.post("/storage/media-defaults")
-    def media_defaults(request: Request, archive: str = Form("default"), max_mb: str = Form(""),
-                       transcode: str = Form("default")):
-        """Media settings for communities that haven't chosen their own; blank/"default"
-        choices follow the THREADBNC_MEDIA_* environment settings."""
-        try:
-            limit = int(max_mb) if max_mb.strip() else None
-        except ValueError:
-            limit = 0
-        if limit is not None and not 1 <= limit <= 100_000:
-            flash(request, "The size limit is a number of megabytes, or blank for the server setting.", "error")
+    async def media_defaults(request: Request):
+        """Media settings for communities that haven't chosen their own; "default"
+        and blank choices follow the THREADBNC_MEDIA_* environment settings."""
+        choices, error = media_choices(await request.form())
+        if error:
+            flash(request, error, "error")
             return RedirectResponse("/storage#media-defaults", status_code=303)
         with db.transaction() as conn:
-            media_mod.save_defaults(conn, archive if archive in media_mod.ARCHIVE_MODES else None, limit,
-                                    {"on": True, "off": False}.get(transcode))
+            media_mod.save_defaults(conn, choices)
             n = media_mod.requeue(conn)
+            media_mod.request_conversion(conn)
         bouncer.wake.set()
         flash(request, "Media defaults saved." + (f" Trying again {n} file{'s' if n != 1 else ''} "
                                                   "the old settings left out." if n else ""))

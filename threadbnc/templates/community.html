@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% from "_macros.html" import when, votes, icon, pager as load_more %}
 {% from "_feed.html" import controls, posts, pager, sidebar %}
+{% from "_media_form.html" import media_form %}
 {% block title %}{{ chandle(c.name, c.canonical_ap_id, True) }}{% endblock %}
 {% block content %}
 {% set following = follow and follow.active %}
@@ -150,38 +151,17 @@
                    ('/c/' ~ c.id ~ '?tab=live&live_sort=' ~ live_sort) if page > 1 else none, page) }}
 
     {% elif tab == 'media' %}
-      {% set d = media_default %}
-      {% set on = c.media_transcode if c.media_transcode is not none else d.transcode %}
       <section class="card" id="media-settings">
         <h2>Media archiving</h2>
-        <form method="post" action="/c/{{ c.id }}/media-settings" class="stack">
-          <label>Archive&nbsp;
-            <select name="archive">
-              <option value="default" {{ 'selected' if not c.media_archive }}>Default: {{ archive_modes[d.archive] | lower }}</option>
-              {% for value, label in archive_modes.items() %}
-              <option value="{{ value }}" {{ 'selected' if c.media_archive == value }}>{{ label }}</option>
-              {% endfor %}
-            </select></label>
-          <label>Largest file kept
-            <input name="max_mb" class="num" inputmode="numeric" value="{{ c.media_max_mb or '' }}"
-                   placeholder="{{ d.max_bytes // 1000000 }}" title="Blank = the default, {{ d.max_bytes | size }}"> MB</label>
-          <label>Files bigger than that&nbsp;
-            <select name="transcode">
-              <option value="default" {{ 'selected' if c.media_transcode is none }}>Default: {{ 'transcode to fit' if d.transcode else 'leave out' }}</option>
-              <option value="on" {{ 'selected' if c.media_transcode == 1 }}>Transcode to fit</option>
-              <option value="off" {{ 'selected' if c.media_transcode == 0 }}>Leave out</option>
-            </select></label>
-          <button class="small">Save</button>
-        </form>
-        <p class="small muted">Transcoding turns videos and animated GIFs into MP4s at whatever quality fits the limit,
-          and scales pictures down. It runs in the background and can take a few minutes per video.
-          Files already archived stay as they are. Pictures and videos shared with another community
-          get the more generous of the two communities' settings. The defaults are set on the
+        {{ media_form('/c/' ~ c.id ~ '/media-settings', media_choices, media_default, 'Default', can_transcode,
+                      media_kinds, transcoded) }}
+        <p class="small muted">Transcoding turns videos and animated GIFs into MP4s at whatever quality fits the size
+          chosen, and scales pictures down. It runs in the background and can take a few minutes per video.
+          Saving also goes through the files already archived: pictures and videos now over the size they're kept
+          as they are up to are transcoded down, replacing the bigger copy. Files of a kind you stop archiving
+          stay. Files shared with another community get the more generous
+          of the two communities' settings. The defaults are set on the
           <a href="/storage#media-defaults">Storage</a> page.</p>
-        {% if on and not can_transcode %}
-        <div class="flash error" role="alert">{{ icon('alert') }} <span>ffmpeg isn't installed on the server, so oversized files
-          are left out for now.</span></div>
-        {% endif %}
       </section>
 
       {% set ok = media.counts.get('ok') %}

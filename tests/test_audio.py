@@ -124,7 +124,7 @@ def test_pictures_only_communities_leave_audio_out(settings, server, aubouncer):
     tid = post_linking(server, aubouncer, "https://pod.test/ep1.mp3")
     cid = community_of(aubouncer, tid)
     client = logged_in(settings, aubouncer)
-    client.post(f"/c/{cid}/media-settings", data={"archive": "images", "max_mb": "", "transcode": "default"})
+    client.post(f"/c/{cid}/media-settings", data={"video_save": "off", "audio_save": "off"})
     aubouncer.fetch_audio([tid])
     row = audio_row(aubouncer, "https://pod.test/ep1.mp3")
     assert row["status"] == "skipped" and row["error"] == "audio files aren't archived for this community"

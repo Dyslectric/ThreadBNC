@@ -1,0 +1,49 @@
+{% from "_macros.html" import icon %}
+
+{# Media settings for each kind of file: the Storage page's defaults, or one
+   community's. choices: {kind: {save, keep_mb, target_mb, fit}} as saved (a
+   field left out follows `inherited`, a MediaPolicy); source: what the
+   inherited settings are called ("Default", "Server setting"). #}
+{% macro media_form(action, choices, inherited, source, can_transcode, kinds, transcoded) %}
+<form method="post" action="{{ action }}" class="stack media-form">
+  {% for kind, label in kinds.items() %}
+  {% set c = choices.get(kind, {}) %}
+  {% set d = inherited.kind(kind) %}
+  <fieldset class="media-kind">
+    <legend>{{ label }}</legend>
+    <label>Archive&nbsp;
+      <select name="{{ kind }}_save">
+        <option value="default" {{ 'selected' if c.save is not defined or c.save is none }}>{{ source }}: {{ 'yes' if d.save else 'no' }}</option>
+        <option value="on" {{ 'selected' if c.save == true }}>Yes</option>
+        <option value="off" {{ 'selected' if c.save == false }}>No</option>
+      </select></label>
+    <label>Kept as they are up to
+      <input name="{{ kind }}_keep" class="num" inputmode="numeric" value="{{ c.keep_mb or '' }}"
+             placeholder="{{ d.keep_bytes // 1000000 }}" title="Blank = {{ source | lower }}, {{ d.keep_bytes | size }}"> MB</label>
+    {% if kind in transcoded %}
+    {% set bigger = 'default' if c.target_mb is not defined and not c.fit else 'leave' if c.target_mb == 0 else 'transcode' %}
+    <div class="row media-bigger">
+      <label>Bigger ones&nbsp;
+        <select name="{{ kind }}_bigger">
+          <option value="default" {{ 'selected' if bigger == 'default' }}>{{ source }}: {{ ('transcode to ' ~ (d.target_bytes | size)) if d.target_bytes else 'leave out' }}</option>
+          <option value="transcode" {{ 'selected' if bigger == 'transcode' }}>Transcode down to…</option>
+          <option value="leave" {{ 'selected' if bigger == 'leave' }}>Leave out</option>
+        </select></label>
+      <label><input name="{{ kind }}_target" class="num" inputmode="numeric" value="{{ c.target_mb or '' }}"
+             placeholder="{{ c.keep_mb or d.keep_bytes // 1000000 }}" aria-label="{{ label }}: transcode down to (MB)"
+             title="Transcode down to this; blank = the size they're kept as they are up to"> MB</label>
+    </div>
+    {% else %}
+    <p class="small muted">Bigger ones are left out: audio isn't transcoded.</p>
+    {% endif %}
+  </fieldset>
+  {% endfor %}
+  <div><button class="small">Save</button></div>
+</form>
+{% set wants = [] %}
+{% for kind in transcoded %}{% if inherited.override(choices).kind(kind).target_bytes %}{% set _ = wants.append(kind) %}{% endif %}{% endfor %}
+{% if wants and not can_transcode %}
+<div class="flash error" role="alert">{{ icon('alert') }} <span>ffmpeg isn't installed on the server, so files too big
+  to keep as they are are left out for now.</span></div>
+{% endif %}
+{% endmacro %}
