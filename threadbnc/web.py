@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import quote, urlencode, urlparse
+from urllib.parse import parse_qsl, quote, urlencode, urlparse
 
 from fastapi import FastAPI, Form, HTTPException, Query, Request
 from fastapi.responses import (
@@ -544,6 +544,12 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             url = default.split("#")[0]
         return url + (f"#{anchor}" if anchor else "")
 
+    def with_at(url: str, at: str) -> str:
+        """A feed's address, with the list as of `at` (feed_as_of)."""
+        u = urlparse(url)
+        query = [(k, v) for k, v in parse_qsl(u.query, keep_blank_values=True) if k != "at"] + [("at", at)]
+        return u._replace(query=urlencode(query)).geturl()
+
     def object_page(oid: int) -> str:
         """Where an object lives: its thread, scrolled to it."""
         with db.connect() as conn:
@@ -565,27 +571,46 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                 conn.execute("INSERT INTO app_settings(key, value) VALUES (?, ?) "
                              "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
 
+    SNAPSHOT_MAX_AGE = timedelta(days=1)
+
+    def feed_as_of(request: Request, at: str | None) -> tuple[str, bool]:
+        """The time a feed's list is as of, and whether that's from the address.
+        A feed page puts the time it was made in its address (app.js), so going
+        back to it shows the same posts: none that arrived since, and the ones
+        read since still there. Reloading (the browser says max-age=0 or
+        no-cache) starts afresh, as does an old or unreadable time."""
+        then = parse_ts(at)
+        now = datetime.now(timezone.utc)
+        cache = request.headers.get("cache-control", "") + request.headers.get("pragma", "")
+        reloaded = "max-age=0" in cache or "no-cache" in cache
+        if then is None or reloaded or not timedelta(0) <= now - then <= SNAPSHOT_MAX_AGE:
+            return fmt_ts(now), False
+        return fmt_ts(then), True
+
     @app.get("/", response_class=HTMLResponse)
     def home(request: Request, sort: str | None = None, t: str | None = None, unread: str | None = None,
-             page: int = 1, view: str | None = None):
+             page: int = 1, view: str | None = None, at: str | None = None):
         """The main feed: every followed community, as the address says or else
         as its defaults say."""
+        as_of, snapshot = feed_as_of(request, at)
         save_view("home_view", view)
         chosen = db.get_setting("home_view")
         with db.connect() as conn:
             defaults = feed_mod.load_defaults(conn)
             s = defaults.with_url(sort, t, unread)
-            fp = feed_mod.load_feed(conn, sort=s.sort, window=s.window, unread=s.unread, page=page)
+            fp = feed_mod.load_feed(conn, sort=s.sort, window=s.window, unread=s.unread, page=page, as_of=as_of)
             follows = feed_mod.followed_communities(conn)
         # The home feed mixes communities, so "auto" goes by what's on this page.
         shown = feed_mod.pick_view(chosen, sum(1 for i in fp.items if i["thumb"]), len(fp.items))
         return render(request, "feed.html", feed=fp, follows=follows, sort=s.sort, window=s.window, unread=s.unread,
-                      defaults=defaults, custom=None, base_url="/", community=None, view=shown, view_chosen=chosen)
+                      defaults=defaults, custom=None, base_url="/", community=None, view=shown, view_chosen=chosen,
+                      snapshot=snapshot)
 
     @app.get("/f/{fid}", response_class=HTMLResponse)
     def custom_feed_page(request: Request, fid: int, sort: str | None = None, t: str | None = None,
-                         unread: str | None = None, page: int = 1, view: str | None = None):
+                         unread: str | None = None, page: int = 1, view: str | None = None, at: str | None = None):
         """One of your own feeds: its communities, shown with its own defaults."""
+        as_of, snapshot = feed_as_of(request, at)
         if view in (*feed_mod.VIEWS, "auto"):
             with db.transaction() as conn:
                 conn.execute("UPDATE custom_feeds SET view_mode=? WHERE id=?", (None if view == "auto" else view, fid))
@@ -596,12 +621,12 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             defaults = feed_mod.feed_settings(custom, feed_mod.load_defaults(conn))
             s = defaults.with_url(sort, t, unread)
             fp = feed_mod.load_feed(conn, community_ids=custom["community_ids"], sort=s.sort, window=s.window,
-                                    unread=s.unread, page=page)
+                                    unread=s.unread, page=page, as_of=as_of)
             follows = feed_mod.followed_communities(conn)
         shown = feed_mod.pick_view(custom["view_mode"], sum(1 for i in fp.items if i["thumb"]), len(fp.items))
         return render(request, "feed.html", feed=fp, follows=follows, sort=s.sort, window=s.window, unread=s.unread,
                       defaults=defaults, custom=custom, base_url=f"/f/{fid}", community=None, view=shown,
-                      view_chosen=custom["view_mode"])
+                      view_chosen=custom["view_mode"], snapshot=snapshot)
 
     @app.post("/feed/defaults")
     def feed_defaults(request: Request, sort: str = Form("new"), t: str = Form("all"), unread: str = Form(""),
@@ -686,7 +711,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                   undo={"action": "/feed/mark-unread", "fields": {"stamp": stamp}})
         else:
             flash(request, "Nothing was unread.")
-        return RedirectResponse(back(request, "/"), status_code=303)
+        # The page's list is as of now, so what was just marked goes (feed_as_of).
+        return RedirectResponse(with_at(back(request, "/"), stamp), status_code=303)
 
     @app.post("/feed/mark-unread")
     def mark_unread(request: Request, stamp: str = Form(...)):
@@ -774,14 +800,16 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
 
     @app.get("/kept", response_class=HTMLResponse)
     def kept(request: Request, tab: str = "threads", sort: str | None = None, t: str | None = None,
-             unread: str | None = None, page: int = 1, view: str | None = None, everything: str = ""):
+             unread: str | None = None, page: int = 1, view: str | None = None, everything: str = "",
+             at: str | None = None):
         """Kept posts read like a feed, with tabs for just the videos and audio,
         kept articles, posts where something changed lately, and the log of
         every change seen."""
         tab = tab if tab in KEPT_TABS else "threads"
         page = max(1, page)
         save_view("kept_view", view)
-        out: dict[str, Any] = {"tab": tab, "page": page}
+        as_of, snapshot = feed_as_of(request, at)
+        out: dict[str, Any] = {"tab": tab, "page": page, "snapshot": snapshot}
         with db.connect() as conn:
             since = fmt_ts(parse_ts(utcnow()) - timedelta(hours=1))  # type: ignore[operator]
             jobs = conn.execute("SELECT * FROM jobs WHERE kind='ingest' AND (status IN ('queued', 'running') "
@@ -796,7 +824,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                 s = feed_mod.load_defaults(conn).with_url(sort, t, unread)
                 out.update(sort=s.sort, window=s.window, unread=s.unread,
                            feed=feed_mod.load_feed(conn, kept_only=True, media=KEPT_MEDIA.get(tab, ""), sort=s.sort,
-                                                   window=s.window, unread=s.unread, page=page))
+                                                   window=s.window, unread=s.unread, page=page, as_of=as_of))
                 chosen = db.get_setting("kept_view")
                 out.update(view_chosen=chosen, view=feed_mod.pick_view(
                     chosen, sum(1 for i in out["feed"].items if i["thumb"]), len(out["feed"].items)))
@@ -1187,8 +1215,10 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
 
     @app.get("/c/{cid}", response_class=HTMLResponse)
     def community(request: Request, cid: int, tab: str = "feed", sort: str | None = None, t: str | None = None,
-                  unread: str | None = None, page: int = 1, live_sort: str = "Hot", view: str | None = None):
+                  unread: str | None = None, page: int = 1, live_sort: str = "Hot", view: str | None = None,
+                  at: str | None = None):
         save_view("", view, cid)
+        as_of, snapshot = feed_as_of(request, at)
         with db.connect() as conn:
             s = feed_mod.load_defaults(conn).with_url(sort, t, unread)
         sort, t, unread = s.sort, s.window, s.unread
@@ -1201,7 +1231,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             fp, shown = None, "list"
             if tab in ("feed", "kept"):
                 fp = feed_mod.load_feed(conn, community_id=cid, sort=sort, window=t, unread=unread,
-                                        kept_only=tab == "kept", page=page)
+                                        kept_only=tab == "kept", page=page, as_of=as_of)
                 shown = feed_mod.pick_view(c["view_mode"], *feed_mod.media_share(conn, cid))
             counts = {r["k"]: r["n"] for r in conn.execute(
                 "SELECT CASE WHEN trashed_at IS NOT NULL THEN 'trash' ELSE retention END AS k, COUNT(*) n "
@@ -1244,7 +1274,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                       page=page, live_sort=live_sort, follows=follows, base_url=f"/c/{cid}",
                       community=c, powers=powers, mod_data=mod_data, view=shown, view_chosen=c["view_mode"],
                       media=media_data, media_default=bouncer.media.default_policy,
-                      archive_modes=media_mod.ARCHIVE_MODES, can_transcode=bouncer.media.can_transcode())
+                      archive_modes=media_mod.ARCHIVE_MODES, can_transcode=bouncer.media.can_transcode(),
+                      snapshot=snapshot)
 
     @app.post("/c/{cid}/media-settings")
     def media_settings(request: Request, cid: int, archive: str = Form("default"), max_mb: str = Form(""),

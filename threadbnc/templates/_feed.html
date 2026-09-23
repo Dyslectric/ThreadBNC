@@ -256,10 +256,13 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
 </article>
 {% endmacro %}
 
-{# The feed's posts: as posts, pictures in one column, or a grid of pictures. #}
-{% macro posts(items, view, show_community=True) %}
+{# The feed's posts: as posts, pictures in one column, or a grid of pictures.
+   as_of: the time the list is as of, which app.js puts in the address so going
+   back shows the same posts; snapshot: the address already said (feed_as_of). #}
+{% macro posts(items, view, show_community=True, as_of=none, snapshot=false) %}
 {% set layout = {'tiles': 'tiles', 'pictures': 'pictures'}.get(view, 'cards') if items else 'cards' %}
-<div id="items" class="{{ layout }}" data-items{% if mark_on_scroll() %} data-mark-on-scroll{% endif %}>
+<div id="items" class="{{ layout }}" data-items{% if mark_on_scroll() %} data-mark-on-scroll{% endif %}
+     {%- if as_of %} data-as-of="{{ as_of }}"{% endif %}{% if snapshot %} data-snapshot{% endif %}>
 {% for i in items %}
   {% set next_id = loop.nextitem.id if loop.nextitem else none %}
   {% if view == 'tiles' %}{{ post_tile(i, show_community, next_id) }}
@@ -269,8 +272,10 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
 </div>
 {% endmacro %}
 
+{# Later pages are as of the same time as this one, so none are skipped as posts are read. #}
 {% macro pager(feed, base, sort, window, unread) %}
-{{ load_more(feed_url(base, sort, window, unread, feed.page + 1) if feed.has_more else none,
+{% set at = '&at=' ~ (feed.as_of | urlencode) if feed.as_of else '' %}
+{{ load_more(feed_url(base, sort, window, unread, feed.page + 1) ~ at if feed.has_more else none,
              feed_url(base, sort, window, unread) if feed.page > 1 else none, feed.page) }}
 {% endmacro %}
 

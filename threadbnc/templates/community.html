@@ -101,7 +101,7 @@
 
     {% if tab in ('feed', 'kept') %}
       {{ controls(base, sort, window, unread, c.id, view, view_chosen) }}
-      {{ posts(feed.items, view, show_community=False) }}
+      {{ posts(feed.items, view, show_community=False, as_of=feed.as_of, snapshot=snapshot) }}
       {% if not feed.items %}
         <section class="card empty"><p class="muted">
           {% if tab == 'kept' %}Nothing kept from this community yet. Use Keep on a post.

@@ -25,7 +25,7 @@
         {{ controls(base_url ~ '?', sort, window, unread, view=view, view_chosen=view_chosen,
                     feed_id=custom.id if custom else none, defaults=defaults) }}
       </div>
-      {{ posts(feed.items, view) }}
+      {{ posts(feed.items, view, as_of=feed.as_of, snapshot=snapshot) }}
       {% if not feed.items %}
         <section class="card empty"><p class="muted">
           {% if custom and not custom.community_ids %}This feed has no communities yet. <a href="/f/{{ custom.id }}/edit">Choose some</a>.

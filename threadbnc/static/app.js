@@ -238,6 +238,13 @@ document.documentElement.classList.add("js");
       const data = await post(form.action, fields);
       const dest = new URL(data.redirect || location.href, location.href);
       if (dest.pathname !== location.pathname) { location.assign(dest.href); return; }
+      // Mark all read: the list is now as of then, so what it marked goes.
+      const at = dest.searchParams.get("at");
+      if (at && at !== new URL(location.href).searchParams.get("at")) {
+        const here = new URL(location.href);
+        here.searchParams.set("at", at);
+        history.replaceState(history.state, "", here.href);
+      }
       const msgs = data.messages || [];
       const undo = (msgs.find((m) => m.undo) || {}).undo;
       const gone = form.dataset.gone;
@@ -425,6 +432,28 @@ document.documentElement.classList.add("js");
   window.addEventListener("pagehide", () => {
     if (seenQueue.size && navigator.sendBeacon) navigator.sendBeacon("/feed/seen", seenBody());
   });
+
+  // ---- going back to a feed shows the same posts -----------------------------------
+  // A feed's list is as of the time it was made (data-as-of). That goes into the
+  // address, so Back asks for the same list: posts read since (scrolled past or
+  // opened) stay put, and ones that arrived since wait. Reloading, or the Feed
+  // link, starts afresh. The server sees a reload coming (web.py: feed_as_of); if
+  // it didn't, or the address came from outside (a bookmark), load it afresh here.
+  function keepFeedAsOf() {
+    const list = $("[data-items][data-as-of]");
+    if (!list) return;
+    const url = new URL(location.href);
+    const nav = ((performance.getEntriesByType && performance.getEntriesByType("navigation")[0]) || {}).type;
+    const fromHere = document.referrer.startsWith(location.origin);
+    if (list.hasAttribute("data-snapshot") && (nav === "reload" || (nav === "navigate" && !fromHere))) {
+      url.searchParams.delete("at");
+      location.replace(url.href);
+      return;
+    }
+    if (url.searchParams.get("at") === list.dataset.asOf) return;
+    url.searchParams.set("at", list.dataset.asOf);
+    history.replaceState(history.state, "", url.href);
+  }
 
   // ---- linked articles' pictures and audio, fetched as posts are scrolled to ---------
   // A post whose linked article (or the pictures in it) isn't saved yet, or
@@ -837,6 +866,7 @@ document.documentElement.classList.add("js");
   }, true);
 
   document.addEventListener("DOMContentLoaded", () => {
+    keepFeedAsOf();
     watchUnread(document);
     watchArticles(document);
     if (location.hash === "#follow") {

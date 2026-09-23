@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
@@ -96,7 +98,7 @@ def test_mark_all_read_can_be_undone(settings, server, bouncer):
     client.post("/login", data={"password": "pw"})
     r = client.post("/feed/mark-read", headers={"referer": "http://testserver/", "X-ThreadBNC-Fetch": "1"})
     data = r.json()  # sent by app.js: where it would go, and the message with its Undo
-    assert data["ok"] and data["redirect"] == "/" and data["messages"][0]["text"] == "Marked 3 posts as read."
+    assert data["ok"] and data["redirect"].startswith("/?at=") and data["messages"][0]["text"] == "Marked 3 posts as read."
     undo = data["messages"][0]["undo"]
     assert "all caught up" in client.get("/?unread=1").text
     client.post(undo["action"], data=undo["fields"])
@@ -118,6 +120,38 @@ def test_posts_scrolled_past_are_read(settings, server, bouncer):
     assert client.post("/feed/seen", data={"ids": seen}).json()["marked"] == 0  # already read
     unread = client.get("/?unread=1").text
     assert "post 3" in unread and "post 1" not in unread
+
+
+def test_going_back_to_a_feed_shows_the_same_posts(settings, server, bouncer):
+    """The page puts the time its list is as of in its address (app.js), so
+    Back shows the same posts: read ones stay, new ones wait. A reload, or the
+    feed without that time, is up to date."""
+    cid = followed_with_posts(server, bouncer)
+    client = TestClient(create_app(settings, bouncer))
+    client.post("/login", data={"password": "pw"})
+    page = client.get("/?unread=1").text
+    as_of = re.search(r'data-as-of="([^"]+)"', page).group(1)
+    assert "data-snapshot" not in page
+    with bouncer.db.connect() as conn:
+        ids = {r["title"]: r["id"] for r in conn.execute(
+            "SELECT t.id, r.title FROM archived_threads t JOIN revisions r ON r.object_id=t.root_object_id")}
+    client.post("/feed/seen", data={"ids": [ids["post 1"]]})  # scrolled past
+    client.post(f"/t/{ids['post 2']}/read")  # opened
+    server.add_post("4", "post 4", "new", created=utcnow())
+    bouncer.poll_follow(cid)
+
+    back = client.get("/", params={"unread": "1", "at": as_of}).text
+    assert "data-snapshot" in back and all(f"post {n}" in back for n in (1, 2, 3)) and "post 4" not in back
+    for fresh in (client.get("/", params={"unread": "1", "at": as_of}, headers={"cache-control": "max-age=0"}).text,
+                  client.get("/?unread=1").text,
+                  client.get("/", params={"unread": "1", "at": from_now(days=-2)}).text):  # too old to be a Back
+        assert "post 4" in fresh and "post 3" in fresh and "post 1" not in fresh and "post 2" not in fresh
+        assert "data-snapshot" not in fresh
+
+    # Mark all read moves the list on to then, so what it marked goes.
+    r = client.post("/feed/mark-read", headers={"referer": f"http://testserver/?unread=1&at={as_of}",
+                                                "X-ThreadBNC-Fetch": "1"})
+    assert "all caught up" in client.get(r.json()["redirect"]).text
 
 
 def test_trash_undo_restores_every_copy(settings, server, bouncer):

@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from . import articles, dupes
-from .db import Conn, fmt_ts
+from .db import Conn, fmt_ts, parse_ts
 from .render import AUDIO_EXTENSIONS, VIDEO_EXTENSIONS, looks_like_audio
 
 # Posts of the same link or text are one feed entry; sorts use the group's totals.
@@ -70,6 +70,7 @@ class FeedPage:
     items: list[dict[str, Any]]
     page: int
     has_more: bool
+    as_of: str | None = None  # the time this list is as of (load_feed)
 
 
 _BASE = """
@@ -80,6 +81,7 @@ SELECT * FROM (
          SUM(n_comments) OVER (PARTITION BY dkey) AS g_comments,
          SUM(n_new) OVER (PARTITION BY dkey) AS g_new,
          SUM(CASE WHEN last_viewed_at IS NULL THEN 1 ELSE 0 END) OVER (PARTITION BY dkey) AS g_unread,
+         SUM(touched) OVER (PARTITION BY dkey) AS g_touched,
          MAX(last_activity) OVER (PARTITION BY dkey) AS g_activity
   FROM (
     SELECT t.id, t.retention, t.retained_at, t.promoted_at, t.expires_at, t.last_viewed_at, t.community_id,
@@ -87,7 +89,7 @@ SELECT * FROM (
            o.cur_missing, o.revision_count, o.thumbnail_url, o.upvotes, o.downvotes, o.dupe_key,
            COALESCE(o.dupe_key, 'thread:' || t.id) AS dkey,
            r.title, r.body, r.url, r.metadata_json AS rmeta, a.username, a.instance AS a_instance,
-           c.name AS cname, c.canonical_ap_id AS c_ap,
+           c.name AS cname, c.canonical_ap_id AS c_ap, {touched} AS touched,
            (SELECT COUNT(*) FROM objects x WHERE x.thread_id=t.id AND x.object_type='comment') AS n_comments,
            (SELECT COUNT(*) FROM objects x WHERE x.thread_id=t.id AND x.discovered_late=1
                AND t.last_viewed_at IS NOT NULL AND x.first_seen_at > t.last_viewed_at) AS n_new,
@@ -218,10 +220,14 @@ def _scope(community_id: int | None, community_ids: list[int] | None, column: st
 def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: list[int] | None = None,
               thread_ids: list[int] | None = None, sort: str = "new", window: str = "all",
               unread: str | bool = "", kept_only: bool = False, media: str = "", page: int = 1,
-              per_page: int = 25) -> FeedPage:
+              per_page: int = 25, as_of: str | None = None) -> FeedPage:
     """A page of posts. `thread_ids`: just those (the caller orders them);
     kept_only with no communities given: kept posts from anywhere, followed or not.
-    `media`: only posts that are a video or audio (MEDIA_KINDS)."""
+    `media`: only posts that are a video or audio (MEDIA_KINDS).
+
+    `as_of`: the list as it was then, for going back to a feed (and its later
+    pages): posts that arrived since are left out, and ones read since stay,
+    even when only unread ones are shown. Otherwise the list is as of now."""
     if thread_ids is not None:
         where, args = (f"t.id IN ({','.join('?' * len(thread_ids))})", list(thread_ids)) if thread_ids \
             else ("1=0", [])
@@ -230,6 +236,11 @@ def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: lis
     else:
         where, args = _scope(community_id, community_ids, "t.community_id")
     scope = f"AND {where}"
+    head: list[Any] = []  # the parameter for {touched}, which comes before the rest
+    if as_of:
+        scope += " AND o.first_seen_at <= ?"
+        args.append(as_of)
+        head.append(as_of)
     if kept_only:
         scope += " AND t.retention='manual'"
     if media in MEDIA_KINDS:
@@ -240,13 +251,15 @@ def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: lis
     delta = WINDOWS.get(window)
     if delta is not None:
         filters += " AND created_at >= ?"
-        args.append(fmt_ts(datetime.now(timezone.utc) - delta))
+        args.append(fmt_ts((parse_ts(as_of) or datetime.now(timezone.utc)) - delta))
     mode = unread_mode(unread)
-    group_filters = f" AND {UNREAD[mode]}" if mode else ""
+    group_filters = f" AND ({UNREAD[mode]} OR g_touched > 0)" if mode else ""
+    touched = "CASE WHEN t.last_viewed_at > ? THEN 1 ELSE 0 END" if as_of else "0"
     order = SORTS.get(sort, SORTS["new"])
     page = max(1, page)
-    rows = conn.execute(_BASE.format(scope=scope, filters=filters, group_filters=group_filters, order=order),
-                        [*args, per_page + 1, (page - 1) * per_page]).fetchall()
+    rows = conn.execute(_BASE.format(scope=scope, filters=filters, group_filters=group_filters, order=order,
+                                     touched=touched),
+                        [*head, *args, per_page + 1, (page - 1) * per_page]).fetchall()
     items = [dict(r) for r in rows[:per_page]]
     thumbs = thumbnails(conn, [(i["oid"], i["url"], i["thumbnail_url"]) for i in items])
     copies = dupes.load_copies(conn, [i["dupe_key"] for i in items])
@@ -262,7 +275,7 @@ def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: lis
         meta = json.loads(i.pop("rmeta") or "{}")
         i["nsfw"], i["spoiler"] = bool(meta.get("nsfw")), bool(meta.get("spoiler"))
         attach_group(i, copies.get(i["dupe_key"]) or [])
-    return FeedPage(items, page, len(rows) > per_page)
+    return FeedPage(items, page, len(rows) > per_page, as_of)
 
 
 def count_kept_media(conn: Conn, media: str) -> int:
