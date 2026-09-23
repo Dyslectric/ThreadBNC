@@ -302,7 +302,9 @@ def test_new_post_in_a_followed_community_is_captured_at_once(fed, followed, bou
     assert last_push(bouncer)["status"] == "done"
     t = one(bouncer, "SELECT t.* FROM archived_threads t JOIN objects o ON o.id=t.root_object_id "
                      "WHERE o.canonical_ap_id=?", server.posts["2"].ap_id)
-    assert t["retention"] == "auto" and t["source_domain"] == DOMAIN  # read from the community's home after that
+    # Read from your server from then on (it's pushed everything), without its comments until opened.
+    assert t["retention"] == "auto" and t["source_domain"] == HOME and t["last_full_fetch_at"] is None
+    assert one(bouncer, "SELECT COUNT(*) FROM objects WHERE thread_id=?", t["id"])[0] == 1
 
 
 def test_removal_and_lock_are_recorded(fed, followed, bouncer, server):
@@ -318,11 +320,14 @@ def test_removal_and_lock_are_recorded(fed, followed, bouncer, server):
 
 
 def test_pushes_keep_the_source_servers_vote_counts(fed, followed, bouncer, server, monkeypatch):
+    """A thread read from another server (e.g. kept by link before you followed
+    its community) keeps that server's counts over your server's partial view."""
     from dataclasses import replace
     from .conftest import FakeAdapter
     post_ap = server.posts["1"].ap_id
     with bouncer.db.transaction() as conn:
         conn.execute("UPDATE objects SET upvotes=500, score=480 WHERE canonical_ap_id=?", (post_ap,))
+        conn.execute("UPDATE archived_threads SET source_domain=?", (DOMAIN,))
     real = FakeAdapter.fetch_post
     monkeypatch.setattr(FakeAdapter, "fetch_post", lambda self, lid: replace(real(self, lid), upvotes=3, score=3))
     server.add_comment("1", "10", "hi", author=ALICE)

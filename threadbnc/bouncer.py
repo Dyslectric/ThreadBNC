@@ -203,7 +203,14 @@ class Bouncer:
             ).fetchone()
 
     def _ingest_post(self, post: NPost, domain: str, local_id: str, adapter: ThreadiverseAdapter, *,
-                     source_url: str, retention: str) -> int:
+                     source_url: str, retention: str, capture: bool = False) -> int:
+        """Store a post as a new thread (or return the one it already is).
+
+        `capture`: a post arriving in a followed community (a push, or a
+        community check). Only the post is stored, as read from where it
+        arrived: its comments are read when it's opened (open_threads), and
+        nothing else is asked of any server. Otherwise (you asked for this
+        post) it's read from the best server along with its comments."""
         existing = self._existing_thread(post.ap_id)
         if existing:
             if retention == "manual" and existing["trashed_at"]:
@@ -212,9 +219,13 @@ class Bouncer:
                 self.promote(existing["id"])
             return existing["id"]
 
-        src_domain, src_local, post = self._best_source(post, domain, local_id, adapter)
-        src_adapter = self.reader(src_domain, self._community_id(post.community.ap_id))
-        comments = src_adapter.fetch_comments(src_local)
+        if capture:
+            src_domain, src_local, src_adapter = domain, local_id, adapter
+            comments: list[NComment] = []
+        else:
+            src_domain, src_local, post = self._best_source(post, domain, local_id, adapter)
+            src_adapter = self.reader(src_domain, self._community_id(post.community.ap_id))
+            comments = src_adapter.fetch_comments(src_local)
         now = utcnow()
         result = store.ApplyResult()
         with self.db.transaction() as conn:
@@ -235,11 +246,12 @@ class Bouncer:
             store.apply_comments(conn, tid, root_id, cid, comments, src_domain, now, True,
                                  getattr(comments, "complete", True), result)
             expires = self._expiry_for(conn, cid, now) if retention == "auto" else None
-            conn.execute(
-                "UPDATE archived_threads SET last_full_fetch_at=?, remote_comment_count=?, "
-                "remote_newest_comment_at=? WHERE id=?",
-                (now, post.comment_count, post.newest_comment_at, tid),
-            )
+            if not capture:  # its comments are stored as of now
+                conn.execute(
+                    "UPDATE archived_threads SET last_full_fetch_at=?, remote_comment_count=?, "
+                    "remote_newest_comment_at=? WHERE id=?",
+                    (now, post.comment_count, post.newest_comment_at, tid),
+                )
             conn.execute(
                 "UPDATE archived_threads SET root_object_id=?, community_id=?, expires_at=?, next_check_at=? "
                 "WHERE id=?",
@@ -540,8 +552,8 @@ class Bouncer:
         post has federated there, since that's where every comment and
         moderation action arrives."""
         home = post.community.domain
-        if not home or home == domain:
-            return
+        if not home or home == domain or domain in self.http.throttle.exempt:
+            return  # already home, or on your own server, which pushes bring everything to
         try:
             new_domain, new_local, _ = self._best_source(post, domain, local, self.adapter_for(domain))
         except RemoteError:
@@ -745,6 +757,10 @@ class Bouncer:
         with self.db.connect() as conn:
             f = conn.execute("SELECT * FROM community_follows WHERE community_id=?", (community_id,)).fetchone()
         ref = self.community_ref(community_id)
+        if f["push_state"] == "subscribed" and f["push_domain"]:
+            # Pushed: catch anything a delivery missed by reading the community
+            # as your own server has it, which asks nothing of anyone else.
+            ref = CommunityRef(f["push_domain"], ref.name, ref.home or ref.domain)
         now = utcnow()
         since = parse_ts(f["capture_since"])
         # First poll: one page (backfill). Later polls: keep paging until we hit a
@@ -789,7 +805,7 @@ class Bouncer:
                 continue
             try:
                 self._ingest_post(post, ref.domain, post.local_id, adapter, source_url=post.ap_id,
-                                  retention="auto")
+                                  retention="auto", capture=True)
                 captured += 1
             except RemoteError as exc:
                 log.warning("auto-capture of %s failed: %s", post.ap_id, exc)
@@ -907,9 +923,6 @@ class Bouncer:
             follows = [r["community_id"] for r in conn.execute(
                 "SELECT community_id FROM community_follows WHERE active=1 AND "
                 "(next_poll_at IS NULL OR next_poll_at<=?)", (now,))]
-            threads = [r["id"] for r in conn.execute(
-                "SELECT id FROM archived_threads WHERE active=1 AND root_object_id IS NOT NULL AND "
-                "(next_check_at IS NULL OR next_check_at<=?) ORDER BY next_check_at LIMIT 25", (now,))]
         for cid in follows:
             if self._stop.is_set():
                 return
@@ -919,26 +932,16 @@ class Bouncer:
                     log.info("community %s: auto-captured %d posts", cid, n)
             except RemoteError as exc:
                 log.warning("poll of community %s failed: %s", cid, exc)
-        for tid in threads:
-            if self._stop.is_set():
-                return
-            while self.run_one_job():  # user requests jump the queue
-                pass
-            try:
-                self.sync_thread(tid)
-            except RemoteError as exc:
-                log.warning("sync of thread %s failed: %s", tid, exc)
-            except Exception:
-                log.error("sync of thread %s crashed: %s", tid, traceback.format_exc())
+        # Comments are never checked in the background: they're read when a
+        # post is opened (open_threads, a job), like a browser would.
         if not self._media_backfilled:
             with self.db.transaction() as conn:
                 media.register_all_existing(conn)
                 media.skip_unprobed_links(conn)
                 articles.register_all_existing(conn)
             self._media_backfilled = True
-        # A batch per tick, so a backlog of links doesn't hold up checking threads.
-        if not self._stop.is_set():
-            self.articles.fetch_pending(limit=20)
+        # Linked articles aren't fetched in the background either: opening or
+        # keeping a post saves its article (open_threads).
         while not self._stop.is_set() and self.media.fetch_pending(limit=10):
             while self.run_one_job():
                 pass

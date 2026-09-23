@@ -371,6 +371,9 @@ def test_follow_a_subreddit_conservatively(bouncer, reddit):
     text = one(bouncer, "SELECT r.url, r.body FROM objects o JOIN revisions r ON r.object_id=o.id "
                         "WHERE canonical_ap_id=?", "https://www.reddit.com/r/pics/comments/p2/")
     assert text["url"] is None and text["body"].startswith("Some **text**")
+    # Comments are read when a post is opened, not when it's captured.
+    assert one(bouncer, "SELECT COUNT(*) FROM objects WHERE object_type='comment'")[0] == 0
+    bouncer.open_threads(col(bouncer, "SELECT id FROM archived_threads"))
     reply = one(bouncer, "SELECT parent_id FROM objects WHERE canonical_ap_id LIKE '%/_/c2/'")[0]
     assert reply == one(bouncer, "SELECT id FROM objects WHERE canonical_ap_id LIKE '%/_/c1/'")[0]
     # New threads are re-checked no more often than the subreddit.

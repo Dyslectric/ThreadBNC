@@ -340,15 +340,19 @@ class Federation:
             return "skipped", "thread in the trash"
         now = utcnow()
         result = store.ApplyResult()
+        # Counts from your server are its own partial view, unless the thread is
+        # read from your server anyway (captured from a push).
+        partial = thread["source_domain"] != account.domain
         with self.db.transaction() as conn:
-            root_id = store.apply_post(conn, thread["id"], post, account.domain, now, False, result, keep_counts=True)
+            root_id = store.apply_post(conn, thread["id"], post, account.domain, now, False, result,
+                                       keep_counts=partial)
             if comment is not None:
                 parent: int | None = root_id
                 if comment.parent_local_id:
                     r = conn.execute("SELECT id FROM objects WHERE canonical_ap_id=?", (parent_ap,)).fetchone()
                     parent = r["id"] if r else None  # not archived (yet): the next full check places it
                 store.apply_comment(conn, thread["id"], root_id, thread["community_id"], comment, parent,
-                                    account.domain, now, False, result, keep_counts=True)
+                                    account.domain, now, False, result, keep_counts=partial)
             conn.execute("UPDATE community_follows SET last_push_at=? WHERE community_id=?",
                          (now, thread["community_id"]))
         self._mark_subscribed(thread["community_id"])  # its changes are arriving, whatever your server says
@@ -404,6 +408,7 @@ class Federation:
         if created and since and created < since:
             return "skipped", "older than the follow"
         tid = self.bouncer._ingest_post(post, account.domain, post.local_id, self.bouncer.adapter_for(account.domain),
+                                        capture=True,
                                         source_url=post.ap_id, retention="auto")
         with self.db.transaction() as conn:
             conn.execute("UPDATE community_follows SET last_push_at=? WHERE community_id=?",
