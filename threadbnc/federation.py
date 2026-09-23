@@ -39,7 +39,7 @@ from starlette.concurrency import run_in_threadpool
 
 from . import store
 from .accounts import Account, AccountError, Poster
-from .adapters import NComment, NPost, RemoteError, RemoteNotFound, ThreadiverseAdapter, host_of, is_reddit_host, is_rss
+from .adapters import NComment, NPost, RemoteError, RemoteNotFound, RemotePaused, ThreadiverseAdapter, host_of, is_reddit_host, is_rss
 from .db import fmt_ts, parse_ts, utcnow
 
 log = logging.getLogger(__name__)
@@ -303,6 +303,8 @@ class Federation:
         attempts = row["attempts"] + 1
         try:
             status, outcome = self.handle(row)
+        except RemotePaused as exc:  # your server asked us to wait: this try doesn't count
+            status, outcome, attempts = "pending", str(exc), row["attempts"]
         except (AccountError, RemoteError) as exc:  # the server may be busy: try again shortly
             status, outcome = ("failed" if attempts >= MAX_ATTEMPTS else "pending"), str(exc)
         except Exception as exc:

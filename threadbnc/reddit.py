@@ -40,8 +40,8 @@ from urllib.parse import urlencode, urljoin
 import httpx
 
 from . import __version__
-from .adapters.base import RemoteNotFound, RemoteRejected, RemoteUnavailable
-from .adapters.http import HostThrottle
+from .adapters.base import RemoteNotFound, RemotePaused, RemoteRejected, RemoteUnavailable
+from .adapters.http import MAX_PAUSE, HostThrottle, retry_after
 from .db import Database, parse_ts, utcnow
 from .vault import TokenVault, VaultError
 
@@ -263,7 +263,10 @@ class RedditConnection:
             data = resp.json()
         except ValueError:
             data = {}
-        if resp.status_code == 429 or resp.status_code >= 500:
+        self._note_limits(resp)
+        if resp.status_code == 429:
+            raise RemotePaused("Reddit: HTTP 429 (too many requests)", self.paused_until - time.monotonic())
+        if resp.status_code >= 500:
             raise RemoteUnavailable(f"Reddit: HTTP {resp.status_code}")
         if resp.status_code >= 400 or not data.get("access_token"):
             err = data.get("error") or data.get("message") or f"HTTP {resp.status_code}"
@@ -305,7 +308,7 @@ class RedditConnection:
                                     + (cfg.get("last_error") or "the sign-in stopped working"))
         wait = self.paused_until - time.monotonic()
         if wait > 0:
-            raise RemoteUnavailable(f"Reddit rate limit reached; waiting {int(wait) + 1} s before asking again")
+            raise RemotePaused(f"Reddit rate limit reached; waiting {int(wait) + 1} s before asking again", wait)
         return cfg
 
     def get(self, path: str, params: dict[str, Any] | None = None) -> Any:
@@ -404,7 +407,9 @@ class RedditConnection:
         if resp.status_code == 403:
             # Private, quarantined or banned subreddits; never taken as deletion.
             raise RemoteUnavailable(f"Reddit {path}: forbidden (private, quarantined or banned?)")
-        if resp.status_code >= 400 and method != "GET" and resp.status_code != 429 and resp.status_code < 500:
+        if resp.status_code == 429:
+            raise RemotePaused(f"Reddit {path}: HTTP 429 (too many requests)", self.paused_until - time.monotonic())
+        if resp.status_code >= 400 and method != "GET" and resp.status_code < 500:
             raise RemoteRejected(f"Reddit refused: HTTP {resp.status_code}", str(resp.status_code))
         if resp.status_code >= 400:
             raise RemoteUnavailable(f"Reddit {path}: HTTP {resp.status_code}")
@@ -416,14 +421,18 @@ class RedditConnection:
 
     def _note_limits(self, resp: httpx.Response) -> None:
         """Obey Reddit's rate-limit headers: when the window is nearly used up
-        (or we got a 429), stop until it resets."""
+        (or we got a 429), stop until it resets, or for as long as its
+        Retry-After asks if that's longer."""
         try:
             remaining = float(resp.headers.get("x-ratelimit-remaining", "inf"))
             reset = float(resp.headers.get("x-ratelimit-reset", "60"))
         except ValueError:
-            return
+            remaining, reset = float("inf"), 60.0
         if resp.status_code == 429 or remaining < LOW_REMAINING:
-            self.paused_until = time.monotonic() + max(reset, 1.0)
+            if resp.status_code == 429:
+                reset = max(reset, retry_after(resp.headers.get("retry-after")) or 0.0)
+            reset = min(reset, MAX_PAUSE)
+            self.paused_until = max(self.paused_until, time.monotonic() + max(reset, 1.0))
             log.warning("Reddit rate limit: pausing %.0f s (%s requests left)", reset, remaining)
 
     def resolve_share(self, path: str) -> str | None:

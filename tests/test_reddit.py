@@ -11,7 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from threadbnc.accounts import AccountError, Poster
-from threadbnc.adapters import RemoteUnavailable, parse_community_ref, parse_thread_url
+from threadbnc.adapters import RemotePaused, RemoteUnavailable, parse_community_ref, parse_thread_url
 from threadbnc.adapters.reddit import gallery as reddit_gallery
 from threadbnc.reddit import RedditConnection
 from threadbnc.vault import TokenVault
@@ -338,6 +338,23 @@ def test_rate_limit_headers_pause_requests(bouncer, reddit):
         bouncer.reddit_adapter.fetch_post("p1")
     assert len(reddit.requests) == before
 
+
+def test_a_429_waits_as_long_as_retry_after_asks(bouncer, reddit, monkeypatch):
+    bouncer.reddit.connect_app("app1", "s3cret")
+    bouncer.reddit_adapter.fetch_post("p1")  # signs in
+    real = reddit.handle
+
+    def busy(request):
+        if request.url.host == "oauth.reddit.com":
+            return httpx.Response(429, headers={"x-ratelimit-remaining": "0", "x-ratelimit-reset": "10",
+                                                "retry-after": "900"})
+        return real(request)
+
+    monkeypatch.setattr(reddit, "handle", busy)
+    bouncer.reddit._http = httpx.Client(transport=httpx.MockTransport(busy))
+    with pytest.raises(RemotePaused):
+        bouncer.reddit_adapter.fetch_post("p1")
+    assert bouncer.reddit.status()["paused_seconds"] > 890
 
 # -- following -----------------------------------------------------------------------------
 

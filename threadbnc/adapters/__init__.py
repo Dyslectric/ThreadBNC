@@ -15,6 +15,7 @@ from .base import (
     RemoteAuthError,
     RemoteError,
     RemoteNotFound,
+    RemotePaused,
     RemoteRejected,
     RemoteUnavailable,
     ThreadiverseAdapter,
@@ -65,7 +66,7 @@ __all__ = [
     "LemmyAdapter", "ModAction",
     "NActor", "NComment",
     "NCommunity", "NInboxItem", "NPost", "PieFedAdapter", "RemoteAuthError", "RemoteError", "RemoteNotFound",
-    "RemoteRejected", "RemoteUnavailable",
+    "RemotePaused", "RemoteRejected", "RemoteUnavailable",
     "ThreadRef", "ThreadiverseAdapter", "UnsupportedSoftware", "adapter_class", "detect_software", "host_of",
     "is_reddit_host", "is_rss", "parse_community_ref", "parse_thread_url",
 ]

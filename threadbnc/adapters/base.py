@@ -17,6 +17,16 @@ class RemoteUnavailable(RemoteError):
     """Temporary failure (network, 5xx, rate limit). Never implies deletion."""
 
 
+class RemotePaused(RemoteUnavailable):
+    """The server asked us to wait (429, or 503 with Retry-After) and the time
+    isn't up. Not a failure of the thing being fetched: reschedule it for when
+    the pause ends instead of counting it against it."""
+
+    def __init__(self, message: str, seconds: float):
+        super().__init__(message)
+        self.seconds = seconds
+
+
 class RemoteNotFound(RemoteError):
     """The remote says the object does not exist (purged, never existed, or hidden)."""
 

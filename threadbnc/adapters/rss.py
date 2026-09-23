@@ -40,6 +40,7 @@ from .base import (
     NCommunity,
     NPost,
     RemoteNotFound,
+    RemotePaused,
     RemoteUnavailable,
     ThreadiverseAdapter,
     ThreadRef,
@@ -360,12 +361,16 @@ class FeedFetcher:
                     raise RemoteNotFound(f"{current}: {exc}") from exc
                 except httpx.HTTPError as exc:
                     raise RemoteUnavailable(f"{current}: {exc}") from exc
-            self.throttle.wait((urlparse(current).hostname or "").lower())
+            host = (urlparse(current).hostname or "").lower()
+            self.throttle.wait(host)
             try:
                 with self.client.stream("GET", current, headers=headers) as resp:
+                    self.throttle.note(host, resp.status_code, resp.headers)
                     if resp.status_code in (301, 302, 303, 307, 308) and "location" in resp.headers:
                         current = urljoin(current, resp.headers["location"])
                         continue
+                    if resp.status_code == 429:
+                        raise RemotePaused(f"{host}: HTTP 429 (too many requests)", self.throttle.paused_for(host))
                     body = b""
                     if resp.status_code == 200:
                         for chunk in resp.iter_bytes(65536):

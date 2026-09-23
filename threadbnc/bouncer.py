@@ -21,6 +21,7 @@ from .adapters import (
     NPost,
     RemoteError,
     RemoteNotFound,
+    RemotePaused,
     RemoteUnavailable,
     ThreadiverseAdapter,
     UnsupportedSoftware,
@@ -443,6 +444,11 @@ class Bouncer:
                 return result
             full = post is not None and (force or not self._comments_unchanged(t, post, now))
             comments = adapter.fetch_comments(local) if full else []
+        except RemotePaused as exc:  # the server asked us to wait: check again when it said
+            with self.db.transaction() as conn:
+                conn.execute("UPDATE archived_threads SET next_check_at=? WHERE id=?",
+                             (_plus(now, seconds=exc.seconds), thread_id))
+            raise
         except (RemoteUnavailable, UnsupportedSoftware) as exc:
             self._sync_failed(t, str(exc))
             raise
@@ -713,6 +719,11 @@ class Bouncer:
                 reached_known = any(self._already_seen(p, since) for p in batch if not p.featured)
                 if reached_known or len(batch) < size:
                     break
+        except RemotePaused as exc:  # not a failure: the server asked us to wait, so we do
+            with self.db.transaction() as conn:
+                conn.execute("UPDATE community_follows SET next_poll_at=? WHERE community_id=?",
+                             (_plus(now, seconds=exc.seconds), community_id))
+            raise
         except RemoteError as exc:
             with self.db.transaction() as conn:
                 store.record_instance_contact(conn, ref.domain, now, False, str(exc))
@@ -790,12 +801,14 @@ class Bouncer:
             return job
 
     def _finish_job(self, job_id: int, status: str, result: Any = None, error: str | None = None,
-                    retry_in: timedelta | None = None) -> None:
+                    retry_in: timedelta | None = None, refund: bool = False) -> None:
+        """`refund`: this attempt doesn't count (the server asked us to wait)."""
         now = utcnow()
         with self.db.transaction() as conn:
             if retry_in is not None:
-                conn.execute("UPDATE jobs SET status='queued', error=?, updated_at=?, run_after=? WHERE id=?",
-                             (error, now, fmt_ts(parse_ts(now) + retry_in), job_id))  # type: ignore[operator]
+                conn.execute("UPDATE jobs SET status='queued', error=?, updated_at=?, run_after=?, "
+                             "attempts=attempts-? WHERE id=?",
+                             (error, now, fmt_ts(parse_ts(now) + retry_in), int(refund), job_id))  # type: ignore[operator]
             else:
                 conn.execute("UPDATE jobs SET status=?, result_json=?, error=?, updated_at=? WHERE id=?",
                              (status, json.dumps(result), error, now, job_id))
@@ -814,6 +827,9 @@ class Bouncer:
                 self._finish_job(job["id"], "done", {"thread_id": payload["thread_id"]})
             else:
                 self._finish_job(job["id"], "failed", error=f"unknown job kind {job['kind']}")
+        except RemotePaused as exc:
+            self._finish_job(job["id"], "queued", error=str(exc), retry_in=timedelta(seconds=exc.seconds),
+                             refund=True)
         except RemoteUnavailable as exc:
             if job["attempts"] < 6:
                 self._finish_job(job["id"], "queued", error=str(exc),

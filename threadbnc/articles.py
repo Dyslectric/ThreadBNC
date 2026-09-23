@@ -27,10 +27,10 @@ import nh3
 import trafilatura
 from markupsafe import Markup
 
-from .adapters.base import host_of, is_reddit_host, parse_thread_url
+from .adapters.base import RemotePaused, host_of, is_reddit_host, parse_thread_url
 from .adapters.http import HostThrottle
 from .db import Conn, Database, fmt_ts, parse_ts, utcnow
-from .media import MAX_ATTEMPTS, MAX_REDIRECTS, MediaRejected, _assert_public_host
+from .media import MAX_ATTEMPTS, MAX_REDIRECTS, MediaRejected, _after, _assert_public_host
 from .media import media_id
 from .media import register as register_media
 from .render import ALLOWED_ATTRS, ALLOWED_TAGS, MediaLookup, _media_html, looks_like_media
@@ -337,11 +337,15 @@ class ArticleFetcher:
         for _ in range(MAX_REDIRECTS + 1):
             if self.check_host:
                 _assert_public_host(current)
-            self.throttle.wait((urlparse(current).hostname or "").lower())
+            host = (urlparse(current).hostname or "").lower()
+            self.throttle.wait(host)
             with self.client.stream("GET", current) as resp:
+                self.throttle.note(host, resp.status_code, resp.headers)
                 if resp.status_code in (301, 302, 303, 307, 308) and "location" in resp.headers:
                     current = urljoin(current, resp.headers["location"])
                     continue
+                if resp.status_code == 429:
+                    raise RemotePaused(f"{host}: HTTP 429 (too many requests)", self.throttle.paused_for(host))
                 if resp.status_code in (401, 402, 403, 451):
                     raise ArticleRejected(f"HTTP {resp.status_code}: the site refused to send the page")
                 if resp.status_code in (404, 410):
@@ -379,6 +383,11 @@ class ArticleFetcher:
             with self.db.transaction() as conn:
                 conn.execute("UPDATE articles SET status=?, error=?, attempts=attempts+1, fetched_at=? WHERE id=?",
                              ("skipped" if isinstance(exc, ArticleSkipped) else "failed", str(exc), now, row["id"]))
+            return
+        except RemotePaused as exc:  # the site asked us to wait: not the page's fault
+            with self.db.transaction() as conn:
+                conn.execute("UPDATE articles SET error=?, next_attempt_at=? WHERE id=?",
+                             (str(exc), _after(now, exc.seconds), row["id"]))
             return
         except (httpx.HTTPError, OSError) as exc:
             attempts = row["attempts"] + 1

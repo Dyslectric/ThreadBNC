@@ -28,6 +28,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 
 from . import transcode
+from .adapters.base import RemotePaused
 from .adapters.http import HostThrottle
 from .db import Conn, Database, fmt_ts, parse_ts, utcnow
 from .render import MediaInfo, extract_media_urls, looks_like_media
@@ -162,6 +163,10 @@ def sniff(head: bytes) -> str | None:
     return None
 
 
+def _after(now: str, seconds: float) -> str:
+    return fmt_ts(parse_ts(now) + timedelta(seconds=seconds))  # type: ignore[operator]
+
+
 def _assert_public_host(url: str) -> None:
     """Refuse loopback/private/link-local targets so archived content can't
     make the bouncer probe the local network."""
@@ -292,11 +297,15 @@ class MediaFetcher:
         for _ in range(MAX_REDIRECTS + 1):
             if self.check_host:
                 _assert_public_host(current)
-            self.throttle.wait((urlparse(current).hostname or "").lower())
+            host = (urlparse(current).hostname or "").lower()
+            self.throttle.wait(host)
             with self.client.stream("GET", current) as resp:
+                self.throttle.note(host, resp.status_code, resp.headers)
                 if resp.status_code in (301, 302, 303, 307, 308) and "location" in resp.headers:
                     current = urljoin(current, resp.headers["location"])
                     continue
+                if resp.status_code == 429:
+                    raise RemotePaused(f"{host}: HTTP 429 (too many requests)", self.throttle.paused_for(host))
                 if resp.status_code == 404 or resp.status_code == 410:
                     raise MediaRejected(f"HTTP {resp.status_code}")
                 if resp.status_code >= 400:
@@ -385,6 +394,11 @@ class MediaFetcher:
                 status = "skipped" if isinstance(exc, MediaSkipped) else "failed"
                 conn.execute("UPDATE media SET status=?, error=?, attempts=attempts+1, fetched_at=? WHERE id=?",
                              (status, str(exc), now, row["id"]))
+            return
+        except RemotePaused as exc:  # the server asked us to wait: not the file's fault
+            with self.db.transaction() as conn:
+                conn.execute("UPDATE media SET error=?, next_attempt_at=? WHERE id=?",
+                             (str(exc), _after(now, exc.seconds), row["id"]))
             return
         except (httpx.HTTPError, OSError) as exc:
             attempts = row["attempts"] + 1

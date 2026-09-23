@@ -167,7 +167,7 @@ clients that go over. So Reddit is checked much less eagerly than Lemmy or PieFe
 - **Threads** are re-checked at the subreddit's interval for their first day, then every 2 hours until day 3, twice a day until day 7, then daily.
 - **Unchanged threads cost one request.** When the comment count hasn't changed, only the post is re-read. The comment tree is re-read at most every 6 hours.
 - **Big threads**: each fetch reads the newest 200 comments. Reddit hides the rest behind "load more comments", which ThreadBNC doesn't expand. A comment that drops out of view isn't marked as gone; only a complete comment tree can show that.
-- **Spacing**: at most one request every 2 seconds (`THREADBNC_REDDIT_MIN_REQUEST_INTERVAL`). When Reddit's rate-limit headers say the allowance is nearly used, or it answers 429, ThreadBNC waits for the window to reset.
+- **Spacing**: at most one request every 2 seconds (`THREADBNC_REDDIT_MIN_REQUEST_INTERVAL`). When Reddit's rate-limit headers say the allowance is nearly used, or it answers 429, ThreadBNC waits for the window to reset, or as long as Reddit's `Retry-After` asks if that's longer.
 - **Sign-in problems** stop everything until you reconnect, so a revoked or expired sign-in isn't retried against Reddit.
 - **Outages** are handled as they are for Lemmy: a failure, a 403 (private or quarantined subreddit) or a pause is retried with exponential backoff and never counts as a deletion.
 
@@ -388,7 +388,7 @@ API (each call with `Authorization: Bearer $THREADBNC_API_TOKEN`):
 | `THREADBNC_SYNC_MINUTES` | `30` | Re-check interval for threads in communities you don't follow |
 | `THREADBNC_FOLLOW_POLL_MINUTES` | `15` | Default poll interval for followed communities |
 | `THREADBNC_FOLLOW_RETENTION_DAYS` | `30` | Default retention for auto-captured posts (`forever` allowed) |
-| `THREADBNC_MIN_REQUEST_INTERVAL` | `1.0` | Seconds between requests to the same instance |
+| `THREADBNC_MIN_REQUEST_INTERVAL` | `1.0` | Seconds between requests to the same server. A server that answers 429 Too Many Requests isn't contacted again until its `Retry-After` has passed (a minute, doubling, when it doesn't say) |
 | `THREADBNC_REDDIT_POLL_MINUTES` | `60` | Default check interval for followed subreddits (at least 10) |
 | `THREADBNC_REDDIT_MIN_REQUEST_INTERVAL` | `2.0` | Seconds between requests to Reddit (at least 1) |
 | `THREADBNC_RSS_POLL_MINUTES` | `60` | Default check interval for followed feeds (at least 5) |
