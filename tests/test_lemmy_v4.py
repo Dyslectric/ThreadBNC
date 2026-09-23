@@ -361,14 +361,16 @@ def test_known_community_is_found_by_name_not_resolve_object():
     assert not http.called("GET", "/resolve_object")
 
 
-def test_resolve_object_server_errors_back_off(monkeypatch):
+def test_lookup_server_errors_back_off(monkeypatch):
+    """A community that crashes the server when asked about by name isn't
+    asked about again soon, by name or with resolve_object."""
     import threadbnc.adapters.lemmy as lemmy
     now = [1000.0]
     monkeypatch.setattr(lemmy.time, "monotonic", lambda: now[0])
 
     def crash(_p, _b):
         raise RemoteUnavailable("HTTP 502")
-    a, http = adapter({("GET", "/resolve_object"): crash})
+    a, http = adapter({("GET", "/community"): crash, ("GET", "/resolve_object"): crash})
     ap = "https://remote2.test/c/crashes"
     for wait in (lemmy.RESOLVE_RETRY_FIRST, 2 * lemmy.RESOLVE_RETRY_FIRST):
         with pytest.raises(RemoteUnavailable):
@@ -376,7 +378,21 @@ def test_resolve_object_server_errors_back_off(monkeypatch):
         with pytest.raises(RemoteUnavailable, match="trying again"):
             a.resolve_as("tok", ap)  # not asked again yet
         now[0] += wait
-    assert len(http.called("GET", "/resolve_object")) == 2
+    assert len(http.called("GET", "/community")) == 2
+    assert not http.called("GET", "/resolve_object")
+
+
+def test_resolve_object_server_errors_back_off_too(monkeypatch):
+    import threadbnc.adapters.lemmy as lemmy
+    monkeypatch.setattr(lemmy.time, "monotonic", lambda: 1000.0)
+
+    def crash(_p, _b):
+        raise RemoteUnavailable("HTTP 502")
+    a, http = adapter({("GET", "/resolve_object"): crash})  # /community: not found
+    for _ in range(2):
+        with pytest.raises(RemoteUnavailable):
+            a.resolve_as("tok", "https://remote2.test/c/crashes")
+    assert len(http.called("GET", "/resolve_object")) == 1
 
 
 def test_follow_state_is_read_without_following_again():

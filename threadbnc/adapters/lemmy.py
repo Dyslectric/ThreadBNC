@@ -36,8 +36,8 @@ from .http import HttpClient
 COMMENT_PAGE_LIMIT = 50
 MAX_COMMENT_PAGES = 400
 COMMUNITY_PATH = re.compile(r"^/c/([^/@]+)/?$")  # Lemmy and PieFed community actor URLs
-# After resolve_object fails with a server error, wait before asking about that
-# object again, doubling each time: some objects crash the server outright.
+# After looking an object up fails with a server error, wait before asking about
+# it again, doubling each time: some objects crash the server outright.
 RESOLVE_RETRY_FIRST, RESOLVE_RETRY_MAX = 600, 86400  # seconds
 
 
@@ -379,7 +379,7 @@ class LemmyAdapter(ThreadiverseAdapter):
         fetching it over federation if needed. Keys: post, comment, community.
         Remembered: an object's local id on a server never changes."""
         if ap_id not in self._resolved:
-            found = self._known_community(token, ap_id) or self._resolve_backing_off(token, ap_id)
+            found = self._resolve_backing_off(token, ap_id)
             if not found:
                 return found
             if len(self._resolved) > 10_000:
@@ -396,6 +396,8 @@ class LemmyAdapter(ThreadiverseAdapter):
         try:
             data = self._call("GET", "/community", token,
                               name=m.group(1) if host == self.domain else f"{m.group(1)}@{host}") or {}
+        except RemoteUnavailable:
+            raise  # the server is struggling: don't try resolve_object on top
         except RemoteError:
             return {}
         c = (data.get("community_view") or {}).get("community") or {}
@@ -404,12 +406,14 @@ class LemmyAdapter(ThreadiverseAdapter):
         return {"community": str(c["id"])}
 
     def _resolve_backing_off(self, token: str, ap_id: str) -> dict[str, str]:
+        """Look an object up, but not again soon after a server error: some
+        objects crash the server whichever way they're asked for."""
         retry_after, wait = self._resolve_failed.get(ap_id, (0.0, 0.0))
         if time.monotonic() < retry_after:
             raise RemoteUnavailable(f"{self.domain} failed looking up {ap_id}; trying again in "
                                     f"{(retry_after - time.monotonic()) / 60:.0f} minutes")
         try:
-            found = self._resolve_as(token, ap_id)
+            found = self._known_community(token, ap_id) or self._resolve_as(token, ap_id)
         except RemoteUnavailable:
             wait = min(wait * 2, RESOLVE_RETRY_MAX) if wait else RESOLVE_RETRY_FIRST
             self._resolve_failed[ap_id] = (time.monotonic() + wait, wait)
