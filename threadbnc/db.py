@@ -618,6 +618,13 @@ class _PgConn:
             cur = self.raw.execute(sql)
         return _PgCursor(cur, returning)
 
+    def executemany(self, sql: str, seq_of_params: Any) -> None:
+        rows = [tuple(p) for p in seq_of_params]
+        if rows:
+            sql = sql.replace("%", "%%").replace("?", "%s")
+            with self.raw.cursor() as cur:
+                cur.executemany(sql, rows)
+
     def executescript(self, script: str) -> None:
         self.raw.execute(script)
 
