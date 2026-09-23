@@ -96,7 +96,7 @@ def test_trash_ui_flow(settings, server, bouncer):
     client = TestClient(create_app(settings, bouncer))
     client.post("/login", data={"password": "pw"})
     client.post(f"/t/{tid}/trash")
-    assert "0 kept threads" in client.get("/kept").text
+    assert "Nothing kept yet" in client.get("/kept").text
     page = client.get("/trash").text
     assert 'aria-label="1 in the trash"' in page and "was kept" in page
     assert "In the trash" in client.get(f"/t/{tid}").text

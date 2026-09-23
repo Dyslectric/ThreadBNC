@@ -814,3 +814,60 @@ a.article-link.dived, a[data-dive].dived { background: var(--hover); border-radi
 .dive-inline .reader-head h1 { font-size: 1.3rem; }
 .dive-inline .reader-body { font-size: 1em; margin: 14px 0 18px; }
 .dive-inline .reader-foot { display: none; }
+
+/* ---- Kept: a feed of its own, with tabs ---- */
+.kept-page { max-width: 820px; margin: 0 auto; }
+.kept-head { align-items: flex-start; }
+.kept-head p { margin: 2px 0 0; }
+.keep-link > summary.button { display: inline-flex; align-items: center; gap: 5px; }
+.keep-link-panel { width: min(440px, calc(100vw - 24px)); max-width: none; padding: 12px; }
+.keep-link-panel input { flex: 1; min-width: 0; }
+.keep-link-panel p { margin: 8px 0 0; }
+.kept-tabs { display: flex; gap: 4px; margin: 16px 0 4px; padding: 4px; background: var(--card); border: 1px solid var(--line);
+  border-radius: 12px; box-shadow: var(--shadow); overflow-x: auto; scrollbar-width: none; }
+.kept-tabs a { flex: 1 0 auto; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 7px 12px;
+  border-radius: 9px; color: var(--muted); font-size: 0.9em; font-weight: 500; white-space: nowrap;
+  transition: background .12s, color .12s; }
+.kept-tabs a:hover { background: var(--hover); color: var(--text); text-decoration: none; }
+.kept-tabs a.on { background: var(--new-bg); color: var(--text); font-weight: 650; }
+.kept-tabs a.on .i { color: var(--accent); }
+.kept-tabs a.on .count.muted { background: var(--card); color: var(--text); }
+.tab-note { margin: 10px 2px 12px; }
+
+.article-card .thumb { width: 150px; height: 100px; }
+.article-card .pc-excerpt { -webkit-line-clamp: 3; line-clamp: 3; }
+.article-card .pc-title { display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.article-card .pc-title a { font-family: Georgia, "Iowan Old Style", "Times New Roman", serif; font-weight: 600; }
+
+.pc-changes { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 4px 0 2px; padding: 2px 8px 2px 6px;
+  border-radius: 8px; background: var(--bg); border: 1px solid var(--line); color: var(--muted); }
+.pc-changes:hover { text-decoration: none; border-color: var(--muted); }
+.pc-changes > .i { color: var(--warn); }
+
+.change-log .log-day { padding: 14px 18px 8px; margin-bottom: 12px; }
+.log-date { font-size: 0.8rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 8px; }
+.log-list { list-style: none; margin: 0; padding: 0; }
+.log-row { display: grid; grid-template-columns: 3.2em 14px minmax(0, 1fr); gap: 0 10px; align-items: start; padding: 7px 0;
+  position: relative; }
+.log-row + .log-row { border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent); }
+.log-time { padding-top: 2px; font-variant-numeric: tabular-nums; text-align: right; }
+.log-dot { width: 10px; height: 10px; margin-top: 6px; border-radius: 50%; background: var(--muted); justify-self: center;
+  box-shadow: 0 0 0 3px var(--card); }
+.log-row.tone-warn .log-dot { background: var(--warn); }
+.log-row.tone-bad .log-dot { background: var(--bad); }
+.log-row.tone-good .log-dot { background: var(--good); }
+.log-row.tone-new .log-dot { background: var(--accent); }
+.log-body { min-width: 0; }
+.log-title { display: block; color: var(--text); font-weight: 550; line-height: 1.35; margin: 2px 0 1px; overflow-wrap: anywhere; }
+.kept-tabs .tab-short { display: none; }
+@media (max-width: 600px) {
+  .kept-tabs { gap: 2px; }
+  .kept-tabs a { flex: 1 0 auto; padding: 7px 8px; gap: 4px; font-size: 0.85em; }
+  .kept-tabs .tab-long { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .kept-tabs .tab-short { display: inline; }
+  .kept-tabs a > .i { display: none; }
+  .article-card .thumb { width: 88px; height: 66px; }
+  .article-card { gap: 12px; }
+  .log-row { grid-template-columns: 2.8em 12px minmax(0, 1fr); gap: 0 8px; }
+}
+.log-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }

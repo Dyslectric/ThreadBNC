@@ -191,9 +191,17 @@ def _scope(community_id: int | None, community_ids: list[int] | None, column: st
 
 
 def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: list[int] | None = None,
-              sort: str = "new", window: str = "all", unread: str | bool = "", kept_only: bool = False,
-              page: int = 1, per_page: int = 25) -> FeedPage:
-    where, args = _scope(community_id, community_ids, "t.community_id")
+              thread_ids: list[int] | None = None, sort: str = "new", window: str = "all",
+              unread: str | bool = "", kept_only: bool = False, page: int = 1, per_page: int = 25) -> FeedPage:
+    """A page of posts. `thread_ids`: just those (the caller orders them);
+    kept_only with no communities given: kept posts from anywhere, followed or not."""
+    if thread_ids is not None:
+        where, args = (f"t.id IN ({','.join('?' * len(thread_ids))})", list(thread_ids)) if thread_ids \
+            else ("1=0", [])
+    elif kept_only and community_id is None and community_ids is None:
+        where, args = "1=1", []
+    else:
+        where, args = _scope(community_id, community_ids, "t.community_id")
     scope = f"AND {where}"
     if kept_only:
         scope += " AND t.retention='manual'"

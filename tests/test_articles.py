@@ -367,7 +367,7 @@ def test_articles_read_from_links_can_be_kept_or_go_after_a_while(abouncer, sett
     client.get("/read?url=https%3A%2F%2Fnews.test%2F2026%2F09%2Fother-story-here")
     other = one_article(abouncer, "https://news.test/2026/09/other-story-here")
     client.post(f"/a/{kept['id']}/keep")
-    assert "Harbour wall to be rebuilt" in client.get("/kept").text
+    assert "Harbour wall to be rebuilt" in client.get("/kept?tab=articles").text
     long_ago = fmt_ts(datetime.now(timezone.utc) - timedelta(days=articles.STANDALONE_DAYS + 1))
     with abouncer.db.transaction() as conn:
         conn.execute("UPDATE articles SET opened_at=?", (long_ago,))

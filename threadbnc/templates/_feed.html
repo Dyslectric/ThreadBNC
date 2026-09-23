@@ -10,8 +10,9 @@
 
 {# defaults: the feed's FeedSettings, to offer making the current ones its
    default (the main feed and your own feeds; community pages use the main feed's). #}
+{# mark_read: offer Mark all read (not where it would reach past what's shown). #}
 {% macro controls(base, sort, window, unread, community_id=none, view='list', view_chosen=none, feed_id=none,
-                  defaults=none) %}
+                  defaults=none, mark_read=True) %}
 {% set here = feed_url(base, sort, window, unread) %}
 {% set views = [('list', 'Posts: thumbnail, title and the start of the text', 'list'),
                 ('pictures', 'Pictures, one column', 'picture'), ('tiles', 'Pictures in a grid', 'tiles')] %}
@@ -46,11 +47,13 @@
     </div>
   </details>
   <span class="grow"></span>
+  {% if mark_read %}
   <form method="post" action="/feed/mark-read" class="inline" data-inplace="items">
     {% if community_id %}<input type="hidden" name="community_id" value="{{ community_id }}">{% endif %}
     {% if feed_id %}<input type="hidden" name="feed_id" value="{{ feed_id }}">{% endif %}
     <button class="act" title="Mark every post here as read">{{ icon('check-all') }}<span class="label">Mark all read</span></button>
   </form>
+  {% endif %}
   <nav class="seg view-seg" aria-label="Show posts as">
     {% for key, label, glyph in views %}
       <a href="{{ here }}&view={{ key }}" class="{{ 'on' if view == key }}" title="{{ label }}" aria-label="{{ label }}"{% if view == key %} aria-current="true"{% endif %}>{{ icon(glyph) }}</a>
@@ -187,6 +190,11 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
     {% endif %}
     <h3 class="pc-title"><a href="/t/{{ i.id }}">{{ i.title }}</a></h3>
     {% if i.url | safe_url and not (i.thumb and i.thumb.is_link) %}<div class="pc-link small"><a href="{{ i.url | safe_url }}" target="_blank" rel="noreferrer noopener nofollow">{{ i.url | host }}{{ icon('external') }}</a></div>{% endif %}
+    {% if i.change_summary %}
+    <a class="pc-changes small" href="/t/{{ i.id }}{{ i.change_anchor }}" title="What changed lately">
+      {{ icon('refresh') }}{% for ch in i.change_summary %}<span class="pill {{ ch.tone }}">{{ ch.label }}{% if ch.n > 1 %} ×{{ ch.n }}{% endif %}</span>{% endfor %}
+      <span class="muted">{{ when(i.last_change) }}</span></a>
+    {% endif %}
     {% if i.excerpt %}<p class="pc-excerpt">{{ i.excerpt }}</p>{% endif %}
     <div class="pc-actions actions small">
       <a class="act" href="/t/{{ i.id }}#comments">{{ icon('comment') }}<span>{{ i.n_comments }} comment{{ 's' if i.n_comments != 1 }}</span></a>

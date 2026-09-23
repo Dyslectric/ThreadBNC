@@ -236,6 +236,12 @@ def absolute(value: str | None) -> str:
     return dt.strftime("%Y-%m-%d %H:%M UTC") if dt else "—"
 
 
+def clock(value: str | None) -> str:
+    """The time of day (UTC), for lists already split into days."""
+    dt = parse_ts(value)
+    return dt.strftime("%H:%M") if dt else ""
+
+
 def safe_url(value: str | None) -> str | None:
     if not value:
         return None
@@ -327,7 +333,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     templates = Jinja2Templates(directory=str(HERE / "templates"))
-    templates.env.filters.update(ago=ago, absolute=absolute, safe_url=safe_url, host=host_of,
+    templates.env.filters.update(ago=ago, absolute=absolute, clock=clock,safe_url=safe_url, host=host_of,
                                  looks_like_media=looks_like_media, size=human_size)
     # A Lemmy or PieFed community (not a subreddit or a feed): one that can be pushed.
     templates.env.tests["is_federated"] = lambda ap_id: not is_rss(ap_id) and not is_reddit_host(host_of(ap_id))
@@ -742,61 +748,182 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         return resp
 
     # ---- kept (the archive) ---------------------------------------------
+    KEPT_TABS = ("threads", "articles", "changed", "log")
+    KEPT_PAGE = 25
+    LOG_PAGE = 100
+
     @app.get("/kept", response_class=HTMLResponse)
-    def kept(request: Request):
+    def kept(request: Request, tab: str = "threads", sort: str | None = None, t: str | None = None,
+             unread: str | None = None, page: int = 1, view: str | None = None, everything: str = ""):
+        """Kept posts read like a feed, with tabs for kept articles, posts where
+        something changed lately, and the log of every change seen."""
+        tab = tab if tab in KEPT_TABS else "threads"
+        page = max(1, page)
+        save_view("kept_view", view)
+        out: dict[str, Any] = {"tab": tab, "page": page}
         with db.connect() as conn:
-            jobs = conn.execute("SELECT * FROM jobs ORDER BY id DESC LIMIT 8").fetchall()
-            rows = conn.execute(
-                "SELECT t.*, r.title, o.created_at, o.cur_deleted, o.cur_removed, o.cur_locked, o.cur_missing, "
-                "o.revision_count, c.id AS cid, c.name AS cname, c.canonical_ap_id AS c_ap, "
-                "(SELECT COUNT(*) FROM objects x WHERE x.thread_id=t.id AND x.object_type='comment') AS n_comments "
-                "FROM archived_threads t JOIN objects o ON o.id=t.root_object_id "
-                "JOIN communities c ON c.id=t.community_id "
-                "JOIN revisions r ON r.object_id=o.id AND r.seq=o.revision_count "
-                "WHERE t.retention='manual' AND t.trashed_at IS NULL "
-                "ORDER BY c.name, c.canonical_ap_id, COALESCE(t.promoted_at, t.retained_at) DESC"
-            ).fetchall()
-            changes = recent_changes(conn, limit=20)
-            kept_articles = conn.execute("SELECT id, title, site_name, url, kept_at FROM articles "
-                                         "WHERE kept_at IS NOT NULL ORDER BY kept_at DESC").fetchall()
-        groups: dict[int, dict[str, Any]] = {}
-        for r in rows:
-            groups.setdefault(r["cid"], {"cid": r["cid"], "name": r["cname"], "ap": r["c_ap"], "threads": []})
-            groups[r["cid"]]["threads"].append(r)
-        pending = any(j["status"] in ("queued", "running") for j in jobs)
-        return render(request, "kept.html", jobs=[dict(j, payload=json.loads(j["payload_json"]),
-                                                       result=json.loads(j["result_json"] or "null"))
-                                                  for j in jobs],
-                      groups=list(groups.values()), total=len(rows), changes=changes, pending=pending,
-                      kept_articles=kept_articles)
+            since = fmt_ts(parse_ts(utcnow()) - timedelta(hours=1))  # type: ignore[operator]
+            jobs = conn.execute("SELECT * FROM jobs WHERE kind='ingest' AND (status IN ('queued', 'running') "
+                                "OR updated_at>=?) ORDER BY id DESC LIMIT 6", (since,)).fetchall()
+            out["counts"] = {
+                "threads": conn.execute("SELECT COUNT(*) FROM archived_threads WHERE retention='manual' "
+                                        "AND trashed_at IS NULL").fetchone()[0],
+                "articles": kept_articles_count(conn),
+            }
+            if tab == "threads":
+                s = feed_mod.load_defaults(conn).with_url(sort, t, unread)
+                out.update(sort=s.sort, window=s.window, unread=s.unread,
+                           feed=feed_mod.load_feed(conn, kept_only=True, sort=s.sort, window=s.window,
+                                                   unread=s.unread, page=page))
+                chosen = db.get_setting("kept_view")
+                out.update(view_chosen=chosen, view=feed_mod.pick_view(
+                    chosen, sum(1 for i in out["feed"].items if i["thumb"]), len(out["feed"].items)))
+            elif tab == "articles":
+                out["articles"], out["has_more"] = kept_articles_page(conn, page)
+            elif tab == "changed":
+                out["feed"] = changed_posts(conn, page)
+            else:
+                out["everything"] = everything == "1"
+                out["days"], out["has_more"] = changes_by_day(conn, page, out["everything"])
+        out["jobs"] = [dict(j, payload=json.loads(j["payload_json"]), result=json.loads(j["result_json"] or "null"))
+                       for j in jobs]
+        out["pending"] = any(j["status"] in ("queued", "running") for j in jobs)
+        return render(request, "kept.html", **out)
+
+    # Articles on the Kept page: those kept while reading, and those kept posts link to.
+    KEPT_ARTICLES = ("FROM articles a WHERE a.kept_at IS NOT NULL OR (a.status='ok' AND EXISTS ("
+                     "SELECT 1 FROM article_refs ar JOIN objects o ON o.id=ar.object_id "
+                     "JOIN archived_threads t ON t.root_object_id=o.id "
+                     "WHERE ar.article_id=a.id AND t.retention='manual' AND t.trashed_at IS NULL))")
+
+    def kept_articles_count(conn: Any) -> int:
+        return conn.execute(f"SELECT COUNT(*) {KEPT_ARTICLES}").fetchone()[0]
+
+    def kept_articles_page(conn: Any, page: int) -> tuple[list[dict[str, Any]], bool]:
+        rows = conn.execute(
+            f"SELECT a.id, a.url, a.status, a.title, a.byline, a.site_name, a.published, a.word_count, "
+            f"a.content_html, a.kept_at, a.fetched_at, a.first_seen_at {KEPT_ARTICLES} "
+            f"ORDER BY COALESCE(a.kept_at, a.fetched_at, a.first_seen_at) DESC, a.id DESC LIMIT ? OFFSET ?",
+            (KEPT_PAGE + 1, (page - 1) * KEPT_PAGE)).fetchall()
+        items = [dict(r) for r in rows[:KEPT_PAGE]]
+        ids = [a["id"] for a in items]
+        pics: dict[int, int] = {}
+        posts: dict[int, dict[str, Any]] = {}
+        if ids:
+            marks = ",".join("?" * len(ids))
+            for r in conn.execute(
+                    f"SELECT am.article_id, MIN(m.id) AS mid FROM article_media am JOIN media m ON m.id=am.media_id "
+                    f"WHERE am.article_id IN ({marks}) AND m.status='ok' AND m.content_type LIKE 'image/%' "
+                    f"AND m.content_type != 'image/svg+xml' GROUP BY am.article_id", ids):
+                pics[r["article_id"]] = r["mid"]
+            for r in conn.execute(  # the kept post that links to it, newest first
+                    f"SELECT ar.article_id, t.id AS tid, c.name AS cname, c.canonical_ap_id AS c_ap "
+                    f"FROM article_refs ar JOIN objects o ON o.id=ar.object_id "
+                    f"JOIN archived_threads t ON t.root_object_id=o.id AND t.trashed_at IS NULL "
+                    f"JOIN communities c ON c.id=t.community_id "
+                    f"WHERE ar.article_id IN ({marks}) ORDER BY t.retention='manual', t.id", ids):
+                posts[r["article_id"]] = dict(r)
+        for a in items:
+            a["picture"] = pics.get(a["id"])
+            a["post"] = posts.get(a["id"])
+            a["excerpt"] = feed_mod.excerpt(articles.excerpt(a.pop("content_html"), 400), 260)
+            a["minutes"] = max(1, round((a["word_count"] or 0) / 230)) if a["word_count"] else None
+        return items, len(rows) > KEPT_PAGE
+
+    def changed_posts(conn: Any, page: int) -> feed_mod.FeedPage:
+        """Posts where something changed, the most recent change first, each
+        with what changed lately."""
+        rows = conn.execute(
+            """SELECT ch.thread_id, MAX(ch.at) AS last_change FROM (
+                 SELECT o.thread_id, e.observed_at AS at FROM state_events e JOIN objects o ON o.id=e.object_id
+                 WHERE e.event_type NOT IN ('discovered', 'retained', 'auto_captured', 'promoted')
+                 UNION ALL
+                 SELECT o.thread_id, r.observed_at FROM revisions r JOIN objects o ON o.id=r.object_id WHERE r.seq>1
+               ) AS ch JOIN archived_threads th ON th.id=ch.thread_id AND th.trashed_at IS NULL
+               GROUP BY ch.thread_id ORDER BY last_change DESC LIMIT ? OFFSET ?""",
+            (KEPT_PAGE + 1, (page - 1) * KEPT_PAGE)).fetchall()
+        ids = [r["thread_id"] for r in rows[:KEPT_PAGE]]
+        fp = feed_mod.load_feed(conn, thread_ids=ids, per_page=KEPT_PAGE)
+        by_id = {i["id"]: i for i in fp.items}
+        items = []
+        for r in rows[:KEPT_PAGE]:
+            item = by_id.get(r["thread_id"])
+            if item is None:  # shown as another copy of the same link
+                continue
+            recent = recent_changes(conn, limit=12, thread_id=r["thread_id"], meaningful=True)
+            tally: dict[tuple[str, str], int] = {}
+            for ch in recent:
+                key = (ch["label"] if ch["object_type"] == "post" else f"Comment {ch['label'].lower()}", ch["tone"])
+                tally[key] = tally.get(key, 0) + 1
+            item["last_change"] = r["last_change"]
+            item["change_summary"] = [{"label": k[0], "tone": k[1], "n": n} for k, n in tally.items()]
+            item["change_anchor"] = next((f"#o{ch['object_id']}" for ch in recent if ch["object_type"] != "post"), "")
+            items.append(item)
+        return feed_mod.FeedPage(items, page, len(rows) > KEPT_PAGE)
+
+    def changes_by_day(conn: Any, page: int, everything: bool = False) -> tuple[list[dict[str, Any]], bool]:
+        """The change log, a page at a time, split into days (in UTC, like the
+        timestamps it is stored in). The same change to one post several times
+        in a row is one line. `everything`: also what was first seen or kept."""
+        rows = recent_changes(conn, limit=LOG_PAGE + 1, offset=(page - 1) * LOG_PAGE, meaningful=not everything)
+        today = parse_ts(utcnow()).date()  # type: ignore[union-attr]
+        days: list[dict[str, Any]] = []
+        for ch in rows[:LOG_PAGE]:
+            day = parse_ts(ch["at"]).date()  # type: ignore[union-attr]
+            ago = (today - day).days
+            label = ("Today" if ago == 0 else "Yesterday" if ago == 1 else f"{day:%A}" if ago < 7
+                     else f"{day.day} {day:%B %Y}")
+            if not days or days[-1]["day"] != day:
+                days.append({"day": day, "label": label, "changes": []})
+            last = days[-1]["changes"][-1] if days[-1]["changes"] else None
+            if last and (last["thread_id"], last["label"], last["object_type"]) == \
+                    (ch["thread_id"], ch["label"], ch["object_type"]):
+                last["n"] += 1
+                continue
+            days[-1]["changes"].append(dict(ch, n=1))
+        return days, len(rows) > LOG_PAGE
 
     def recent_changes(conn: Any, limit: int = 30, community_id: int | None = None,
-                       thread_id: int | None = None) -> list[dict[str, Any]]:
+                       thread_id: int | None = None, offset: int = 0,
+                       meaningful: bool = False) -> list[dict[str, Any]]:
+        """Changes seen, newest first. `meaningful`: leave out the ones that
+        only say something was first seen or kept."""
         where, args = "", []
         if community_id:
             where, args = " AND o.community_id=?", [community_id]
         if thread_id:
             where, args = " AND o.thread_id=?", [thread_id]
+        skip = " AND e.event_type NOT IN ('discovered', 'retained', 'auto_captured', 'promoted')" if meaningful else ""
         rows = conn.execute(
             f"""
             SELECT * FROM (
               SELECT e.observed_at AS at, e.event_type, e.attribution, e.metadata_json, e.reason,
-                     o.id AS object_id, o.object_type, o.thread_id, NULL AS seq
+                     o.id AS object_id, o.object_type, o.thread_id, NULL AS seq, th.community_id
               FROM state_events e JOIN objects o ON o.id=e.object_id
-              JOIN archived_threads th ON th.id=o.thread_id AND th.trashed_at IS NULL WHERE 1=1 {where}
+              JOIN archived_threads th ON th.id=o.thread_id AND th.trashed_at IS NULL WHERE 1=1 {where}{skip}
               UNION ALL
-              SELECT r.observed_at, 'edited', NULL, '{{}}', NULL, o.id, o.object_type, o.thread_id, r.seq
+              SELECT r.observed_at, 'edited', NULL, '{{}}', NULL, o.id, o.object_type, o.thread_id, r.seq,
+                     th.community_id
               FROM revisions r JOIN objects o ON o.id=r.object_id
               JOIN archived_threads th ON th.id=o.thread_id AND th.trashed_at IS NULL WHERE r.seq>1 {where}
-            ) AS changes ORDER BY at DESC LIMIT ?""",
-            [*args, *args, limit],
+            ) AS changes ORDER BY at DESC LIMIT ? OFFSET ?""",
+            [*args, *args, limit, offset],
         ).fetchall()
+        cids = sorted({r["community_id"] for r in rows})
+        names = {c["id"]: c for c in conn.execute(
+            f"SELECT id, name, canonical_ap_id FROM communities WHERE id IN ({','.join('?' * len(cids))})",
+            cids)} if cids else {}
+        titles: dict[int, str] = {}
         out = []
         for r in rows:
             d = dict(r)
             d["label"] = "Edited" if r["event_type"] == "edited" else event_label(r)
             d["tone"] = "warn" if r["event_type"] == "edited" else TONE.get(r["event_type"], "")
-            d["title"] = thread_title(conn, r["thread_id"])
+            if r["thread_id"] not in titles:
+                titles[r["thread_id"]] = thread_title(conn, r["thread_id"])
+            d["title"] = titles[r["thread_id"]]
+            c = names.get(r["community_id"])
+            d["cname"], d["c_ap"] = (c["name"], c["canonical_ap_id"]) if c else (None, None)
             out.append(d)
         return out
 
@@ -2186,9 +2313,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
 
     @app.get("/changes", response_class=HTMLResponse)
     def changes(request: Request):
-        with db.connect() as conn:
-            rows = recent_changes(conn, limit=200)
-        return render(request, "changes.html", changes=rows)
+        """Now the Log tab of the Kept page."""
+        return RedirectResponse("/kept?tab=log", status_code=303)
 
     # ---- search ---------------------------------------------------------------
     def archived_communities() -> list[Any]:

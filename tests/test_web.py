@@ -57,8 +57,13 @@ def test_pages_render_with_history(settings, bouncer, server):
 
     client = make_client(settings, bouncer)
     login(client)
-    kept = client.get("/kept")
-    assert "Question about topology" in kept.text and "Deleted by author" in kept.text
+    assert "Question about topology" in client.get("/kept").text
+    changed = client.get("/kept?tab=changed").text
+    assert "Question about topology" in changed and "Comment deleted by author" in changed
+    assert "Comment edited" in changed
+    log = client.get("/kept?tab=log").text
+    assert "Deleted by author" in log and "Question about topology" in log and "Today" in log
+    assert client.get("/changes").url.path == "/kept"
     comms = client.get("/communities")
     assert "!math" in comms.text
     page = client.get(f"/t/{tid}")
