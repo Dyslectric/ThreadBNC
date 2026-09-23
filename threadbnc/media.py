@@ -633,7 +633,7 @@ class MediaFetcher:
         return Downloaded(out, ctype, out.stat().st_size, h.hexdigest(), dl.final_url, dl.size, dl.content_type)
 
     def convert_some(self) -> bool:
-        """Bring archived pictures and videos in line with the settings (after
+        """Bring archived pictures and videos, YouTube's included, in line with the settings (after
         they changed: request_conversion). Files over the size they're kept
         as they are up to, with a size to transcode down to, are transcoded
         from the stored copy, which the smaller one replaces. Files of a kind
@@ -647,7 +647,7 @@ class MediaFetcher:
             default = self.default_policy
             rows = conn.execute(
                 "SELECT id, content_type, size_bytes, storage_path FROM media WHERE id>? AND status='ok' "
-                "AND kept_only=0 AND storage_path IS NOT NULL AND content_type != 'image/svg+xml' "
+                "AND storage_path IS NOT NULL AND content_type != 'image/svg+xml' "
                 "AND (content_type LIKE 'image/%' OR content_type LIKE 'video/%') ORDER BY id LIMIT ?",
                 (after, CONVERT_SCAN)).fetchall()
             todo = None
@@ -700,6 +700,24 @@ class MediaFetcher:
         if unused:  # the bigger copy, replaced
             src.unlink(missing_ok=True)
         log.info("media %s: transcoded down from %.1f MB to %.1f MB", row["id"], row["size_bytes"] / 1e6, size / 1e6)
+
+    def _fit(self, dl: Downloaded, kp: KindPolicy, leave_out: bool = True) -> Downloaded:
+        """A download bigger than it's kept as it is up to, transcoded as the
+        settings say (to a size, or a video to a bitrate). With nothing to
+        transcode it down to, it's left out (MediaRejected), or kept as it is
+        when not `leave_out`."""
+        if dl.size <= kp.keep_bytes:
+            return dl
+        if not (kp.transcodes and self.can_transcode()):
+            if not leave_out:
+                return dl
+            dl.tmp_path.unlink(missing_ok=True)
+            raise MediaRejected(f"too large ({dl.size / 1_000_000:.1f} MB)")
+        if kp.target_bps and dl.content_type.startswith("video/"):
+            return self._reencode(dl, kp.target_bps)
+        if kp.target_bytes and dl.size > kp.target_bytes:  # (already small enough otherwise)
+            return self._shrink(dl, kp.target_bytes)
+        return dl
 
     def _reencode(self, dl: Downloaded, bps: int) -> Downloaded:
         """A downloaded video at a bitrate (transcode.at_bitrate); as it is if it's no higher already."""
@@ -754,20 +772,16 @@ class MediaFetcher:
                     raise MediaSkipped(f"videos aren't archived {POLICY_SUFFIX}")
                 if not wanted:
                     raise MediaHeld()
-                dl = self._download_youtube(row["url"])
+                # Its size and quality limits are the YouTube page's; then it's
+                # transcoded like any video, but never left out for its size.
+                dl = self._fit(self._download_youtube(row["url"]), policy.video, leave_out=False)
             else:
                 if not wanted and (looks_like_video(row["url"]) or looks_like_audio(row["url"])):
                     raise MediaHeld()
                 dl = self._download(row["url"], policy, wanted)
                 kp = policy.for_type(dl.content_type)
-                if kp is not None and dl.size > kp.keep_bytes:
-                    if not (kp.transcodes and self.can_transcode()):
-                        dl.tmp_path.unlink(missing_ok=True)
-                        raise MediaRejected(f"too large ({dl.size / 1_000_000:.1f} MB)")
-                    if kp.target_bps and dl.content_type.startswith("video/"):
-                        dl = self._reencode(dl, kp.target_bps)
-                    elif kp.target_bytes and dl.size > kp.target_bytes:  # (already small enough otherwise)
-                        dl = self._shrink(dl, kp.target_bytes)
+                if kp is not None:
+                    dl = self._fit(dl, kp)
             rel = self._store(dl)
         except MediaRejected as exc:
             with self.db.transaction() as conn:
