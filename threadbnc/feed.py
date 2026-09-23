@@ -10,7 +10,7 @@ from typing import Any
 
 from . import articles, dupes
 from .db import Conn, fmt_ts
-from .render import looks_like_audio
+from .render import AUDIO_EXTENSIONS, VIDEO_EXTENSIONS, looks_like_audio
 
 # Posts of the same link or text are one feed entry; sorts use the group's totals.
 SORTS = {  # NULLS LAST: Postgres otherwise puts NULLs first in DESC order
@@ -27,6 +27,25 @@ MEDIA_SAMPLE = 40  # recent posts looked at to decide
 TILES_MIN_POSTS = 4  # too few posts to tell: stay a list
 _VISUAL = ("m.status='ok' AND (m.content_type LIKE 'image/%' OR m.content_type LIKE 'video/%') "
            "AND m.content_type != 'image/svg+xml'")
+
+
+
+def _ext_sql(extensions: tuple[str, ...]) -> str:
+    """mm.url ends in one of these, before any query string (looks_like_audio in SQL)."""
+    return "(" + " OR ".join(f"LOWER(mm.url) LIKE '%{e}' OR LOWER(mm.url) LIKE '%{e}?%'" for e in extensions) + ")"
+
+
+# Posts that are a video or a piece of audio (the Kept page's tabs): a video
+# archived with the post (its link or embedded), a YouTube video saved when
+# kept, or a video link not downloaded yet; audio as the feed's player finds it
+# (audio()). o and r are the post and its current revision in _BASE.
+_HAS_MEDIA = "EXISTS (SELECT 1 FROM media_refs mr JOIN media mm ON mm.id=mr.media_id WHERE mr.object_id=o.id AND "
+MEDIA_KINDS = {
+    "video": _HAS_MEDIA + ("mr.from_article=0 AND (mm.content_type LIKE 'video/%' OR mm.kept_only=1 OR "
+                           f"(mm.content_type IS NULL AND {_ext_sql(VIDEO_EXTENSIONS)})))"),
+    "audio": _HAS_MEDIA + ("mm.url=r.url AND mm.status != 'skipped' AND (mm.content_type LIKE 'audio/%' OR "
+                           f"(mm.status != 'ok' AND {_ext_sql(AUDIO_EXTENSIONS)})))"),
+}
 
 _IMG = re.compile(r"!\[[^\]]*\]\([^)]*\)")
 _LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
@@ -193,9 +212,11 @@ def _scope(community_id: int | None, community_ids: list[int] | None, column: st
 
 def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: list[int] | None = None,
               thread_ids: list[int] | None = None, sort: str = "new", window: str = "all",
-              unread: str | bool = "", kept_only: bool = False, page: int = 1, per_page: int = 25) -> FeedPage:
+              unread: str | bool = "", kept_only: bool = False, media: str = "", page: int = 1,
+              per_page: int = 25) -> FeedPage:
     """A page of posts. `thread_ids`: just those (the caller orders them);
-    kept_only with no communities given: kept posts from anywhere, followed or not."""
+    kept_only with no communities given: kept posts from anywhere, followed or not.
+    `media`: only posts that are a video or audio (MEDIA_KINDS)."""
     if thread_ids is not None:
         where, args = (f"t.id IN ({','.join('?' * len(thread_ids))})", list(thread_ids)) if thread_ids \
             else ("1=0", [])
@@ -206,6 +227,8 @@ def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: lis
     scope = f"AND {where}"
     if kept_only:
         scope += " AND t.retention='manual'"
+    if media in MEDIA_KINDS:
+        scope += " AND " + MEDIA_KINDS[media]
     filters = ""
     delta = WINDOWS.get(window)
     if delta is not None:
@@ -233,6 +256,14 @@ def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: lis
         i["nsfw"], i["spoiler"] = bool(meta.get("nsfw")), bool(meta.get("spoiler"))
         attach_group(i, copies.get(i["dupe_key"]) or [])
     return FeedPage(items, page, len(rows) > per_page)
+
+
+def count_kept_media(conn: Conn, media: str) -> int:
+    """How many kept posts are a video, or audio (MEDIA_KINDS)."""
+    return conn.execute(
+        "SELECT COUNT(*) FROM archived_threads t JOIN objects o ON o.id=t.root_object_id "
+        "JOIN revisions r ON r.object_id=o.id AND r.seq=o.revision_count "
+        f"WHERE t.retention='manual' AND t.trashed_at IS NULL AND {MEDIA_KINDS[media]}").fetchone()[0]
 
 
 def attach_group(item: dict[str, Any], copies: list[dict[str, Any]]) -> None:

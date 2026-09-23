@@ -868,7 +868,7 @@ a.article-link.dived, a[data-dive].dived { background: var(--hover); border-radi
 .log-title { display: block; color: var(--text); font-weight: 550; line-height: 1.35; margin: 2px 0 1px; overflow-wrap: anywhere; }
 .kept-tabs .tab-short { display: none; }
 @media (max-width: 600px) {
-  .kept-tabs { gap: 2px; }
+  .kept-tabs { gap: 2px; flex-wrap: wrap; }  /* six tabs: two rows rather than scrolling */
   .kept-tabs a { flex: 1 0 auto; padding: 7px 8px; gap: 4px; font-size: 0.85em; }
   .kept-tabs .tab-long { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .kept-tabs .tab-short { display: inline; }

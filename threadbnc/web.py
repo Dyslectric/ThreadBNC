@@ -767,15 +767,17 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         return resp
 
     # ---- kept (the archive) ---------------------------------------------
-    KEPT_TABS = ("threads", "articles", "changed", "log")
+    KEPT_TABS = ("threads", "videos", "audio", "articles", "changed", "log")
+    KEPT_MEDIA = {"videos": "video", "audio": "audio"}  # tab: feed.MEDIA_KINDS
     KEPT_PAGE = 25
     LOG_PAGE = 100
 
     @app.get("/kept", response_class=HTMLResponse)
     def kept(request: Request, tab: str = "threads", sort: str | None = None, t: str | None = None,
              unread: str | None = None, page: int = 1, view: str | None = None, everything: str = ""):
-        """Kept posts read like a feed, with tabs for kept articles, posts where
-        something changed lately, and the log of every change seen."""
+        """Kept posts read like a feed, with tabs for just the videos and audio,
+        kept articles, posts where something changed lately, and the log of
+        every change seen."""
         tab = tab if tab in KEPT_TABS else "threads"
         page = max(1, page)
         save_view("kept_view", view)
@@ -788,12 +790,13 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                 "threads": conn.execute("SELECT COUNT(*) FROM archived_threads WHERE retention='manual' "
                                         "AND trashed_at IS NULL").fetchone()[0],
                 "articles": kept_articles_count(conn),
+                **{k: feed_mod.count_kept_media(conn, m) for k, m in KEPT_MEDIA.items()},
             }
-            if tab == "threads":
+            if tab == "threads" or tab in KEPT_MEDIA:
                 s = feed_mod.load_defaults(conn).with_url(sort, t, unread)
                 out.update(sort=s.sort, window=s.window, unread=s.unread,
-                           feed=feed_mod.load_feed(conn, kept_only=True, sort=s.sort, window=s.window,
-                                                   unread=s.unread, page=page))
+                           feed=feed_mod.load_feed(conn, kept_only=True, media=KEPT_MEDIA.get(tab, ""), sort=s.sort,
+                                                   window=s.window, unread=s.unread, page=page))
                 chosen = db.get_setting("kept_view")
                 out.update(view_chosen=chosen, view=feed_mod.pick_view(
                     chosen, sum(1 for i in out["feed"].items if i["thumb"]), len(out["feed"].items)))

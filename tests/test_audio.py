@@ -145,3 +145,24 @@ def test_markdown_audio():
                                                                   MediaInfo(3, "ok", "audio/mpeg")}.get))
     assert '<audio class="media" src="/media/3" controls' in out
     assert "[audio: ep" in str(render_markdown("![ep](https://pod.test/ep1.mp3)"))
+
+
+def test_kept_page_has_video_and_audio_tabs(settings, server, aubouncer):
+    for local_id, title, url in [("1", "Episode", "https://pod.test/ep1.mp3"),
+                                 ("2", "A talk", "https://www.youtube.com/watch?v=dQw4w9WgXcQ"),
+                                 ("3", "Just words", None)]:
+        server.add_post(local_id, title, "")
+        if url:
+            server.edit_post(local_id, url=url)
+        aubouncer.ingest_url(f"https://{DOMAIN}/post/{local_id}")  # kept by link
+    post_linking(server, aubouncer, "https://pod.test/ep2.m4a", "4")  # not kept
+    with aubouncer.db.connect() as conn:
+        assert feed.count_kept_media(conn, "audio") == 1 and feed.count_kept_media(conn, "video") == 1
+    client = logged_in(settings, aubouncer)
+    kept = client.get("/kept").text
+    assert 'href="/kept?tab=videos"' in kept and 'href="/kept?tab=audio"' in kept
+    audio = client.get("/kept?tab=audio").text
+    assert "Episode" in audio and "A talk" not in audio and "Just words" not in audio
+    assert 'aria-current="page"' in audio and "/kept?tab=audio&amp;sort=" in audio
+    videos = client.get("/kept?tab=videos").text
+    assert "A talk" in videos and "Episode" not in videos and "Just words" not in videos

@@ -37,6 +37,8 @@
 <nav class="kept-tabs" aria-label="Kept">
   {# (tab, label, shorter label for narrow screens, icon, count) #}
   {% for key, label, short, glyph, count in [('threads', 'Threads', 'Threads', 'star', counts.threads),
+                                             ('videos', 'Videos', 'Videos', 'video', counts.videos),
+                                             ('audio', 'Audio', 'Audio', 'audio', counts.audio),
                                              ('articles', 'Articles', 'Articles', 'article', counts.articles),
                                              ('changed', 'Recently changed', 'Changed', 'refresh', none),
                                              ('log', 'Changes log', 'Log', 'clock', none)] %}
@@ -45,16 +47,20 @@
   {% endfor %}
 </nav>
 
-{% if tab == 'threads' %}
-  {{ controls('/kept?', sort, window, unread, view=view, view_chosen=view_chosen, mark_read=False) }}
+{% if tab in ('threads', 'videos', 'audio') %}
+  {% set base = '/kept?' ~ ('tab=' ~ tab ~ '&' if tab != 'threads') %}
+  {% if tab == 'videos' %}<p class="tab-note small muted">Kept posts that are a video: YouTube links (saved once kept), and videos posted or embedded.</p>
+  {% elif tab == 'audio' %}<p class="tab-note small muted">Kept posts that link to an audio file, to play from here.</p>{% endif %}
+  {{ controls(base, sort, window, unread, view=view, view_chosen=view_chosen, mark_read=False) }}
   {{ posts(feed.items, view) }}
   {% if not feed.items %}
     <section class="card empty"><p class="muted">
-      {% if counts.threads == 0 %}Nothing kept yet. Use Keep ({{ icon('star') }}, or <kbd>s</kbd>) on a post in your feed, or keep one by its link.
+      {% if tab != 'threads' and counts[tab] == 0 %}No {{ 'videos' if tab == 'videos' else 'audio' }} kept yet. Keep a post that {{ 'is a video' if tab == 'videos' else 'links to an audio file' }} and it shows up here.
+      {% elif counts.threads == 0 %}Nothing kept yet. Use Keep ({{ icon('star') }}, or <kbd>s</kbd>) on a post in your feed, or keep one by its link.
       {% elif unread == 'comments' %}No new comments on posts you've kept.{% elif unread %}You're all caught up.{% else %}Nothing kept in this time range.{% endif %}
     </p></section>
   {% endif %}
-  {{ pager(feed, '/kept?', sort, window, unread) }}
+  {{ pager(feed, base, sort, window, unread) }}
 
 {% elif tab == 'articles' %}
   <p class="tab-note small muted">Articles you kept while reading, and the ones your kept posts link to.</p>
