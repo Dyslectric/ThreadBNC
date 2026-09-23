@@ -9,6 +9,10 @@ Each community can say what gets archived (everything, pictures only, nothing),
 how big a file may be, and whether files over that are transcoded down to fit
 (see transcode.py) instead of given up on. Media shared between communities gets
 the most generous of their settings.
+
+Pictures (and video thumbnails, which are pictures) are downloaded as soon as
+they're seen. Full videos wait until a post showing them is opened or kept
+(`held`): most scroll past unwatched, and they're by far the biggest files.
 """
 
 from __future__ import annotations
@@ -31,7 +35,7 @@ from . import transcode
 from .adapters.base import RemotePaused
 from .adapters.http import HostThrottle
 from .db import Conn, Database, fmt_ts, parse_ts, utcnow
-from .render import MediaInfo, extract_media_urls, looks_like_media
+from .render import VIDEO_EXTENSIONS, MediaInfo, extract_media_urls, looks_like_media
 
 MAX_ATTEMPTS = 5
 MAX_REDIRECTS = 5
@@ -52,6 +56,21 @@ class MediaRejected(Exception):
 
 class MediaSkipped(MediaRejected):
     """Not wanted: not media at all, or a community's settings leave it out."""
+
+
+class MediaHeld(Exception):
+    """A video nobody has opened yet: wait until someone does."""
+
+
+# A file is wanted in full once a post (or comment) showing it is in a thread
+# you opened or kept. Until then, videos are held.
+WANTED_SQL = ("EXISTS (SELECT 1 FROM media_refs wr JOIN objects wo ON wo.id=wr.object_id "
+              "JOIN archived_threads wt ON wt.id=wo.thread_id WHERE wr.media_id=media.id "
+              "AND (wt.retention='manual' OR wt.opened_at IS NOT NULL))")
+
+
+def looks_like_video(url: str) -> bool:
+    return urlparse(url).path.lower().endswith(VIDEO_EXTENSIONS)
 
 
 ARCHIVE_MODES = {"all": "Pictures and videos", "images": "Pictures only", "off": "Nothing"}
@@ -287,7 +306,8 @@ class MediaFetcher:
     def can_transcode(self) -> bool:
         return transcode.available()
 
-    def _download(self, url: str, policy: MediaPolicy | None = None) -> Downloaded:
+    def _download(self, url: str, policy: MediaPolicy | None = None, wanted: bool = True) -> Downloaded:
+        """`wanted` False: a video is held (MediaHeld) as soon as the server says it's one."""
         policy = policy or self.default_policy
         shrinkable = policy.transcode and self.can_transcode()
         cap = max(policy.max_bytes, self.source_max_bytes) if shrinkable else policy.max_bytes
@@ -316,6 +336,8 @@ class MediaFetcher:
                     raise MediaSkipped(f"not media ({declared})")
                 if policy.archive == "images" and declared.startswith("video/"):
                     raise MediaSkipped(f"videos aren't archived {POLICY_SUFFIX}")
+                if not wanted and declared.startswith("video/"):
+                    raise MediaHeld()
                 if length > cap:
                     raise MediaRejected(f"too large ({length / 1_000_000:.1f} MB)")
                 self.media_dir.mkdir(parents=True, exist_ok=True)
@@ -373,7 +395,7 @@ class MediaFetcher:
         with self.db.connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM media WHERE status='pending' AND (next_attempt_at IS NULL OR next_attempt_at<=?) "
-                "ORDER BY id LIMIT ?", (now, limit)).fetchall()
+                f"AND (held=0 OR {WANTED_SQL}) ORDER BY id LIMIT ?", (now, limit)).fetchall()
         for row in rows:
             self.fetch_one(row)
         return len(rows)
@@ -382,10 +404,13 @@ class MediaFetcher:
         now = utcnow()
         with self.db.connect() as conn:
             policy = policy_for(conn, row["id"], self.env_policy.override(*load_defaults(conn)))
+            wanted = bool(conn.execute(f"SELECT {WANTED_SQL} FROM media WHERE id=?", (row["id"],)).fetchone()[0])
         try:
             if policy.archive == "off":
                 raise MediaSkipped(f"archiving is off {POLICY_SUFFIX}")
-            dl = self._download(row["url"], policy)
+            if not wanted and looks_like_video(row["url"]):
+                raise MediaHeld()
+            dl = self._download(row["url"], policy, wanted)
             if dl.size > policy.max_bytes:
                 dl = self._shrink(dl, policy.max_bytes)
             rel = self._store(dl)
@@ -394,6 +419,10 @@ class MediaFetcher:
                 status = "skipped" if isinstance(exc, MediaSkipped) else "failed"
                 conn.execute("UPDATE media SET status=?, error=?, attempts=attempts+1, fetched_at=? WHERE id=?",
                              (status, str(exc), now, row["id"]))
+            return
+        except MediaHeld:
+            with self.db.transaction() as conn:
+                conn.execute("UPDATE media SET held=1 WHERE id=?", (row["id"],))
             return
         except RemotePaused as exc:  # the server asked us to wait: not the file's fault
             with self.db.transaction() as conn:

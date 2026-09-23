@@ -1,11 +1,14 @@
 // Comment tree helpers. Collapsing itself is native <details>; this only adds
 // click-the-bar, bulk expand/collapse and jumping between highlighted comments.
+// Handlers listen on the document, so they keep working after the comments are
+// swapped for a fresh copy (see refresh below).
 (function () {
-  const root = document.getElementById("comments");
-  if (!root) return;
-  const all = () => root.querySelectorAll("details.comment");
+  if (!document.getElementById("comments")) return;
+  const comments = () => document.getElementById("comments");
+  const all = () => comments().querySelectorAll("details.comment");
 
   function revealAncestors(el) {
+    const root = comments();
     for (let p = el.parentElement; p && p !== root; p = p.parentElement) {
       if (p.tagName === "DETAILS") { p.open = true; p.classList.remove("replies-hidden"); }
     }
@@ -18,7 +21,9 @@
     if (r.top < covered || r.top > window.innerHeight) el.scrollIntoView({ block: "start" });
   }
 
-  root.addEventListener("click", (ev) => {
+  document.addEventListener("click", (ev) => {
+    const root = ev.target.closest("#comments");
+    if (!root) return;
     const bar = ev.target.closest("button.bar");
     if (bar) {
       const d = bar.closest("details.comment");
@@ -57,7 +62,7 @@
   function openHash() {
     const id = location.hash.slice(1);
     const el = id && document.getElementById(id);
-    if (el && root.contains(el)) {
+    if (el && comments().contains(el)) {
       revealAncestors(el);
       if (el.tagName === "DETAILS") el.open = true;
       el.scrollIntoView({ block: "start" });
@@ -65,4 +70,69 @@
   }
   window.addEventListener("hashchange", openHash);
   openHash();
+
+  // Opening the post asked the bouncer to re-read its comments (and save its
+  // article). Wait for that, then swap in the fresh post and comments. Comments
+  // you opened or collapsed stay that way; a reply you're writing is never thrown away.
+  const status = document.getElementById("refreshing");
+  if (!status) return;
+  const WAIT_MS = 60000;
+  const started = Date.now();
+
+  function say(text) {
+    status.hidden = false;
+    status.textContent = text;
+  }
+
+  // `withComments` false: only the post (its votes and article may be new even
+  // when reading the comments failed).
+  async function swapFresh(withComments) {
+    const r = await fetch(status.dataset.url, { credentials: "same-origin" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const doc = new DOMParser().parseFromString(await r.text(), "text/html");
+    const post = document.getElementById(status.dataset.post);
+    const freshPost = doc.getElementById(status.dataset.post);
+    if (post && freshPost) post.replaceWith(document.adoptNode(freshPost));
+    if (!withComments) return;
+    const now = comments();
+    const fresh = doc.getElementById("comments");
+    if (!fresh) return;
+    const writing = [...now.querySelectorAll("textarea")].some((t) => t.value.trim());
+    if (writing) {
+      say("New comments arrived. They'll show when you reload, after you post your reply.");
+      return;
+    }
+    const shown = new Map([...now.querySelectorAll("details.comment[id]")].map((d) => [d.id, d.open]));
+    for (const d of fresh.querySelectorAll("details.comment[id]")) if (shown.has(d.id)) d.open = shown.get(d.id);
+    now.replaceWith(document.adoptNode(fresh));
+  }
+
+  async function poll() {
+    let job;
+    try {
+      const r = await fetch(`/api/jobs/${status.dataset.job}`, { credentials: "same-origin" });
+      job = r.ok ? await r.json() : null;
+    } catch (e) {
+      job = null;
+    }
+    if (job && (job.status === "done" || job.status === "failed")) {
+      const failed = job.status === "failed";
+      try {
+        await swapFresh(!failed);
+      } catch (e) {
+        say("Couldn't load the fresh copy; reload to see it.");
+        return;
+      }
+      if (failed) say(`Couldn't check for new comments (${job.error}). Showing the saved copy.`);
+      return;
+    }
+    if (Date.now() - started > WAIT_MS) {
+      say(job && job.error
+        ? `Couldn't check for new comments right now (${job.error}). Showing the saved copy; it'll try again.`
+        : "Still checking for new comments; reload in a moment to see them.");
+      return;
+    }
+    setTimeout(poll, 1000);
+  }
+  setTimeout(poll, 700);
 })();

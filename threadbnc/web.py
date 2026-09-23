@@ -1089,6 +1089,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         ids = group_of(tid, group)
         for t_id in ids:
             bouncer.promote(t_id)
+        bouncer.enqueue("open", {"thread_ids": ids})  # its comments, article and videos, to keep with it
         flash(request, "Kept permanently. It won't expire." if len(ids) == 1 else
               f"Kept all {len(ids)} copies permanently. They won't expire.")
         return RedirectResponse(back(request, f"/t/{tid}", safe_anchor(anchor)), status_code=303)
@@ -1842,10 +1843,15 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                   "LEFT JOIN community_follows f ON f.community_id=c.id WHERE t.id=?")
 
     @app.get("/t/{tid}", response_class=HTMLResponse)
-    def thread(request: Request, tid: int, sort: str | None = None, merge: int = 1):
+    def thread(request: Request, tid: int, sort: str | None = None, merge: int = 1, refreshed: int = 0):
         """A thread, shown together with its stored duplicates (the same link or
         text posted elsewhere) unless merge=0: one post listing every copy,
-        every copy's comments in one tree, repeated comments squashed."""
+        every copy's comments in one tree, repeated comments squashed.
+
+        Opening it asks the bouncer to re-read the comments (and save the
+        linked article) unless that was done in the last few minutes; the page
+        shows the stored copy at once and thread.js swaps in the fresh one.
+        `refreshed`: that fresh copy, which doesn't count as another visit."""
         if sort in COMMENT_SORTS:
             request.session["comment_sort"] = sort
         sort = request.session.get("comment_sort", "hot") if sort not in COMMENT_SORTS else sort
@@ -1875,11 +1881,20 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             instance = conn.execute("SELECT * FROM instances WHERE domain=?", (t["source_domain"],)).fetchone()
             post = next((o for o in objs if o["thread_id"] == tid and o["object_type"] == "post"), None)
             article = articles.for_object(conn, post["id"], post["url"]) if post else None
-            seen_at = {i: th["last_viewed_at"] for i, th in threads.items()}
-            # Every copy's comments are on this page, so they all count as read.
-            conn.execute(f"UPDATE archived_threads SET prev_viewed_at=last_viewed_at, last_viewed_at=? "
-                         f"WHERE id IN ({marks})", [utcnow(), *tids])
-        since = t["last_viewed_at"]
+            seen_key = "prev_viewed_at" if refreshed else "last_viewed_at"  # this visit already moved it along
+            seen_at = {i: th[seen_key] for i, th in threads.items()}
+            if not refreshed:
+                # Every copy's comments are on this page, so they all count as read.
+                now = utcnow()
+                conn.execute(f"UPDATE archived_threads SET prev_viewed_at=last_viewed_at, last_viewed_at=?, "
+                             f"opened_at=? WHERE id IN ({marks})", [now, now, *tids])
+        since = t[seen_key]
+        refresh_job = None
+        if not refreshed:
+            stale = [i for i, th in threads.items() if not th["trashed_at"] and (
+                bouncer.comments_stale(th) or (i == tid and article is not None and article["status"] == "pending"))]
+            if stale:
+                refresh_job = bouncer.enqueue("open", {"thread_ids": stale})
         srcs = {i: {"id": i, "cname": th["cname"], "c_ap": th["c_ap"], "server": th["source_domain"]}
                 for i, th in threads.items()}
         nodes: dict[int, dict[str, Any]] = {}
@@ -1941,7 +1956,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                       me=me, powers_by_community=powers, new_count=new_count, changed_count=changed_count,
                       comment_sort=sort, comment_sorts=COMMENT_SORTS, instance=instance, since=since,
                       grouped=len(tids) > 1, post_copies=post_copies, merge=merge, article=article,
-                      n_copies=max(len(copies), 1),
+                      n_copies=max(len(copies), 1), refresh_job=refresh_job,
                       all_kept=all(th["retention"] == "manual" for th in threads.values()))
 
     def read_href(url: str) -> str:

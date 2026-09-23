@@ -60,6 +60,8 @@ FULL_FETCH_EVERY = timedelta(hours=6)
 # Communities whose changes are pushed through your own server (federation.py)
 # are still checked this often, to catch anything a delivery missed.
 PUSHED_POLL_MINUTES = 360
+# Opening a post re-reads its comments unless they were read this recently.
+OPEN_CACHE = timedelta(minutes=5)
 
 
 def _plus(ts: str, **delta: float) -> str:
@@ -479,6 +481,49 @@ class Bouncer:
                 self._maybe_move_source(thread_id, post, domain, local)
         return result
 
+    # -- opening -----------------------------------------------------------
+    def open_threads(self, thread_ids: list[int]) -> None:
+        """What opening (or keeping) posts fetches, as a browser would: each
+        one's comments and votes unless read within OPEN_CACHE, and the article
+        it links to if it isn't saved yet. Videos in them are no longer held
+        (media.py), so the next media pass downloads them."""
+        first_error: RemoteError | None = None
+        for tid in thread_ids:
+            with self.db.connect() as conn:
+                t = conn.execute("SELECT * FROM archived_threads WHERE id=?", (tid,)).fetchone()
+            if t is None or t["trashed_at"] or not t["root_object_id"]:
+                continue
+            if self.comments_stale(t):
+                try:
+                    self.sync_thread(tid, force=True)
+                except RemoteError as exc:
+                    first_error = first_error or exc
+            self.fetch_article(t["root_object_id"])
+        self.wake.set()
+        if first_error:
+            raise first_error
+
+    @staticmethod
+    def comments_stale(t: Any) -> bool:
+        """True when opening this thread should re-read its comments. Feed
+        articles have none."""
+        if t["source_domain"] == RSS_DOMAIN:
+            return False
+        last = parse_ts(t["last_full_fetch_at"])
+        return last is None or parse_ts(utcnow()) - last >= OPEN_CACHE  # type: ignore[operator]
+
+    def article_for(self, root_object_id: int) -> Any:
+        with self.db.connect() as conn:
+            o = conn.execute("SELECT r.url FROM objects o JOIN revisions r ON r.object_id=o.id "
+                             "AND r.seq=o.revision_count WHERE o.id=?", (root_object_id,)).fetchone()
+            return articles.for_object(conn, root_object_id, o["url"] if o else None)
+
+    def fetch_article(self, root_object_id: int) -> None:
+        """Save the article a post links to, if it's waiting to be."""
+        a = self.article_for(root_object_id)
+        if a is not None and a["status"] == "pending" and self.articles.enabled:
+            self.articles.fetch_one(a)
+
     def _aged_out(self, thread_id: int) -> None:
         """A feed article that's no longer in its feed: feeds only list their
         latest entries, so that's not deletion. Keep what we have and stop
@@ -821,7 +866,12 @@ class Bouncer:
         try:
             if job["kind"] == "ingest":
                 tid = self.ingest_url(payload["url"], payload.get("retention", "manual"))
+                if payload.get("retention", "manual") == "manual":
+                    self.open_threads([tid])  # kept: its article too
                 self._finish_job(job["id"], "done", {"thread_id": tid})
+            elif job["kind"] == "open":
+                self.open_threads(payload["thread_ids"])
+                self._finish_job(job["id"], "done", {"thread_ids": payload["thread_ids"]})
             elif job["kind"] == "sync":
                 self.sync_thread(payload["thread_id"], force=True)
                 self._finish_job(job["id"], "done", {"thread_id": payload["thread_id"]})

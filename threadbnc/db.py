@@ -105,7 +105,8 @@ CREATE TABLE IF NOT EXISTS archived_threads (
     trash_expires_at TEXT,    -- permanent deletion time; NULL = trash kept forever
     last_full_fetch_at TEXT,  -- last time the whole comment tree was fetched
     remote_comment_count INTEGER,
-    remote_newest_comment_at TEXT
+    remote_newest_comment_at TEXT,
+    opened_at TEXT            -- last opened on its own page (not just marked read): comments and articles are fetched then
 );
 
 CREATE TABLE IF NOT EXISTS objects (
@@ -197,7 +198,8 @@ CREATE TABLE IF NOT EXISTS media (
     first_seen_at TEXT NOT NULL,
     fetched_at TEXT,
     original_bytes INTEGER,   -- set when the stored file was transcoded down from a bigger one
-    original_type TEXT
+    original_type TEXT,
+    held INTEGER NOT NULL DEFAULT 0  -- 1 = a video, waiting until a post showing it is opened or kept
 );
 CREATE INDEX IF NOT EXISTS media_pending ON media(status, next_attempt_at);
 CREATE INDEX IF NOT EXISTS media_sha ON media(sha256);
@@ -506,6 +508,8 @@ COLUMN_MIGRATIONS = [
     ("community_follows", "last_push_at", "TEXT"),
     ("articles", "kept_at", "TEXT"),
     ("articles", "opened_at", "TEXT"),
+    ("archived_threads", "opened_at", "TEXT"),
+    ("media", "held", "INTEGER NOT NULL DEFAULT 0"),
 ]
 
 # Tables with an integer `id` key: inserts into these get `RETURNING id` on
