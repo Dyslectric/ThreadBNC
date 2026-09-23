@@ -253,6 +253,7 @@ class Federation:
         self.wake = threading.Event()
         self._stop = threading.Event()
         self._housekept = 0.0
+        self._subscribe_all = False  # asked for on the Communities page (request_subscribe_all)
         for domain in relays:  # your own servers: no need to space out requests
             self.bouncer.http.throttle.exempt.add(domain)
         self.bouncer.follow_hooks.append(self.subscribe)
@@ -482,12 +483,27 @@ class Federation:
                                 "WHERE f.active=1 AND f.push_state IS NULL").fetchall()
         ok = failed = 0
         for r in rows:
+            if self._stop.is_set():
+                break
             if _federated(r["canonical_ap_id"]):
                 if self.subscribe(r["community_id"]):
                     ok += 1
                 else:
                     failed += 1
         return ok, failed
+
+    def request_subscribe_all(self) -> None:
+        """Subscribe to everything not yet pushed, on the push worker: each one
+        waits on your server, which can take a while for many communities."""
+        self._subscribe_all = True
+        self.wake.set()
+
+    def subscribe_requested(self) -> None:
+        if not self._subscribe_all:
+            return
+        self._subscribe_all = False
+        ok, failed = self.subscribe_all()
+        log.info("subscribe to all: %d subscribed or pending, %d failed", ok, failed)
 
     # -- running ----------------------------------------------------------------
     def housekeeping(self) -> None:
@@ -538,6 +554,7 @@ class Federation:
             try:
                 while not self._stop.is_set() and self.process_pending():
                     pass
+                self.subscribe_requested()
                 self.housekeeping()
             except Exception:
                 log.error("push worker crashed: %s", traceback.format_exc())

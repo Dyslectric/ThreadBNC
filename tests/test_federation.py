@@ -380,6 +380,8 @@ def test_community_page_turns_pushes_off_and_on(settings, bouncer, server, poste
     assert "Get pushes" in client.get(f"/c/{cid}").text
     assert "Subscribe to all" in client.get("/communities").text
     client.post("/communities/push-all")
+    assert server.subscriptions == set()  # left to the push worker
+    client.app.state.federation.subscribe_requested()
     assert server.subscriptions == {("dave", "77")}
     assert "pushed" in client.get("/communities").text
 

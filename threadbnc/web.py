@@ -944,11 +944,10 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     def push_all(request: Request):
         if federation is None:
             raise HTTPException(404)
-        ok, failed = federation.subscribe_all()
-        flash(request, f"Subscribed as {push_handle()} to {ok} communit{'y' if ok == 1 else 'ies'}."
-              + (f" {failed} couldn't be." if failed else ""),
-              "error" if failed and not ok else "info")
-        return RedirectResponse("/communities", status_code=303)
+        federation.request_subscribe_all()
+        flash(request, f"Subscribing as {push_handle()} in the background. Each community shows Pushed, "
+                       "waiting to be accepted, or why it couldn't be, as it's done.")
+        return RedirectResponse(back(request, "/communities"), status_code=303)
 
     PUSH_STATUSES = {"done": "Recorded", "skipped": "Skipped", "failed": "Failed", "pending": "Waiting",
                      "refused": "Refused"}
