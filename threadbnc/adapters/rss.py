@@ -30,6 +30,7 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 
+from .. import youtube
 from ..db import fmt_ts, parse_ts
 from .base import (
     RSS_DOMAIN,
@@ -286,6 +287,9 @@ def _atom_entry(entry: ET.Element, base: str) -> Entry:
     published = _date(_t(entry, ATOM + "published"))
     updated = _date(_t(entry, ATOM + "updated"))
     html = _atom_text(entry.find(ATOM + "content")) or _atom_text(entry.find(ATOM + "summary"))
+    if not html:  # YouTube: the video's description, as plain text
+        described = _t(entry, f"{MEDIA}group/{MEDIA}description")
+        html = "<br>".join(escape(line) for line in described.splitlines())
     return Entry(key=_key(_t(entry, ATOM + "id"), link, title, published or updated), link=link, title=title,
                  html=html, published=published or updated, updated=updated if updated != published else None,
                  author=_t(entry, f"{ATOM}author/{ATOM}name") or None, thumb=_thumb(entry, base))
@@ -363,8 +367,9 @@ class FeedFetcher:
                     raise RemoteUnavailable(f"{current}: {exc}") from exc
             host = (urlparse(current).hostname or "").lower()
             self.throttle.wait(host)
+            sent = {**headers, "Cookie": youtube.CONSENT_COOKIE} if youtube.is_youtube_host(host) else headers
             try:
-                with self.client.stream("GET", current, headers=headers) as resp:
+                with self.client.stream("GET", current, headers=sent) as resp:
                     self.throttle.note(host, resp.status_code, resp.headers)
                     if resp.status_code in (301, 302, 303, 307, 308) and "location" in resp.headers:
                         current = urljoin(current, resp.headers["location"])
@@ -384,10 +389,20 @@ class FeedFetcher:
 
     def feed(self, url: str, find: bool = False) -> Feed:
         """The feed at `url`, from the cache when it's fresh. With `find`, a
-        web page's advertised feed is followed instead."""
+        web page's advertised feed is followed instead, and a YouTube
+        channel's link leads to the channel's feed."""
+        rewritten = youtube.feed_url(url)
+        if rewritten and rewritten != url:
+            return self.feed(rewritten)
+        page = youtube.channel_page(url) if find else None
+        if page:
+            return self.feed(self._youtube_channel_feed(page))
         cached = self._cache.get(url)
         if cached and time.monotonic() - cached[0] < FEED_CACHE:
             return cached[3]
+        listing = youtube.page_url(url)
+        if listing:  # YouTube's feeds are unreliable: read the page they'd list instead
+            return self._youtube_page(url, listing)
         headers = {}
         if cached and cached[1]:
             headers["If-None-Match"] = cached[1]
@@ -413,6 +428,41 @@ class FeedFetcher:
             self._cache.clear()
         self._cache[url] = (time.monotonic(), resp_headers.get("etag"), resp_headers.get("last-modified"), parsed)
         return parsed
+
+    def _youtube_page(self, url: str, page: str) -> Feed:
+        """A YouTube feed's videos, from the channel's Videos tab or the
+        playlist's page (youtube.py). Entries get the ids the feed uses, so
+        nothing is doubled if the feed's own entries are ever read again."""
+        status, _, body, _ = self._get(page, {"Accept": "text/html", "Accept-Language": "en"})
+        if status in (404, 410):
+            raise RemoteNotFound(f"{page}: HTTP {status}")
+        if status != 200:
+            raise RemoteUnavailable(f"{page}: HTTP {status}")
+        listed = youtube.parse_page(body.decode("utf-8", "replace"), page)
+        if listed is None:
+            raise RemoteUnavailable(f"{page}: no video list on the page (YouTube may have changed it)")
+        entries = [Entry(key=f"yt:video:{v.id}", link=youtube.watch_url(v.id), title=v.title, html="",
+                         published=fmt_ts(v.published), updated=None, author=v.author,
+                         thumb=youtube.thumbnail_url(v.id)) for v in listed.videos]
+        parsed = Feed(url, listed.title, listed.link, listed.description, entries)
+        if len(self._cache) > 500:
+            self._cache.clear()
+        self._cache[url] = (time.monotonic(), None, None, parsed)
+        return parsed
+
+    def _youtube_channel_feed(self, page: str) -> str:
+        """The feed of the channel an @handle or /c/ page is, read from the page
+        (once, when it's followed)."""
+        status, _, body, _ = self._get(page, {"Accept": "text/html"})
+        if status in (404, 410):
+            raise RemoteNotFound(f"{page}: no such YouTube channel")
+        if status != 200:
+            raise RemoteUnavailable(f"{page}: HTTP {status}")
+        channel = youtube.channel_id_in(body.decode("utf-8", "replace"))
+        if not channel:
+            raise RemoteNotFound(f"{page}: couldn't find the channel's id on its page; "
+                                 "try its https://www.youtube.com/channel/UC… link")
+        return f"{youtube.FEED}?channel_id={channel}"
 
 
 # -- the adapter ----------------------------------------------------------------------------

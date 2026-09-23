@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% from "_macros.html" import when %}
+{% block title %}YouTube{% endblock %}
+{% block content %}
+<h1>YouTube</h1>
+<p class="muted">Follow a channel or playlist by pasting its link where you follow communities, e.g.
+  <code>youtube.com/@BenEater</code>. New videos are read from the channel's Videos tab, or the playlist's page, while
+  you're using ThreadBNC, like subreddits: one channel at a time, spread across the hour.
+  A video is only downloaded when you <strong>keep</strong> its post. Opening a post, or scrolling past it, doesn't
+  download anything.</p>
+
+<section class="card">
+  <h2>Channels you follow ({{ channels | length }})</h2>
+  {% if channels %}
+  <ul class="plain">
+    {% for c in channels %}<li><a href="/c/{{ c.id }}">{{ c.name }}</a></li>{% endfor %}
+  </ul>
+  {% else %}<p class="muted">None yet. <a href="/communities#follow">Follow one →</a></p>{% endif %}
+  <p class="small muted">
+    {% if counts.ok %}{{ counts.ok }} kept video{{ 's' if counts.ok != 1 }} saved.{% endif %}
+    {% if counts.pending %}{{ counts.pending }} waiting to download.{% endif %}
+    {% if counts.failed %}<span class="bad-text">{{ counts.failed }} couldn't be saved.</span>{% endif %}
+  </p>
+</section>
+
+<section class="card">
+  <h2>Downloader</h2>
+  {% if not yt.downloader %}
+    <p class="bad-text">yt-dlp isn't installed, so kept videos can't be saved. Install it with
+      <code>pip install -r requirements.txt</code>.</p>
+  {% else %}
+    <p>yt-dlp is installed.
+      {% if yt.merges %}<span class="pill good">ffmpeg found</span>{% else %}<span class="pill warn" title="Without ffmpeg, only files that already combine sound and picture can be used: often just 360p on YouTube">no ffmpeg: often 360p only</span>{% endif %}
+      {% if yt.js_runtimes %}<span class="pill good">JavaScript: {{ yt.js_runtimes | join(', ') }}</span>{% else %}<span class="pill warn" title="yt-dlp needs deno, node or bun to solve YouTube's player challenges">no deno or node: most videos will fail</span>{% endif %}</p>
+  {% endif %}
+  <form method="post" action="/youtube/limits" class="row">
+    <label>Largest video <input type="number" name="max_mb" min="10" max="50000" step="10" value="{{ yt.max_mb }}"> MB</label>
+    <label>Best quality
+      <select name="max_height">{% for h in heights %}<option value="{{ h }}" {{ 'selected' if h == yt.max_height }}>{{ h }}p</option>{% endfor %}</select></label>
+    <button class="small">Save</button>
+  </form>
+  <p class="small muted">These apply to YouTube videos only. Other pictures and videos use the <a href="/storage#media-defaults">Storage</a> settings.
+    A community set to save pictures only, or nothing, doesn't save its YouTube videos either.</p>
+</section>
+
+<section class="card narrow-form">
+  <h2>Session</h2>
+  {% if yt.has_cookies or yt.has_po_token %}
+    <p>{% if yt.has_cookies %}<strong>Signed-in cookies</strong> <span class="muted">({{ yt.cookie_count }})</span>{% endif %}
+      {% if yt.has_cookies and yt.has_po_token %} and {% endif %}
+      {% if yt.has_po_token %}<strong>a PO token</strong>{% endif %}
+      <span class="muted">· saved {{ when(yt.saved_at) }}</span>
+      {% if yt.last_error %}<span class="pill bad">needs refreshing</span>{% elif yt.last_ok_at %}<span class="pill good">last worked {{ when(yt.last_ok_at) }}</span>{% endif %}</p>
+  {% else %}
+    <p class="muted">No session saved. Many videos download without one, but YouTube often asks to
+      “confirm you're not a bot” before serving video to a server. A signed-in session gets past that.</p>
+  {% endif %}
+  {% if yt.last_error %}<div class="flash error" role="alert">{{ yt.last_error }}</div>{% endif %}
+  <form method="post" action="/youtube/session" class="stack" autocomplete="off">
+    <label>youtube.com cookies
+      <textarea name="cookies" rows="5" spellcheck="false" placeholder="# Netscape HTTP Cookie File&#10;.youtube.com	TRUE	/	TRUE	…	SID	…&#10;&#10;or a Cookie header: SID=…; HSID=…; __Secure-3PSID=…"></textarea></label>
+    <p class="small muted">Export them from a browser that's signed in to YouTube, as a <code>cookies.txt</code>
+      file (a “Get cookies.txt” browser extension does this), or copy the <code>Cookie</code> header of a request
+      to youtube.com from the browser's developer tools. A private window that you close afterwards keeps the
+      session from being rotated. It's best to use a spare Google account: YouTube can suspend accounts it
+      thinks are downloading.</p>
+    <label>PO token <span class="muted small">(optional)</span>
+      <input name="po_token" spellcheck="false" placeholder="web.gvs+…"></label>
+    <p class="small muted">A proof-of-origin token, for when YouTube still refuses with cookies. See yt-dlp's
+      “PO Token Guide” for how to get one.</p>
+    <p class="small muted">Stored encrypted like your account tokens, and used only to download the videos in
+      posts you keep. Leave a field blank to keep what's saved.</p>
+    <button>Save session</button>
+  </form>
+  {% if yt.has_cookies or yt.has_po_token %}
+  <details class="reply-box">
+    <summary class="small">Forget session…</summary>
+    <form method="post" action="/youtube/forget">
+      <p class="small muted">Forgets the cookies and PO token here. Signing out of YouTube in that browser also ends the session.</p>
+      <button class="small danger">Forget</button>
+    </form>
+  </details>
+  {% endif %}
+</section>
+{% endblock %}

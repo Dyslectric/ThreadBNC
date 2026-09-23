@@ -218,6 +218,18 @@ edits kept as history, keeping and expiry, duplicate grouping and tiles.
 - **Feeds only list their latest entries.** An article that drops out of its feed is kept as last seen and marked "Dropped out of its feed", not recorded as missing, and isn't checked any more.
 - Fetches follow at most 5 redirects, refuse private and local addresses, and stop at 5 MB.
 
+## YouTube
+
+Paste a channel or playlist link into the follow box: `youtube.com/@name`, `/channel/UC…`, `/user/…` or
+`/playlist?list=…`. It gets its own **YouTube** group in the sidebar and in the feed editor. An `@name` or `/c/`
+link is read once, when you follow it, to find the channel's id.
+
+- **Checking:** YouTube's feeds have been unreliable (404 for every channel), so new videos are read from the channel's Videos tab, or the playlist's page: each one's title, thumbnail and rough upload time ("2 weeks ago"). The page shows the latest 30. Like subreddits, channels are only checked while you're using ThreadBNC, one at a time and spread across the check interval (60 minutes by default). There's no description, since the page doesn't carry one.
+
+- **Videos are saved only for posts you keep.** Opening a post or scrolling past it downloads nothing. This covers any kept post that links to a YouTube video, a Lemmy or Reddit one included. [yt-dlp](https://github.com/yt-dlp/yt-dlp) does the downloading, with deno (installed by `requirements.txt`) solving YouTube's player challenges. With ffmpeg, video and sound are joined up to the chosen quality. Without it, YouTube often only has 360p as a single file.
+- **The YouTube page** (`/youtube`, linked from Accounts) sets the largest video (2000 MB by default) and the best quality (1080p). These apply instead of the community's media size limit. A community set to save pictures only, or nothing, saves no videos.
+- **Session:** YouTube often asks servers to "confirm you're not a bot". On the YouTube page, paste your browser's youtube.com cookies (a `cookies.txt` export or a `Cookie` header) and, optionally, a PO token. They're encrypted like account tokens and used only for these downloads. Saving a session retries videos that failed. A spare Google account is safest: YouTube can suspend accounts it thinks are downloading.
+
 ## Accounts and posting
 
 On the **Accounts** page, add any Lemmy or PieFed account: the server, username, password and, on Lemmy, a 2FA code if you use one. You can then act as that account from ThreadBNC. The header has a switcher for choosing which account to act as; the default is marked on the Accounts page.

@@ -215,7 +215,8 @@
     {% set m = media_for(o.url) %}
     {% if m and m.status == 'ok' and m.content_type != 'image/svg+xml' %}
       <div class="post-media">
-      {% if m.content_type.startswith('video/') %}<video class="media" src="/media/{{ m.id }}" controls loop muted playsinline preload="metadata"></video>
+      {% if m.content_type.startswith('video/') and o.url | youtube_video %}<video class="media" src="/media/{{ m.id }}" controls playsinline preload="metadata"></video>
+      {% elif m.content_type.startswith('video/') %}<video class="media" src="/media/{{ m.id }}" controls loop muted playsinline preload="metadata"></video>
       {% else %}<a href="/media/{{ m.id }}" target="_blank"><img class="media" src="/media/{{ m.id }}" alt="" loading="lazy"></a>{% endif %}
       <div class="small muted">Archived copy</div>
       </div>
@@ -223,7 +224,13 @@
       <a class="link-preview" href="{{ o.url | safe_url }}" rel="noreferrer noopener nofollow" target="_blank">
         <img src="/media/{{ pm.id }}" alt="" loading="lazy"><span class="small muted">{{ o.url | host }}{{ icon('external') }}</span></a>
     {% elif m and m.status == 'pending' and o.url | looks_like_media %}<p class="small muted">Linked media is being archived…</p>
-    {% elif m and m.status == 'failed' %}<p class="small bad-text">Linked media could not be archived: {{ m.error }}</p>{% endif %}
+    {% elif m and m.status == 'failed' and not o.url | youtube_video %}<p class="small bad-text">Linked media could not be archived: {{ m.error }}</p>{% endif %}
+    {% if m and o.url | youtube_video and m.status != 'ok' %}
+      {% if m.status == 'failed' %}<p class="small bad-text">Couldn't save the video: {{ m.error }} <a href="/youtube">YouTube settings</a></p>
+      {% elif m.status == 'skipped' %}<p class="small muted">The video isn't saved: {{ m.error }}</p>
+      {% elif t.retention == 'manual' %}<p class="small muted">Saving the video…</p>
+      {% else %}<p class="small muted">Keep this post to save the video.</p>{% endif %}
+    {% endif %}
   {% endif %}
   {% if o.body %}<div class="md {{ 'faded' if o.cur_deleted or o.cur_removed }}">{{ md(o.body) }}</div>{% endif %}
   {{ event_list(root.events) }}

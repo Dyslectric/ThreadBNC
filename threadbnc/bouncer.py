@@ -50,6 +50,7 @@ from .config import REDDIT_MIN_POLL_MINUTES, RSS_MIN_POLL_MINUTES, Settings
 from .db import Database, fmt_ts, parse_ts, utcnow
 from .reddit import RedditConnection
 from .vault import TokenVault
+from .youtube import YouTubeSession, is_youtube_feed
 
 log = logging.getLogger("threadbnc.bouncer")
 
@@ -71,9 +72,10 @@ FULL_FETCH_EVERY = timedelta(hours=6)
 PUSHED_POLL_MINUTES = 360
 # Opening a post re-reads its comments unless they were read this recently.
 OPEN_CACHE = timedelta(minutes=5)
-# Subreddits are only checked while you're using ThreadBNC: a tab was
-# interacted with this recently (app.js reports it, see note_active). Their
-# checks are spread out, one at a time, never closer together than this.
+# Subreddits and YouTube channels (whose pages are read, see youtube.py) are
+# only checked while you're using ThreadBNC: a tab was interacted with this
+# recently (app.js reports it, see note_active). Each kind's checks are spread
+# out, one at a time, never closer together than this.
 ACTIVE_WINDOW = timedelta(minutes=30)
 REDDIT_MIN_SPACING = 30.0  # seconds
 
@@ -100,9 +102,10 @@ class Bouncer:
         self.settings = settings
         self.http = http or HttpClient(settings.user_agent, settings.http_timeout,
                                        settings.min_request_interval)
+        vault = TokenVault(settings.credentials_key, settings.data_dir)
         self.reddit = reddit or RedditConnection(
-            db, TokenVault(settings.credentials_key, settings.data_dir), timeout=settings.http_timeout,
-            min_interval=settings.reddit_min_request_interval)
+            db, vault, timeout=settings.http_timeout, min_interval=settings.reddit_min_request_interval)
+        self.youtube = YouTubeSession(db, vault)
         self.reddit_adapter = RedditAdapter(self.reddit)
         self.rss_adapter = RssAdapter(FeedFetcher(settings.user_agent, settings.http_timeout, self.http.throttle))
         self._adapter_factory = adapter_factory
@@ -119,12 +122,14 @@ class Bouncer:
         self.media = media.MediaFetcher(db, self.media_dir, settings.user_agent, settings.media_max_bytes,
                                         timeout=max(settings.http_timeout, 30.0), throttle=self.http.throttle,
                                         transcode_default=settings.media_transcode,
-                                        transcode_source_max_bytes=settings.media_transcode_source_max_bytes)
+                                        transcode_source_max_bytes=settings.media_transcode_source_max_bytes,
+                                        youtube_session=self.youtube)
         self.articles = articles.ArticleFetcher(db, settings.user_agent, enabled=settings.archive_articles,
                                                 timeout=max(settings.http_timeout, 30.0), throttle=self.http.throttle)
         self._media_backfilled = False
         self._articles_swept = 0.0  # monotonic time of the last sweep of articles read from links
-        self._reddit_clock: float | None = None  # monotonic time of the last subreddit check (None: you're away)
+        # "reddit" / "youtube" -> monotonic time of the last check of one (None: you're away)
+        self._paced_clock: dict[str, float | None] = {}
         self._clock: Callable[[], float] = time.monotonic
         self.wake = threading.Event()
         self._stop = threading.Event()
@@ -899,22 +904,34 @@ class Bouncer:
         seen = parse_ts(self.db.get_setting("last_active_at"))
         return seen is not None and parse_ts(utcnow()) - seen < ACTIVE_WINDOW  # type: ignore[operator]
 
-    def _next_subreddit(self, due: list[Any], followed: list[Any]) -> int | None:
-        """The subreddit to check now, if any: only while you're using
-        ThreadBNC, and one at a time, spread across the check interval so
-        coming back doesn't set off a burst. None when it's not time yet."""
+    @staticmethod
+    def paced_kind(follow: Any) -> str | None:
+        """"reddit" or "youtube" for follows only checked while you're using
+        ThreadBNC (see _next_paced), None for the rest."""
+        if is_reddit_host(follow["source_domain"]):
+            return "reddit"
+        if follow["source_domain"] == RSS_DOMAIN and is_youtube_feed(RSS_PREFIX + (follow["source_ref"] or "")):
+            return "youtube"
+        return None
+
+    def _next_paced(self, kind: str, due: list[Any], followed: list[Any]) -> int | None:
+        """The subreddit (or YouTube channel) to check now, if any: only while
+        you're using ThreadBNC, and one at a time, spread across the check
+        interval so coming back doesn't set off a burst. None when it's not
+        time yet."""
         if not self.user_active():
-            self._reddit_clock = None  # away: when you're back, start counting from then
+            self._paced_clock[kind] = None  # away: when you're back, start counting from then
             return None
         clock = self._clock()
-        if self._reddit_clock is None:
-            self._reddit_clock = clock
+        last = self._paced_clock.get(kind)
+        if last is None:
+            self._paced_clock[kind] = clock
             return None
         every = min(f["poll_interval_minutes"] for f in followed) * 60
         spacing = max(REDDIT_MIN_SPACING, every / len(followed))
-        if not due or clock - self._reddit_clock < spacing:
+        if not due or clock - last < spacing:
             return None
-        self._reddit_clock = clock
+        self._paced_clock[kind] = clock
         return due[0]["community_id"]
 
     # -- votes ---------------------------------------------------------------
@@ -1109,14 +1126,17 @@ class Bouncer:
             # Checked: those with polling on, and pushed ones now and then (on
             # your own server). Anything else waits for pushes.
             checked = conn.execute(
-                "SELECT community_id, source_domain, poll_interval_minutes, next_poll_at FROM community_follows "
+                "SELECT community_id, source_domain, source_ref, poll_interval_minutes, next_poll_at "
+                "FROM community_follows "
                 "WHERE active=1 AND (polling=1 OR push_state='subscribed') ORDER BY next_poll_at").fetchall()
         due = [r for r in checked if not r["next_poll_at"] or r["next_poll_at"] <= now]
-        follows = [r["community_id"] for r in due if not is_reddit_host(r["source_domain"])]
-        subreddit = self._next_subreddit([r for r in due if is_reddit_host(r["source_domain"])],
-                                         [r for r in checked if is_reddit_host(r["source_domain"])])
-        if subreddit is not None:
-            follows.append(subreddit)
+        follows = [r["community_id"] for r in due if not self.paced_kind(r)]
+        for kind in ("reddit", "youtube"):
+            followed = [r for r in checked if self.paced_kind(r) == kind]
+            if followed:
+                cid = self._next_paced(kind, [r for r in due if self.paced_kind(r) == kind], followed)
+                if cid is not None:
+                    follows.append(cid)
         for cid in follows:
             if self._stop.is_set():
                 return
@@ -1135,6 +1155,7 @@ class Bouncer:
             with self.db.transaction() as conn:
                 media.register_all_existing(conn)
                 media.skip_unprobed_links(conn)
+                media.register_youtube_links(conn)
                 articles.register_all_existing(conn)
             self._media_backfilled = True
         # Linked articles aren't fetched in the background either: opening or

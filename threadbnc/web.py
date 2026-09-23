@@ -26,7 +26,7 @@ from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import articles, dupes, store
+from . import articles, dupes, store, youtube
 from . import search as search_mod
 from . import feed as feed_mod
 from . import media as media_mod
@@ -39,6 +39,7 @@ from .moderation import REGISTRATION_MODES, Moderation
 from .private import PrivateCommunities
 from .reddit import CALLBACK_PATH as REDDIT_CALLBACK_PATH, RedditError
 from .reddit import callback_url as reddit_callback_url
+from .youtube import is_youtube_feed
 from .sso import CALLBACK_PATH, SingleSignOn, callback_url
 
 # The reverse proxy adds this (with THREADBNC_PROXY_SECRET) to requests it has signed in.
@@ -253,10 +254,13 @@ def is_reddit(ap_id: str | None) -> bool:
 
 
 def chandle(name: str, ap_id: str | None, plain: bool = False) -> Markup | str:
-    """A community's handle: r/name for subreddits, the feed's title for feeds,
+    """A community's handle: r/name for subreddits, the feed's title for feeds
+    (the channel's name for YouTube),
     !name@host otherwise (with the host dimmed unless `plain`)."""
     if is_reddit(ap_id):
         return f"r/{name}"
+    if is_youtube_feed(ap_id):
+        return f"{name} (YouTube)" if plain else Markup('{}<span class="muted"> · YouTube</span>').format(name)
     if is_rss(ap_id):
         return f"{name} (feed)" if plain else Markup('{}<span class="muted"> · feed</span>').format(name)
     host = host_of(ap_id or "")
@@ -334,7 +338,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     templates = Jinja2Templates(directory=str(HERE / "templates"))
     templates.env.filters.update(ago=ago, absolute=absolute, clock=clock,safe_url=safe_url, host=host_of,
-                                 looks_like_media=looks_like_media, size=human_size)
+                                 looks_like_media=looks_like_media, size=human_size, youtube_video=youtube.video_id)
     # A Lemmy or PieFed community (not a subreddit or a feed): one that can be pushed.
     templates.env.tests["is_federated"] = lambda ap_id: not is_rss(ap_id) and not is_reddit_host(host_of(ap_id))
     def static_url(name: str) -> str:
@@ -362,7 +366,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                                  feed_windows=FEED_WINDOWS, feed_shows=FEED_SHOWS,
                                  password_login=bool(settings.password),
                                  proxy_login=bool(settings.proxy_auth_header), chandle=chandle,
-                                 is_reddit=is_reddit, is_rss=is_rss, reading_articles=bouncer.articles.enabled)
+                                 is_reddit=is_reddit, is_rss=is_rss, is_youtube=is_youtube_feed,
+                                 reading_articles=bouncer.articles.enabled)
     app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
 
     # The SSO return page comes from the identity provider's site, so the
@@ -1920,6 +1925,47 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             return RedirectResponse(f"/t/{new_tid}", status_code=303)
         return account_action(request, f"/t/{tid}/repost", act, "Reposted. It's kept automatically, and shown "
                                                                "together with the original.")
+
+    # ---- YouTube -------------------------------------------------------------
+    @app.get("/youtube", response_class=HTMLResponse)
+    def youtube_page(request: Request):
+        with db.connect() as conn:
+            counts = {r["status"]: r["n"] for r in conn.execute(
+                f"SELECT status, COUNT(*) AS n FROM media WHERE kept_only=1 AND (status!='pending' OR "
+                f"{media_mod.KEPT_SQL}) GROUP BY status")}
+            channels = conn.execute(
+                "SELECT c.id, c.name FROM communities c JOIN community_follows f ON f.community_id=c.id "
+                "WHERE f.active=1 AND c.canonical_ap_id LIKE ? ORDER BY lower(c.name)",
+                (youtube.FEED_PREFIX + "%",)).fetchall()
+        return render(request, "youtube.html", yt=bouncer.youtube.status(), counts=counts, channels=channels,
+                      heights=youtube.HEIGHTS)
+
+    @app.post("/youtube/session")
+    def youtube_session(request: Request, cookies: str = Form(""), po_token: str = Form("")):
+        try:
+            bouncer.youtube.save_session(cookies, po_token)
+        except youtube.YouTubeError as exc:
+            flash(request, str(exc), "error")
+            return RedirectResponse("/youtube", status_code=303)
+        with db.transaction() as conn:
+            retried = media_mod.retry_youtube(conn)
+        bouncer.wake.set()
+        flash(request, "Saved. It's used only to download the videos in posts you keep"
+                       + (f"; trying {retried} that failed again." if retried else "."))
+        return RedirectResponse("/youtube", status_code=303)
+
+    @app.post("/youtube/forget")
+    def youtube_forget(request: Request):
+        bouncer.youtube.forget()
+        flash(request, "Forgot your YouTube session. Videos already saved stay.")
+        return RedirectResponse("/youtube", status_code=303)
+
+    @app.post("/youtube/limits")
+    def youtube_limits(request: Request, max_mb: int = Form(youtube.DEFAULT_MAX_MB),
+                       max_height: int = Form(youtube.DEFAULT_MAX_HEIGHT)):
+        bouncer.youtube.save_limits(max_mb, max_height)
+        flash(request, "Saved. Videos already downloaded aren't changed.")
+        return RedirectResponse("/youtube", status_code=303)
 
     # ---- Reddit --------------------------------------------------------------
     @app.get("/reddit", response_class=HTMLResponse)

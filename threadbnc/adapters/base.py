@@ -250,8 +250,9 @@ def parse_thread_url(url: str) -> ThreadRef:
 
 def parse_community_ref(text: str) -> CommunityRef:
     """Accepts !name@host, name@host, https://host/c/name, https://host/c/name@home,
-    subreddits: r/name or https://www.reddit.com/r/name, and feeds: rss:<url>, or
-    any other web address (a feed, or a page that links to one)."""
+    subreddits: r/name or https://www.reddit.com/r/name, and feeds: rss:<url>, a
+    YouTube channel or playlist link, or any other web address (a feed, or a
+    page that links to one)."""
     text = text.strip()
     if text.lower().startswith(RSS_PREFIX):
         return CommunityRef(RSS_DOMAIN, text[len(RSS_PREFIX):].strip(), RSS_DOMAIN)
@@ -267,6 +268,9 @@ def parse_community_ref(text: str) -> CommunityRef:
             return CommunityRef(REDDIT_DOMAIN, m.group(1), REDDIT_DOMAIN)
         if is_reddit_host(parsed.hostname):
             raise ValueError("Not a subreddit URL (expected https://www.reddit.com/r/name)")
+    if re.match(r"^(?:https?://)?(?:[\w-]+\.)*(?:youtube\.com|youtu\.be)/", text, re.I):
+        # A YouTube channel or playlist (youtube.com/@name has an "@" in it too)
+        return CommunityRef(RSS_DOMAIN, text if "://" in text else "https://" + text, RSS_DOMAIN)
     if "://" in text or text.startswith(("/", "www.")) or ("/c/" in text):
         u = text if "://" in text else "https://" + text
         parsed = urlparse(u)

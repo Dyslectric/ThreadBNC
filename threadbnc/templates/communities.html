@@ -10,7 +10,7 @@
 <section class="card" id="follow">
   <h2>Follow a community</h2>
   <form method="post" action="/follow" class="stack">
-    <input name="community" placeholder="!technology@lemmy.world  ·  https://lemmy.world/c/technology  ·  r/technology  ·  a feed or website URL" required>
+    <input name="community" placeholder="!technology@lemmy.world  ·  https://lemmy.world/c/technology  ·  r/technology  ·  youtube.com/@channel  ·  a feed or website URL" required>
     <div class="row">
       <label>Check every <input type="number" name="poll_interval_minutes" placeholder="{{ default_poll }}" min="1" class="num"
         title="Blank: every {{ default_poll }} minutes, or {{ reddit_poll }} for a subreddit"> min</label>
@@ -27,9 +27,10 @@
   </form>
   <p class="small muted">Lemmy and PieFed posts arrive through your own server as they're made{% if not push_handle %}, once
     it's set up (THREADBNC_RELAY_INBOXES); until then, only communities checked on a schedule bring posts{% endif %}.
-    Feeds and subreddits are checked on a schedule.
+    Feeds, YouTube channels and subreddits are checked on a schedule.
     Leave the interval blank for the default: {{ default_poll }} minutes, or {{ reddit_poll }} for subreddits.
-    {% if not reddit %}To follow subreddits, <a href="/reddit">connect Reddit</a> first.{% else %}<a href="/reddit">Reddit settings</a>{% endif %}</p>
+    {% if not reddit %}To follow subreddits, <a href="/reddit">connect Reddit</a> first.{% else %}<a href="/reddit">Reddit settings</a>{% endif %}
+    · <a href="/youtube">YouTube settings</a></p>
 </section>
 
 <section class="card">

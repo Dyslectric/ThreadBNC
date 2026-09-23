@@ -13,6 +13,8 @@ the most generous of their settings.
 Pictures (and video thumbnails, which are pictures) are downloaded as soon as
 they're seen. Full videos wait until a post showing them is opened or kept
 (`held`): most scroll past unwatched, and they're by far the biggest files.
+YouTube videos (`kept_only`) wait longer still: they're downloaded with yt-dlp
+only once a post linking to one is kept (see youtube.py).
 """
 
 from __future__ import annotations
@@ -31,7 +33,7 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 
-from . import transcode
+from . import transcode, youtube
 from .adapters.base import RemotePaused
 from .adapters.http import HostThrottle
 from .db import Conn, Database, fmt_ts, parse_ts, utcnow
@@ -67,6 +69,10 @@ class MediaHeld(Exception):
 WANTED_SQL = ("EXISTS (SELECT 1 FROM media_refs wr JOIN objects wo ON wo.id=wr.object_id "
               "JOIN archived_threads wt ON wt.id=wo.thread_id WHERE wr.media_id=media.id "
               "AND (wt.retention='manual' OR wt.opened_at IS NOT NULL))")
+# A YouTube video is wanted only once a post linking to it is kept.
+KEPT_SQL = ("EXISTS (SELECT 1 FROM media_refs kr JOIN objects ko ON ko.id=kr.object_id "
+            "JOIN archived_threads kt ON kt.id=ko.thread_id WHERE kr.media_id=media.id "
+            "AND kt.retention='manual' AND kt.trashed_at IS NULL)")
 
 
 def looks_like_video(url: str) -> bool:
@@ -211,6 +217,9 @@ def media_candidates(title: str | None, body: str | None, url: str | None) -> li
     # never load third-party pages just to find out what they are.
     if url and looks_like_media(url) and url not in urls:
         urls.append(url)
+    # A YouTube link is registered to be saved with yt-dlp if the post is kept.
+    if url and youtube.video_id(url) and url not in urls:
+        urls.append(url)
     return urls
 
 
@@ -225,7 +234,7 @@ def skip_unprobed_links(conn: Conn) -> int:
         wanted.update(json.loads(r[0]))  # pictures in linked articles (articles.py)
     n = 0
     for r in conn.execute("SELECT id, url FROM media WHERE status='pending'").fetchall():
-        if r["url"] not in wanted and not looks_like_media(r["url"]):
+        if r["url"] not in wanted and not looks_like_media(r["url"]) and not youtube.video_id(r["url"]):
             conn.execute("UPDATE media SET status='skipped', error='post link is not an image; not fetched' "
                          "WHERE id=?", (r["id"],))
             n += 1
@@ -233,9 +242,11 @@ def skip_unprobed_links(conn: Conn) -> int:
 
 
 def media_id(conn: Conn, url: str, now: str) -> int:
-    """The media row for a URL, registered (to be downloaded) if it's new."""
-    conn.execute("INSERT INTO media(url, first_seen_at, next_attempt_at) VALUES (?,?,?) "
-                 "ON CONFLICT(url) DO NOTHING", (url, now, now))
+    """The media row for a URL, registered (to be downloaded) if it's new.
+    YouTube videos start out held until a post linking to them is kept."""
+    yt = int(bool(youtube.video_id(url)))
+    conn.execute("INSERT INTO media(url, first_seen_at, next_attempt_at, held, kept_only) VALUES (?,?,?,?,?) "
+                 "ON CONFLICT(url) DO NOTHING", (url, now, now, yt, yt))
     return conn.execute("SELECT id FROM media WHERE url=?", (url,)).fetchone()[0]
 
 
@@ -248,6 +259,24 @@ def register(conn: Conn, object_id: int, urls: Iterable[str], now: str, from_art
         mid = media_id(conn, url, now)
         conn.execute("INSERT INTO media_refs(object_id, media_id, first_seen_at, from_article) VALUES (?,?,?,?) "
                      f"ON CONFLICT(object_id, media_id) {on_conflict}", (object_id, mid, now, int(from_article)))
+
+
+def register_youtube_links(conn: Conn) -> None:
+    """YouTube links in posts from before videos were saved with yt-dlp,
+    including ones an older version skipped as not being pictures."""
+    now = utcnow()
+    for r in conn.execute("SELECT DISTINCT object_id, url FROM revisions WHERE url LIKE '%youtu%'").fetchall():
+        if youtube.video_id(r["url"]):
+            register(conn, r["object_id"], [r["url"]], now)
+            conn.execute("UPDATE media SET kept_only=1, held=1, status='pending', error=NULL, attempts=0 "
+                         "WHERE url=? AND kept_only=0 AND status IN ('pending', 'skipped')", (r["url"],))
+
+
+def retry_youtube(conn: Conn) -> int:
+    """YouTube downloads that failed, perhaps for want of a session: try them
+    again (one was just saved)."""
+    return conn.execute("UPDATE media SET status='pending', attempts=0, error=NULL, next_attempt_at=NULL "
+                        "WHERE kept_only=1 AND status='failed'").rowcount
 
 
 def register_all_existing(conn: Conn) -> None:
@@ -285,8 +314,10 @@ class MediaFetcher:
     def __init__(self, db: Database, media_dir: Path, user_agent: str, max_bytes: int,
                  timeout: float = 30.0, client: httpx.Client | None = None, check_host: bool = True,
                  throttle: HostThrottle | None = None, transcode_default: bool = False,
-                 transcode_source_max_bytes: int = 1_000_000_000):
+                 transcode_source_max_bytes: int = 1_000_000_000,
+                 youtube_session: youtube.YouTubeSession | None = None):
         self.db = db
+        self.youtube = youtube_session
         self.throttle = throttle or HostThrottle(1.0)
         self.media_dir = media_dir
         self.env_policy = MediaPolicy("all", max_bytes, transcode_default)
@@ -365,6 +396,30 @@ class MediaFetcher:
                 return Downloaded(Path(tmp.name), ctype, size, h.hexdigest(), current)
         raise MediaRejected("too many redirects")
 
+    def _download_youtube(self, url: str) -> Downloaded:
+        """A YouTube video, with yt-dlp (youtube.py). Its size limit and quality
+        come from the YouTube page rather than the community: saving the video
+        is what keeping a YouTube post is for."""
+        if self.youtube is None:
+            raise MediaRejected("YouTube videos aren't saved here")
+        cfg = self.youtube.status()
+        self.throttle.wait("www.youtube.com")
+        try:
+            path, _ = youtube.download(url, self.media_dir, self.youtube, cfg["max_mb"] * 1_000_000)
+        except youtube.VideoGone as exc:
+            if isinstance(exc, youtube.NeedsSession):
+                self.youtube.note(str(exc))
+            raise MediaRejected(str(exc)) from None
+        self.youtube.note(None)
+        h = hashlib.sha256()
+        with path.open("rb") as f:
+            head = f.read(32)
+            f.seek(0)
+            for chunk in iter(lambda: f.read(CHUNK), b""):
+                h.update(chunk)
+        ctype = sniff(head) or mimetypes.guess_type(path.name)[0] or "video/mp4"
+        return Downloaded(path, ctype, path.stat().st_size, h.hexdigest(), url)
+
     def _shrink(self, dl: Downloaded, limit: int) -> Downloaded:
         """Transcode a download that's over the limit (only downloaded that big when allowed to)."""
         try:
@@ -395,7 +450,8 @@ class MediaFetcher:
         with self.db.connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM media WHERE status='pending' AND (next_attempt_at IS NULL OR next_attempt_at<=?) "
-                f"AND (held=0 OR {WANTED_SQL}) ORDER BY id LIMIT ?", (now, limit)).fetchall()
+                f"AND (held=0 OR (kept_only=0 AND {WANTED_SQL}) OR (kept_only=1 AND {KEPT_SQL})) "
+                "ORDER BY id LIMIT ?", (now, limit)).fetchall()
         for row in rows:
             self.fetch_one(row)
         return len(rows)
@@ -404,15 +460,23 @@ class MediaFetcher:
         now = utcnow()
         with self.db.connect() as conn:
             policy = policy_for(conn, row["id"], self.env_policy.override(*load_defaults(conn)))
-            wanted = bool(conn.execute(f"SELECT {WANTED_SQL} FROM media WHERE id=?", (row["id"],)).fetchone()[0])
+            wanted = bool(conn.execute(f"SELECT {KEPT_SQL if row['kept_only'] else WANTED_SQL} FROM media "
+                                       "WHERE id=?", (row["id"],)).fetchone()[0])
         try:
             if policy.archive == "off":
                 raise MediaSkipped(f"archiving is off {POLICY_SUFFIX}")
-            if not wanted and looks_like_video(row["url"]):
-                raise MediaHeld()
-            dl = self._download(row["url"], policy, wanted)
-            if dl.size > policy.max_bytes:
-                dl = self._shrink(dl, policy.max_bytes)
+            if row["kept_only"]:
+                if policy.archive == "images":
+                    raise MediaSkipped(f"videos aren't archived {POLICY_SUFFIX}")
+                if not wanted:
+                    raise MediaHeld()
+                dl = self._download_youtube(row["url"])
+            else:
+                if not wanted and looks_like_video(row["url"]):
+                    raise MediaHeld()
+                dl = self._download(row["url"], policy, wanted)
+                if dl.size > policy.max_bytes:
+                    dl = self._shrink(dl, policy.max_bytes)
             rel = self._store(dl)
         except MediaRejected as exc:
             with self.db.transaction() as conn:

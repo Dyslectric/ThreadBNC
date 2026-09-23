@@ -267,13 +267,14 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
 
 {% macro sidebar(follows, current_id=none, feed_id=none) %}
 {# Grouped by kind of source once the list is long enough to need it. #}
-{% set g = namespace(fedi=[], reddit=[], feeds=[]) %}
+{% set g = namespace(fedi=[], reddit=[], youtube=[], feeds=[]) %}
 {% for f in follows %}
   {% if is_reddit(f.canonical_ap_id) %}{% set g.reddit = g.reddit + [f] %}
+  {% elif is_youtube(f.canonical_ap_id) %}{% set g.youtube = g.youtube + [f] %}
   {% elif is_rss(f.canonical_ap_id) %}{% set g.feeds = g.feeds + [f] %}
   {% else %}{% set g.fedi = g.fedi + [f] %}{% endif %}
 {% endfor %}
-{% set groups = [('Lemmy & PieFed', g.fedi), ('Reddit', g.reddit), ('Feeds', g.feeds)] | selectattr(1) | list %}
+{% set groups = [('Lemmy & PieFed', g.fedi), ('Reddit', g.reddit), ('YouTube', g.youtube), ('Feeds', g.feeds)] | selectattr(1) | list %}
 {% set grouped = follows | length > 8 and groups | length > 1 %}
 {% set home = current_id is none and feed_id is none %}
 <aside class="sidebar" id="feed-sidebar" data-live aria-label="Feeds and communities you follow">
@@ -308,7 +309,7 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
       <li class="fl-add"><a href="/communities#follow">{{ icon('plus') }}<span class="fl-name">Follow</span></a></li>
     </ul>
     <form method="post" action="/follow" class="stack follow-quick">
-      <input name="community" placeholder="!community@instance, r/name or a feed URL" required aria-label="Community to follow">
+      <input name="community" placeholder="!community@instance, r/name, a YouTube channel or a feed URL" required aria-label="Community to follow">
       <input type="hidden" name="backfill" value="1">
       <button class="small">Follow</button>
     </form>
