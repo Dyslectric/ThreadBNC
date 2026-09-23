@@ -7,8 +7,10 @@ this and overrides the few differences.
 from __future__ import annotations
 
 import copy
+import re
 import time
 from typing import Any
+from urllib.parse import urlparse
 
 from ..db import fmt_ts, parse_ts
 from .base import (
@@ -22,6 +24,7 @@ from .base import (
     RemoteAuthError,
     RemoteError,
     RemoteNotFound,
+    RemoteUnavailable,
     ThreadiverseAdapter,
     ThreadRef,
     follow_state,
@@ -32,6 +35,10 @@ from .http import HttpClient
 
 COMMENT_PAGE_LIMIT = 50
 MAX_COMMENT_PAGES = 400
+COMMUNITY_PATH = re.compile(r"^/c/([^/@]+)/?$")  # Lemmy and PieFed community actor URLs
+# After resolve_object fails with a server error, wait before asking about that
+# object again, doubling each time: some objects crash the server outright.
+RESOLVE_RETRY_FIRST, RESOLVE_RETRY_MAX = 600, 86400  # seconds
 
 
 def _ts(value: Any) -> str | None:
@@ -55,6 +62,7 @@ class LemmyAdapter(ThreadiverseAdapter):
         self._admins: set[str] | None = None
         self._read_token: str | None = None  # see reading_as()
         self._resolved: dict[str, dict[str, str]] = {}  # ap_id -> local ids; they never change
+        self._resolve_failed: dict[str, tuple[float, float]] = {}  # ap_id -> (retry after, last wait)
 
     def reading_as(self, token: str) -> "LemmyAdapter":
         """A copy whose reads are made as a logged-in account, for content only
@@ -371,13 +379,43 @@ class LemmyAdapter(ThreadiverseAdapter):
         fetching it over federation if needed. Keys: post, comment, community.
         Remembered: an object's local id on a server never changes."""
         if ap_id not in self._resolved:
-            found = self._resolve_as(token, ap_id)
+            found = self._known_community(token, ap_id) or self._resolve_backing_off(token, ap_id)
             if not found:
                 return found
             if len(self._resolved) > 10_000:
                 self._resolved.clear()
             self._resolved[ap_id] = found
         return dict(self._resolved[ap_id])
+
+    def _known_community(self, token: str, ap_id: str) -> dict[str, str]:
+        """A community the server already has, found by name: a database read,
+        where resolve_object may fetch the community over federation again."""
+        m, host = COMMUNITY_PATH.match(urlparse(ap_id).path), host_of(ap_id)
+        if not m or not host:
+            return {}
+        try:
+            data = self._call("GET", "/community", token,
+                              name=m.group(1) if host == self.domain else f"{m.group(1)}@{host}") or {}
+        except RemoteError:
+            return {}
+        c = (data.get("community_view") or {}).get("community") or {}
+        if c.get("id") is None or (c.get("actor_id") or c.get("ap_id") or "").rstrip("/") != ap_id.rstrip("/"):
+            return {}
+        return {"community": str(c["id"])}
+
+    def _resolve_backing_off(self, token: str, ap_id: str) -> dict[str, str]:
+        retry_after, wait = self._resolve_failed.get(ap_id, (0.0, 0.0))
+        if time.monotonic() < retry_after:
+            raise RemoteUnavailable(f"{self.domain} failed looking up {ap_id}; trying again in "
+                                    f"{(retry_after - time.monotonic()) / 60:.0f} minutes")
+        try:
+            found = self._resolve_as(token, ap_id)
+        except RemoteUnavailable:
+            wait = min(wait * 2, RESOLVE_RETRY_MAX) if wait else RESOLVE_RETRY_FIRST
+            self._resolve_failed[ap_id] = (time.monotonic() + wait, wait)
+            raise
+        self._resolve_failed.pop(ap_id, None)
+        return found
 
     def _resolve_as(self, token: str, ap_id: str) -> dict[str, str]:
         data = self._call("GET", "/resolve_object", token, q=ap_id) or {}

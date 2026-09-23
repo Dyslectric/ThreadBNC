@@ -21,6 +21,7 @@ from threadbnc.adapters import (
     LemmyAdapter,
     PieFedAdapter,
     RemoteNotFound,
+    RemoteUnavailable,
     adapter_class,
 )
 from threadbnc import store
@@ -348,6 +349,33 @@ def test_resolved_ids_are_remembered():
     assert len(http.called("GET", "/resolve_object")) == 1
     a, http = adapter({("GET", "/resolve_object"): {}})  # not found: not remembered
     assert a.resolve_as("tok", ap) == {} and a.resolve_as("tok", ap) == {}
+    assert len(http.called("GET", "/resolve_object")) == 2
+
+
+def test_known_community_is_found_by_name_not_resolve_object():
+    """resolve_object may fetch a remote community again, and some crash the
+    server doing it; one the server already has is a plain lookup."""
+    a, http = adapter({("GET", "/community"): fixture("community")})
+    assert a.resolve_as("tok", "https://remote2.test/c/user4") == {"community": "3"}
+    assert http.called("GET", "/community")[0][0] == {"name": "user4@remote2.test"}
+    assert not http.called("GET", "/resolve_object")
+
+
+def test_resolve_object_server_errors_back_off(monkeypatch):
+    import threadbnc.adapters.lemmy as lemmy
+    now = [1000.0]
+    monkeypatch.setattr(lemmy.time, "monotonic", lambda: now[0])
+
+    def crash(_p, _b):
+        raise RemoteUnavailable("HTTP 502")
+    a, http = adapter({("GET", "/resolve_object"): crash})
+    ap = "https://remote2.test/c/crashes"
+    for wait in (lemmy.RESOLVE_RETRY_FIRST, 2 * lemmy.RESOLVE_RETRY_FIRST):
+        with pytest.raises(RemoteUnavailable):
+            a.resolve_as("tok", ap)
+        with pytest.raises(RemoteUnavailable, match="trying again"):
+            a.resolve_as("tok", ap)  # not asked again yet
+        now[0] += wait
     assert len(http.called("GET", "/resolve_object")) == 2
 
 
