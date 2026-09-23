@@ -288,6 +288,9 @@ def remote_with_big(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=body, headers={"content-type": ctype})
     if name == "fat.png":  # really over 1 MB, unlike huge.png, which only says so
         return httpx.Response(200, content=PNG + b"\x00" * 1_500_000, headers={"content-type": "image/png"})
+    if name == "fat.mp4":  # over 1 MB
+        return httpx.Response(200, content=b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 1_500_000,
+                              headers={"content-type": "video/mp4"})
     if name == "small.mp4":
         return httpx.Response(200, content=b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 50,
                               headers={"content-type": "video/mp4"})
@@ -466,6 +469,70 @@ def test_lowering_a_limit_transcodes_what_is_already_archived(settings, server, 
     monkeypatch.setattr(media.MediaFetcher, "can_transcode", lambda self: False)
     client.post(f"/c/{cid}/media-settings", data={})
     assert not tbouncer.media.convert_some() and tbouncer.db.get_setting(media.CONVERT_KEY) == "0"
+
+
+def test_videos_can_be_reencoded_at_a_bitrate(settings, server, tbouncer, monkeypatch):
+    calls = []
+    already_low = set()
+
+    def at_bitrate(src, bps, workdir):
+        calls.append(bps)
+        return None if src.stat().st_size in already_low else _write(workdir, b"\x00\x00\x00\x18ftypmp42lean")
+
+    monkeypatch.setattr(media.transcode, "at_bitrate", at_bitrate)
+    monkeypatch.setattr(media.transcode, "shrink", lambda *a: pytest.fail("not by size"))
+    monkeypatch.setattr(media.MediaFetcher, "can_transcode", lambda self: True)
+    cid = community_with(server, tbouncer, "![v](https://img.test/fat.mp4)")
+    client = logged_in(settings, tbouncer)
+    r = client.post(f"/c/{cid}/media-settings", data={"video_bigger": "rate", "video_rate": "fast"})
+    assert "the bitrate is a number of megabits a second" in r.text
+    client.post(f"/c/{cid}/media-settings", data={"video_bigger": "rate", "video_rate": "2.5"})
+    with tbouncer.db.connect() as conn:
+        mid = conn.execute("SELECT id FROM media WHERE url='https://img.test/fat.mp4'").fetchone()[0]
+        assert media.policy_for(conn, mid, tbouncer.media.default_policy).video == media.KindPolicy(
+            True, 1_000_000, None, 2_500_000)
+    page = client.get(f"/c/{cid}?tab=media").text
+    assert '<option value="rate" selected>' in page and 'name="video_rate" class="num" inputmode="decimal" value="2.5"' in page
+
+    tbouncer.media.fetch_one(media_rows(tbouncer)["https://img.test/fat.mp4"], wanted=True)
+    row = media_rows(tbouncer)["https://img.test/fat.mp4"]
+    assert calls == [2_500_000] and row["status"] == "ok" and row["size_bytes"] < 100
+    assert row["original_bytes"] > 1_500_000
+
+    # Already archived as it was: re-encoded when the setting changes, unless it's no higher already.
+    with tbouncer.db.transaction() as conn:
+        conn.execute("UPDATE media SET status='pending', attempts=0 WHERE id=?", (mid,))
+    client.post(f"/c/{cid}/media-settings", data={"video_keep": "5"})
+    tbouncer.media.fetch_one(media_rows(tbouncer)["https://img.test/fat.mp4"], wanted=True)
+    kept = media_rows(tbouncer)["https://img.test/fat.mp4"]
+    assert kept["size_bytes"] > 1_500_000 and kept["original_bytes"] is None
+    already_low.add(kept["size_bytes"])
+    client.post(f"/c/{cid}/media-settings", data={"video_bigger": "rate", "video_rate": "1"})
+    while tbouncer.media.convert_some():
+        pass
+    assert calls[-1] == 1_000_000 and media_rows(tbouncer)["https://img.test/fat.mp4"]["storage_path"] == kept["storage_path"]
+    already_low.clear()
+    client.post(f"/c/{cid}/media-settings", data={"video_bigger": "rate", "video_rate": "1"})
+    while tbouncer.media.convert_some():
+        pass
+    assert media_rows(tbouncer)["https://img.test/fat.mp4"]["size_bytes"] < 100
+
+
+def test_a_bitrate_wins_over_a_size_for_shared_videos():
+    by_size, by_rate = media.KindPolicy(True, 10_000_000, 50_000_000), media.KindPolicy(True, 5_000_000, None, 1_000_000)
+    assert by_size.merge(by_rate) == by_rate.merge(by_size) == media.KindPolicy(True, 10_000_000, None, 1_000_000)
+    assert by_rate.override({"target_mb": 20}) == media.KindPolicy(True, 5_000_000, 20_000_000, None)
+    assert by_size.override({"target_mbps": 2.5}) == media.KindPolicy(True, 10_000_000, None, 2_500_000)
+
+
+@needs_ffmpeg
+def test_reencoding_at_a_bitrate(tmp_path):
+    src = tmp_path / "clip.mp4"
+    src.write_bytes(big_file("clip.mp4")[0])
+    out = transcode.at_bitrate(src, 1_000_000, tmp_path)
+    info = transcode.probe(out)
+    assert float(info["format"]["bit_rate"]) < 1_300_000 and out.stat().st_size < src.stat().st_size
+    assert transcode.at_bitrate(out, 5_000_000, tmp_path) is None  # already lower
 
 
 def _write(workdir, data: bytes):

@@ -1275,7 +1275,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                       community=c, powers=powers, mod_data=mod_data, view=shown, view_chosen=c["view_mode"],
                       media=media_data, media_default=bouncer.media.default_policy,
                       media_choices=media_mod.parse_choices(c["media_policy"]), media_kinds=media_mod.KINDS,
-                      transcoded=media_mod.TRANSCODED, can_transcode=bouncer.media.can_transcode(),
+                      transcoded=media_mod.TRANSCODED, by_rate=media_mod.BY_RATE,
+                      can_transcode=bouncer.media.can_transcode(),
                       snapshot=snapshot)
 
     def media_choices(form: Any) -> tuple[dict[str, dict[str, Any]], str | None]:
@@ -1304,6 +1305,15 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                     return {}, f"{label}: transcode down to no more than the size they're kept as they are up to."
                 else:
                     c["target_mb"] = sizes["target"]
+            elif bigger == "rate" and kind in media_mod.BY_RATE:
+                raw = str(form.get(f"{kind}_rate", "")).strip()
+                try:
+                    mbps = float(raw)
+                except ValueError:
+                    mbps = 0.0
+                if not 0.1 <= mbps <= 100:
+                    return {}, f"{label}: the bitrate is a number of megabits a second, like 2.5."
+                c["target_mbps"] = round(mbps, 2)
             choices[kind] = {k: v for k, v in c.items() if v is not None}
         return choices, None
 
@@ -1472,7 +1482,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             saved = media_mod.load_defaults(conn)
         return render(request, "storage.html", u=usage, nouns=storage_mod.NOUNS, env=bouncer.media.env_policy,
                       saved=saved, media_kinds=media_mod.KINDS, transcoded=media_mod.TRANSCODED,
-                      can_transcode=bouncer.media.can_transcode())
+                      by_rate=media_mod.BY_RATE, can_transcode=bouncer.media.can_transcode())
 
     @app.post("/storage/media-defaults")
     async def media_defaults(request: Request):

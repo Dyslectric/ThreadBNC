@@ -507,6 +507,10 @@ fieldset.media-kind { border: 1px solid var(--line); border-radius: 10px; paddin
 fieldset.media-kind legend { font-weight: 600; padding: 0 4px; }
 fieldset.media-kind p { margin: 0; }
 .media-bigger { gap: 6px 10px; }
+/* Only the box for the choice made: a size to transcode down to, or a bitrate. */
+.media-bigger:has(option[value=rate]:checked) .for-size,
+.media-bigger:not(:has(option[value=rate]:checked)) .for-rate,
+.media-bigger:has(option[value=leave]:checked) .for-size { display: none; }
 
 /* ---- tiled media view ---- */
 .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; margin-bottom: 10px; }

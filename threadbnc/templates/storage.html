@@ -144,7 +144,8 @@
 
 <section class="card" id="media-defaults">
   <h2>Media defaults</h2>
-  {{ media_form('/storage/media-defaults', saved, env, 'Server setting', can_transcode, media_kinds, transcoded) }}
+  {{ media_form('/storage/media-defaults', saved, env, 'Server setting', can_transcode, media_kinds, transcoded,
+                by_rate) }}
   <p class="small muted">For every community that hasn't chosen its own in its Media tab. The server settings come from
     the <code>THREADBNC_MEDIA_*</code> environment variables. Saving tries again files the old settings left out, and
     goes through the files already archived: pictures and videos now over the size they're kept as they are up to are

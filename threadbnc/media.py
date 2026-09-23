@@ -93,11 +93,12 @@ _BIG = ("video/", "audio/")  # held until wanted
 
 
 # What's archived is chosen per kind of file. Pictures and videos up to a size
-# are kept as they are; bigger ones are transcoded down to a target size (see
-# transcode.py), or left out when there's no target. Audio is only ever kept
-# as it is, up to its size limit.
+# are kept as they are; bigger ones are transcoded down to a target size, or
+# for videos to a bitrate (see transcode.py), or left out when there's neither.
+# Audio is only ever kept as it is, up to its size limit.
 KINDS = {"image": "Pictures", "video": "Videos", "audio": "Audio"}
 TRANSCODED = ("image", "video")  # the kinds that can be transcoded down
+BY_RATE = ("video",)  # the kinds that can be transcoded to a bitrate instead of a size
 # Errors that a change of settings can fix; requeue() retries these.
 POLICY_SUFFIX = "for this community"
 
@@ -115,23 +116,38 @@ def kind_of(ctype: str) -> str | None:
 class KindPolicy:
     save: bool = True
     keep_bytes: int = 25_000_000  # kept as they are up to this
-    target_bytes: int | None = None  # bigger ones transcoded down to this; None = left out
+    # Bigger ones: transcoded down to this size, or (videos) re-encoded at this
+    # bitrate, whatever size that comes to; neither = left out.
+    target_bytes: int | None = None
+    target_bps: int | None = None
+
+    @property
+    def transcodes(self) -> bool:
+        return bool(self.target_bytes or self.target_bps)
 
     def override(self, choice: dict[str, Any]) -> KindPolicy:
         """This policy with the choices made (a missing or None field keeps it).
-        target_mb 0: bigger files are left out; "fit": transcoded down to the
-        size limit, whatever it is (settings from before, legacy_choices)."""
-        save, keep, target = choice.get("save"), choice.get("keep_mb"), choice.get("target_mb")
+        target_mb 0: bigger files are left out; target_mbps: a bitrate instead
+        of a size; "fit": transcoded down to the size limit, whatever it is
+        (settings from before, legacy_choices)."""
+        save, keep = choice.get("save"), choice.get("keep_mb")
         keep_bytes = keep * 1_000_000 if keep else self.keep_bytes
-        target_bytes = self.target_bytes if target is None else target * 1_000_000 or None
-        return KindPolicy(self.save if save is None else bool(save), keep_bytes,
-                          keep_bytes if choice.get("fit") else target_bytes)
+        size, rate = self.target_bytes, self.target_bps
+        if choice.get("fit"):
+            size, rate = keep_bytes, None
+        elif choice.get("target_mbps") is not None:
+            size, rate = None, int(choice["target_mbps"] * 1_000_000) or None
+        elif choice.get("target_mb") is not None:
+            size, rate = choice["target_mb"] * 1_000_000 or None, None
+        return KindPolicy(self.save if save is None else bool(save), keep_bytes, size, rate)
 
     def merge(self, other: KindPolicy) -> KindPolicy:
-        """The more generous of two policies, for media several communities share."""
-        targets = [t for t in (self.target_bytes, other.target_bytes) if t]
+        """The more generous of two policies, for media several communities
+        share. A bitrate wins over a size (it doesn't squeeze long videos)."""
+        rates = [r for r in (self.target_bps, other.target_bps) if r]
+        sizes = [t for t in (self.target_bytes, other.target_bytes) if t]
         return KindPolicy(self.save or other.save, max(self.keep_bytes, other.keep_bytes),
-                          max(targets) if targets else None)
+                          None if rates or not sizes else max(sizes), max(rates) if rates else None)
 
 
 @dataclass(frozen=True)
@@ -349,6 +365,14 @@ def _noun(ctype: str) -> str:
     return {"image": "pictures", "audio": "audio files"}.get(kind_of(ctype) or "", "videos")
 
 
+def _sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(CHUNK), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def _after(now: str, seconds: float) -> str:
     return fmt_ts(parse_ts(now) + timedelta(seconds=seconds))  # type: ignore[operator]
 
@@ -501,7 +525,9 @@ class MediaFetcher:
     def _cap(self, kp: KindPolicy) -> int:
         """The largest file of a kind worth downloading: bigger than it's kept
         as-is when it could be transcoded down."""
-        return max(kp.keep_bytes, self.source_max_bytes) if kp.target_bytes and self.can_transcode()             else kp.keep_bytes
+        if kp.transcodes and self.can_transcode():
+            return max(kp.keep_bytes, self.source_max_bytes)
+        return kp.keep_bytes
 
     def _download(self, url: str, policy: MediaPolicy | None = None, wanted: bool = True) -> Downloaded:
         """`wanted` False: a video is held (MediaHeld) as soon as the server says it's one."""
@@ -628,8 +654,13 @@ class MediaFetcher:
             for r in rows:
                 after = r["id"]
                 kp = policy_for(conn, r["id"], default).for_type(r["content_type"])
-                if kp and kp.save and kp.target_bytes and r["size_bytes"] > max(kp.keep_bytes, kp.target_bytes):
-                    todo = (r, kp.target_bytes)
+                if not (kp and kp.save and r["size_bytes"] > kp.keep_bytes):
+                    continue
+                if kp.target_bps and r["content_type"].startswith("video/"):
+                    todo = (r, None, kp.target_bps)
+                    break
+                if kp.target_bytes and r["size_bytes"] > kp.target_bytes:
+                    todo = (r, kp.target_bytes, None)
                     break
         with self.db.transaction() as conn:
             if rows:
@@ -640,12 +671,18 @@ class MediaFetcher:
             self._convert(*todo)
         return bool(rows)
 
-    def _convert(self, row: Any, target: int) -> None:
+    def _convert(self, row: Any, target: int | None, bps: int | None) -> None:
         src = self.media_dir / row["storage_path"]
         try:
-            out, ctype = transcode.shrink(src, row["content_type"], target, self.media_dir)
+            if bps:
+                out, ctype = transcode.at_bitrate(src, bps, self.media_dir), "video/mp4"
+                if out is None:  # at that rate or lower already
+                    return
+            else:
+                out, ctype = transcode.shrink(src, row["content_type"], target, self.media_dir)
         except (transcode.TranscodeError, OSError) as exc:
-            log.warning("media %s: couldn't transcode it down to %d MB: %s", row["id"], target // 1_000_000, exc)
+            want = f"{bps / 1_000_000:g} Mbps" if bps else f"{target // 1_000_000} MB"
+            log.warning("media %s: couldn't transcode it to %s: %s", row["id"], want, exc)
             return
         h = hashlib.sha256()
         with out.open("rb") as f:
@@ -663,6 +700,18 @@ class MediaFetcher:
         if unused:  # the bigger copy, replaced
             src.unlink(missing_ok=True)
         log.info("media %s: transcoded down from %.1f MB to %.1f MB", row["id"], row["size_bytes"] / 1e6, size / 1e6)
+
+    def _reencode(self, dl: Downloaded, bps: int) -> Downloaded:
+        """A downloaded video at a bitrate (transcode.at_bitrate); as it is if it's no higher already."""
+        try:
+            out = transcode.at_bitrate(dl.tmp_path, bps, self.media_dir)
+        except transcode.TranscodeError as exc:
+            dl.tmp_path.unlink(missing_ok=True)
+            raise MediaRejected(f"too large ({dl.size / 1_000_000:.1f} MB); couldn't transcode: {exc}") from None
+        if out is None:
+            return dl
+        dl.tmp_path.unlink(missing_ok=True)
+        return Downloaded(out, "video/mp4", out.stat().st_size, _sha256(out), dl.final_url, dl.size, dl.content_type)
 
     def _store(self, dl: Downloaded) -> str:
         ext = _EXT.get(dl.content_type) or mimetypes.guess_extension(dl.content_type) or ".bin"
@@ -712,10 +761,12 @@ class MediaFetcher:
                 dl = self._download(row["url"], policy, wanted)
                 kp = policy.for_type(dl.content_type)
                 if kp is not None and dl.size > kp.keep_bytes:
-                    if not (kp.target_bytes and self.can_transcode()):
+                    if not (kp.transcodes and self.can_transcode()):
                         dl.tmp_path.unlink(missing_ok=True)
                         raise MediaRejected(f"too large ({dl.size / 1_000_000:.1f} MB)")
-                    if dl.size > kp.target_bytes:  # (already small enough otherwise)
+                    if kp.target_bps and dl.content_type.startswith("video/"):
+                        dl = self._reencode(dl, kp.target_bps)
+                    elif kp.target_bytes and dl.size > kp.target_bytes:  # (already small enough otherwise)
                         dl = self._shrink(dl, kp.target_bytes)
             rel = self._store(dl)
         except MediaRejected as exc:

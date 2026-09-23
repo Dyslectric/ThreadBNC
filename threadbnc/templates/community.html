@@ -154,7 +154,7 @@
       <section class="card" id="media-settings">
         <h2>Media archiving</h2>
         {{ media_form('/c/' ~ c.id ~ '/media-settings', media_choices, media_default, 'Default', can_transcode,
-                      media_kinds, transcoded) }}
+                      media_kinds, transcoded, by_rate) }}
         <p class="small muted">Transcoding turns videos and animated GIFs into MP4s at whatever quality fits the size
           chosen, and scales pictures down. It runs in the background and can take a few minutes per video.
           Saving also goes through the files already archived: pictures and videos now over the size they're kept

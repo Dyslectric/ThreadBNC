@@ -552,7 +552,7 @@ Posts and comments are rendered as Markdown: CommonMark plus tables, strikethrou
 **Settings for each kind of file.** Pictures, videos and audio each have their own:
 - **Archive**: yes or no. Files already archived stay when you turn this off.
 - **Kept as they are up to**: the largest file saved unchanged.
-- **Bigger ones** (pictures and videos): leave them out, or **transcode down to** a size of their own (blank: the size they're kept as they are up to). Videos and animated GIFs become H.264/AAC MP4s at whatever bitrate fits (up to 1080p). Pictures are scaled down and saved as WebP. Videos too long to fit at a watchable bitrate are left out. Audio isn't transcoded: files over its limit are left out.
+- **Bigger ones** (pictures and videos): leave them out, or **transcode down to** a size of their own (blank: the size they're kept as they are up to). Videos and animated GIFs become H.264/AAC MP4s at whatever bitrate fits (up to 1080p). Videos can instead be **re-encoded at a bitrate** (in Mbps, picture and sound together), which keeps the quality the same however long they are, so long ones can still come out big; videos already at or under it are kept as they are. Pictures are scaled down and saved as WebP. Videos too long to fit at a watchable bitrate are left out. Audio isn't transcoded: files over its limit are left out.
 
 **Defaults** (the **Media defaults** section of the Storage page): these settings for every community that hasn't chosen its own. Each one left on "Server setting" (or blank) follows the `THREADBNC_MEDIA_*` environment variables. Saving retries anything the old settings left out or found too large.
 

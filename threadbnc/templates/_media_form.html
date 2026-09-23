@@ -2,9 +2,10 @@
 
 {# Media settings for each kind of file: the Storage page's defaults, or one
    community's. choices: {kind: {save, keep_mb, target_mb, fit}} as saved (a
-   field left out follows `inherited`, a MediaPolicy); source: what the
+   field left out follows `inherited`, a MediaPolicy; target_mbps: a
+   bitrate for videos instead of a size); source: what the
    inherited settings are called ("Default", "Server setting"). #}
-{% macro media_form(action, choices, inherited, source, can_transcode, kinds, transcoded) %}
+{% macro media_form(action, choices, inherited, source, can_transcode, kinds, transcoded, by_rate) %}
 <form method="post" action="{{ action }}" class="stack media-form">
   {% for kind, label in kinds.items() %}
   {% set c = choices.get(kind, {}) %}
@@ -21,18 +22,29 @@
       <input name="{{ kind }}_keep" class="num" inputmode="numeric" value="{{ c.keep_mb or '' }}"
              placeholder="{{ d.keep_bytes // 1000000 }}" title="Blank = {{ source | lower }}, {{ d.keep_bytes | size }}"> MB</label>
     {% if kind in transcoded %}
-    {% set bigger = 'default' if c.target_mb is not defined and not c.fit else 'leave' if c.target_mb == 0 else 'transcode' %}
+    {% set bigger = 'rate' if c.target_mbps else 'default' if c.target_mb is not defined and not c.fit
+                    else 'leave' if c.target_mb == 0 else 'transcode' %}
+    {% set inherited_does = ('re-encode at ' ~ '%g' | format(d.target_bps / 1000000) ~ ' Mbps') if d.target_bps
+                            else ('transcode to ' ~ (d.target_bytes | size)) if d.target_bytes else 'leave out' %}
     <div class="row media-bigger">
       <label>Bigger ones&nbsp;
         <select name="{{ kind }}_bigger">
-          <option value="default" {{ 'selected' if bigger == 'default' }}>{{ source }}: {{ ('transcode to ' ~ (d.target_bytes | size)) if d.target_bytes else 'leave out' }}</option>
-          <option value="transcode" {{ 'selected' if bigger == 'transcode' }}>Transcode down to…</option>
+          <option value="default" {{ 'selected' if bigger == 'default' }}>{{ source }}: {{ inherited_does }}</option>
+          <option value="transcode" {{ 'selected' if bigger == 'transcode' }}>Transcode down to a size…</option>
+          {% if kind in by_rate %}<option value="rate" {{ 'selected' if bigger == 'rate' }}>Re-encode at a bitrate…</option>{% endif %}
           <option value="leave" {{ 'selected' if bigger == 'leave' }}>Leave out</option>
         </select></label>
-      <label><input name="{{ kind }}_target" class="num" inputmode="numeric" value="{{ c.target_mb or '' }}"
+      <label class="for-size"><input name="{{ kind }}_target" class="num" inputmode="numeric" value="{{ c.target_mb or '' }}"
              placeholder="{{ c.keep_mb or d.keep_bytes // 1000000 }}" aria-label="{{ label }}: transcode down to (MB)"
              title="Transcode down to this; blank = the size they're kept as they are up to"> MB</label>
+      {% if kind in by_rate %}
+      <label class="for-rate"><input name="{{ kind }}_rate" class="num" inputmode="decimal" value="{{ '%g' | format(c.target_mbps) if c.target_mbps else '' }}"
+             placeholder="{{ '%g' | format(d.target_bps / 1000000) if d.target_bps else '2.5' }}" aria-label="{{ label }}: re-encode at (Mbps)"
+             title="Picture and sound together; how big a video comes out depends on how long it is"> Mbps</label>
+      {% endif %}
     </div>
+    {% if kind in by_rate %}<p class="small muted">A bitrate keeps the quality the same however long a video is, so
+      long ones can still come out big. Videos already at or under it are kept as they are.</p>{% endif %}
     {% else %}
     <p class="small muted">Bigger ones are left out: audio isn't transcoded.</p>
     {% endif %}
@@ -41,7 +53,7 @@
   <div><button class="small">Save</button></div>
 </form>
 {% set wants = [] %}
-{% for kind in transcoded %}{% if inherited.override(choices).kind(kind).target_bytes %}{% set _ = wants.append(kind) %}{% endif %}{% endfor %}
+{% for kind in transcoded %}{% if inherited.override(choices).kind(kind).transcodes %}{% set _ = wants.append(kind) %}{% endif %}{% endfor %}
 {% if wants and not can_transcode %}
 <div class="flash error" role="alert">{{ icon('alert') }} <span>ffmpeg isn't installed on the server, so files too big
   to keep as they are are left out for now.</span></div>

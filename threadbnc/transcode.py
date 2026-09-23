@@ -1,7 +1,8 @@
 """Shrinking media that is too big to archive as-is, with ffmpeg.
 
 Videos (and animated GIFs) become H.264/AAC MP4s at a bitrate worked out from
-their length so the result fits the size limit, and audio AAC in an M4A the
+their length so the result fits the size limit (or, at_bitrate, at a bitrate
+chosen outright, whatever size that comes to), and audio AAC in an M4A the
 same way; pictures are scaled down and
 re-encoded as WebP (JPEG if this ffmpeg has no WebP encoder). Nothing here
 touches the database: media.py decides when to call it and records the result.
@@ -96,24 +97,55 @@ def _video(src: Path, limit: int, workdir: Path, timeout: float) -> Path:
     video_bps = total_bps - audio_bps
     if video_bps < MIN_VIDEO_BPS:
         raise TranscodeError(f"too long ({duration / 60:.0f} min) to fit in {limit // 1_000_000} MB")
-    height = 1080 if video_bps >= 2_500_000 else 720 if video_bps >= 1_000_000 else 480 if video_bps >= 400_000 \
-        else 360
     out = _tmp(workdir, ".mp4")
     try:
         for factor in (1.0, 0.75, 0.55):
-            bps = int(video_bps * factor)
-            args = ["-i", str(src), "-map", "0:v:0", "-vf",
-                    f"scale=-2:'trunc(min(ih,{height})/2)*2',format=yuv420p",
-                    "-c:v", "libx264", "-preset", "veryfast", "-b:v", str(bps), "-maxrate", str(bps),
-                    "-bufsize", str(bps * 2)]
-            args += ["-map", "0:a:0", "-c:a", "aac", "-b:a", str(audio_bps)] if has_audio else ["-an"]
-            _run([*args, "-movflags", "+faststart", "-f", "mp4", str(out)], timeout)
+            _encode(src, out, int(video_bps * factor), audio_bps if has_audio else 0, timeout)
             if out.stat().st_size <= limit:
                 return out
         raise TranscodeError(f"still over {limit // 1_000_000} MB after transcoding")
     except BaseException:
         out.unlink(missing_ok=True)
         raise
+
+
+def at_bitrate(src: Path, bps: int, workdir: Path, timeout: float = TIMEOUT) -> Path | None:
+    """Re-encode a video at about `bps` bits a second, picture and sound
+    together, as an H.264/AAC MP4 (the caller owns the new file); how big
+    that comes out depends on how long it is. None when it's already at or
+    under that rate: re-encoding would only lose quality."""
+    if not available():
+        raise TranscodeError("ffmpeg is not installed")
+    info = probe(src)
+    streams = info.get("streams") or []
+    video = next((s for s in streams if s.get("codec_type") == "video"), None)
+    if not video:
+        raise TranscodeError("no video stream")
+    fmt = info.get("format", {})
+    duration = float(fmt.get("duration") or video.get("duration") or 0)
+    current = float(fmt.get("bit_rate") or 0) or (src.stat().st_size * 8 / duration if duration > 0 else 0)
+    if current and current <= bps:
+        return None
+    has_audio = any(s.get("codec_type") == "audio" for s in streams)
+    audio_bps = (128_000 if bps >= 1_500_000 else 96_000 if bps >= 600_000 else 48_000) if has_audio else 0
+    out = _tmp(workdir, ".mp4")
+    try:
+        _encode(src, out, max(MIN_VIDEO_BPS, bps - audio_bps), audio_bps, timeout)
+        return out
+    except BaseException:
+        out.unlink(missing_ok=True)
+        raise
+
+
+def _encode(src: Path, out: Path, video_bps: int, audio_bps: int, timeout: float) -> None:
+    """H.264 at video_bps (no taller than suits that rate), AAC at audio_bps (0: no sound)."""
+    height = 1080 if video_bps >= 2_500_000 else 720 if video_bps >= 1_000_000 else 480 if video_bps >= 400_000 \
+        else 360
+    args = ["-i", str(src), "-map", "0:v:0", "-vf", f"scale=-2:'trunc(min(ih,{height})/2)*2',format=yuv420p",
+            "-c:v", "libx264", "-preset", "veryfast", "-b:v", str(video_bps), "-maxrate", str(video_bps),
+            "-bufsize", str(video_bps * 2)]
+    args += ["-map", "0:a:0", "-c:a", "aac", "-b:a", str(audio_bps)] if audio_bps else ["-an"]
+    _run([*args, "-movflags", "+faststart", "-f", "mp4", str(out)], timeout)
 
 
 def _audio(src: Path, limit: int, workdir: Path, timeout: float) -> Path:
