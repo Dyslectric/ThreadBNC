@@ -1077,6 +1077,12 @@ class Bouncer:
             elif job["kind"] == "sync":
                 self.sync_thread(payload["thread_id"], force=True)
                 self._finish_job(job["id"], "done", {"thread_id": payload["thread_id"]})
+            elif job["kind"] == "poll":  # Refresh on a checked community: now, not at its turn
+                with self.db.connect() as conn:
+                    followed = conn.execute("SELECT 1 FROM community_follows WHERE community_id=? AND active=1",
+                                            (payload["community_id"],)).fetchone()
+                captured = self.poll_follow(payload["community_id"]) if followed else 0
+                self._finish_job(job["id"], "done", {"community_id": payload["community_id"], "captured": captured})
             else:
                 self._finish_job(job["id"], "failed", error=f"unknown job kind {job['kind']}")
         except RemotePaused as exc:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import threading
 import time
 from urllib.parse import parse_qs, urlparse
 
@@ -691,3 +692,23 @@ def test_logged_out_cookie_waits_for_a_new_one(bouncer, reddit, poster):
     with pytest.raises(RemoteUnavailable):
         bouncer.reddit_adapter.fetch_post("p1")
     assert len(reddit.requests) == before
+
+
+def test_refresh_checks_a_subreddit_now(settings, bouncer, reddit):
+    bouncer.reddit.connect_app("app1", "s3cret")
+    cid = bouncer.follow_community("r/pics", None, 30, backfill=True)
+    client = logged_in(settings, bouncer)
+    assert f'action="/c/{cid}/refresh"' in client.get(f"/c/{cid}").text
+
+    def worker():  # the bouncer's worker, which isn't running in tests
+        while not bouncer.run_one_job():
+            time.sleep(0.05)
+
+    threading.Thread(target=worker, daemon=True).start()
+    page = client.post(f"/c/{cid}/refresh", headers={"referer": f"http://testserver/c/{cid}"},
+                       follow_redirects=True).text
+    assert "2 new posts." in page and "Link post" in page
+    assert one(bouncer, "SELECT last_polled_at FROM community_follows")[0]
+    # Not checked on a schedule (or not followed): nothing to refresh.
+    bouncer.unfollow(cid)
+    assert client.post(f"/c/{cid}/refresh").status_code == 404

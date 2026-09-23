@@ -1130,6 +1130,38 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         flash(request, "Checking it now. Reload in a moment to see how it went.")
         return RedirectResponse(back(request, f"/c/{cid}"), status_code=303)
 
+    REFRESH_WAIT_SECONDS = 10.0
+
+    @app.post("/c/{cid}/refresh")
+    def refresh_community(request: Request, cid: int):
+        """Check a subreddit (or any checked community) for new posts now, and
+        wait a little for it so the page comes back with them."""
+        with db.connect() as conn:
+            f = conn.execute("SELECT polling FROM community_follows WHERE community_id=? AND active=1",
+                             (cid,)).fetchone()
+            if not f or not f["polling"]:
+                raise HTTPException(404)
+            # Clicked twice: wait for the check already on its way rather than asking again.
+            job = conn.execute("SELECT id FROM jobs WHERE kind='poll' AND status IN ('queued', 'running') "
+                               "AND json_extract(payload_json, '$.community_id')=? ORDER BY id LIMIT 1",
+                               (cid,)).fetchone()
+        job_id = job["id"] if job else bouncer.enqueue("poll", {"community_id": cid})
+        deadline = time.monotonic() + REFRESH_WAIT_SECONDS
+        while True:
+            with db.connect() as conn:
+                j = conn.execute("SELECT status, error, result_json FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if j["status"] in ("done", "failed") or time.monotonic() >= deadline:
+                break
+            time.sleep(0.25)
+        if j["status"] == "done":
+            n = (json.loads(j["result_json"] or "null") or {}).get("captured", 0)
+            flash(request, f"{n} new post{'' if n == 1 else 's'}." if n else "No new posts.")
+        elif j["status"] == "failed":
+            flash(request, f"Couldn't check it: {j['error']}", "error")
+        else:
+            flash(request, "Still checking. New posts will show when you reload.")
+        return RedirectResponse(back(request, f"/c/{cid}"), status_code=303)
+
     @app.get("/c/{cid}", response_class=HTMLResponse)
     def community(request: Request, cid: int, tab: str = "feed", sort: str | None = None, t: str | None = None,
                   unread: str | None = None, page: int = 1, live_sort: str = "Hot", view: str | None = None):
