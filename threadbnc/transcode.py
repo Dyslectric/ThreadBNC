@@ -1,7 +1,8 @@
 """Shrinking media that is too big to archive as-is, with ffmpeg.
 
 Videos (and animated GIFs) become H.264/AAC MP4s at a bitrate worked out from
-their length so the result fits the size limit; pictures are scaled down and
+their length so the result fits the size limit, and audio AAC in an M4A the
+same way; pictures are scaled down and
 re-encoded as WebP (JPEG if this ffmpeg has no WebP encoder). Nothing here
 touches the database: media.py decides when to call it and records the result.
 """
@@ -17,6 +18,8 @@ from pathlib import Path
 
 TIMEOUT = 30 * 60  # seconds for one ffmpeg run; a long video on a slow box takes a while
 MIN_VIDEO_BPS = 100_000  # below this a video is mush; give up instead
+MIN_AUDIO_BPS = 32_000  # speech is still fine at this; music less so
+MAX_AUDIO_BPS = 128_000  # no point going higher when shrinking
 # (longest side, WebP quality) tried in turn until a picture fits.
 IMAGE_STEPS = [(None, 85), (4096, 80), (2560, 80), (1920, 75), (1280, 70), (1024, 60)]
 
@@ -66,6 +69,8 @@ def shrink(src: Path, content_type: str, limit: int, workdir: Path,
         raise TranscodeError("ffmpeg is not installed")
     if content_type.startswith("video/") or content_type == "image/gif":
         return _video(src, limit, workdir, timeout), "video/mp4"
+    if content_type.startswith("audio/"):
+        return _audio(src, limit, workdir, timeout), "audio/mp4"
     if content_type.startswith("image/") and content_type != "image/svg+xml":
         return _image(src, limit, workdir, timeout)
     raise TranscodeError(f"can't transcode {content_type}")
@@ -103,6 +108,32 @@ def _video(src: Path, limit: int, workdir: Path, timeout: float) -> Path:
                     "-bufsize", str(bps * 2)]
             args += ["-map", "0:a:0", "-c:a", "aac", "-b:a", str(audio_bps)] if has_audio else ["-an"]
             _run([*args, "-movflags", "+faststart", "-f", "mp4", str(out)], timeout)
+            if out.stat().st_size <= limit:
+                return out
+        raise TranscodeError(f"still over {limit // 1_000_000} MB after transcoding")
+    except BaseException:
+        out.unlink(missing_ok=True)
+        raise
+
+
+def _audio(src: Path, limit: int, workdir: Path, timeout: float) -> Path:
+    info = probe(src)
+    streams = info.get("streams") or []
+    audio = next((s for s in streams if s.get("codec_type") == "audio"), None)
+    if not audio:
+        raise TranscodeError("no audio stream")
+    duration = float(info.get("format", {}).get("duration") or audio.get("duration") or 0)
+    if duration <= 0:
+        raise TranscodeError("unknown length")
+    target = min(MAX_AUDIO_BPS, limit * 8 * 0.95 / duration)
+    if target < MIN_AUDIO_BPS:
+        raise TranscodeError(f"too long ({duration / 60:.0f} min) to fit in {limit // 1_000_000} MB")
+    out = _tmp(workdir, ".m4a")
+    try:
+        for factor in (1.0, 0.85):
+            bps = int(max(MIN_AUDIO_BPS, target * factor))
+            _run(["-i", str(src), "-map", "0:a:0", "-vn", "-c:a", "aac", "-b:a", str(bps),
+                  "-movflags", "+faststart", "-f", "mp4", str(out)], timeout)
             if out.stat().st_size <= limit:
                 return out
         raise TranscodeError(f"still over {limit // 1_000_000} MB after transcoding")

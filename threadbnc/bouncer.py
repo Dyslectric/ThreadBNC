@@ -5,8 +5,9 @@ It asks other servers as little as a browser would. Lemmy and PieFed posts
 arrive by push (federation.py); a community is only checked on a schedule
 when you turn that on, feeds and subreddits always are, and subreddits only
 while you're using ThreadBNC. A post's comments, linked article and videos
-are fetched when it's opened or kept (open_threads), its article when it's
-scrolled into view in a feed too (fetch_articles), and its votes on a
+are fetched when it's opened or kept (open_threads), its article and the
+audio file it links to when it's scrolled into view in a feed too
+(fetch_articles, fetch_audio), and its votes on a
 schedule that slows with age and stops after a week (check_votes), from one
 community listing where it can. A server that answers 429 is left alone for
 as long as it asks (adapters/http.py)."""
@@ -23,6 +24,7 @@ from datetime import timedelta
 from typing import Any, Callable
 
 from . import articles, media, store
+from . import feed as feed_mod
 from .adapters import (
     CommunityRef,
     HttpClient,
@@ -565,6 +567,28 @@ class Bouncer:
             for m in pics:
                 self.media.fetch_one(m)
 
+    def fetch_audio(self, thread_ids: list[int]) -> None:
+        """Posts scrolled into view in a feed that link to an audio file: download
+        it, so it's there to play in the post's player bar. Only the posts the
+        reader looked at, as a browser showing a player would."""
+        for tid in thread_ids:
+            if self._stop.is_set():
+                return
+            with self.db.connect() as conn:
+                t = conn.execute("SELECT root_object_id, trashed_at FROM archived_threads WHERE id=?",
+                                 (tid,)).fetchone()
+                if t is None or t["trashed_at"] or not t["root_object_id"]:
+                    continue
+                o = conn.execute("SELECT r.url FROM objects o JOIN revisions r ON r.object_id=o.id "
+                                 "AND r.seq=o.revision_count WHERE o.id=?", (t["root_object_id"],)).fetchone()
+                sound = feed_mod.audio(conn, [(t["root_object_id"], o["url"] if o else None)])
+                a = sound.get(t["root_object_id"])
+                m = conn.execute("SELECT * FROM media WHERE id=? AND status='pending' "
+                                 "AND (next_attempt_at IS NULL OR next_attempt_at<=?)",
+                                 (a["id"], utcnow())).fetchone() if a else None
+            if m is not None:
+                self.media.fetch_one(m, wanted=True)
+
     def _aged_out(self, thread_id: int) -> None:
         """A feed article that's no longer in its feed: feeds only list their
         latest entries, so that's not deletion. Keep what we have and stop
@@ -1073,6 +1097,9 @@ class Bouncer:
                 self._finish_job(job["id"], "done", {"thread_ids": payload["thread_ids"]})
             elif job["kind"] == "articles":
                 self.fetch_articles(payload["thread_ids"])
+                self._finish_job(job["id"], "done", {"thread_ids": payload["thread_ids"]})
+            elif job["kind"] == "audio":
+                self.fetch_audio(payload["thread_ids"])
                 self._finish_job(job["id"], "done", {"thread_ids": payload["thread_ids"]})
             elif job["kind"] == "sync":
                 self.sync_thread(payload["thread_id"], force=True)

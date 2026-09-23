@@ -10,6 +10,7 @@ from typing import Any
 
 from . import articles, dupes
 from .db import Conn, fmt_ts
+from .render import looks_like_audio
 
 # Posts of the same link or text are one feed entry; sorts use the group's totals.
 SORTS = {  # NULLS LAST: Postgres otherwise puts NULLs first in DESC order
@@ -221,11 +222,13 @@ def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: lis
     copies = dupes.load_copies(conn, [i["dupe_key"] for i in items])
     readable = articles.readable(conn, [i["oid"] for i in items])
     waiting = articles.waiting(conn, [(i["oid"], i["url"]) for i in items])
+    sounds = audio(conn, [(i["oid"], i["url"]) for i in items])
     for i in items:
         i["excerpt"] = excerpt(i["body"])
         i["thumb"] = thumbs.get(i["oid"])
         i["article"] = i["oid"] in readable
         i["article_waiting"] = i["oid"] in waiting
+        i["audio"] = sounds.get(i["oid"])
         meta = json.loads(i.pop("rmeta") or "{}")
         i["nsfw"], i["spoiler"] = bool(meta.get("nsfw")), bool(meta.get("spoiler"))
         attach_group(i, copies.get(i["dupe_key"]) or [])
@@ -280,6 +283,25 @@ def thumbnails(conn: Conn,
         pics = sorted((p for p in found[oid] if p["rank"] != 1), key=lambda p: p["rank"])
         thumb["pics"] = pics or [p for p in found[oid] if p["rank"] == 1]
     return out
+
+
+def audio(conn: Conn, links: list[tuple[int, str | None]]) -> dict[int, dict[str, Any]]:
+    """The audio file each of these (object id, current link) posts links to,
+    for the player bar in its feed entry: its media row's id, status
+    (pending until it's downloaded, which happens once the post is scrolled
+    to: Bouncer.fetch_audio) and error. Links that turned out not to be audio,
+    or that settings leave out, have none."""
+    links = [(oid, url) for oid, url in links if url]
+    if not links:
+        return {}
+    pairs = " OR ".join("(r.object_id=? AND m.url=?)" for _ in links)
+    rows = conn.execute(
+        f"SELECT r.object_id, m.id, m.url, m.status, m.content_type, m.error FROM media_refs r "
+        f"JOIN media m ON m.id=r.media_id WHERE ({pairs}) AND m.status != 'skipped'",
+        [v for pair in links for v in pair]).fetchall()
+    return {r["object_id"]: {"id": r["id"], "status": r["status"], "error": r["error"]} for r in rows
+            if (r["content_type"] or "").startswith("audio/")
+            or (r["status"] != "ok" and looks_like_audio(r["url"]))}
 
 
 def followed_communities(conn: Conn) -> list[dict[str, Any]]:

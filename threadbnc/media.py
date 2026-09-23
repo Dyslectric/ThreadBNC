@@ -1,4 +1,4 @@
-"""Media archiving: images/GIFs/short videos referenced by retained content.
+"""Media archiving: images/GIFs/short videos/audio referenced by retained content.
 
 Media is registered when a revision is recorded and downloaded later by the
 bouncer (never while holding the DB write lock). Files are content-addressed
@@ -13,6 +13,9 @@ the most generous of their settings.
 Pictures (and video thumbnails, which are pictures) are downloaded as soon as
 they're seen. Full videos wait until a post showing them is opened or kept
 (`held`): most scroll past unwatched, and they're by far the biggest files.
+Audio files are held too, but a post linking to one fetches it as soon as the
+post is scrolled into view in a feed (Bouncer.fetch_audio), so it's ready to
+play from the post's player bar.
 """
 
 from __future__ import annotations
@@ -35,7 +38,7 @@ from . import transcode
 from .adapters.base import RemotePaused
 from .adapters.http import HostThrottle
 from .db import Conn, Database, fmt_ts, parse_ts, utcnow
-from .render import VIDEO_EXTENSIONS, MediaInfo, extract_media_urls, looks_like_media
+from .render import VIDEO_EXTENSIONS, MediaInfo, extract_media_urls, looks_like_audio, looks_like_media
 
 MAX_ATTEMPTS = 5
 MAX_REDIRECTS = 5
@@ -47,7 +50,9 @@ _MAGIC = [
 ]
 _EXT = {"image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif", "image/webp": ".webp",
         "image/avif": ".avif", "video/mp4": ".mp4", "video/webm": ".webm", "image/svg+xml": ".svg",
-        "video/quicktime": ".mov", "image/bmp": ".bmp", "image/heic": ".heic"}
+        "video/quicktime": ".mov", "image/bmp": ".bmp", "image/heic": ".heic", "audio/mpeg": ".mp3",
+        "audio/mp4": ".m4a", "audio/aac": ".aac", "audio/ogg": ".ogg", "audio/flac": ".flac",
+        "audio/wav": ".wav", "audio/opus": ".opus"}
 
 
 class MediaRejected(Exception):
@@ -59,11 +64,11 @@ class MediaSkipped(MediaRejected):
 
 
 class MediaHeld(Exception):
-    """A video nobody has opened yet: wait until someone does."""
+    """A video or audio file nobody has opened yet: wait until someone does."""
 
 
 # A file is wanted in full once a post (or comment) showing it is in a thread
-# you opened or kept. Until then, videos are held.
+# you opened or kept. Until then, videos and audio are held.
 WANTED_SQL = ("EXISTS (SELECT 1 FROM media_refs wr JOIN objects wo ON wo.id=wr.object_id "
               "JOIN archived_threads wt ON wt.id=wo.thread_id WHERE wr.media_id=media.id "
               "AND (wt.retention='manual' OR wt.opened_at IS NOT NULL))")
@@ -73,7 +78,10 @@ def looks_like_video(url: str) -> bool:
     return urlparse(url).path.lower().endswith(VIDEO_EXTENSIONS)
 
 
-ARCHIVE_MODES = {"all": "Pictures and videos", "images": "Pictures only", "off": "Nothing"}
+_BIG = ("video/", "audio/")  # held until wanted, and not archived with "Pictures only"
+
+
+ARCHIVE_MODES = {"all": "Pictures, videos and audio", "images": "Pictures only", "off": "Nothing"}
 _RANK = {"off": 0, "images": 1, "all": 2}
 # Errors that a change of settings can fix; requeue() retries these.
 POLICY_SUFFIX = "for this community"
@@ -172,14 +180,42 @@ def sniff(head: bytes) -> str | None:
             return ctype
     if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
         return "image/webp"
+    if head[:4] == b"RIFF" and head[8:12] == b"WAVE":
+        return "audio/wav"
     if head[4:8] == b"ftyp":
         brand = head[8:12]
         if brand in (b"avif", b"avis"):
             return "image/avif"
         if brand.startswith(b"heic") or brand in (b"heix", b"mif1"):
             return "image/heic"
+        if brand in (b"M4A ", b"M4B ", b"M4P "):
+            return "audio/mp4"
         return "video/quicktime" if brand == b"qt  " else "video/mp4"
+    if head.startswith(b"ID3"):
+        return "audio/mpeg"
+    if head.startswith(b"fLaC"):
+        return "audio/flac"
+    if head.startswith(b"OggS"):
+        return "audio/ogg"
+    if len(head) > 1 and head[0] == 0xFF and head[1] & 0xE0 == 0xE0:  # MPEG audio frame sync
+        return "audio/aac" if head[1] & 0x06 == 0 else "audio/mpeg"  # layer 0 is AAC (ADTS)
     return None
+
+
+def _content_type(head: bytes, declared: str, url: str) -> str:
+    """What a download is: its first bytes, unless they only say which container
+    it is (MP4, Ogg), which holds audio as well as video: then the server's say,
+    or the link's extension."""
+    ctype = sniff(head) or declared
+    if ctype in ("video/mp4", "audio/ogg") and declared.startswith(_BIG):
+        return declared
+    if ctype == "video/mp4" and looks_like_audio(url):
+        return "audio/mp4"
+    return ctype
+
+
+def _noun(ctype: str) -> str:
+    return "audio files" if ctype.startswith("audio/") else "videos"
 
 
 def _after(now: str, seconds: float) -> str:
@@ -334,9 +370,9 @@ class MediaFetcher:
                 length = int(resp.headers.get("content-length") or 0)
                 if declared.startswith(("text/", "application/json", "application/xhtml")):
                     raise MediaSkipped(f"not media ({declared})")
-                if policy.archive == "images" and declared.startswith("video/"):
-                    raise MediaSkipped(f"videos aren't archived {POLICY_SUFFIX}")
-                if not wanted and declared.startswith("video/"):
+                if policy.archive == "images" and declared.startswith(_BIG):
+                    raise MediaSkipped(f"{_noun(declared)} aren't archived {POLICY_SUFFIX}")
+                if not wanted and declared.startswith(_BIG):
                     raise MediaHeld()
                 if length > cap:
                     raise MediaRejected(f"too large ({length / 1_000_000:.1f} MB)")
@@ -354,11 +390,11 @@ class MediaFetcher:
                                 raise MediaRejected(f"too large (> {cap // 1_000_000} MB)")
                             h.update(chunk)
                             tmp.write(chunk)
-                    ctype = sniff(head) or declared
-                    if not ctype.startswith(("image/", "video/")):
+                    ctype = _content_type(head, declared, url)
+                    if not ctype.startswith(("image/", *_BIG)):
                         raise MediaSkipped(f"not media ({declared or 'unknown type'})")
-                    if policy.archive == "images" and ctype.startswith("video/"):
-                        raise MediaSkipped(f"videos aren't archived {POLICY_SUFFIX}")
+                    if policy.archive == "images" and ctype.startswith(_BIG):
+                        raise MediaSkipped(f"{_noun(ctype)} aren't archived {POLICY_SUFFIX}")
                 except BaseException:
                     Path(tmp.name).unlink(missing_ok=True)
                     raise
@@ -400,15 +436,18 @@ class MediaFetcher:
             self.fetch_one(row)
         return len(rows)
 
-    def fetch_one(self, row: Any) -> None:
+    def fetch_one(self, row: Any, wanted: bool = False) -> None:
+        """`wanted`: fetch it even if it's a video or audio file nobody has
+        opened yet (a post's audio, scrolled to in a feed)."""
         now = utcnow()
         with self.db.connect() as conn:
             policy = policy_for(conn, row["id"], self.env_policy.override(*load_defaults(conn)))
-            wanted = bool(conn.execute(f"SELECT {WANTED_SQL} FROM media WHERE id=?", (row["id"],)).fetchone()[0])
+            wanted = wanted or bool(conn.execute(f"SELECT {WANTED_SQL} FROM media WHERE id=?",
+                                                 (row["id"],)).fetchone()[0])
         try:
             if policy.archive == "off":
                 raise MediaSkipped(f"archiving is off {POLICY_SUFFIX}")
-            if not wanted and looks_like_video(row["url"]):
+            if not wanted and (looks_like_video(row["url"]) or looks_like_audio(row["url"])):
                 raise MediaHeld()
             dl = self._download(row["url"], policy, wanted)
             if dl.size > policy.max_bytes:

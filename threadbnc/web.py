@@ -699,32 +699,46 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             n = feed_mod.mark_seen(conn, utcnow(), ids[:200])
         return {"ok": True, "marked": n}
 
+    def feed_roots(conn: Any, ids: list[int]) -> list[Any]:
+        """These threads' posts and their current links."""
+        if not ids:
+            return []
+        marks = ",".join("?" * len(ids))
+        return conn.execute(
+            f"SELECT t.id, o.id AS oid, r.url, o.thumbnail_url FROM archived_threads t "
+            f"JOIN objects o ON o.id=t.root_object_id JOIN revisions r ON r.object_id=o.id "
+            f"AND r.seq=o.revision_count WHERE t.id IN ({marks})", ids).fetchall()
+
     @app.post("/feed/articles")
     def feed_articles(ids: list[int] = Form([])):
         """Posts app.js scrolled into view whose linked article (or its
-        pictures) isn't saved yet: fetch them (Bouncer.fetch_articles)."""
+        pictures) isn't saved yet, or whose audio file isn't downloaded: fetch
+        them (Bouncer.fetch_articles, Bouncer.fetch_audio)."""
+        ids = ids[:50]
         if ids and bouncer.articles.enabled:
-            bouncer.enqueue("articles", {"thread_ids": ids[:50]})
+            bouncer.enqueue("articles", {"thread_ids": ids})
+        with db.connect() as conn:
+            rows = feed_roots(conn, ids)
+            sounds = feed_mod.audio(conn, [(r["oid"], r["url"]) for r in rows])
+        if audio_ids := [r["id"] for r in rows if sounds.get(r["oid"], {}).get("status") == "pending"]:
+            bouncer.enqueue("audio", {"thread_ids": audio_ids})
         return {"ok": True}
 
     @app.get("/feed/articles")
     def feed_articles_status(ids: list[int] = Query([])):
         """How those posts are getting on: which are still waiting on their
-        article or its pictures, and how many pictures each has to show."""
-        ids = ids[:50]
-        if not ids:
-            return {"waiting": [], "pics": {}}
-        marks = ",".join("?" * len(ids))
+        article, its pictures or their audio file, how many pictures each has
+        to show, and where each one's audio file is at."""
         with db.connect() as conn:
-            rows = conn.execute(
-                f"SELECT t.id, o.id AS oid, r.url, o.thumbnail_url FROM archived_threads t "
-                f"JOIN objects o ON o.id=t.root_object_id JOIN revisions r ON r.object_id=o.id "
-                f"AND r.seq=o.revision_count WHERE t.id IN ({marks})", ids).fetchall()
+            rows = feed_roots(conn, ids[:50])
             waiting = articles.waiting(conn, [(r["oid"], r["url"]) for r in rows]) \
                 if bouncer.articles.enabled else set()
             thumbs = feed_mod.thumbnails(conn, [(r["oid"], r["url"], r["thumbnail_url"]) for r in rows])
-        return {"waiting": [r["id"] for r in rows if r["oid"] in waiting],
-                "pics": {r["id"]: len(thumbs[r["oid"]]["pics"]) if r["oid"] in thumbs else 0 for r in rows}}
+            sounds = feed_mod.audio(conn, [(r["oid"], r["url"]) for r in rows])
+        return {"waiting": [r["id"] for r in rows if r["oid"] in waiting
+                            or sounds.get(r["oid"], {}).get("status") == "pending"],
+                "pics": {r["id"]: len(thumbs[r["oid"]]["pics"]) if r["oid"] in thumbs else 0 for r in rows},
+                "audio": {r["id"]: sounds[r["oid"]]["status"] for r in rows if r["oid"] in sounds}}
 
     @app.post("/feed/settings")
     def feed_settings(request: Request, mark_read_on_scroll: str = Form("")):
@@ -1270,7 +1284,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         if not path.is_relative_to(media_root) or not path.is_file():
             raise HTTPException(404)
         ctype = m["content_type"] or "application/octet-stream"
-        inline = ctype.startswith(("image/", "video/")) and ctype != "image/svg+xml"
+        inline = ctype.startswith(("image/", "video/", "audio/")) and ctype != "image/svg+xml"
         return FileResponse(path, media_type=ctype, content_disposition_type="inline" if inline else "attachment")
 
     def md_for(object_ids: list[int]):
