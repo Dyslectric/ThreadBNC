@@ -830,18 +830,41 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
 
     @app.post("/follow")
     def follow(request: Request, community: str = Form(...), poll_interval_minutes: str = Form(""),
-               retention_days: str = Form("30"), backfill: str | None = Form(None)):
+               retention_days: str = Form("30"), backfill: str | None = Form(None),
+               polling: str | None = Form(None)):
         """A blank check interval means the default for that kind of server
-        (slower for Reddit)."""
+        (slower for Reddit). Lemmy and PieFed communities are only checked on a
+        schedule with `polling`; otherwise their posts arrive by push."""
         days = None if retention_days.strip().lower() in ("", "forever", "none") else int(retention_days)
         every = int(poll_interval_minutes) if poll_interval_minutes.strip().isdigit() else None
         try:
-            cid = bouncer.follow_community(community, max(1, every) if every else None, days, bool(backfill))
+            cid = bouncer.follow_community(community, max(1, every) if every else None, days, bool(backfill),
+                                           polling=bool(polling))
         except (RemoteError, ValueError) as exc:
             flash(request, f"Could not follow {community}: {exc}", "error")
             return RedirectResponse(back(request, "/communities"), status_code=303)
-        flash(request, "Following. Posts will show up in your feed within a minute or so.")
+        with db.connect() as conn:
+            f = conn.execute("SELECT * FROM community_follows WHERE community_id=?", (cid,)).fetchone()
+        if f["push_state"] == "subscribed":
+            flash(request, f"Following. {push_handle()} subscribed, so posts arrive as they're made.")
+        elif f["polling"]:
+            flash(request, f"Following. It's checked every {f['poll_interval_minutes']} minutes.")
+        elif f["push_state"] == "pending":
+            flash(request, f"Following. {push_handle()} asked to subscribe; posts arrive once the community "
+                           "accepts. If it doesn't, turn on checking it on a schedule here.", "warn-flash")
+        else:
+            flash(request, "Following, but nothing will arrive yet: posts from Lemmy and PieFed come through your "
+                           "own server (THREADBNC_RELAY_INBOXES), which couldn't subscribe. You can have it "
+                           "checked on a schedule instead, here.", "warn-flash")
         return RedirectResponse(f"/c/{cid}", status_code=303)
+
+    @app.post("/c/{cid}/polling")
+    def polling_setting(request: Request, cid: int, on: str = Form("1")):
+        """Check a community on a schedule because its posts can't be pushed, or stop."""
+        bouncer.set_polling(cid, on == "1")
+        flash(request, "It's checked on a schedule now." if on == "1" else
+              "It's no longer checked on a schedule; only posts pushed through your server arrive.")
+        return RedirectResponse(back(request, f"/c/{cid}"), status_code=303)
 
     @app.post("/c/{cid}/follow-settings")
     def follow_settings(request: Request, cid: int, poll_interval_minutes: int = Form(...),
@@ -864,21 +887,23 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             raise HTTPException(404)
         if on != "1":
             federation.unsubscribe(cid)
-            flash(request, "Stopped pushes. The community is checked on its usual schedule again.")
+            with db.connect() as conn:
+                f = conn.execute("SELECT polling FROM community_follows WHERE community_id=?", (cid,)).fetchone()
+            flash(request, "Stopped pushes. " + ("It's checked on its schedule." if f and f["polling"] else
+                                                 "Nothing new will arrive unless you have it checked on a schedule."))
         else:
             state = federation.subscribe(cid)
             who = push_handle()
             if state == "subscribed":
                 flash(request, f"Subscribed as {who}. Changes here now arrive as they happen.")
             elif state == "pending":
-                flash(request, f"Asked to subscribe as {who}. Waiting for the community to accept; "
-                               "it's checked as usual until then.")
+                flash(request, f"Asked to subscribe as {who}. Waiting for the community to accept.")
             else:
                 with db.connect() as conn:
                     row = conn.execute("SELECT push_error FROM community_follows WHERE community_id=?",
                                        (cid,)).fetchone()
                 flash(request, "Couldn't subscribe" + (f": {row['push_error']}" if row and row["push_error"] else ".")
-                      + " The community is checked on its usual schedule.", "error")
+                      + " You can have it checked on a schedule instead.", "error")
         return RedirectResponse(back(request, f"/c/{cid}"), status_code=303)
 
     @app.post("/communities/push-all")
@@ -887,7 +912,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             raise HTTPException(404)
         ok, failed = federation.subscribe_all()
         flash(request, f"Subscribed as {push_handle()} to {ok} communit{'y' if ok == 1 else 'ies'}."
-              + (f" {failed} couldn't be; they're checked as usual." if failed else ""),
+              + (f" {failed} couldn't be." if failed else ""),
               "error" if failed and not ok else "info")
         return RedirectResponse("/communities", status_code=303)
 

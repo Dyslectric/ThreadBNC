@@ -21,10 +21,14 @@
         </select>
       </label>
       <label class="check"><input type="checkbox" name="backfill" value="1" checked> Start with the posts on the community's first page</label>
+      <label class="check" title="Lemmy and PieFed posts arrive by push through your own server. Only check on a schedule when that can't work."><input type="checkbox" name="polling" value="1"> Check a Lemmy or PieFed community on a schedule too</label>
     </div>
     <button>Follow</button>
   </form>
-  <p class="small muted">Leave the interval blank for the default: {{ default_poll }} minutes, or {{ reddit_poll }} for subreddits.
+  <p class="small muted">Lemmy and PieFed posts arrive through your own server as they're made{% if not push_handle %}, once
+    it's set up (THREADBNC_RELAY_INBOXES); until then, only communities checked on a schedule bring posts{% endif %}.
+    Feeds and subreddits are checked on a schedule.
+    Leave the interval blank for the default: {{ default_poll }} minutes, or {{ reddit_poll }} for subreddits.
     {% if not reddit %}To follow subreddits, <a href="/reddit">connect Reddit</a> first.{% else %}<a href="/reddit">Reddit settings</a>{% endif %}</p>
 </section>
 
@@ -34,8 +38,8 @@
   {% set unpushed = follows | rejectattr('push_state') | selectattr('canonical_ap_id', 'is_federated') | list %}
   {% if push_handle and unpushed %}
   <form method="post" action="/communities/push-all" class="row push-all small">
-    <span class="muted">{{ unpushed | length }} Lemmy and PieFed communit{{ 'y is' if unpushed | length == 1 else 'ies are' }} only checked
-      on a schedule. {{ push_handle }} can subscribe, so their changes arrive as they happen.</span>
+    <span class="muted">{{ unpushed | length }} Lemmy and PieFed communit{{ "y isn't" if unpushed | length == 1 else "ies aren't" }}
+      pushed. {{ push_handle }} can subscribe, so their posts arrive as they're made.</span>
     <button class="small">Subscribe to all</button>
   </form>
   {% endif %}
@@ -48,7 +52,8 @@
         {% if f.unread %}<span class="pill new">{{ f.unread }} unread</span>{% endif %}
         {% if f.push_state == 'subscribed' %}<span class="pill good" title="Changes arrive as they happen{{ ', last ' ~ (f.last_push_at | ago) if f.last_push_at }}">pushed</span>
         {% elif f.push_state == 'pending' %}<span class="pill warn" title="Waiting for the community to accept the subscription">push pending</span>{% endif %}
-        <div class="small muted">{{ f.title or '' }} · {{ f.total }} posts saved · checked {{ when(f.last_polled_at) if f.last_polled_at else 'not yet' }}
+        {% if f.push_state != 'subscribed' and not f.polling %}<span class="pill bad" title="Not pushed and not checked on a schedule: nothing new arrives. See the community's Following menu.">not arriving</span>{% endif %}
+        <div class="small muted">{{ f.title or '' }} · {{ f.total }} posts saved{% if f.polling and f.push_state != 'subscribed' %} · checked {{ when(f.last_polled_at) if f.last_polled_at else 'not yet' }}{% endif %}
           {% if f.last_error %}· <span class="bad-text">{{ icon('alert') }} {{ f.last_error }}</span>{% endif %}</div>
       </div>
       <form method="post" action="/c/{{ f.id }}/follow-settings" class="row compact">

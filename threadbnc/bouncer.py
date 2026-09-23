@@ -655,24 +655,35 @@ class Bouncer:
                 log.info("home instance %s unusable, polling via %s: %s", home, ref.domain, exc)
         return CommunityRef(ref.domain, community.name, home), community
 
+    @staticmethod
+    def always_polled(domain: str) -> bool:
+        """Feeds and subreddits can't push, so following them means checking them."""
+        return domain == RSS_DOMAIN or is_reddit_host(domain)
+
     def follow_community(self, text: str, poll_interval_minutes: int | None = None,
-                         retention_days: int | None = -1, backfill: bool = False) -> int:
+                         retention_days: int | None = -1, backfill: bool = False,
+                         polling: bool | None = None) -> int:
+        """Follow a community. Lemmy and PieFed communities arrive by push
+        through your own server (the follow hooks subscribe) and aren't checked
+        on a schedule unless `polling`; feeds and subreddits always are."""
         ref, community = self.resolve_community(text)
         now = utcnow()
         interval = self.poll_interval(ref.domain, poll_interval_minutes)
         days = self.settings.default_follow_retention_days if retention_days == -1 else retention_days
+        polled = self.always_polled(ref.domain) or bool(polling)
         with self.db.transaction() as conn:
             cid = store.upsert_community(conn, community, now)
             conn.execute(
                 "INSERT INTO community_follows(community_id, active, followed_at, capture_since, "
-                "poll_interval_minutes, retention_days, source_domain, source_ref, next_poll_at) "
-                "VALUES (?,1,?,?,?,?,?,?,?) ON CONFLICT(community_id) DO UPDATE SET active=1, "
+                "poll_interval_minutes, retention_days, source_domain, source_ref, next_poll_at, polling) "
+                "VALUES (?,1,?,?,?,?,?,?,?,?) ON CONFLICT(community_id) DO UPDATE SET active=1, "
                 "unfollowed_at=NULL, last_error=NULL, consecutive_failures=0, "
                 "poll_interval_minutes=excluded.poll_interval_minutes, "
                 "retention_days=excluded.retention_days, source_domain=excluded.source_domain, "
-                "source_ref=excluded.source_ref, capture_since=excluded.capture_since, next_poll_at=?",
+                "source_ref=excluded.source_ref, capture_since=excluded.capture_since, next_poll_at=?, "
+                "polling=excluded.polling",
                 (cid, now, "1970-01-01T00:00:00.000000Z" if backfill else now, interval, days,
-                 ref.domain, ref.qualified, now, now),
+                 ref.domain, ref.qualified, now, int(polled), now),
             )
             self._reapply_expiry(conn, cid)
             store.add_event(conn, "followed", now, community_id=cid,
@@ -699,6 +710,26 @@ class Bouncer:
         if domain == RSS_DOMAIN:
             return max(asked or self.settings.rss_poll_minutes, RSS_MIN_POLL_MINUTES)
         return asked or self.settings.default_follow_poll_minutes
+
+    def set_polling(self, community_id: int, on: bool) -> None:
+        """Check a Lemmy or PieFed community on a schedule (when its posts can't
+        be pushed), or stop. Feeds and subreddits are always checked."""
+        now = utcnow()
+        with self.db.transaction() as conn:
+            f = conn.execute("SELECT source_domain FROM community_follows WHERE community_id=?",
+                             (community_id,)).fetchone()
+            if f is None or self.always_polled(f["source_domain"]):
+                return
+            conn.execute("UPDATE community_follows SET polling=?, next_poll_at=?, last_error=NULL, "
+                         "consecutive_failures=0 WHERE community_id=?", (int(on), now, community_id))
+            store.add_event(conn, "follow_settings_changed", now, community_id=community_id,
+                            metadata={"polling": on})
+        self.wake.set()
+
+    @staticmethod
+    def arriving(f: Any) -> bool:
+        """Whether a follow's posts arrive at all: pushed, or checked."""
+        return f["push_state"] == "subscribed" or bool(f["polling"])
 
     def update_follow(self, community_id: int, poll_interval_minutes: int, retention_days: int | None) -> None:
         now = utcnow()
@@ -920,8 +951,11 @@ class Bouncer:
                 log.error("bouncer hook %s crashed: %s", getattr(hook, "__qualname__", hook), traceback.format_exc())
         now = utcnow()
         with self.db.connect() as conn:
+            # Checked: those with polling on, and pushed ones now and then (on
+            # your own server). Anything else waits for pushes.
             follows = [r["community_id"] for r in conn.execute(
                 "SELECT community_id FROM community_follows WHERE active=1 AND "
+                "(polling=1 OR push_state='subscribed') AND "
                 "(next_poll_at IS NULL OR next_poll_at<=?)", (now,))]
         for cid in follows:
             if self._stop.is_set():

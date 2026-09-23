@@ -24,6 +24,8 @@ def main() -> None:
     f.add_argument("community")
     f.add_argument("--every", type=int, default=None, help="poll interval in minutes")
     f.add_argument("--keep-days", default=None, help="retention for auto-captured posts, or 'forever'")
+    f.add_argument("--poll", action="store_true",
+                   help="check a Lemmy/PieFed community on a schedule (when your server can't get it pushed)")
     sub.add_parser("sync", help="run one bouncer pass and exit")
     args = parser.parse_args()
 
@@ -54,7 +56,7 @@ def main() -> None:
         days: int | None = -1
         if args.keep_days is not None:
             days = None if args.keep_days.lower() == "forever" else int(args.keep_days)
-        print(f"community {bouncer.follow_community(args.community, args.every, days)}")
+        print(f"community {bouncer.follow_community(args.community, args.every, days, polling=args.poll)}")
     elif args.cmd == "sync":
         bouncer.tick()
 
