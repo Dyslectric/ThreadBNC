@@ -169,6 +169,12 @@ def observe_moderators(conn: Conn, community_id: int, stored_json: str | None,
 
 # --- revisions -------------------------------------------------------------
 
+# In a revision's metadata: stored without its text (a post from a subreddit
+# listing, see Bouncer.poll_follow). The first full read fills the text in
+# rather than recording it as an edit.
+BODY_DEFERRED = "_body_deferred"
+
+
 def content_hash(title: str | None, body: str | None, url: str | None, meta: dict[str, Any]) -> str:
     payload = json.dumps({"title": title, "body": body, "url": url, "meta": meta},
                          sort_keys=True, ensure_ascii=False)
@@ -195,6 +201,14 @@ def record_revision(conn: Conn, object_id: int, now: str, *, title: str | None,
     if prev is not None and prev["remote_updated_at"] and (
             not remote_updated_at or remote_updated_at < prev["remote_updated_at"]):
         return False, []
+    if prev is not None and not meta.get(BODY_DEFERRED) and json.loads(prev["metadata_json"] or "{}").get(BODY_DEFERRED):
+        # The text of a post stored without it: part of the first observation, not an edit.
+        filled = body if not _is_redacted(body, hidden) else None
+        conn.execute("UPDATE revisions SET body=?, metadata_json=?, content_hash=? WHERE id=?",
+                     (filled, dumps(meta), content_hash(prev["title"], filled, prev["url"], meta), prev["id"]))
+        media.register(conn, object_id, media.media_candidates(prev["title"], filled, prev["url"]), now)
+        dupes.refresh_key(conn, object_id)
+        prev = conn.execute("SELECT * FROM revisions WHERE id=?", (prev["id"],)).fetchone()
     withheld: list[str] = []
     values = {"title": title, "body": body, "url": url}
     for name in ("title", "body", "url"):

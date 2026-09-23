@@ -7,6 +7,7 @@ import json
 import logging
 import threading
 import time
+from dataclasses import replace
 import traceback
 from datetime import timedelta
 from typing import Any, Callable
@@ -60,6 +61,11 @@ FULL_FETCH_EVERY = timedelta(hours=6)
 PUSHED_POLL_MINUTES = 360
 # Opening a post re-reads its comments unless they were read this recently.
 OPEN_CACHE = timedelta(minutes=5)
+# Subreddits are only checked while you're using ThreadBNC: a tab was
+# interacted with this recently (app.js reports it, see note_active). Their
+# checks are spread out, one at a time, never closer together than this.
+ACTIVE_WINDOW = timedelta(minutes=30)
+REDDIT_MIN_SPACING = 30.0  # seconds
 
 
 def _plus(ts: str, **delta: float) -> str:
@@ -108,6 +114,8 @@ class Bouncer:
                                                 timeout=max(settings.http_timeout, 30.0), throttle=self.http.throttle)
         self._media_backfilled = False
         self._articles_swept = 0.0  # monotonic time of the last sweep of articles read from links
+        self._reddit_clock: float | None = None  # monotonic time of the last subreddit check (None: you're away)
+        self._clock: Callable[[], float] = time.monotonic
         self.wake = threading.Event()
         self._stop = threading.Event()
 
@@ -827,6 +835,10 @@ class Bouncer:
                 continue
             if self._existing_thread(post.ap_id):
                 continue
+            if is_reddit_host(ref.domain) and post.body:
+                # A subreddit's posts are stored as their title, link and pictures;
+                # the text is read with the comments when the post is opened.
+                post = replace(post, body=None, metadata={**post.metadata, store.BODY_DEFERRED: True})
             try:
                 self._ingest_post(post, ref.domain, post.local_id, adapter, source_url=post.ap_id,
                                   retention="auto", capture=True)
@@ -841,6 +853,35 @@ class Bouncer:
                 (now, _plus(now, minutes=self._follow_every(f)), community_id),
             )
         return captured
+
+    # -- you, using ThreadBNC --------------------------------------------------
+    def note_active(self) -> None:
+        """Someone is using ThreadBNC (a tab was interacted with)."""
+        with self.db.transaction() as conn:
+            conn.execute("INSERT INTO app_settings(key, value) VALUES ('last_active_at', ?) "
+                         "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (utcnow(),))
+
+    def user_active(self) -> bool:
+        seen = parse_ts(self.db.get_setting("last_active_at"))
+        return seen is not None and parse_ts(utcnow()) - seen < ACTIVE_WINDOW  # type: ignore[operator]
+
+    def _next_subreddit(self, due: list[Any], followed: list[Any]) -> int | None:
+        """The subreddit to check now, if any: only while you're using
+        ThreadBNC, and one at a time, spread across the check interval so
+        coming back doesn't set off a burst. None when it's not time yet."""
+        if not self.user_active():
+            self._reddit_clock = None  # away: when you're back, start counting from then
+            return None
+        clock = self._clock()
+        if self._reddit_clock is None:
+            self._reddit_clock = clock
+            return None
+        every = min(f["poll_interval_minutes"] for f in followed) * 60
+        spacing = max(REDDIT_MIN_SPACING, every / len(followed))
+        if not due or clock - self._reddit_clock < spacing:
+            return None
+        self._reddit_clock = clock
+        return due[0]["community_id"]
 
     # -- votes ---------------------------------------------------------------
     def check_votes(self, limit: int = 200) -> int:
@@ -1030,10 +1071,15 @@ class Bouncer:
         with self.db.connect() as conn:
             # Checked: those with polling on, and pushed ones now and then (on
             # your own server). Anything else waits for pushes.
-            follows = [r["community_id"] for r in conn.execute(
-                "SELECT community_id FROM community_follows WHERE active=1 AND "
-                "(polling=1 OR push_state='subscribed') AND "
-                "(next_poll_at IS NULL OR next_poll_at<=?)", (now,))]
+            checked = conn.execute(
+                "SELECT community_id, source_domain, poll_interval_minutes, next_poll_at FROM community_follows "
+                "WHERE active=1 AND (polling=1 OR push_state='subscribed') ORDER BY next_poll_at").fetchall()
+        due = [r for r in checked if not r["next_poll_at"] or r["next_poll_at"] <= now]
+        follows = [r["community_id"] for r in due if not is_reddit_host(r["source_domain"])]
+        subreddit = self._next_subreddit([r for r in due if is_reddit_host(r["source_domain"])],
+                                         [r for r in checked if is_reddit_host(r["source_domain"])])
+        if subreddit is not None:
+            follows.append(subreddit)
         for cid in follows:
             if self._stop.is_set():
                 return

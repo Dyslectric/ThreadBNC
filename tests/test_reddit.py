@@ -368,12 +368,16 @@ def test_follow_a_subreddit_conservatively(bouncer, reddit):
     link = one(bouncer, "SELECT o.*, r.url, r.body FROM objects o JOIN revisions r ON r.object_id=o.id "
                         "WHERE canonical_ap_id=?", "https://www.reddit.com/r/pics/comments/p1/")
     assert link["url"] == "https://example.org/story" and link["body"] is None and link["score"] == 42
-    text = one(bouncer, "SELECT r.url, r.body FROM objects o JOIN revisions r ON r.object_id=o.id "
-                        "WHERE canonical_ap_id=?", "https://www.reddit.com/r/pics/comments/p2/")
-    assert text["url"] is None and text["body"].startswith("Some **text**")
+    text_sql = ("SELECT r.url, r.body, o.revision_count, o.last_changed_at FROM objects o JOIN revisions r "
+                "ON r.object_id=o.id WHERE canonical_ap_id=?", "https://www.reddit.com/r/pics/comments/p2/")
+    text = one(bouncer, *text_sql)
+    assert text["url"] is None and text["body"] is None  # the text waits until it's opened
     # Comments are read when a post is opened, not when it's captured.
     assert one(bouncer, "SELECT COUNT(*) FROM objects WHERE object_type='comment'")[0] == 0
     bouncer.open_threads(col(bouncer, "SELECT id FROM archived_threads"))
+    text = one(bouncer, *text_sql)
+    assert text["body"].startswith("Some **text**")
+    assert text["revision_count"] == 1 and text["last_changed_at"] is None  # filled in, not an edit
     reply = one(bouncer, "SELECT parent_id FROM objects WHERE canonical_ap_id LIKE '%/_/c2/'")[0]
     assert reply == one(bouncer, "SELECT id FROM objects WHERE canonical_ap_id LIKE '%/_/c1/'")[0]
     # No vote checks of their own: a subreddit's votes come with its listing.

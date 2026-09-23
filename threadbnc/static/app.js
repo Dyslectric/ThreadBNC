@@ -413,6 +413,25 @@ document.documentElement.classList.add("js");
     if (seenQueue.size && navigator.sendBeacon) navigator.sendBeacon("/feed/seen", seenBody());
   });
 
+  // ---- being here ---------------------------------------------------------------------
+  // Subreddits are only checked while someone is using ThreadBNC: tell the
+  // server when this tab is visible and used, at most once a minute. A tab
+  // left alone (or hidden) stops saying so, and after half an hour the
+  // checks stop until you're back.
+  let lastBeat = 0;
+  function beat() {
+    if (document.visibilityState !== "visible") return;
+    const now = Date.now();
+    if (now - lastBeat < 60000) return;
+    lastBeat = now;
+    fetch("/presence", { method: "POST", headers: FETCH, credentials: "same-origin" }).catch(() => {});
+  }
+  for (const ev of ["pointerdown", "keydown", "scroll", "focus"]) {
+    window.addEventListener(ev, beat, { passive: true, capture: true });
+  }
+  document.addEventListener("visibilitychange", beat);
+  beat();
+
   // ---- diving into linked articles (the reader) --------------------------------------
   // A link to another article opens it beside the one you're reading on a wide
   // screen (a column each, two or three on screen, the newest scrolled to), or

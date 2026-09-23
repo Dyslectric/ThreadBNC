@@ -40,8 +40,9 @@
 <section class="card">
   <h2>Your subscriptions ({{ subscriptions | length }})</h2>
   {% if not subscriptions %}<p class="muted">You aren't subscribed to any subreddits.</p>{% else %}
-  <p class="small muted">Tick the ones to follow here. Each is checked every {{ reddit_poll }} minutes; every
-    subreddit you follow uses part of Reddit's request allowance, so pick the ones you actually read.</p>
+  <p class="small muted">Tick the ones to follow here. Each is checked about every {{ reddit_poll }} minutes while
+    you're using ThreadBNC; every subreddit you follow uses part of Reddit's request allowance, so pick the ones you
+    actually read.</p>
   <form method="post" action="/reddit/follow" class="stack">
     <ul class="plain sub-list">
       {% for c in subscriptions %}
@@ -119,11 +120,13 @@
 <section class="card">
   <h2>How often Reddit is checked</h2>
   <ul class="small">
-    <li>Subreddits: every {{ reddit_poll }} minutes unless you choose otherwise, and never more often than every 10.
-      Each check reads up to 2 pages of 25 new posts.</li>
-    <li>Threads: at that interval for their first day, then every 2 hours until day 3, twice a day until day 7, then daily.
-      When a thread's comment count hasn't changed, only the post is re-read (one request), and the whole comment
-      tree at most every 6 hours.</li>
+    <li>Only while you're using ThreadBNC: a tab used in the last half hour. Away longer, nothing is asked of Reddit
+      until you're back, and then not all at once.</li>
+    <li>Subreddits: every {{ reddit_poll }} minutes unless you choose otherwise, and never more often than every 10,
+      one at a time, spread across that interval. Each check reads up to 2 pages of 25 new posts, which also
+      updates the votes on the ones already here.</li>
+    <li>Posts are stored as their title, link and pictures. Their text and comments are read when you open one
+      (and again when you reopen it more than 5 minutes later), like a browser would.</li>
     <li>Big threads: the newest 200 comments are read each time. Reddit hides the rest behind "load more", which
       isn't followed, so comments seen once are kept even when they drop out of view.</li>
     <li>At most one request every {{ reddit_interval }} seconds, and ThreadBNC stops when Reddit's rate-limit

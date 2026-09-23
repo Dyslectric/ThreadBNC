@@ -804,6 +804,13 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         flash(request, "Queued for keeping. The bouncer is fetching the thread.")
         return RedirectResponse(back(request, "/kept"), status_code=303)
 
+    @app.post("/presence")
+    def presence():
+        """app.js: someone is using ThreadBNC (a tab was interacted with). Subreddits
+        are only checked while someone is."""
+        bouncer.note_active()
+        return {"ok": True}
+
     @app.get("/api/jobs/{job_id}")
     def job_status(job_id: int):
         with db.connect() as conn:
@@ -1852,7 +1859,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                 failed.append(f"r/{name}: {exc}")
         if done:
             flash(request, f"Following {done} subreddit{'s' if done != 1 else ''}, each checked every "
-                           f"{settings.reddit_poll_minutes} minutes.")
+                           f"{settings.reddit_poll_minutes} minutes while you're using ThreadBNC.")
         if failed:
             flash(request, "Couldn't follow " + "; ".join(failed), "error")
         return RedirectResponse("/reddit?subs=1", status_code=303)
