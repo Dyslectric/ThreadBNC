@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% from "_macros.html" import when, votes, icon, pager as load_more %}
-{% from "_feed.html" import controls, posts, pager, sidebar %}
+{% from "_feed.html" import controls, posts, pager, sidebar with context %}
 {% from "_media_form.html" import media_form %}
 {% block title %}{{ chandle(c.name, c.canonical_ap_id, True) }}{% endblock %}
 {% block content %}

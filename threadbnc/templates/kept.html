@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% from "_macros.html" import when, icon, pager as load_more %}
-{% from "_feed.html" import controls, posts, pager %}
+{% from "_feed.html" import controls, posts, pager with context %}
 {% block head %}{% if pending %}<meta http-equiv="refresh" content="4">{% endif %}{% endblock %}
 {% block title %}Kept{% endblock %}
 {% block content %}

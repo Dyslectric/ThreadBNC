@@ -596,6 +596,17 @@ def test_reddit_thread_page_offers_voting_and_commenting(settings, bouncer, redd
     assert "Comment as u/dave" in page and "Upvote as u/dave" in page
 
 
+def test_reddit_tile_puts_score_between_vote_buttons(settings, bouncer, reddit, poster):
+    login_with_reddit(bouncer, poster)
+    tid = bouncer.ingest_url(P1)
+    cid = one(bouncer, "SELECT community_id FROM archived_threads WHERE id=?", tid)[0]
+    page = logged_in(settings, bouncer).get(f"/c/{cid}?view=tiles").text
+    votes = page.split('class="tile-votes', 1)[1].split("</div>", 1)[0]
+    assert 'class="reddit-score" aria-label="42 points">42</span>' in votes
+    assert "▲ 42" not in votes and "▼ 42" not in votes
+    assert votes.index('class="vote up ') < votes.index('class="reddit-score"') < votes.index('class="vote down ')
+
+
 def test_archived_reddit_thread_says_why(bouncer, reddit, poster):
     me = login_with_reddit(bouncer, poster)
     tid = bouncer.ingest_url(P1)

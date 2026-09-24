@@ -513,7 +513,7 @@ fieldset.media-kind p { margin: 0; }
 .media-bigger:has(option[value=leave]:checked) .for-size { display: none; }
 
 /* ---- tiled media view ---- */
-.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; margin-bottom: 10px; }
+.tiles { --tile-gap: 12px; display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: var(--tile-gap); margin-bottom: 10px; }
 .tile { display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 12px;
   box-shadow: var(--shadow); transition: border-color .15s, box-shadow .15s, transform .15s; min-width: 0; }
 .tile:hover { border-color: color-mix(in srgb, var(--muted) 40%, var(--line)); box-shadow: var(--shadow-lift); }
@@ -587,9 +587,19 @@ fieldset.media-kind p { margin: 0; }
 .tile.unread .tile-title a { font-weight: 700; }
 .tile-title a:visited { color: var(--muted); }
 .tile-meta { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.tile-actions { margin: auto -6px 0; gap: 0 2px; flex-wrap: nowrap; }
-.tile-actions .act { padding: 3px 6px; }
-.tile-actions > .votes { margin: 0 2px; }
+.tile-actions { margin: auto -6px -2px; display: grid; gap: 2px; }
+.tile-action-row { display: flex; align-items: center; min-width: 0; gap: 2px; }
+.tile-action-row .act { padding: 3px 6px; }
+.tile-action-secondary { justify-content: flex-end; padding-top: 2px; border-top: 1px solid var(--line); }
+.tile-votes.obj-actions { flex-wrap: nowrap; align-items: stretch; gap: 3px; margin: 0 2px; }
+.tile-votes .inline { display: flex; }
+.tile-votes button.vote { min-width: 34px; padding: 2px 7px; line-height: 1.25; }
+.tile-votes button.vote:disabled { cursor: default; opacity: .55; }
+.reddit-votes { gap: 0 !important; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; }
+.reddit-votes button.vote { min-width: 27px; border: 0; border-radius: 0; padding-inline: 7px; }
+.reddit-votes .reddit-score { display: inline-flex; align-items: center; justify-content: center; min-width: 2.25em;
+  padding: 1px 6px; border-inline: 1px solid var(--line); color: var(--text); font-weight: 600;
+  font-variant-numeric: tabular-nums; }
 @media (prefers-reduced-motion: reduce) {
   .tile-media img, .tile-media video { transition: none; }
   .tile:hover .tile-media img, .tile:hover .tile-media video { transform: none; }
@@ -699,7 +709,7 @@ dialog.shortcuts::backdrop { background: rgba(0, 0, 0, .35); }
   .post-card { padding: 12px 12px 8px; gap: 12px; }
   .picture-card { padding: 12px 12px 8px; }
   .picture-media { margin-inline: -12px; }
-  .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .tiles { --tile-gap: 8px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .tile-body { padding: 7px 8px 6px; }
   .vote-breakdown { min-width: 0; max-width: calc(100vw - 32px); white-space: normal; }
   .copies-head a { margin-left: 0; }
@@ -736,6 +746,8 @@ svg.meter rect.track { fill: var(--line); }
 /* ---- linked articles (reader view) ---- */
 .act.read-article { color: var(--accent); }
 .act.read-article:hover { color: var(--accent-hover); }
+.act.direct-link { color: var(--accent); }
+.act.direct-link:hover { color: var(--accent-hover); }
 .article-cta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: 8px 0; }
 .reader { max-width: 42rem; margin: 0 auto; }
 .reader-nav { margin: 0 0 18px; }
@@ -812,7 +824,7 @@ fieldset.feed-picks input[type=checkbox] { flex: none; width: 16px; margin: 0; }
 a.article-link.dived, a[data-dive].dived { background: var(--hover); border-radius: 4px; }
 .dive-loading { margin: 12px 0; }
 @media (min-width: 1100px) {
-  main:has(.reader-deck.diving) { max-width: none; padding-bottom: 16px; }
+  main:has(> .reader-deck.diving) { max-width: none; padding-bottom: 16px; }
   .reader-deck.diving { --shown: min(var(--cols, 2), 2); display: flex; gap: 14px; overflow-x: auto;
     scroll-snap-type: x mandatory; overscroll-behavior-x: contain; }
   .reader-deck.diving > .reader-col { flex: 0 0 calc((100% - (var(--shown) - 1) * 14px) / var(--shown));
@@ -820,16 +832,99 @@ a.article-link.dived, a[data-dive].dived { background: var(--hover); border-radi
     scroll-snap-align: end; background: var(--card); border: 1px solid var(--line); border-radius: 12px;
     padding: 18px 24px; }
   .reader-deck.diving .reader-head h1 { font-size: 1.6rem; }
+  .reader-deck.diving > .dive-col { display: grid; grid-template-columns: 15px minmax(0, 1fr); padding: 0; overflow: hidden auto; }
+  .reader-deck.diving > .dive-col > .dive-content { min-width: 0; padding: 18px 24px; }
 }
 @media (min-width: 1760px) {
   .reader-deck.diving { --shown: min(var(--cols, 2), 3); }
 }
-.dive-inline { margin: 4px 0 18px; padding: 12px 14px; border: 1px solid var(--line); border-left: 3px solid var(--accent);
-  border-radius: 10px; background: var(--card); font-size: 0.95rem; }
+.dive-inline { margin: 4px 0 18px; display: grid; grid-template-columns: 15px minmax(0, 1fr); border: 1px solid var(--line);
+  border-radius: 10px; background: var(--card); font-size: 0.95rem; overflow: clip; }
+.dive-content { min-width: 0; }
+.dive-inline > .dive-content { padding: 12px 14px; }
+.dive-col, .dive-inline { --dive-color: var(--d1); }
+/* The containing article panel already uses blue. Begin nested dives at green
+   so adjacent rails never repeat, then cycle only after all eight colors. */
+.dive-depth-0 { --dive-color: var(--d1); }
+.dive-depth-1 { --dive-color: var(--d2); }
+.dive-depth-2 { --dive-color: var(--d3); }
+.dive-depth-3 { --dive-color: var(--d4); }
+.dive-depth-4 { --dive-color: var(--d5); }
+.dive-depth-5 { --dive-color: var(--d6); }
+.dive-depth-6 { --dive-color: var(--d7); }
+.dive-depth-7 { --dive-color: var(--d0); }
+.dive-rail { position: relative; align-self: stretch; width: 15px; min-height: 72px; padding: 0; border: 0; border-radius: 0;
+  background: color-mix(in srgb, var(--dive-color) 11%, var(--card)); cursor: pointer; }
+.dive-rail::before { content: ""; position: absolute; inset: 7px auto 7px 5px; width: 5px; border-radius: 4px;
+  background: var(--dive-color); opacity: .76; transition: opacity .12s, width .12s; }
+.dive-rail:hover::before, .dive-rail:focus-visible::before { width: 7px; opacity: 1; }
 .dive-inline .reader { max-width: none; }
 .dive-inline .reader-head h1 { font-size: 1.3rem; }
 .dive-inline .reader-body { font-size: 1em; margin: 14px 0 18px; }
 .dive-inline .reader-foot { display: none; }
+
+/* ---- articles and comments expanded in a post's vertical place ---- */
+.inline-panel { --panel-color: var(--accent); position: relative; display: grid; grid-template-columns: 15px minmax(0, 1fr);
+  min-width: 0; margin: 0 0 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--card);
+  box-shadow: var(--shadow); overflow: clip; }
+.inline-panel.comments-panel { --panel-color: var(--d1); }
+.inline-panel.post-panel { --panel-color: var(--d2); }
+.inline-panel[hidden] { display: none; }
+.inline-panel-rail { position: relative; width: 15px; min-height: 72px; padding: 0; border: 0; border-radius: 0;
+  background: color-mix(in srgb, var(--panel-color) 10%, var(--card)); cursor: pointer; }
+.inline-panel-rail::before { content: ""; position: absolute; inset: 7px auto 7px 5px; width: 5px; border-radius: 4px;
+  background: var(--panel-color); opacity: .72; transition: opacity .12s, width .12s; }
+.inline-panel-rail:hover::before, .inline-panel-rail:focus-visible::before { width: 7px; opacity: 1; }
+.inline-panel-body { min-width: 0; padding: 16px 20px 18px; }
+.inline-loading { margin: 4px 0; }
+.inline-panel .reader { max-width: 42rem; margin-left: 0; margin-right: 0; }
+/* Match a dive's 14px horizontal content inset. Together with the 15px rail,
+   this makes every nested article step exactly the same width. */
+.article-panel > .inline-panel-body { padding: 12px 14px; }
+.inline-panel .reader-nav { margin-top: 0; }
+.inline-panel .reader-foot { display: none; }
+.inline-panel .comments-head h2 { font-size: 1.15rem; }
+.inline-panel .toolbar { top: var(--header-h); background: var(--card); }
+.inline-panel .expanded-post-content { font-size: 1rem; }
+
+/* List/picture/thread cards really contain their expansion. The inset border
+   joins the new content to the card instead of looking like a detached card. */
+.inline-panels { flex-basis: 100%; min-width: 0; }
+.thread-article-panels { margin: -2px 0 12px; }
+.card-inline-panel { margin: 10px 0 0; border-radius: 9px; box-shadow: none; background: var(--bg); }
+.card-inline-panel.panel-continuation { margin-top: 0; border-top: 0; border-top-left-radius: 0; border-top-right-radius: 0; }
+.card-inline-panel.panel-followed { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.post-card .card-inline-panel { margin-right: 0; }
+.panel-owner-open { border-color: color-mix(in srgb, var(--accent) 42%, var(--line)); }
+
+/* Tile panels are placed after the final tile in their existing row, so no
+   tile changes column. A compact shelf and centered pointer identify the owner
+   without filling the entire space between the tile row and panel. */
+.tiles > .tile-inline-panel { --spread-depth: 22px; grid-column: 1 / -1; margin: 10px 0 0; overflow: visible; }
+.tile-panel-spread { position: absolute; z-index: 1; top: calc(-1 * var(--spread-depth)); left: -1px;
+  width: calc(100% + 2px); height: calc(var(--spread-depth) + 1px);
+  overflow: visible; pointer-events: none; }
+.tile-panel-spread-fill { fill: var(--card); }
+.tile-panel-spread-edges { fill: none; stroke: var(--line); stroke-width: 1.2; vector-effect: non-scaling-stroke; }
+.tile-inline-panel:not(.panel-continuation) { border-top-color: transparent; border-top-left-radius: 0; border-top-right-radius: 0; }
+.tiles > .tile-inline-panel.panel-continuation { margin-top: calc(-1 * var(--tile-gap)); border-top: 0;
+  border-top-left-radius: 0; border-top-right-radius: 0; }
+.tile-inline-panel.panel-continuation .tile-panel-spread { display: none; }
+.tile-inline-panel.panel-followed { border-bottom-left-radius: 0; border-bottom-right-radius: 0; box-shadow: none; }
+.tile.panel-owner-open { border-bottom-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+  border-bottom-left-radius: 12px; border-bottom-right-radius: 12px; box-shadow: var(--shadow-lift); z-index: 1; }
+.tile-inline-panel > :not(.tile-panel-spread) { position: relative; z-index: 2; }
+@media (max-width: 600px) {
+  .inline-panel { grid-template-columns: 11px minmax(0, 1fr); }
+  .inline-panel-rail { width: 11px; }
+  .inline-panel-rail::before { left: 3px; width: 4px; }
+  .inline-panel-body { padding: 12px 10px 14px; }
+  .dive-inline { grid-template-columns: 11px minmax(0, 1fr); }
+  .dive-rail { width: 11px; }
+  .dive-rail::before { left: 3px; width: 4px; }
+  .dive-inline > .dive-content { padding: 12px 10px 14px; }
+  .article-panel > .inline-panel-body { padding: 12px 10px 14px; }
+}
 
 /* ---- Kept: a feed of its own, with tabs ---- */
 .kept-page { max-width: 820px; margin: 0 auto; }

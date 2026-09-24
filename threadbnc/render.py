@@ -39,6 +39,37 @@ def looks_like_audio(url: str | None) -> bool:
     return bool(url) and urlparse(url).path.lower().endswith(AUDIO_EXTENSIONS)
 
 
+def sole_link(text: str | None) -> str | None:
+    """Return the URL when Markdown consists only of one HTTP(S) link.
+
+    The link label may contain formatting, but there must be no visible text
+    outside it. This covers Markdown links, autolinks and bare URLs after the
+    parser's linkification rule has run.
+    """
+    if not text:
+        return None
+    blocks = _MD.parse(text)
+    inlines = [t for t in blocks if t.type == "inline"]
+    if len(inlines) != 1 or any(t.type not in ("paragraph_open", "inline", "paragraph_close") for t in blocks):
+        return None
+    links: list[str] = []
+    depth = 0
+    for token in inlines[0].children or []:
+        if token.type == "link_open":
+            href = str(token.attrGet("href") or "")
+            if depth == 0:
+                links.append(href)
+            depth += 1
+        elif token.type == "link_close":
+            depth = max(0, depth - 1)
+        elif depth == 0 and token.type in ("text", "code_inline", "html_inline", "image") \
+                and token.content.strip():
+            return None
+    if len(links) != 1 or urlparse(links[0]).scheme not in ("http", "https"):
+        return None
+    return links[0]
+
+
 def _linkify(state: Any) -> None:
     """Core rule: turn bare http(s) URLs in text into links (no extra dependency)."""
     for block in state.tokens:

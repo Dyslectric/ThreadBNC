@@ -117,7 +117,13 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
 
 {# The archived copy of the article a post links to, when the bouncer could read it. #}
 {% macro article_link(i, short=False) -%}
-{% if i.article %}<a class="act read-article" href="/t/{{ i.id }}/article" title="Read the linked article here">{{ icon('article') }}<span{% if short %} class="sr-only"{% endif %}>Read article</span></a>{% endif %}
+{% if i.article %}<a class="act read-article" href="/t/{{ i.id }}/article" title="Read the linked article here" aria-expanded="false">{{ icon('article') }}<span{% if short %} class="sr-only"{% endif %}>Read article</span></a>{% endif %}
+{%- endmacro %}
+
+{# The post's own Markdown, distinct from the linked article. #}
+{% macro post_content_link(i, short=False) -%}
+{% if i.body_link %}<a class="act direct-link" href="{{ i.body_link }}" target="_blank" rel="noreferrer noopener nofollow" title="Open the link" aria-label="Open link">{{ icon('link') }}<span{% if short %} class="sr-only"{% endif %}>Open link</span></a>
+{% elif i.body %}<a class="act read-post" href="/t/{{ i.id }}#post-text" title="Show the post text here" aria-expanded="false">{{ icon('article') }}<span{% if short %} class="sr-only"{% endif %}>Post text</span></a>{% endif %}
 {%- endmacro %}
 
 {% macro repost_link(i, short=False) -%}
@@ -149,6 +155,38 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
 </div>
 {% endmacro %}
 
+{# Compact, actionable vote controls for tiles. Reddit exposes one score, so
+   it sits between its arrow buttons; ActivityPub exposes both counts, which
+   live inside their respective buttons. #}
+{% macro tile_votes(i) -%}
+{% set eligible = [] %}{% set handles = [] %}
+{% for c in i.copies %}
+  {% set acct = none if is_rss(c.canonical_ap_id) else (reddit_me if is_reddit(c.canonical_ap_id) else acting) %}
+  {% if acct %}{% set _ = eligible.append(c) %}{% if acct.handle not in handles %}{% set _ = handles.append(acct.handle) %}{% endif %}{% endif %}
+{% endfor %}
+{% set reddit = is_reddit(i.canonical_ap_id) %}
+{% set mine = i.my_vote or 0 %}
+{% set every = (' on all ' ~ eligible | length ~ ' copies') if eligible | length > 1 else '' %}
+{% set as_whom = handles | join(' and ') %}
+<div class="tile-votes obj-actions {{ 'reddit-votes' if reddit else 'activitypub-votes' }}"{% if eligible %} id="a{{ eligible[0].oid }}"{% endif %}>
+  {% for direction, word, glyph in [(1, 'upvote', '▲'), (-1, 'downvote', '▼')] %}
+    {% set on = mine == direction %}
+    {% set count = i.upvotes if direction == 1 else i.downvotes %}
+    {% set label = ('Remove ' if on else '') ~ word ~ ((' as ' ~ as_whom ~ every) if eligible else '') %}
+    {% if eligible %}<form method="post" action="/o/{{ eligible[0].oid }}/vote" class="inline" data-inplace="a{{ eligible[0].oid }}" data-vote>
+      <input type="hidden" name="score" value="{{ 0 if on else direction }}">
+      {% for c in eligible[1:] %}<input type="hidden" name="also" value="{{ c.oid }}">{% endfor %}
+      <button class="vote {{ 'up' if direction == 1 else 'down' }} {{ 'on' if on }}" title="{{ label }}" aria-pressed="{{ 'true' if on else 'false' }}"
+        data-on="Remove {{ word }} as {{ as_whom ~ every }}" data-off="{{ word | capitalize }} as {{ as_whom ~ every }}"
+        aria-label="{{ label }}{{ (', ' ~ count ~ ' so far') if count is not none }}"><span aria-hidden="true">{{ glyph }}{% if not reddit %} {{ count or 0 }}{% endif %}</span></button>
+    </form>{% else %}
+      <button class="vote {{ 'up' if direction == 1 else 'down' }}" type="button" disabled title="Add an account to vote" aria-label="{{ word | capitalize }}; add an account to vote"><span aria-hidden="true">{{ glyph }}{% if not reddit %} {{ count or 0 }}{% endif %}</span></button>
+    {% endif %}
+    {% if reddit and direction == 1 %}<span class="reddit-score" aria-label="{{ i.score or 0 }} points">{{ i.score or 0 }}</span>{% endif %}
+  {% endfor %}
+</div>
+{%- endmacro %}
+
 {# A post as a grid tile: its pictures, else a text card. NSFW and
    spoiler media stays blurred until hovered, focused or tapped. #}
 {% macro post_tile(i, show_community=True, next_id=none) %}
@@ -168,16 +206,21 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
       {% if show_community %}<a class="pc-community" href="/c/{{ i.community_id }}">{{ chandle(i.cname, i.c_ap) }}</a> · {% endif %}{{ when(i.created_at) }}
       {% if i.nsfw %}<span class="pill bad">NSFW</span>{% endif %}
     </div>
-    <div class="tile-actions actions small">
-      <a class="act" href="/t/{{ i.id }}#comments" title="{{ i.n_comments }} comment{{ 's' if i.n_comments != 1 }}">{{ icon('comment') }}<span class="sr-only">Comments: </span>{{ i.n_comments }}</a>
-      {% if i.n_new %}<a href="/t/{{ i.id }}#comments" class="pill new">{{ i.n_new }} new</a>{% endif %}
-      {{ votes(i.upvotes, i.downvotes, i.score, i.breakdown if i.group) }}
-      {{ article_link(i, short=True) }}
-      <span class="grow"></span>
-      {{ read_button(i.id, i.unread, i.group, anchor='p' ~ i.id, short=True, refresh='p' ~ i.id) }}
-      {{ keep_button(i.id, i.all_kept, i.group, anchor='p' ~ i.id, short=True, refresh='p' ~ i.id) }}
-      {% if not i.all_kept %}{{ trash_button(i.id, i.group, ('p' ~ next_id) if next_id else '', short=True, refresh='p' ~ i.id) }}{% endif %}
-      {{ repost_link(i, short=True) }}
+    <div class="tile-actions small">
+      <div class="tile-action-row tile-action-primary">
+        {{ post_content_link(i, short=True) }}
+        <a class="act inline-comments" href="/t/{{ i.id }}#comments" title="Show {{ i.n_comments }} comment{{ 's' if i.n_comments != 1 }} here" aria-expanded="false">{{ icon('comment') }}<span class="sr-only">Comments: </span>{{ i.n_comments }}</a>
+        {% if i.n_new %}<a href="/t/{{ i.id }}#comments" class="pill new inline-comments" aria-expanded="false">{{ i.n_new }} new</a>{% endif %}
+        {{ article_link(i, short=True) }}
+        <span class="grow"></span>
+        {{ tile_votes(i) }}
+      </div>
+      <div class="tile-action-row tile-action-secondary actions">
+        {{ read_button(i.id, i.unread, i.group, anchor='p' ~ i.id, short=True, refresh='p' ~ i.id) }}
+        {{ keep_button(i.id, i.all_kept, i.group, anchor='p' ~ i.id, short=True, refresh='p' ~ i.id) }}
+        {% if not i.all_kept %}{{ trash_button(i.id, i.group, ('p' ~ next_id) if next_id else '', short=True, refresh='p' ~ i.id) }}{% endif %}
+        {{ repost_link(i, short=True) }}
+      </div>
     </div>
   </div>
 </article>
@@ -214,8 +257,9 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
     {% endif %}
     {% if i.excerpt %}<p class="pc-excerpt">{{ i.excerpt }}</p>{% endif %}
     <div class="pc-actions actions small">
-      <a class="act" href="/t/{{ i.id }}#comments">{{ icon('comment') }}<span>{{ i.n_comments }} comment{{ 's' if i.n_comments != 1 }}</span></a>
-      {% if i.n_new %}<a href="/t/{{ i.id }}#comments" class="pill new">{{ i.n_new }} new</a>{% endif %}
+      {{ post_content_link(i) }}
+      <a class="act inline-comments" href="/t/{{ i.id }}#comments" aria-expanded="false">{{ icon('comment') }}<span>{{ i.n_comments }} comment{{ 's' if i.n_comments != 1 }}</span></a>
+      {% if i.n_new %}<a href="/t/{{ i.id }}#comments" class="pill new inline-comments" aria-expanded="false">{{ i.n_new }} new</a>{% endif %}
       {{ article_link(i) }}
       {{ votes(i.upvotes, i.downvotes, i.score, i.breakdown if i.group) }}
       {{ read_button(i.id, i.unread, i.group, anchor='p' ~ i.id, refresh='p' ~ i.id) }}
@@ -245,8 +289,9 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
   {% if i.thumb %}<div class="picture-media">{{ gallery(i, veiled, 'picture') }}</div>
   {% elif i.excerpt %}<p class="pc-excerpt">{{ i.excerpt }}</p>{% endif %}
   <div class="pc-actions actions small">
-    <a class="act" href="/t/{{ i.id }}#comments">{{ icon('comment') }}<span>{{ i.n_comments }} comment{{ 's' if i.n_comments != 1 }}</span></a>
-    {% if i.n_new %}<a href="/t/{{ i.id }}#comments" class="pill new">{{ i.n_new }} new</a>{% endif %}
+    {{ post_content_link(i) }}
+    <a class="act inline-comments" href="/t/{{ i.id }}#comments" aria-expanded="false">{{ icon('comment') }}<span>{{ i.n_comments }} comment{{ 's' if i.n_comments != 1 }}</span></a>
+    {% if i.n_new %}<a href="/t/{{ i.id }}#comments" class="pill new inline-comments" aria-expanded="false">{{ i.n_new }} new</a>{% endif %}
     {{ article_link(i) }}
     {{ votes(i.upvotes, i.downvotes, i.score, i.breakdown if i.group) }}
     {{ read_button(i.id, i.unread, i.group, anchor='p' ~ i.id, refresh='p' ~ i.id) }}

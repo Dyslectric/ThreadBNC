@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_feed.html" import controls, posts, pager, sidebar %}
+{% from "_feed.html" import controls, posts, pager, sidebar with context %}
 {% block title %}{{ custom.name if custom else 'Feed' }}{% endblock %}
 {% block content %}
 <div class="layout">

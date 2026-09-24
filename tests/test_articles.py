@@ -127,11 +127,15 @@ def test_article_read_and_shown(server, abouncer, settings):
     client = TestClient(create_app(settings, abouncer))
     client.post("/login", data={"password": "pw"})
     assert f'href="/t/{tid}/article"' in client.get(f"/t/{tid}").text
-    assert f'href="/t/{tid}/article"' in client.get(f"/c/{cid}").text
+    feed_page = client.get(f"/c/{cid}").text
+    assert f'href="/t/{tid}/article"' in feed_page
+    assert 'class="act read-article"' in feed_page and 'aria-expanded="false"' in feed_page
     r = client.get(f"/t/{tid}/article")
     assert r.status_code == 200
     assert "Harbour wall to be rebuilt" in r.text and "Paragraph 3." in r.text and "Pat Writer" in r.text
     assert f'src="/media/{pic["id"]}"' in r.text and "news.test/img" not in r.text
+    pane = client.get(f"/t/{tid}/article?pane=1").text
+    assert "<html" not in pane and "data-dive-close" in pane
 
 
 def test_article_pictures_follow_the_posts_own(server, abouncer):

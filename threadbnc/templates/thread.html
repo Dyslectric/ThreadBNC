@@ -207,7 +207,7 @@
   {% endif %}
   {% if o.url | safe_url %}<p class="post-link"><a href="{{ o.url | safe_url }}" rel="noreferrer noopener nofollow" target="_blank">{{ o.url }}</a></p>
     {% if article and article.status == 'ok' %}
-      <p class="article-cta"><a class="button" href="/t/{{ t.id }}/article">{{ icon('article') }}Read article</a>
+      <p class="article-cta"><a class="button read-article" href="/t/{{ t.id }}/article" aria-expanded="false">{{ icon('article') }}Read article</a>
         <span class="small muted">{{ article.word_count }} words · saved {{ when(article.fetched_at) }}</span></p>
     {% elif article and article.status == 'pending' %}<p class="small muted">Saving the linked article…</p>
     {% elif article and article.status == 'failed' %}<form method="post" action="/t/{{ t.id }}/article/retry" class="small muted article-cta">Couldn't save the linked article: {{ article.error }}. <button class="link">Try again</button></form>
@@ -247,6 +247,7 @@
     <form method="post" action="/t/{{ t.id }}/sync" class="inline"><button class="small secondary">Re-check now</button></form>
   </div>
   <div class="actions thread-actions small" id="thread-actions">
+    <a class="act" href="/t/{{ t.id }}#comments">{{ icon('comment') }}<span>{{ total_comments }} comment{{ 's' if total_comments != 1 }}</span></a>
     {% if not t.trashed_at %}
       {{ keep_button(t.id, all_kept, grouped, refresh='thread-actions') }}
       {% if not all_kept %}{{ trash_button(t.id, grouped) }}{% endif %}
@@ -283,7 +284,7 @@
   <a href="/t/{{ t.id }}/repost">repost it</a> to discuss it on your own server.</p>
 {% endif %}
 
-<section class="comments" id="comments">
+<section class="comments" id="comments" data-inline-source>
   <div class="comments-head">
     <h2>{{ total_comments }} comment{{ 's' if total_comments != 1 }}
       {% if grouped or raw_comments != total_comments %}<span class="small muted">

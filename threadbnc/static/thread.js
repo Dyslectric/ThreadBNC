@@ -23,7 +23,7 @@
 
   document.addEventListener("click", (ev) => {
     const root = ev.target.closest("#comments");
-    if (!root) return;
+    if (!root || root.closest(".inline-panel")) return; // app.js owns dynamically placed trees
     const bar = ev.target.closest("button.bar");
     if (bar) {
       const d = bar.closest("details.comment");

@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from threadbnc import media, thumbs, transcode
 from threadbnc.db import utcnow
-from threadbnc.render import MediaInfo, extract_media_urls, render_markdown
+from threadbnc.render import MediaInfo, extract_media_urls, render_markdown, sole_link
 from threadbnc.web import create_app
 
 from .conftest import DOMAIN
@@ -48,6 +48,15 @@ def media_rows(b):
 def test_extract_media_urls():
     text = "![a](https://x.test/a.png) [clip](https://x.test/v.mp4) [page](https://x.test/page) https://x.test/b.gif"
     assert extract_media_urls(text) == ["https://x.test/a.png", "https://x.test/v.mp4", "https://x.test/b.gif"]
+
+
+def test_sole_link_accepts_common_link_forms_but_not_other_content():
+    assert sole_link("https://example.test/story") == "https://example.test/story"
+    assert sole_link("[a story](https://example.test/story)") == "https://example.test/story"
+    assert sole_link("<https://example.test/story>") == "https://example.test/story"
+    assert sole_link("Read https://example.test/story") is None
+    assert sole_link("https://one.test https://two.test") is None
+    assert sole_link("[local](/story)") is None
 
 
 def test_render_is_sanitised():

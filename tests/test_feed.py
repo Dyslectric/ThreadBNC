@@ -92,6 +92,29 @@ def test_feed_page_ui(settings, server, bouncer):
     assert "all caught up" in client.get("/?unread=1").text
 
 
+def test_post_text_action_only_for_posts_with_a_body(settings, server, bouncer):
+    server.add_post("1", "with text", "The full post")
+    server.add_post("2", "link and title only", "")
+    server.add_post("3", "body containing only a link", "[the destination](https://example.test/story)")
+    cid = bouncer.follow_community(f"!math@{DOMAIN}", 10, 7, backfill=True)
+    bouncer.poll_follow(cid)
+    with bouncer.db.connect() as conn:
+        ids = {r["canonical_ap_id"]: r["id"] for r in conn.execute(
+            "SELECT t.id, o.canonical_ap_id FROM archived_threads t JOIN objects o ON o.id=t.root_object_id"
+        )}
+        with_text = ids[f"https://{DOMAIN}/post/1"]
+        without_text = ids[f"https://{DOMAIN}/post/2"]
+        link_only = ids[f"https://{DOMAIN}/post/3"]
+    client = TestClient(create_app(settings, bouncer))
+    client.post("/login", data={"password": "pw"})
+    html = client.get("/").text
+    assert f'href="/t/{with_text}#post-text"' in html
+    assert f'href="/t/{without_text}#post-text"' not in html
+    assert f'href="/t/{link_only}#post-text"' not in html
+    assert 'class="act direct-link" href="https://example.test/story"' in html
+    assert 'aria-label="Open link"' in html
+
+
 def test_mark_all_read_can_be_undone(settings, server, bouncer):
     followed_with_posts(server, bouncer)
     client = TestClient(create_app(settings, bouncer))
@@ -192,6 +215,11 @@ def test_vote_counts_shown(settings, server, bouncer):
     client = TestClient(create_app(settings, bouncer))
     client.post("/login", data={"password": "pw"})
     assert "▲ 12" in client.get("/").text and "▼ 3" in client.get("/").text
+    tiles = client.get("/?view=tiles").text
+    assert 'class="tile-action-row tile-action-primary"' in tiles
+    assert 'class="tile-action-row tile-action-secondary actions"' in tiles
+    assert 'class="vote up"' in tiles and "▲ 12" in tiles
+    assert 'class="vote down"' in tiles and "▼ 3" in tiles
     page = client.get(f"/t/{tid}").text
     assert "▲ 12" in page and "▲ 5" in page and "▼ 1" in page
     # vote changes are current state, not edits

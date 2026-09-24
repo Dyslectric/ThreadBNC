@@ -10,7 +10,7 @@ from typing import Any
 
 from . import articles, dupes
 from .db import Conn, fmt_ts, parse_ts
-from .render import AUDIO_EXTENSIONS, VIDEO_EXTENSIONS, looks_like_audio
+from .render import AUDIO_EXTENSIONS, VIDEO_EXTENSIONS, looks_like_audio, sole_link
 
 # Posts of the same link or text are one feed entry; sorts use the group's totals.
 SORTS = {  # NULLS LAST: Postgres otherwise puts NULLs first in DESC order
@@ -85,7 +85,8 @@ SELECT * FROM (
          MAX(last_activity) OVER (PARTITION BY dkey) AS g_activity
   FROM (
     SELECT t.id, t.retention, t.retained_at, t.promoted_at, t.expires_at, t.last_viewed_at, t.community_id,
-           t.source_domain, o.id AS oid, o.created_at, o.score, o.cur_deleted, o.cur_removed, o.cur_locked,
+           t.source_domain, o.id AS oid, o.canonical_ap_id, o.created_at, o.score,
+           o.cur_deleted, o.cur_removed, o.cur_locked,
            o.cur_missing, o.revision_count, o.thumbnail_url, o.upvotes, o.downvotes, o.dupe_key,
            COALESCE(o.dupe_key, 'thread:' || t.id) AS dkey,
            r.title, r.body, r.url, r.metadata_json AS rmeta, a.username, a.instance AS a_instance,
@@ -270,6 +271,7 @@ def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: lis
         i["excerpt"] = excerpt(i["body"])
         i["thumb"] = thumbs.get(i["oid"])
         i["article"] = i["oid"] in readable
+        i["body_link"] = sole_link(i["body"]) if not i["article"] else None
         i["article_waiting"] = i["oid"] in waiting
         i["audio"] = sounds.get(i["oid"])
         meta = json.loads(i.pop("rmeta") or "{}")

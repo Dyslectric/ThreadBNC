@@ -106,6 +106,26 @@ def test_comments_read_in_the_last_five_minutes_are_not_read_again(server, bounc
     assert counted == []
 
 
+def test_expanding_comments_forces_a_check_unless_the_community_is_pushed(server, bouncer, web):
+    server.add_post("1", "hello", "b")
+    tid = bouncer.ingest_url(f"https://{DOMAIN}/post/1")
+    result = web.post(f"/t/{tid}/comments/check").json()
+    assert result["thread_ids"] == [tid] and len(result["jobs"]) == 1
+    assert len(jobs(bouncer, "sync")) == 1
+
+    cid = one(bouncer, "SELECT community_id FROM archived_threads WHERE id=?", tid)[0]
+    now = utcnow()
+    with bouncer.db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO community_follows(community_id, followed_at, capture_since, poll_interval_minutes, "
+            "retention_days, source_domain, source_ref, next_poll_at, polling, push_state) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (cid, now, now, 10, 7, DOMAIN, f"math@{DOMAIN}", now, 0, "subscribed"))
+    pushed = web.post(f"/t/{tid}/comments/check").json()
+    assert pushed == {"jobs": [], "thread_ids": []}
+    assert len(jobs(bouncer, "sync")) == 1
+
+
 def test_the_fresh_copy_is_not_another_visit(server, bouncer, web):
     server.add_post("1", "hello", "b")
     tid = bouncer.ingest_url(f"https://{DOMAIN}/post/1")

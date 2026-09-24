@@ -165,6 +165,12 @@ document.documentElement.classList.add("js");
   function showVote(box, mine, copies) {
     const up = $("button.vote.up", box), down = $("button.vote.down", box);
     const old = up.classList.contains("on") ? 1 : down.classList.contains("on") ? -1 : 0;
+    const redditScore = $(".reddit-score", box);
+    if (redditScore) {
+      const n = redditScore.textContent.match(/-?\d+/);
+      if (n) redditScore.textContent = redditScore.textContent.replace(
+        n[0], String(+n[0] + copies * (mine - old)));
+    }
     for (const [btn, dir] of [[up, 1], [down, -1]]) {
       const on = mine === dir;
       const count = $("span", btn);
@@ -568,6 +574,324 @@ document.documentElement.classList.add("js");
   document.addEventListener("visibilitychange", beat);
   beat();
 
+  // ---- articles and comments expanded beneath a post -------------------------------
+  // The links remain ordinary links without JavaScript.  With it, each opens a
+  // reader panel in the post's vertical place; the coloured rail collapses it.
+  function inlineThreadId(link) {
+    const m = new URL(link.href, location.href).pathname.match(/^\/t\/(\d+)/);
+    return m && m[1];
+  }
+
+  function inlineOwner(link) {
+    const tid = inlineThreadId(link);
+    return link.closest("[data-entry], article.post") || (tid && document.getElementById("p" + tid)) || $("article.post");
+  }
+
+  function inlineKey(kind, link) {
+    return `${kind}-${inlineThreadId(link) || new URL(link.href, location.href).pathname}`;
+  }
+
+  const inlineSelector = (kind) => ({ article: "a.read-article", comments: "a.inline-comments", post: "a.read-post" })[kind];
+
+  function inlinePanelOwner(panel) {
+    return panel.dataset.owner && document.getElementById(panel.dataset.owner);
+  }
+
+  function panelsForOwner(owner) {
+    if (!owner) return [];
+    const scope = owner.matches(".tile, article.post") ? owner.parentElement : owner;
+    return $$(".inline-panel", scope).filter((p) => p.dataset.owner === (owner.id || "thread"));
+  }
+
+  function orderInlinePanels(owner) {
+    const panels = panelsForOwner(owner);
+    const article = panels.find((panel) => panel.dataset.kind === "article");
+    const comments = panels.find((panel) => panel.dataset.kind === "comments");
+    if (article && comments && article.parentElement === comments.parentElement) comments.before(article);
+  }
+
+  function updateInlinePanels(owner) {
+    if (!owner) return;
+    orderInlinePanels(owner);
+    const allPanels = panelsForOwner(owner);
+    const panels = allPanels.filter((p) => !p.hidden);
+    owner.classList.toggle("panel-owner-open", panels.length > 0);
+    for (const panel of allPanels) panel.classList.remove("panel-continuation", "panel-followed");
+    for (const [index, panel] of panels.entries()) {
+      panel.classList.toggle("panel-continuation", index > 0);
+      panel.classList.toggle("panel-followed", index < panels.length - 1);
+      if (!owner.matches(".tile")) continue;
+      const ownerBox = owner.getBoundingClientRect();
+      const panelBox = panel.getBoundingClientRect();
+      const spread = $(".tile-panel-spread", panel);
+      if (spread && index === 0) {
+        const width = panelBox.width;
+        const left = Math.max(0, ownerBox.left - panelBox.left);
+        const right = Math.min(width, ownerBox.right - panelBox.left);
+        const height = Math.max(14, panelBox.top - ownerBox.bottom + 1);
+        panel.style.setProperty("--spread-depth", `${height}px`);
+        spread.setAttribute("viewBox", `0 0 ${width} ${height}`);
+        const pointer = (left + right) / 2;
+        const pointerHalf = Math.min(22, Math.max(14, (right - left) * .09));
+        const shelfTop = Math.max(9, height * .48);
+        const shape = `M 0 ${shelfTop} H ${pointer - pointerHalf} L ${pointer} 0 L ${pointer + pointerHalf} ${shelfTop} H ${width} V ${height} H 0 Z`;
+        const edges = `M 0 ${shelfTop} H ${pointer - pointerHalf} L ${pointer} 0 L ${pointer + pointerHalf} ${shelfTop} H ${width}`;
+        $(".tile-panel-spread-fill", spread).setAttribute("d", shape);
+        $(".tile-panel-spread-edges", spread).setAttribute("d", edges);
+      }
+    }
+  }
+
+  addEventListener("resize", () => $$(".tile.panel-owner-open").forEach(updateInlinePanels), { passive: true });
+
+  function closeOtherTileInRow(owner) {
+    if (!owner || !owner.matches(".tile")) return;
+    const rowTop = owner.offsetTop;
+    const otherTiles = [...owner.parentElement.children].filter((el) =>
+      el.matches(".tile") && el !== owner && el.offsetTop === rowTop);
+    for (const tile of otherTiles) {
+      for (const panel of panelsForOwner(tile)) {
+        if (!panel.hidden) setInlineExpanded(panel, false);
+      }
+    }
+  }
+
+  function setInlineExpanded(panel, on) {
+    panel.hidden = !on;
+    for (const link of $$(inlineSelector(panel.dataset.kind))) {
+      if (inlineKey(panel.dataset.kind, link) === panel.dataset.key) link.setAttribute("aria-expanded", on ? "true" : "false");
+    }
+    updateInlinePanels(inlinePanelOwner(panel));
+  }
+
+  function makeInlinePanel(kind, link) {
+    const owner = inlineOwner(link);
+    if (!owner) return null;
+    const panel = document.createElement("section");
+    panel.className = `inline-panel ${kind}-panel`;
+    panel.dataset.kind = kind;
+    panel.dataset.key = inlineKey(kind, link);
+    panel.opener = link;
+    panel.innerHTML = `<button type="button" class="inline-panel-rail" aria-label="Collapse ${kind}" title="Collapse ${kind}"></button><div class="inline-panel-body"></div>`;
+    panel.dataset.owner = owner.id || "thread";
+    if (owner.matches(".tile")) {
+      panel.classList.add("tile-inline-panel");
+      panel.insertAdjacentHTML("afterbegin", '<svg class="tile-panel-spread" aria-hidden="true" focusable="false"><path class="tile-panel-spread-fill"></path><path class="tile-panel-spread-edges"></path></svg>');
+      const rowTop = owner.offsetTop;
+      const row = [...owner.parentElement.children].filter((el) => el.matches(".tile") && el.offsetTop === rowTop);
+      let after = row[row.length - 1] || owner;
+      while (after.nextElementSibling && after.nextElementSibling.matches(".inline-panel") &&
+             after.nextElementSibling.dataset.owner === owner.id) after = after.nextElementSibling;
+      after.insertAdjacentElement("afterend", panel);
+    } else if (owner.matches("article.post") && kind === "article") {
+      let slot = owner.nextElementSibling;
+      if (!slot || !slot.matches(".thread-article-panels")) {
+        slot = document.createElement("div");
+        slot.className = "inline-panels thread-article-panels";
+        owner.insertAdjacentElement("afterend", slot);
+      }
+      panel.classList.add("card-inline-panel");
+      slot.append(panel);
+    } else {
+      const host = owner.matches(".post-card") ? $(".pc-main", owner) : owner;
+      let slot = $(":scope > .inline-panels", host);
+      if (!slot) {
+        slot = document.createElement("div");
+        slot.className = "inline-panels";
+        host.append(slot);
+      }
+      panel.classList.add("card-inline-panel");
+      slot.append(panel);
+    }
+    setInlineExpanded(panel, true);
+    return panel;
+  }
+
+  function collapseInlinePanel(panel) {
+    setInlineExpanded(panel, false);
+    if (panel.opener && panel.opener.isConnected) panel.opener.focus({ preventScroll: true });
+  }
+
+  async function loadInlineArticle(panel, link) {
+    const body = $(".inline-panel-body", panel);
+    panel.setAttribute("aria-busy", "true");
+    body.innerHTML = '<p class="muted inline-loading">Reading…</p>';
+    const r = await fetch(paneUrl(link.href), { credentials: "same-origin" });
+    if (!r.ok || new URL(r.url).origin !== location.origin) throw new Error("HTTP " + r.status);
+    const doc = new DOMParser().parseFromString(await r.text(), "text/html");
+    const article = $("article.reader", doc);
+    if (!article) throw new Error("not an article");
+    const deck = document.createElement("div");
+    deck.className = "reader-deck inline-reader-deck";
+    deck.dataset.deck = "";
+    const col = document.createElement("div");
+    col.className = "reader-col";
+    col.append(document.adoptNode(article));
+    deck.append(col);
+    body.replaceChildren(deck);
+    panel.removeAttribute("aria-busy");
+  }
+
+  async function loadInlinePost(panel, link) {
+    const body = $(".inline-panel-body", panel);
+    panel.setAttribute("aria-busy", "true");
+    body.innerHTML = '<p class="muted inline-loading">Loading post text…</p>';
+    const url = new URL(link.href, location.href);
+    url.hash = "";
+    url.searchParams.set("refreshed", "1");
+    url.searchParams.set("inline", "1");
+    const doc = await fetchDoc(url.href);
+    const content = $("article.post > .md", doc);
+    if (!content) throw new Error("post text not found");
+    content.classList.add("expanded-post-content");
+    body.replaceChildren(document.adoptNode(content));
+    panel.removeAttribute("aria-busy");
+  }
+
+  function commentRoot(panel) { return $(".comments", panel); }
+
+  function setCommentsStatus(panel, text, bad = false) {
+    let status = $("[data-inline-comment-status]", panel);
+    if (!status) {
+      status = document.createElement("p");
+      status.className = "small muted";
+      status.dataset.inlineCommentStatus = "";
+      commentRoot(panel).querySelector(".comments-head").insertAdjacentElement("afterend", status);
+    }
+    status.classList.toggle("bad-text", bad);
+    status.textContent = text;
+  }
+
+  async function waitForCommentJobs(panel, jobs, freshUrl) {
+    if (!jobs.length) return;
+    setCommentsStatus(panel, "Checking for new comments…");
+    const started = Date.now();
+    let failed = "";
+    while (Date.now() - started < 60000) {
+      let done = true;
+      for (const id of jobs) {
+        try {
+          const r = await fetch(`/api/jobs/${id}`, { credentials: "same-origin" });
+          const job = r.ok ? await r.json() : null;
+          if (!job || !["done", "failed"].includes(job.status)) done = false;
+          if (job && job.status === "failed") failed = job.error || "the check failed";
+        } catch (e) { done = false; }
+      }
+      if (done) {
+        if (failed) { setCommentsStatus(panel, `Couldn't check for new comments (${failed}). Showing the saved copy.`, true); return; }
+        try {
+          const doc = await fetchDoc(panel.dataset.commentsUrl || freshUrl);
+          const fresh = $(".comments", doc);
+          const now = commentRoot(panel);
+          if (fresh && now) {
+            const shown = new Map($$("details.comment[id]", now).map((d) => [d.id, d.open]));
+            for (const d of $$("details.comment[id]", fresh)) if (shown.has(d.id)) d.open = shown.get(d.id);
+            if (now.id !== "comments") fresh.id = now.id;
+            now.replaceWith(document.adoptNode(fresh));
+          }
+        } catch (e) { setCommentsStatus(panel, "New comments arrived; reload to show them."); }
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    setCommentsStatus(panel, "Still checking for new comments; leave this open or try again in a moment.");
+  }
+
+  async function startInlineCommentCheck(panel, tid, existingStatus) {
+    if (panel.dataset.checking) return;
+    panel.dataset.checking = "true";
+    let jobs = existingStatus && existingStatus.dataset.job ? [existingStatus.dataset.job] : [];
+    let freshUrl = existingStatus && existingStatus.dataset.url;
+    try {
+      if (!jobs.length) {
+        const r = await fetch(`/t/${tid}/comments/check`, { method: "POST", headers: FETCH, credentials: "same-origin" });
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        jobs = (await r.json()).jobs || [];
+        freshUrl = `/t/${tid}?refreshed=1&inline=1`;
+      }
+      if (existingStatus) existingStatus.remove();
+      await waitForCommentJobs(panel, jobs, freshUrl);
+    } finally {
+      delete panel.dataset.checking;
+    }
+  }
+
+  async function loadInlineComments(panel, link) {
+    const body = $(".inline-panel-body", panel);
+    const tid = inlineThreadId(link);
+    panel.setAttribute("aria-busy", "true");
+    body.innerHTML = '<p class="muted inline-loading">Loading comments…</p>';
+    let root = tid && $(".comments[data-inline-source]");
+    if (root && inlineOwner(link).matches("article.post")) {
+      body.replaceChildren(root);
+    } else {
+      const commentsUrl = new URL(link.href, location.href);
+      commentsUrl.hash = "";
+      commentsUrl.searchParams.set("inline", "1");
+      panel.dataset.commentsUrl = commentsUrl.href;
+      const doc = await fetchDoc(commentsUrl.href);
+      root = $(".comments", doc);
+      if (!root) throw new Error("comments not found");
+      root.id = `comments-${tid}`;
+      body.replaceChildren(document.adoptNode(root));
+    }
+    panel.removeAttribute("aria-busy");
+    const status = $("#refreshing", root);
+    startInlineCommentCheck(panel, tid, status).catch((e) =>
+      setCommentsStatus(panel, `Couldn't check for new comments (${e.message}). Showing the saved copy.`, true));
+  }
+
+  async function sortInlineComments(panel, link) {
+    if (panel.dataset.sorting) return;
+    panel.dataset.sorting = "true";
+    panel.setAttribute("aria-busy", "true");
+    const current = commentRoot(panel);
+    const shown = new Map($$("details.comment[id]", current).map((d) => [d.id, d.open]));
+    const url = new URL(link.href, location.href);
+    url.hash = "";
+    url.searchParams.set("inline", "1");
+    url.searchParams.set("refreshed", "1");
+    try {
+      const doc = await fetchDoc(url.href);
+      const fresh = $(".comments", doc);
+      if (!fresh) throw new Error("comments not found");
+      for (const d of $$('details.comment[id]', fresh)) if (shown.has(d.id)) d.open = shown.get(d.id);
+      fresh.id = current.id;
+      current.replaceWith(document.adoptNode(fresh));
+      panel.dataset.commentsUrl = url.href;
+    } finally {
+      delete panel.dataset.sorting;
+      panel.removeAttribute("aria-busy");
+    }
+  }
+
+  async function toggleInline(link, kind) {
+    const key = inlineKey(kind, link);
+    let panel = $$(".inline-panel").find((p) => p.dataset.key === key);
+    if (panel) {
+      panel.opener = link;
+      if (!panel.hidden) { collapseInlinePanel(panel); return; }
+      closeOtherTileInRow(inlineOwner(link));
+      setInlineExpanded(panel, true);
+      if (kind === "comments") startInlineCommentCheck(panel, inlineThreadId(link), null).catch((e) =>
+        setCommentsStatus(panel, `Couldn't check for new comments (${e.message}). Showing the saved copy.`, true));
+      reveal(panel);
+      return;
+    }
+    closeOtherTileInRow(inlineOwner(link));
+    panel = makeInlinePanel(kind, link);
+    if (!panel) { location.assign(link.href); return; }
+    try {
+      if (kind === "article") await loadInlineArticle(panel, link);
+      else if (kind === "post") await loadInlinePost(panel, link);
+      else await loadInlineComments(panel, link);
+      reveal(panel);
+    } catch (e) {
+      panel.remove();
+      location.assign(link.href);
+    }
+  }
+
   // ---- diving into linked articles (the reader) --------------------------------------
   // A link to another article opens it beside the one you're reading on a wide
   // screen (a column each, two or three on screen, the newest scrolled to), or
@@ -632,14 +956,22 @@ document.documentElement.classList.add("js");
     block.insertAdjacentElement(block.matches("li, dd, td") ? "beforeend" : "afterend", box);
   }
 
+  function diveDepth(link) {
+    const parent = link.closest(".dive-col, .dive-inline");
+    return parent ? +(parent.dataset.depth || 0) + 1 : 0;
+  }
+
   async function dive(link) {
     const deck = deckOf(link);
-    const wide = WIDE.matches;
+    const wide = WIDE.matches && !deck.classList.contains("inline-reader-deck");
     const box = document.createElement(wide ? "div" : "section");
+    const depth = diveDepth(link);
     box.className = wide ? "reader-col dive-col" : "dive-inline";
+    box.classList.add(`dive-depth-${depth % 8}`);
+    box.dataset.depth = String(depth);
     box.opener = link;
     box.setAttribute("aria-busy", "true");
-    box.innerHTML = '<p class="muted dive-loading">Reading…</p>';
+    box.innerHTML = '<button type="button" class="dive-rail" aria-label="Collapse this article" title="Collapse this article"></button><div class="dive-content"><p class="muted dive-loading">Reading…</p></div>';
     if (wide) {
       const col = link.closest(".reader-col");
       closeColumnsAfter(deck, col, true);
@@ -659,7 +991,7 @@ document.documentElement.classList.add("js");
       const article = $("article.reader", doc);
       if (!article) throw new Error("not an article");
       if (!box.isConnected) return; // closed while it was being read
-      box.replaceChildren(document.adoptNode(article));
+      $(".dive-content", box).replaceChildren(document.adoptNode(article));
       box.removeAttribute("aria-busy");
       if (wide) box.scrollTop = 0; else reveal(box);
     } catch (e) {
@@ -670,10 +1002,18 @@ document.documentElement.classList.add("js");
   }
 
   document.addEventListener("click", (ev) => {
+    const rail = ev.target.closest(".inline-panel-rail");
+    if (rail) { collapseInlinePanel(rail.closest(".inline-panel")); return; }
+    const diveRail = ev.target.closest(".dive-rail");
+    if (diveRail) { closeDive(diveRail.closest(".dive-col, .dive-inline")); return; }
     const close = ev.target.closest("[data-dive-close]");
     if (close) {
       const box = close.closest(".dive-col, .dive-inline");
       if (box) closeDive(box);
+      else {
+        const panel = close.closest(".inline-panel");
+        if (panel) collapseInlinePanel(panel);
+      }
       return;
     }
     const link = ev.target.closest("a.article-link, a[data-dive]");
@@ -686,9 +1026,56 @@ document.documentElement.classList.add("js");
     dive(link);
   });
 
+  document.addEventListener("click", (ev) => {
+    const link = ev.target.closest("a.read-article, a.inline-comments, a.read-post");
+    if (!link || ev.button !== 0 || ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.altKey) return;
+    ev.preventDefault();
+    toggleInline(link, link.classList.contains("read-article") ? "article" :
+      link.classList.contains("read-post") ? "post" : "comments");
+  });
+
+  // Comment controls in panels loaded after the page's thread.js ran.
+  document.addEventListener("click", (ev) => {
+    const root = ev.target.closest(".inline-panel .comments");
+    if (!root) return;
+    const sortLink = ev.target.closest(".comments-head .seg a");
+    if (sortLink && ev.button === 0 && !ev.ctrlKey && !ev.metaKey && !ev.shiftKey && !ev.altKey) {
+      ev.preventDefault();
+      const panel = root.closest(".inline-panel");
+      sortInlineComments(panel, sortLink).catch((e) =>
+        setCommentsStatus(panel, `Couldn't sort comments (${e.message}).`, true));
+      return;
+    }
+    const all = () => $$("details.comment", root);
+    const bar = ev.target.closest("button.bar");
+    if (bar) { bar.closest("details.comment").open = false; return; }
+    const btn = ev.target.closest("[data-action]");
+    if (!btn) return;
+    const clear = () => $$(".replies-hidden", root).forEach((d) => d.classList.remove("replies-hidden"));
+    if (btn.dataset.action === "expand-all") { clear(); all().forEach((d) => (d.open = true)); }
+    if (btn.dataset.action === "collapse-all") { clear(); all().forEach((d) => (d.open = false)); }
+    if (btn.dataset.action === "collapse-replies") all().forEach((d) => {
+      d.open = true;
+      if (!d.parentElement.closest("details.comment")) d.classList.add("replies-hidden");
+    });
+    if (btn.dataset.action === "show-replies") btn.closest("details.comment").classList.remove("replies-hidden");
+    if (btn.dataset.action === "next-highlight") {
+      const marks = $$("details.comment.is-new, details.comment.is-changed", root);
+      const next = marks.find((m) => m.getBoundingClientRect().top > headerH() + 1) || marks[0];
+      if (next) {
+        for (let p = next.parentElement; p && p !== root; p = p.parentElement) {
+          if (p.matches("details.comment")) { p.open = true; p.classList.remove("replies-hidden"); }
+        }
+        next.open = true;
+        reveal(next);
+      }
+    }
+  });
+
   // Crossing between wide and narrow: columns and inline articles don't carry over, so close them.
   WIDE.addEventListener("change", () => {
     for (const deck of $$("[data-deck]")) {
+      if (deck.classList.contains("inline-reader-deck")) continue;
       for (const box of $$(".dive-inline", deck)) closeDive(box);
       if (deck.children.length > 1) closeColumnsAfter(deck, deck.firstElementChild);
     }
@@ -872,6 +1259,10 @@ document.documentElement.classList.add("js");
     if (location.hash === "#follow") {
       const input = $("#follow input[name=community]");
       if (input) input.focus();
+    }
+    if (location.hash === "#comments" || /^#o\d+$/.test(location.hash)) {
+      const link = $("#thread-actions .inline-comments");
+      if (link) link.click();
     }
   });
 })();

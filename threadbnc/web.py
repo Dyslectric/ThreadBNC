@@ -33,6 +33,7 @@ from . import media as media_mod
 from . import storage as storage_mod
 from . import thumbs as thumbs_mod
 from .adapters import RemoteError, host_of, is_reddit_host, is_rss
+from .adapters.base import RSS_DOMAIN
 from .accounts import Account, AccountError, Poster
 from .bouncer import PUSHED_POLL_MINUTES, Bouncer
 from .inbox import KINDS as INBOX_KINDS, Inbox
@@ -489,9 +490,22 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
 
     def render(request: Request, name: str, **ctx: Any) -> HTMLResponse:
         if request.session.get("auth"):
+            me, reddit_me = acting(request), poster.reddit_account()
             ctx.setdefault("accounts", poster.list())
-            ctx.setdefault("acting", acting(request))
-            ctx.setdefault("reddit_me", poster.reddit_account())
+            ctx.setdefault("acting", me)
+            ctx.setdefault("reddit_me", reddit_me)
+            # Feed tiles use the same real vote controls as thread pages. Add
+            # the viewer's current vote once for the whole page so rendering
+            # the controls never turns into one database query per post.
+            fp = ctx.get("feed")
+            if isinstance(fp, feed_mod.FeedPage):
+                ap_ids = [c["canonical_ap_id"] for i in fp.items for c in i.get("copies", [])
+                          if c.get("canonical_ap_id")]
+                mine = {**poster.my_votes(me, ap_ids), **poster.my_votes(reddit_me, ap_ids)}
+                for item in fp.items:
+                    item["my_vote"] = next((mine.get(c.get("canonical_ap_id"), 0)
+                                            for c in item.get("copies", [])
+                                            if mine.get(c.get("canonical_ap_id"), 0)), 0)
         return templates.TemplateResponse(request, name, ctx)
 
     def require_acting(request: Request) -> Account:
@@ -2253,12 +2267,33 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         flash(request, "Re-check queued.")
         return RedirectResponse(f"/t/{tid}", status_code=303)
 
+    @app.post("/t/{tid}/comments/check")
+    def check_comments(tid: int):
+        """Start a fresh comment read for copies that do not receive pushes.
+
+        Inline comment panels call this when they open.  Pushed communities
+        already deliver comments as they happen, so asking their server again
+        would only add traffic and latency.
+        """
+        ids = group_of(tid, "1")
+        marks = ",".join("?" * len(ids))
+        with db.connect() as conn:
+            rows = conn.execute(
+                "SELECT t.id, t.source_domain, f.push_state FROM archived_threads t "
+                "LEFT JOIN community_follows f ON f.community_id=t.community_id AND f.active=1 "
+                f"WHERE t.id IN ({marks}) AND t.trashed_at IS NULL", ids).fetchall()
+        searched = [r["id"] for r in rows
+                    if r["source_domain"] != RSS_DOMAIN and r["push_state"] != "subscribed"]
+        jobs = [bouncer.enqueue("sync", {"thread_id": thread_id}) for thread_id in searched]
+        return {"jobs": jobs, "thread_ids": searched}
+
     THREAD_SQL = ("SELECT t.*, c.name AS cname, c.canonical_ap_id AS c_ap, c.id AS cid, "
-                  "f.retention_days FROM archived_threads t JOIN communities c ON c.id=t.community_id "
+                  "f.retention_days, f.push_state FROM archived_threads t JOIN communities c ON c.id=t.community_id "
                   "LEFT JOIN community_follows f ON f.community_id=c.id WHERE t.id=?")
 
     @app.get("/t/{tid}", response_class=HTMLResponse)
-    def thread(request: Request, tid: int, sort: str | None = None, merge: int = 1, refreshed: int = 0):
+    def thread(request: Request, tid: int, sort: str | None = None, merge: int = 1, refreshed: int = 0,
+               inline: int = 0):
         """A thread, shown together with its stored duplicates (the same link or
         text posted elsewhere) unless merge=0: one post listing every copy,
         every copy's comments in one tree, repeated comments squashed.
@@ -2307,7 +2342,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         refresh_job = None
         if not refreshed:
             stale = [i for i, th in threads.items() if not th["trashed_at"] and (
-                bouncer.comments_stale(th) or (i == tid and article is not None and article["status"] == "pending"))]
+                (bouncer.comments_stale(th) and not (inline and th["push_state"] == "subscribed")) or
+                (i == tid and article is not None and article["status"] == "pending"))]
             if stale:
                 refresh_job = bouncer.enqueue("open", {"thread_ids": stale})
         srcs = {i: {"id": i, "cname": th["cname"], "c_ap": th["c_ap"], "server": th["source_domain"]}
@@ -2403,7 +2439,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                       lead=lead if shown else None, discussed=discussed, kept=kept, mentions=mentions, pane=pane)
 
     @app.get("/t/{tid}/article", response_class=HTMLResponse)
-    def article_page(request: Request, tid: int):
+    def article_page(request: Request, tid: int, pane: bool = False):
         """The article the post links to, as the bouncer read it."""
         with db.connect() as conn:
             t = conn.execute(THREAD_SQL, (tid,)).fetchone()
@@ -2414,7 +2450,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             a = articles.for_object(conn, o["id"], o["url"]) if o else None
         if not a or a["status"] != "ok":
             raise HTTPException(404)
-        return article_view(request, a, t, o)
+        return article_view(request, a, t, o, pane=pane)
 
     @app.get("/read")
     def read_link(url: str = "", pane: bool = False):
