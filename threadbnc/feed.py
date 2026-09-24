@@ -320,14 +320,17 @@ def thumbnails(conn: Conn,
     server's preview image (article links), else the first embedded image.
     "pics" is every picture to page through: the link, then embedded and gallery
     images in the order they were found, then the linked article's; the preview
-    only when there's nothing else, as it is usually a smaller copy of one of them."""
+    only when there's nothing else, as it is usually a smaller copy of one of them.
+    A saved YouTube video isn't one of them: its thumbnail stays the picture,
+    rather than the video's first frame."""
     if not roots:
         return {}
     ids = [oid for oid, _, _ in roots]
     marks = ",".join("?" * len(ids))
     rows = conn.execute(
         f"SELECT r.object_id, r.from_article, m.id, m.url, m.content_type FROM media_refs r "
-        f"JOIN media m ON m.id=r.media_id WHERE r.object_id IN ({marks}) AND {_VISUAL} ORDER BY m.id", ids,
+        f"JOIN media m ON m.id=r.media_id WHERE r.object_id IN ({marks}) AND {_VISUAL} AND m.kept_only=0 "
+        f"ORDER BY m.id", ids,
     ).fetchall()
     links = {oid: url for oid, url, _ in roots}
     previews = {oid: thumb for oid, _, thumb in roots}

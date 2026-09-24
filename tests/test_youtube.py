@@ -266,7 +266,18 @@ def test_videos_are_saved_only_when_kept(settings, bouncer, yt, downloads):
     assert (m["status"], m["content_type"]) == ("ok", "video/mp4")
     assert (bouncer.media_dir / m["storage_path"]).read_bytes() == MP4
     page = client.get(f"/t/{tid}").text
-    assert f'<video class="media" src="/media/{m["id"]}" controls playsinline' in page  # with sound, no loop
+    assert f'<video class="media" src="/media/{m["id"]}"' in page
+    assert "controls playsinline preload" in page  # with sound, no loop
+
+    # With the thumbnail saved too, it stays the picture: in the feed, and as the player's cover.
+    thumb = one(bouncer, "SELECT id FROM media WHERE url='https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg'")[0]
+    with bouncer.db.transaction() as conn:
+        conn.execute("UPDATE media SET status='ok', content_type='image/jpeg' WHERE id=?", (thumb,))
+    for view in ("list", "pictures", "tiles"):
+        feed = client.get(f"/c/{cid}?view={view}").text
+        assert f'src="/media/{thumb}?w=' in feed and f'src="/media/{m["id"]}"' not in feed, view
+    page = client.get(f"/t/{tid}").text
+    assert f'<video class="media" src="/media/{m["id"]}" poster="/media/{thumb}" controls playsinline' in page
 
 
 def test_youtube_videos_go_by_the_youtube_resolution(settings, bouncer, yt, monkeypatch):

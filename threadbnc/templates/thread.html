@@ -215,7 +215,7 @@
     {% set m = media_for(o.url) %}
     {% if m and m.status == 'ok' and m.content_type != 'image/svg+xml' %}
       <div class="post-media">
-      {% if m.content_type.startswith('video/') and o.url | youtube_video %}<video class="media" src="/media/{{ m.id }}" controls playsinline preload="metadata"></video>
+      {% if m.content_type.startswith('video/') and o.url | youtube_video %}{% set pm = preview(o) %}<video class="media" src="/media/{{ m.id }}"{% if pm %} poster="/media/{{ pm.id }}"{% endif %} controls playsinline preload="metadata"></video>
       {% elif m.content_type.startswith('video/') %}<video class="media" src="/media/{{ m.id }}" controls loop muted playsinline preload="metadata"></video>
       {% elif m.content_type.startswith('audio/') %}<audio class="media" src="/media/{{ m.id }}" controls preload="metadata"></audio>
       {% else %}<a href="/media/{{ m.id }}" target="_blank"><img class="media" src="/media/{{ m.id }}" alt="" loading="lazy"></a>{% endif %}
