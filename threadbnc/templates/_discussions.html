@@ -3,6 +3,19 @@
    that are probably the same story. `talk` comes from web.py's talk_about.
    While a look elsewhere is under way (data-job), app.js swaps in the answer. #}
 {% from "_macros.html" import when, icon %}
+{# One of them: a chat bubble, what it says and where, opening into a panel
+   with what it's for (caller("actions")), then what it says in full and its
+   replies, which app.js fetches from `peek` (discussion_peek.html). #}
+{% macro item(title, peek) -%}
+<details class="discussion" data-peek="{{ peek }}">
+  <summary>{{ icon('comment', 'discussion-icon') }}<span class="discussion-head"><span class="discussion-title">{{ title }}</span>
+    <span class="muted">{{ caller("meta") }}</span></span>{{ icon('chevron-down', 'chev') }}</summary>
+  <div class="discussion-panel">
+    <div class="discussion-actions">{{ caller("actions") }}</div>
+    <div class="discussion-peek" data-peek-body></div>
+  </div>
+</details>
+{%- endmacro %}
 {% set a = talk.article %}
 {% if talk.posted or talk.found or talk.similar or talk.job or talk.checks %}
 <section class="discussions small" data-discussions="/a/{{ a.id }}/discussions{{ '?t=' ~ talk.thread_id if talk.thread_id }}"
@@ -10,22 +23,27 @@
   <h2>{{ icon('comment') }} Discussions</h2>
   {% if talk.posted %}
   <h3>{{ 'Also posted' if talk.thread_id else 'Posted' }} here</h3>
-  <ul class="plain">{% for d in talk.posted %}<li><a href="/t/{{ d.id }}">{{ d.title }}</a>
-    <span class="muted">· {{ chandle(d.name, d.canonical_ap_id) }}{% if d.created_at %} · {{ when(d.created_at) }}{% endif %}</span></li>{% endfor %}</ul>
+  <ul class="plain discussion-list">{% for d in talk.posted %}<li>
+    {%- call(part) item(d.title, "/t/" ~ d.id ~ "/peek") %}
+      {%- if part == "meta" %}· {{ chandle(d.name, d.canonical_ap_id) }}{% if d.created_at %} · {{ when(d.created_at) }}{% endif %}
+      {%- else %}<a href="/t/{{ d.id }}">Read it here</a>{% endif %}
+    {%- endcall %}</li>{% endfor %}</ul>
   {% endif %}
   {% if talk.found %}
   <h3>Elsewhere</h3>
   <ul class="plain discussion-list">{% for d in talk.found %}<li>
-    {% if d.thread_id %}<a href="/t/{{ d.thread_id }}">{{ d.title }}</a>
-    {% elif d.url | safe_url %}<a href="{{ d.url | safe_url }}" rel="noreferrer noopener nofollow" target="_blank">{{ d.title }}{{ icon('external') }}</a>
-    {% else %}{{ d.title }}{% endif %}
-    <span class="muted">·
-      {%- if d.place %} {{ d.place }}{% endif %}
-      {%- if d.author %} · {{ d.author }}{% endif %}
-      {%- if d.count %} · {{ d.count }}{% endif %}
-      {%- if d.created_at %} · {{ when(d.created_at) }}{% endif %}</span>
-    {% if not d.thread_id and d.openable %}<form method="post" action="/discussions/{{ d.id }}/open" class="inline"><button class="link">Open here</button></form>{% endif %}
-  </li>{% endfor %}</ul>
+    {%- call(part) item(d.title, "/t/" ~ d.thread_id ~ "/peek" if d.thread_id else "/discussions/" ~ d.id) %}
+      {%- if part == "meta" %}·
+        {%- if d.place %} {{ d.place }}{% endif %}
+        {%- if d.author %} · {{ d.author }}{% endif %}
+        {%- if d.count %} · {{ d.count }}{% endif %}
+        {%- if d.created_at %} · {{ when(d.created_at) }}{% endif %}
+      {%- else %}
+        {%- if d.thread_id %}<a href="/t/{{ d.thread_id }}">Read it here</a>
+        {%- elif d.openable %}<form method="post" action="/discussions/{{ d.id }}/open" class="inline"><button class="link">Open here</button></form>{% endif %}
+        {%- if d.url | safe_url %}<a href="{{ d.url | safe_url }}" rel="noreferrer noopener nofollow" target="_blank">On {{ d.place or (d.url | host) }}{{ icon('external') }}</a>{% endif %}
+      {%- endif %}
+    {%- endcall %}</li>{% endfor %}</ul>
   {% endif %}
   {% if talk.similar %}
   <h3>Probably the same story</h3>

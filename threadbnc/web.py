@@ -2954,6 +2954,27 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         job = bouncer.enqueue("ingest", {"url": d["url"], "retention": "auto"})
         return RedirectResponse(f"/jobs/{job}/wait", status_code=303)
 
+    @app.get("/discussions/{did}", response_class=HTMLResponse)
+    def discussion_peek(request: Request, did: int):
+        """A discussion found elsewhere, expanded in its list (app.js asks for
+        this when it is): its text, then its replies (Discussions.peek)."""
+        with db.connect() as conn:
+            d = conn.execute("SELECT * FROM discussions WHERE id=?", (did,)).fetchone()
+        if d is None:
+            raise HTTPException(404)
+        return render(request, "discussion_peek.html", peek=discussions.peek(d),
+                      md=lambda text, titles=video_titles(): render_markdown(text, None, titles))
+
+    @app.get("/t/{tid}/peek", response_class=HTMLResponse)
+    def thread_peek(request: Request, tid: int):
+        """A post here, expanded in a Discussions list: its text and comments as saved."""
+        with db.connect() as conn:
+            if conn.execute("SELECT 1 FROM archived_threads WHERE id=?", (tid,)).fetchone() is None:
+                raise HTTPException(404)
+            peek = discussions_mod.saved_peek(conn, tid)
+        md, _media_for, _preview = md_for(peek["object_ids"])
+        return render(request, "discussion_peek.html", peek=peek, md=md)
+
     @app.get("/jobs/{job_id}/wait", response_class=HTMLResponse)
     def job_wait(request: Request, job_id: int):
         """Waiting for a post to be saved (discussion_open): on to it once it is."""

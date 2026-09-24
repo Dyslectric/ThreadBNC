@@ -325,6 +325,60 @@ def test_a_post_found_elsewhere_opens_here(server, dbouncer, looking):
     assert again.headers["location"] == f"/t/{new_tid}"
 
 
+def discussion_id(b, url: str) -> int:
+    with b.db.connect() as conn:
+        return conn.execute("SELECT id FROM discussions WHERE url=?", (url,)).fetchone()[0]
+
+
+def test_each_one_expands_into_its_text_then_its_replies(server, dbouncer, looking, monkeypatch):
+    client, asked = looking
+    tid = post_linking(server, dbouncer, STORY, "1")
+    client.get(f"/t/{tid}")
+    run_jobs(dbouncer)
+    part = client.get(f"/t/{tid}").text
+    did = discussion_id(dbouncer, f"https://{DOMAIN}/post/77")
+    assert f'data-peek="/discussions/{did}"' in part and '<details class="discussion"' in part
+    # A Lemmy post is read from your own server when it's expanded, with its comments, best first.
+    server.add_post("77", "Posted in tech", "The council **finally** agreed.")
+    server.add_comment("77", "c1", "First!")
+    server.add_comment("77", "c2", "Worth the wait.")
+    server.add_comment("77", "c3", "Agreed, it was.", parent="c2")
+    server.edit_comment("77", "c2", score=5)
+    read = []
+    real = FakeAdapter.fetch_comments
+    monkeypatch.setattr(FakeAdapter, "fetch_comments", lambda self, pid: read.append((self.domain, pid)) or
+                        real(self, pid))
+    panel = client.get(f"/discussions/{did}").text
+    assert read == [(DOMAIN, "77")]
+    assert "<strong>finally</strong>" in panel and "3 replies" in panel
+    assert panel.index("finally") < panel.index("Worth the wait.") < panel.index("Agreed, it was.")         < panel.index("First!")
+    client.get(f"/discussions/{did}")
+    assert len(read) == 1  # expanded again soon after, it isn't read again
+    # A reply to the blog's post has only its text, kept from when it was found.
+    reply = client.get(f"/discussions/{discussion_id(dbouncer, 'https://mastodon.test/@carol/1')}").text
+    assert "About time they fixed that wall." in reply and "where it was written" in reply
+    # One that can't be read says so, and still shows what it said.
+    monkeypatch.setattr(dbouncer.bluesky_adapter, "resolve_url",
+                        lambda ref: (_ for _ in ()).throw(RemoteUnavailable("bsky.app: HTTP 502")))
+    sky = client.get(f"/discussions/{discussion_id(dbouncer, 'https://bsky.app/profile/did:plc:abc/post/3k')}").text
+    assert "Good news for the harbour" in sky and "bsky.app: HTTP 502" in sky
+
+
+def test_a_post_here_expands_from_what_was_saved(server, dbouncer, looking):
+    client, asked = looking
+    t1 = post_linking(server, dbouncer, STORY, "1")
+    server.add_post("2", "Same story", "Posted again.")
+    server.edit_post("2", url="https://news.test/s/abc")  # a short link to it
+    server.add_comment("2", "c9", "Saw this one already.")
+    t2 = dbouncer.ingest_url(f"https://{DOMAIN}/post/2")
+    dbouncer.articles.fetch_pending()
+    part = client.get(f"/t/{t1}").text
+    assert f'data-peek="/t/{t2}/peek"' in part
+    server.down = True  # nobody's asked
+    panel = client.get(f"/t/{t2}/peek").text
+    assert panel.index("Posted again.") < panel.index("Saw this one already.") and "1 reply" in panel
+
+
 def test_feed_articles_are_discussed_too(server, dbouncer, looking, monkeypatch):
     """A feed item's article has no comments of its own: its Discussions are the conversation."""
     client, asked = looking
