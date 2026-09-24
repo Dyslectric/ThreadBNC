@@ -230,7 +230,10 @@
   {% if o.url | safe_url %}{% set episode = post_audio.episode if post_audio else none %}
     {% set page = (episode.page if episode and episode.page else o.url) | safe_url %}
     {% set vid = page | youtube_video if page else none %}
-    {% if vid %}{% set vtitle = video_title(page) %}<p class="post-link"><a class="video-link{{ ' untitled' if not vtitle }}" href="/youtube/v/{{ vid }}"
+    {% set live = page | livestream if page else none %}
+    {% if live %}<p class="post-link"><a class="live-link" href="{{ live.href }}" title="{{ live.link_title }}">
+      {{- (video_title(page) if vid else none) or page }}</a></p>
+    {% elif vid %}{% set vtitle = video_title(page) %}<p class="post-link"><a class="video-link{{ ' untitled' if not vtitle }}" href="/youtube/v/{{ vid }}"
       title="YouTube video: see how big it is, then save it here or watch it on YouTube">{{ vtitle or page }}</a></p>
     {% elif page %}<p class="post-link"><a href="{{ page }}" rel="noreferrer noopener nofollow" target="_blank">{{ page }}</a></p>{% endif %}
     {% if article and article.status == 'ok' %}

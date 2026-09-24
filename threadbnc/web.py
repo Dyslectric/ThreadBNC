@@ -29,7 +29,7 @@ from markupsafe import Markup
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.background import BackgroundTask
 
-from . import articles, dupes, integrity, opml, portable, store, youtube
+from . import articles, dupes, integrity, livestream, opml, portable, store, youtube
 from . import search as search_mod
 from . import feed as feed_mod
 from . import media as media_mod
@@ -369,6 +369,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     templates = Jinja2Templates(directory=str(HERE / "templates"))
     templates.env.filters.update(ago=ago, absolute=absolute, clock=clock,safe_url=safe_url, host=host_of,
                                  looks_like_media=looks_like_media, size=human_size, youtube_video=youtube.video_id,
+                                 livestream=livestream.stream_of,
                                  running_time=running_time)
     # A Lemmy or PieFed community (not a subreddit, a feed or Bluesky): one that can be pushed.
     templates.env.tests["is_federated"] = lambda ap_id: (not is_rss(ap_id) and not is_tag(ap_id)
@@ -513,6 +514,9 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         resp.headers["Content-Security-Policy"] = (
             "default-src 'self'; img-src 'self'; media-src 'self'; style-src 'self'; script-src 'self'; "
             "form-action 'self'; "
+            # Livestream players, only once a link's box is opened (livestream.py): Twitch's,
+            # YouTube's, or any Owncast server's.
+            "frame-src https:; "
             "frame-ancestors 'none'"
         )
         if path.startswith("/media/") and resp.status_code == 200:
@@ -2504,6 +2508,25 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         asks once it's shown), asked of YouTube now."""
         vids = [v for v in dict.fromkeys(ids) if youtube.is_video_id(v)][:50]
         return JSONResponse(bouncer.youtube_titles(vids))
+
+    # ---- Livestreams: the player a link opens (livestream.py, app.js) ---------------
+    @app.get("/live/owncast")
+    def owncast_link_hosts(hosts: list[str] = Query([])):
+        """Of the sites whose front pages a page links to (app.js asks once
+        it's shown), the Owncast servers."""
+        return JSONResponse(bouncer.owncast_hosts(hosts[:50]))
+
+    @app.get("/live/{kind}/{key}", response_class=HTMLResponse)
+    def live_box(request: Request, kind: str, key: str, pane: bool = False):
+        """A livestream link, opened: the stream's own player (app.js puts it in
+        once it's shown). `pane`: just the box, for app.js to open under the link."""
+        stream = livestream.from_key(kind, key)
+        if stream is None or (stream.kind == "owncast" and stream.key not in bouncer.owncast_hosts([stream.key])):
+            raise HTTPException(404)
+        title = None
+        if stream.kind == "youtube" and not stream.is_channel:  # known, or asked of YouTube (oEmbed)
+            title = bouncer.youtube_titles([stream.key]).get(stream.key)
+        return render(request, "live_pane.html" if pane else "live.html", s=stream, title=title, pane=pane)
 
     # ---- Reddit --------------------------------------------------------------
     @app.get("/reddit", response_class=HTMLResponse)

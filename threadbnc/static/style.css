@@ -832,7 +832,7 @@ fieldset.feed-picks input[type=checkbox] { flex: none; width: 16px; margin: 0; }
 }
 
 /* ---- linked articles opened beside the one you're reading (wide), or inside it (narrow): app.js ---- */
-a.article-link.dived, a[data-dive].dived, a.video-link.dived { background: var(--hover); border-radius: 4px; }
+a.article-link.dived, a[data-dive].dived, a.video-link.dived, a.live-link.dived { background: var(--hover); border-radius: 4px; }
 
 /* ---- YouTube links: the video's title, marked as a video; they open its box (app.js) ---- */
 .video-link::before { content: ""; display: inline-block; width: 1em; height: 1em; margin-right: 0.25em;
@@ -844,6 +844,19 @@ a.article-link.dived, a[data-dive].dived, a.video-link.dived { background: var(-
 .video-box .media, .video-box-thumb { display: block; max-width: 100%; max-height: 60vh; border-radius: 8px; margin: 0 0 8px; }
 .video-box-size .i { vertical-align: -0.15em; }
 .video-box .row { margin-top: 8px; }
+
+/* ---- livestream links (Twitch, YouTube live, Owncast): they open the stream's player (app.js) ---- */
+.live-link::before { content: ""; display: inline-block; width: 1em; height: 1em; margin-right: 0.25em;
+  vertical-align: -0.15em; background-color: currentColor;
+  -webkit-mask: url(live-link.svg) center / contain no-repeat; mask: url(live-link.svg) center / contain no-repeat; }
+.live-box { max-width: 56rem; }
+.video-page .live-box { margin: 0 auto; }
+.live-box h2 { font-size: 1.2rem; margin: 2px 0 10px; overflow-wrap: anywhere; }
+.live-player { aspect-ratio: 16 / 9; max-height: 70vh; background: #000; border-radius: 8px; overflow: hidden;
+  display: grid; place-items: center; }
+.live-player iframe { width: 100%; height: 100%; border: 0; display: block; }
+.live-player p { color: #ccc; }
+.live-box .row { margin-top: 8px; }
 /* Kept → Videos: the ones saved from a link's box, above the kept posts */
 .linked-videos { margin-bottom: 14px; }
 .linked-videos h2 { font-size: 0.85rem; font-weight: 600; margin: 4px 0 8px; }

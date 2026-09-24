@@ -37,6 +37,7 @@ from .media import media_id
 from .media import register as register_media
 from .render import (ALLOWED_ATTRS, ALLOWED_TAGS, VIDEO_HREF, VIDEO_LINK_TITLE, MediaLookup, VideoTitles, _media_html,
                      looks_like_media, video_link_text)
+from .livestream import stream_of
 from .youtube import video_id
 
 MAX_PAGE_BYTES = 5_000_000
@@ -236,7 +237,8 @@ def render(content_html: str | None, lookup: MediaLookup, page_url: str | None =
     """Stored article HTML with its pictures swapped for the archived copies.
     With `read_link`, links to other articles go to reading them here (marked
     with the article-link class); other links open the site in a new tab.
-    Links to YouTube videos open their box here, titled by `titles` where
+    Links to livestreams open their player here (livestream.py), and links
+    to YouTube videos open their box here, titled by `titles` where
     their text is just the address (as in posts, see render._video_links)."""
     if not content_html:
         return Markup("")
@@ -249,8 +251,14 @@ def render(content_html: str | None, lookup: MediaLookup, page_url: str | None =
     here = urldefrag(page_url or "")[0]
     for a in root.iter("a"):
         href = a.get("href") or ""
+        stream = stream_of(href)
         vid = video_id(href)
-        if vid and not a.get("class"):
+        if stream and not a.get("class"):
+            a.set("href", stream.href)
+            a.set("class", "live-link")
+            a.set("title", stream.link_title)
+            a.attrib.pop("target", None)
+        elif vid and not a.get("class"):
             a.set("href", VIDEO_HREF.format(vid))
             a.set("class", "video-link")
             a.set("title", VIDEO_LINK_TITLE)
