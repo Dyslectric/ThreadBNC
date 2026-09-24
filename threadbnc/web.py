@@ -938,6 +938,10 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                 "articles": kept_articles_count(conn),
                 **{k: feed_mod.count_kept_media(conn, m) for k, m in KEPT_MEDIA.items()},
             }
+            linked = media_mod.saved_from_links(conn)
+            out["counts"]["videos"] += len(linked)
+            if tab == "videos" and page == 1:
+                out["linked_videos"] = linked_videos(conn, linked)
             if tab == "threads" or tab in KEPT_MEDIA:
                 s = feed_mod.load_defaults(conn).with_url(sort, t, unread)
                 out.update(sort=s.sort, window=s.window, unread=s.unread,
@@ -957,6 +961,24 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                        for j in jobs]
         out["pending"] = any(j["status"] in ("queued", "running") for j in jobs)
         return render(request, "kept.html", **out)
+
+    def linked_videos(conn: Any, rows: list[Any]) -> list[dict[str, Any]]:
+        """YouTube videos saved from a link's box (media.saved_from_links), for
+        the Videos tab: each with its title, channel and length, and its
+        thumbnail when one was saved for a post."""
+        vids = [youtube.video_id(r["url"]) or "" for r in rows]
+        titles = youtube.titles(conn, vids)
+        about = {r["video_id"]: r for r in conn.execute(
+            f"SELECT * FROM youtube_videos WHERE video_id IN ({','.join('?' * len(vids))})", vids)} if vids else {}
+        thumbs = {r["url"]: r["id"] for r in conn.execute(
+            f"SELECT id, url FROM media WHERE url IN ({','.join('?' * len(vids))}) AND status='ok' "
+            f"AND content_type LIKE 'image/%'", [youtube.thumbnail_url(v) for v in vids])} if vids else {}
+        out = []
+        for r, vid in zip(rows, vids):
+            v = about.get(vid)
+            out.append({"vid": vid, "media": r, "title": titles.get(vid), "channel": v["channel"] if v else None,
+                        "duration": v["duration"] if v else None, "thumb": thumbs.get(youtube.thumbnail_url(vid))})
+        return out
 
     # Articles on the Kept page: those kept while reading, and those kept posts link to.
     KEPT_ARTICLES = ("FROM articles a WHERE a.kept_at IS NOT NULL OR (a.status='ok' AND EXISTS ("

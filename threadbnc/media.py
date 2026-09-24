@@ -537,6 +537,14 @@ def want_youtube(conn: Conn, vid: str, now: str) -> int:
     return mid
 
 
+def saved_from_links(conn: Conn) -> list[Any]:
+    """YouTube videos saved (or being saved) from a link's box that no kept
+    post links to, the latest asked for first: the Kept page's Videos tab
+    lists them besides the kept posts that are videos."""
+    return conn.execute(f"SELECT * FROM media WHERE kept_only=1 AND wanted_at IS NOT NULL AND NOT {KEPT_SQL} "
+                        "ORDER BY wanted_at DESC, id DESC").fetchall()
+
+
 def retry_youtube(conn: Conn) -> int:
     """YouTube downloads that failed, perhaps for want of a session: try them
     again (one was just saved)."""

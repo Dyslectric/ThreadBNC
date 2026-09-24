@@ -49,11 +49,43 @@
 
 {% if tab in ('threads', 'videos', 'audio') %}
   {% set base = '/kept?' ~ ('tab=' ~ tab ~ '&' if tab != 'threads') %}
-  {% if tab == 'videos' %}<p class="tab-note small muted">Kept posts that are a video: YouTube links (saved once kept), and videos posted or embedded.</p>
+  {% if tab == 'videos' %}<p class="tab-note small muted">Kept posts that are a video: YouTube links (saved once kept), and videos posted or embedded.
+    Also YouTube videos you saved from a link's box.</p>
   {% elif tab == 'audio' %}<p class="tab-note small muted">Kept posts that link to an audio file, to play from here.</p>{% endif %}
+  {% if linked_videos %}
+  <section class="linked-videos" aria-labelledby="linked-videos-title">
+    <h2 id="linked-videos-title" class="small muted">Saved from links</h2>
+    <div class="cards">
+    {% for lv in linked_videos %}{% set m = lv.media %}
+      <article class="post-card video-card" id="yt-{{ lv.vid }}">
+        <a class="thumb" href="/youtube/v/{{ lv.vid }}" tabindex="-1" aria-hidden="true">
+          {%- if lv.thumb %}<img src="{{ thumb(lv.thumb, 'list') }}" alt="" loading="lazy">
+          {%- elif m.status == 'ok' %}<video src="/media/{{ m.id }}#t=1" muted playsinline preload="metadata"></video>
+          {%- else %}<span class="thumb-icon">{{ icon('video') }}</span>{% endif %}</a>
+        <div class="pc-main">
+          <div class="pc-meta small">
+            <span class="pc-community">YouTube{% if lv.channel %} · {{ lv.channel }}{% endif %}</span>
+            {% if lv.duration %}· <span>{{ lv.duration | running_time }}</span>{% endif %}
+            {% if m.status == 'ok' %}· <span>{{ m.size_bytes | size }}</span>
+            {% elif m.status == 'failed' %}<span class="pill bad" title="{{ m.error }}">couldn't be saved</span>
+            {% else %}<span class="pill new">saving…</span>{% endif %}
+          </div>
+          <h3 class="pc-title"><a class="video-link" href="/youtube/v/{{ lv.vid }}">{{ lv.title or 'youtube.com/watch?v=' ~ lv.vid }}</a></h3>
+          <div class="pc-actions actions small">
+            <a class="act" href="/youtube/v/{{ lv.vid }}">{{ icon('play') }}<span>{{ 'Watch' if m.status == 'ok' else 'Open' }}</span></a>
+            <a class="act" href="https://www.youtube.com/watch?v={{ lv.vid }}" target="_blank" rel="noreferrer noopener nofollow">{{ icon('external') }}<span>YouTube</span></a>
+            <span class="muted" title="{{ m.wanted_at | absolute }}">saved {{ when(m.fetched_at or m.wanted_at) }}</span>
+          </div>
+        </div>
+      </article>
+    {% endfor %}
+    </div>
+    {% if feed.items %}<h2 class="small muted linked-videos-posts">Kept posts</h2>{% endif %}
+  </section>
+  {% endif %}
   {{ controls(base, sort, window, unread, view=view, view_chosen=view_chosen, mark_read=False) }}
   {{ posts(feed.items, view, as_of=feed.as_of, snapshot=snapshot) }}
-  {% if not feed.items %}
+  {% if not feed.items and not linked_videos %}
     <section class="card empty"><p class="muted">
       {% if tab != 'threads' and counts[tab] == 0 %}No {{ 'videos' if tab == 'videos' else 'audio' }} kept yet. Keep a post that {{ 'is a video' if tab == 'videos' else 'links to an audio file' }} and it shows up here.
       {% elif counts.threads == 0 %}Nothing kept yet. Use Keep ({{ icon('star') }}, or <kbd>s</kbd>) on a post in your feed, or keep one by its link.

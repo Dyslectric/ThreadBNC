@@ -631,3 +631,29 @@ def test_a_post_linking_to_a_video_links_to_its_box(settings, server, bouncer, y
     page = logged_in(settings, bouncer).get(f"/t/{tid}").text
     assert '<a class="video-link" href="/youtube/v/dQw4w9WgXcQ"' in page and ">Never Gonna Give You Up</a>" in page
     assert '<a href="/youtube/v/gnmrKDpTM7o" class="video-link untitled"' in page
+
+
+def test_videos_saved_from_links_are_under_kept_videos(settings, server, bouncer, yt, downloads, monkeypatch):
+    monkeypatch.setattr(youtube, "probe", lambda url, session: youtube.Probe(
+        "Never Gonna Give You Up", "Rick Astley", 213, 123_400_000, False, 1080))
+    client = logged_in(settings, bouncer)
+    assert "Saved from links" not in client.get("/kept?tab=videos").text
+    client.get("/youtube/v/dQw4w9WgXcQ?pane=1")
+    client.post("/youtube/v/dQw4w9WgXcQ/save")
+    page = client.get("/kept?tab=videos").text
+    assert "Saved from links" in page and "saving…" in page
+    assert '<a class="video-link" href="/youtube/v/dQw4w9WgXcQ">Never Gonna Give You Up</a>' in page
+    assert '<span class="count muted" aria-label="1 kept">1</span>' in page
+    bouncer.media.fetch_pending()
+    m = video_media(bouncer)
+    page = client.get("/kept?tab=videos").text
+    assert f'<video src="/media/{m["id"]}#t=1"' in page and "Rick Astley" in page and "4 min" in page
+
+    # Once a kept post links to it, it's listed as that post instead.
+    from .conftest import DOMAIN
+    server.add_post("1", "neat video", "")
+    server.edit_post("1", url=VIDEO)
+    bouncer.ingest_url(f"https://{DOMAIN}/post/1")
+    page = client.get("/kept?tab=videos").text
+    assert "Saved from links" not in page and "neat video" in page
+    assert '<span class="count muted" aria-label="1 kept">1</span>' in page
