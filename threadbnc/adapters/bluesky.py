@@ -275,7 +275,9 @@ class BlueskyAdapter(ThreadiverseAdapter):
         if raw is not None:
             content, headers["Content-Type"] = raw
             body = {}  # a procedure, like any other POST
-        elif body is not None:
+        elif body:
+            # An empty body is a procedure that takes no input (refreshSession,
+            # deleteSession): Bluesky refuses one sent anyway, even `{}`.
             # Bluesky refuses a null where it expects a value: leave unset fields out.
             headers["Content-Type"] = "application/json"
             content = json.dumps({k: v for k, v in body.items() if v is not None}).encode()
