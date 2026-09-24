@@ -188,6 +188,37 @@ def _is_redacted(value: str | None, hidden: bool) -> bool:
     return hidden and norm in REDACTION_MARKERS
 
 
+def _to_episode(conn: Conn, object_id: int, prev: Any, url: str | None, meta: dict[str, Any], now: str) -> bool:
+    """A feed entry stored linking to its web page before ThreadBNC read
+    podcasts' audio, now read as an episode linking to its audio file: the
+    feed didn't change, what ThreadBNC reads from it did, so that's not an
+    edit. Its revision takes the new link in place (anything else that
+    changed is still an edit). Returns whether it did."""
+    page = (meta.get("episode") or {}).get("page")
+    old = json.loads(prev["metadata_json"] or "{}")
+    if not page or "episode" in old or prev["url"] != page or url == page:
+        return False
+    new_meta = {**old, "episode": meta["episode"]}
+    conn.execute("UPDATE revisions SET url=?, metadata_json=?, content_hash=? WHERE id=?",
+                 (url, dumps(new_meta), content_hash(prev["title"], prev["body"], url, new_meta), prev["id"]))
+    media.register(conn, object_id, media.media_candidates(prev["title"], prev["body"], url), now)
+    if url:
+        media.register(conn, object_id, [url], now, episode=True)
+    dupes.refresh_key(conn, object_id)
+    return True
+
+
+def upgrade_episode(conn: Conn, post: NPost, now: str) -> bool:
+    """A stored feed entry that its feed now shows is a podcast episode
+    (_to_episode). Feed entries aren't re-read once stored, so a feed's
+    checks are what bring the ones stored earlier up to date."""
+    if not post.metadata.get("episode"):
+        return False
+    row = conn.execute("SELECT r.* FROM objects o JOIN revisions r ON r.object_id=o.id AND r.seq=o.revision_count "
+                       "WHERE o.canonical_ap_id=? AND o.object_type='post'", (post.ap_id,)).fetchone()
+    return bool(row) and _to_episode(conn, row["object_id"], row, post.url, post.metadata, now)
+
+
 def record_revision(conn: Conn, object_id: int, now: str, *, title: str | None,
                     body: str | None, url: str | None, meta: dict[str, Any],
                     remote_updated_at: str | None, hidden: bool) -> tuple[bool, list[str]]:
@@ -208,6 +239,8 @@ def record_revision(conn: Conn, object_id: int, now: str, *, title: str | None,
                      (filled, dumps(meta), content_hash(prev["title"], filled, prev["url"], meta), prev["id"]))
         media.register(conn, object_id, media.media_candidates(prev["title"], filled, prev["url"]), now)
         dupes.refresh_key(conn, object_id)
+        prev = conn.execute("SELECT * FROM revisions WHERE id=?", (prev["id"],)).fetchone()
+    if prev is not None and _to_episode(conn, object_id, prev, url, meta, now):
         prev = conn.execute("SELECT * FROM revisions WHERE id=?", (prev["id"],)).fetchone()
     withheld: list[str] = []
     values = {"title": title, "body": body, "url": url}
@@ -391,6 +424,8 @@ def apply_post(conn: Conn, thread_id: int, post: NPost, source_domain: str, now:
         conn, oid, now, title=post.title, body=post.body, url=post.url, meta=post.metadata,
         remote_updated_at=post.updated_at, hidden=hidden,
     )
+    if post.metadata.get("episode") and post.url:  # its audio: saved when played or kept (media.py)
+        media.register(conn, oid, [post.url], now, episode=True)
     result.new_revisions += int(created)
     _apply_flags(conn, obj, oid, thread_id, "post", post.local_id,
                  {"deleted": post.deleted, "removed": post.removed, "locked": post.locked,

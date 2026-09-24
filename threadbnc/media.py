@@ -21,7 +21,10 @@ their own on the YouTube page (the resolution they're saved at) rather than
 the Videos ones. Audio files are held
 too, but a post linking to one fetches it as soon as the post is scrolled into
 view in a feed (Bouncer.fetch_audio), so it's ready to play from the post's
-player bar.
+player bar. Podcast episodes (`episode`, from a feed's enclosures) aren't:
+an hour of audio is 50-150 MB, and podcast hosts count every download as a
+listen. One is downloaded when you press play on it (`wanted_at`) or keep its
+post, and may be bigger than other audio (THREADBNC_PODCAST_MAX_MB).
 """
 
 from __future__ import annotations
@@ -34,7 +37,7 @@ import mimetypes
 import socket
 import tempfile
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, Iterable, Iterator
@@ -476,22 +479,29 @@ def skip_unprobed_links(conn: Conn) -> int:
     return n
 
 
-def media_id(conn: Conn, url: str, now: str) -> int:
+def media_id(conn: Conn, url: str, now: str, episode: bool = False) -> int:
     """The media row for a URL, registered (to be downloaded) if it's new.
-    YouTube videos start out held until a post linking to them is kept."""
+    YouTube videos start out held until a post linking to them is kept, and
+    podcast episodes until one is played or kept."""
     yt = int(bool(youtube.video_id(url)))
-    conn.execute("INSERT INTO media(url, first_seen_at, next_attempt_at, held, kept_only) VALUES (?,?,?,?,?) "
-                 "ON CONFLICT(url) DO NOTHING", (url, now, now, yt, yt))
+    conn.execute("INSERT INTO media(url, first_seen_at, next_attempt_at, held, kept_only, episode) "
+                 "VALUES (?,?,?,?,?,?) ON CONFLICT(url) DO NOTHING",
+                 (url, now, now, int(yt or episode), yt, int(episode)))
+    if episode:  # the same file linked before, as a plain audio link
+        conn.execute("UPDATE media SET episode=1, held=CASE WHEN status='pending' THEN 1 ELSE held END "
+                     "WHERE url=? AND episode=0", (url,))
     return conn.execute("SELECT id FROM media WHERE url=?", (url,)).fetchone()[0]
 
 
-def register(conn: Conn, object_id: int, urls: Iterable[str], now: str, from_article: bool = False) -> None:
+def register(conn: Conn, object_id: int, urls: Iterable[str], now: str, from_article: bool = False,
+             episode: bool = False) -> None:
     """`from_article`: pictures in the article the post links to (articles.py),
-    which aren't shown as the post's own pictures in feeds."""
+    which aren't shown as the post's own pictures in feeds. `episode`: a
+    podcast episode's audio file."""
     # A picture that's the post's own as well as the article's counts as its own.
     on_conflict = "DO NOTHING" if from_article else "DO UPDATE SET from_article=0 WHERE media_refs.from_article=1"
     for url in urls:
-        mid = media_id(conn, url, now)
+        mid = media_id(conn, url, now, episode)
         conn.execute("INSERT INTO media_refs(object_id, media_id, first_seen_at, from_article) VALUES (?,?,?,?) "
                      f"ON CONFLICT(object_id, media_id) {on_conflict}", (object_id, mid, now, int(from_article)))
 
@@ -551,8 +561,10 @@ class MediaFetcher:
                  timeout: float = 30.0, client: httpx.Client | None = None, check_host: bool = True,
                  throttle: HostThrottle | None = None, transcode_default: bool = False,
                  transcode_source_max_bytes: int = 1_000_000_000,
-                 youtube_session: youtube.YouTubeSession | None = None):
+                 youtube_session: youtube.YouTubeSession | None = None,
+                 episode_max_bytes: int = 500_000_000):
         self.db = db
+        self.episode_max_bytes = episode_max_bytes  # podcast episodes may be this big, whatever audio's limit
         self.youtube = youtube_session
         self.throttle = throttle or HostThrottle(1.0)
         self.media_dir = media_dir
@@ -825,7 +837,8 @@ class MediaFetcher:
         with self.db.connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM media WHERE status='pending' AND (next_attempt_at IS NULL OR next_attempt_at<=?) "
-                f"AND (held=0 OR (kept_only=0 AND {WANTED_SQL}) OR (kept_only=1 AND {KEPT_SQL})) "
+                f"AND (held=0 OR (kept_only=0 AND episode=0 AND {WANTED_SQL}) "
+                f"OR ((kept_only=1 OR episode=1) AND {KEPT_SQL}) OR (episode=1 AND wanted_at IS NOT NULL)) "
                 "ORDER BY id LIMIT ?", (now, limit)).fetchall()
         for row in rows:
             self.fetch_one(row)
@@ -839,6 +852,11 @@ class MediaFetcher:
             policy = policy_for(conn, row["id"], self.env_policy.override(load_defaults(conn)))
             if row["kept_only"]:  # a YouTube video: only for kept posts, whoever asks
                 wanted = bool(conn.execute(f"SELECT {KEPT_SQL} FROM media WHERE id=?", (row["id"],)).fetchone()[0])
+            elif row["episode"]:  # a podcast episode: when played, or its post is kept (not just opened)
+                wanted = bool(row["wanted_at"]) or bool(
+                    conn.execute(f"SELECT {KEPT_SQL} FROM media WHERE id=?", (row["id"],)).fetchone()[0])
+                policy = replace(policy, audio=replace(
+                    policy.audio, keep_bytes=max(policy.audio.keep_bytes, self.episode_max_bytes)))
             else:
                 wanted = wanted or bool(conn.execute(f"SELECT {WANTED_SQL} FROM media WHERE id=?",
                                                      (row["id"],)).fetchone()[0])
@@ -854,7 +872,7 @@ class MediaFetcher:
                 # the resolution it says, as YouTube encoded it.
                 dl = self._download_youtube(row["url"])
             else:
-                if not wanted and (looks_like_video(row["url"]) or looks_like_audio(row["url"])):
+                if not wanted and (row["episode"] or looks_like_video(row["url"]) or looks_like_audio(row["url"])):
                     raise MediaHeld()
                 dl = self._download(row["url"], policy, wanted)
                 kp = policy.for_type(dl.content_type)
@@ -918,6 +936,7 @@ def collect_orphans(conn: Conn, media_dir: Path) -> list[Path]:
     ).fetchall()
     files: list[Path] = []
     for o in orphans:
+        conn.execute("DELETE FROM listening WHERE media_id=?", (o["id"],))
         conn.execute("DELETE FROM media WHERE id=?", (o["id"],))
         if o["storage_path"]:
             still_used = conn.execute("SELECT 1 FROM media WHERE storage_path=? LIMIT 1",

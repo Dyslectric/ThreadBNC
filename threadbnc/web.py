@@ -311,6 +311,18 @@ def word_diff(old: str | None, new: str | None) -> Markup:
     return Markup(" ".join(out))
 
 
+# The speeds the speed button goes through, in order (app.js has the same list).
+AUDIO_RATES = ("1", "1.25", "1.5", "1.75", "2", "0.75")
+
+
+def running_time(seconds: float | None) -> str:
+    """How long a podcast episode runs, or has left: "1 h 02 min", "25 min", "40 s"."""
+    s = int(seconds or 0)
+    if s >= 3600:
+        return f"{s // 3600} h {s % 3600 // 60:02d} min"
+    return f"{max(1, round(s / 60))} min" if s >= 60 else f"{s} s"
+
+
 def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None) -> FastAPI:
     settings = settings or load_settings()
     if settings.proxy_auth_header and len(settings.proxy_secret or "") < 16:
@@ -349,7 +361,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     templates = Jinja2Templates(directory=str(HERE / "templates"))
     templates.env.filters.update(ago=ago, absolute=absolute, clock=clock,safe_url=safe_url, host=host_of,
-                                 looks_like_media=looks_like_media, size=human_size, youtube_video=youtube.video_id)
+                                 looks_like_media=looks_like_media, size=human_size, youtube_video=youtube.video_id,
+                                 running_time=running_time)
     # A Lemmy or PieFed community (not a subreddit or a feed): one that can be pushed.
     templates.env.tests["is_federated"] = lambda ap_id: (not is_rss(ap_id) and not is_tag(ap_id)
                                                          and not is_reddit_host(host_of(ap_id)))
@@ -360,6 +373,11 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     def trash_count() -> int:
         with db.connect() as conn:
             return conn.execute("SELECT COUNT(*) FROM archived_threads WHERE trashed_at IS NOT NULL").fetchone()[0]
+
+    def audio_rate() -> float:
+        """How fast audio plays (the speed button in players), the same on every device."""
+        value = db.get_setting("audio_rate")
+        return float(value) if value in AUDIO_RATES else 1.0
 
     def mark_on_scroll() -> bool:
         return db.get_setting("mark_read_on_scroll") == "1"
@@ -389,7 +407,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     templates.env.globals.update(event_label=event_label, tone=lambda e: TONE.get(e["event_type"], ""),
                                  thumb=thumb,
                                  static_url=static_url, trash_count=trash_count, inbox_count=inbox.unread_count,
-                                 mark_on_scroll=mark_on_scroll, themes=THEMES, custom_feeds=custom_feeds,
+                                 mark_on_scroll=mark_on_scroll, audio_rate=audio_rate, themes=THEMES, custom_feeds=custom_feeds,
                                  following_collapsed=following_collapsed, feed_sorts=FEED_SORTS,
                                  feed_windows=FEED_WINDOWS, feed_shows=FEED_SHOWS,
                                  password_login=bool(settings.password),
@@ -832,6 +850,16 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                 "pics": {r["id"]: len(thumbs[r["oid"]]["pics"]) if r["oid"] in thumbs else 0 for r in rows},
                 "audio": {r["id"]: sounds[r["oid"]]["status"] for r in rows if r["oid"] in sounds},
                 "previewed": previewed}
+
+    @app.post("/audio/rate")
+    def set_audio_rate(rate: str = Form("1")):
+        """The speed button in a player (app.js): every player plays at it from now on."""
+        if rate not in AUDIO_RATES:
+            raise HTTPException(400)
+        with db.transaction() as conn:
+            conn.execute("INSERT INTO app_settings(key, value) VALUES ('audio_rate', ?) "
+                         "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (rate,))
+        return {"ok": True}
 
     @app.post("/feed/settings")
     def feed_settings(request: Request, mark_read_on_scroll: str = Form("")):
@@ -1565,6 +1593,34 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         with db.transaction() as conn:
             feed_mod.set_read(conn, utcnow(), group_of(tid, group), read == "1")
         return RedirectResponse(back(request, f"/t/{tid}", safe_anchor(anchor)), status_code=303)
+
+    @app.post("/t/{tid}/play")
+    def play_episode(request: Request, tid: int, anchor: str = Form("")):
+        """Play pressed on a podcast episode that isn't saved yet: download it now
+        (Bouncer.fetch_audio). Its player bar shows it's on its way, and then plays it."""
+        with db.transaction() as conn:
+            rows = feed_roots(conn, [tid])
+            sound = feed_mod.audio(conn, [(rows[0]["oid"], rows[0]["url"])]).get(rows[0]["oid"]) if rows else None
+            if sound and sound["status"] == "play":
+                conn.execute("UPDATE media SET wanted_at=?, next_attempt_at=NULL WHERE id=?",
+                             (utcnow(), sound["id"]))
+        if sound and sound["status"] in ("play", "pending"):
+            bouncer.enqueue("audio", {"thread_ids": [tid]})
+        return RedirectResponse(back(request, f"/t/{tid}", safe_anchor(anchor)), status_code=303)
+
+    @app.post("/media/{mid}/position")
+    def listening_position(mid: int, position: float = Form(0), duration: float | None = Form(None),
+                           finished: str = Form("")):
+        """Where the player is in an audio file (app.js sends it as you listen,
+        and when you leave the page), to carry on from there."""
+        whole = duration if duration is not None and math.isfinite(duration) and duration > 0 else None
+        at = position if math.isfinite(position) else 0
+        with db.transaction() as conn:
+            if not conn.execute("SELECT 1 FROM media WHERE id=? AND content_type LIKE 'audio/%'",
+                                (mid,)).fetchone():
+                raise HTTPException(404)
+            feed_mod.listened(conn, mid, int(at), int(whole) if whole else None, finished == "1", utcnow())
+        return {"ok": True}
 
     @app.post("/t/{tid}/trash")
     def trash_thread(request: Request, tid: int, group: str | None = Form(None), anchor: str = Form("")):
@@ -2450,6 +2506,10 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             instance = conn.execute("SELECT * FROM instances WHERE domain=?", (t["source_domain"],)).fetchone()
             post = next((o for o in objs if o["thread_id"] == tid and o["object_type"] == "post"), None)
             article = articles.for_object(conn, post["id"], post["url"]) if post else None
+            # Its audio file, for the same player bar as in the feed.
+            sound = feed_mod.audio(conn, [(post["id"], post["url"])]).get(post["id"]) if post else None
+            post_audio = {"id": tid, "audio": sound,
+                          "episode": json.loads(post["rmeta"] or "{}").get("episode")} if post else None
             seen_key = "prev_viewed_at" if refreshed else "last_viewed_at"  # this visit already moved it along
             seen_at = {i: th[seen_key] for i, th in threads.items()}
             if not refreshed:
@@ -2526,7 +2586,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                       me=me, powers_by_community=powers, new_count=new_count, changed_count=changed_count,
                       comment_sort=sort, comment_sorts=COMMENT_SORTS, instance=instance, since=since,
                       grouped=len(tids) > 1, post_copies=post_copies, merge=merge, article=article,
-                      n_copies=max(len(copies), 1), refresh_job=refresh_job,
+                      n_copies=max(len(copies), 1), refresh_job=refresh_job, post_audio=post_audio,
                       all_kept=all(th["retention"] == "manual" for th in threads.values()))
 
     def read_href(url: str) -> str:

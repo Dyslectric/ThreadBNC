@@ -117,7 +117,7 @@ def test_mp4_container_named_as_audio_is_audio(server, aubouncer):
     with aubouncer.db.connect() as conn:
         [item] = feed.load_feed(conn, community_id=community_of(aubouncer, tid)).items
     assert item["thumb"] is None  # a player, not a picture
-    assert item["audio"] == {"id": row["id"], "status": "ok", "error": None}
+    assert {k: item["audio"][k] for k in ("id", "status", "error")} == {"id": row["id"], "status": "ok", "error": None}
 
 
 def test_pictures_only_communities_leave_audio_out(settings, server, aubouncer):

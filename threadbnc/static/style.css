@@ -384,6 +384,15 @@ button.danger:hover { background: color-mix(in srgb, var(--bad) 85%, var(--text)
 .audio-note { display: flex; align-items: center; gap: 6px; height: 40px; padding: 0 14px; box-sizing: border-box;
   border: 1px dashed var(--line); border-radius: 999px; }
 .tile .audio-bar { margin: 2px 0; }
+.audio-bar form { margin: 0; }
+.audio-play { width: 100%; font: inherit; color: var(--text); background: none; cursor: pointer; text-align: left; }
+.audio-play:hover, .audio-play:focus-visible { border-style: solid; border-color: var(--accent); }
+.audio-row { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 12px; margin: 2px 0 0 6px; }
+.audio-controls { display: inline-flex; align-items: center; gap: 2px; }
+.audio-controls .act { font-variant-numeric: tabular-nums; }
+.audio-rate { min-width: 3.6em; justify-content: center; }
+.i.flip { transform: scaleX(-1); }
+.audio-where { display: flex; align-items: center; gap: 4px; }
 .pager { display: flex; flex-direction: column; align-items: center; gap: 6px; margin: 16px 0; }
 .load-more { min-width: 12em; }
 .load-more[aria-busy=true] { opacity: .7; pointer-events: none; }

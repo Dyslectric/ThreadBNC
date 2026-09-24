@@ -138,7 +138,8 @@ class Bouncer:
                                         timeout=max(settings.http_timeout, 30.0), throttle=self.http.throttle,
                                         transcode_default=settings.media_transcode,
                                         transcode_source_max_bytes=settings.media_transcode_source_max_bytes,
-                                        youtube_session=self.youtube)
+                                        youtube_session=self.youtube,
+                                        episode_max_bytes=settings.podcast_max_bytes)
         self.articles = articles.ArticleFetcher(db, settings.user_agent, enabled=settings.archive_articles,
                                                 timeout=max(settings.http_timeout, 30.0), throttle=self.http.throttle)
         self._media_backfilled = False
@@ -630,7 +631,8 @@ class Bouncer:
     def fetch_audio(self, thread_ids: list[int]) -> None:
         """Posts scrolled into view in a feed that link to an audio file: download
         it, so it's there to play in the post's player bar. Only the posts the
-        reader looked at, as a browser showing a player would."""
+        reader looked at, as a browser showing a player would. A podcast
+        episode only once play is pressed on it (web.py sets media.wanted_at)."""
         for tid in thread_ids:
             if self._stop.is_set():
                 return
@@ -1034,6 +1036,7 @@ class Bouncer:
         with self.db.transaction() as conn:  # the listing's votes for posts already stored, free
             for post in posts:
                 store.update_counts(conn, post, now)
+                store.upgrade_episode(conn, post, now)  # a podcast's, stored before episodes were read
         captured = 0
         for post in reversed(posts):  # oldest first, so feed order matches capture order
             created = parse_ts(post.created_at)

@@ -211,10 +211,21 @@ CREATE TABLE IF NOT EXISTS media (
     transcoded_at TEXT,       -- when it was transcoded (downloaded, or converted after settings changed)
     transcode_error TEXT,     -- why converting it after settings changed failed (it stays as it was)
     held INTEGER NOT NULL DEFAULT 0,  -- 1 = a video, waiting until a post showing it is opened or kept
-    kept_only INTEGER NOT NULL DEFAULT 0  -- 1 = a YouTube video (see youtube.py): saved only for kept posts
+    kept_only INTEGER NOT NULL DEFAULT 0,  -- 1 = a YouTube video (see youtube.py): saved only for kept posts
+    episode INTEGER NOT NULL DEFAULT 0,  -- 1 = a podcast episode: saved when played or kept, never on sight
+    wanted_at TEXT            -- when play was pressed on it (an episode): download it now
 );
 CREATE INDEX IF NOT EXISTS media_pending ON media(status, next_attempt_at);
 CREATE INDEX IF NOT EXISTS media_sha ON media(sha256);
+
+-- How far into an audio file you've listened, to carry on from there.
+CREATE TABLE IF NOT EXISTS listening (
+    media_id INTEGER PRIMARY KEY,
+    position INTEGER NOT NULL DEFAULT 0,  -- seconds
+    duration INTEGER,                     -- seconds, as the player found it
+    finished INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
 
 -- Which objects (in any revision) referenced which media.
 CREATE TABLE IF NOT EXISTS media_refs (
@@ -527,6 +538,8 @@ COLUMN_MIGRATIONS = [
     ("media", "kept_only", "INTEGER NOT NULL DEFAULT 0"),
     ("media", "transcoded_at", "TEXT"),
     ("media", "transcode_error", "TEXT"),
+    ("media", "episode", "INTEGER NOT NULL DEFAULT 0"),
+    ("media", "wanted_at", "TEXT"),
     # Follows from before polling was opt-in keep being checked, so upgrading doesn't empty anyone's feed.
     ("community_follows", "polling", "INTEGER NOT NULL DEFAULT 1"),
     ("community_follows", "push_actor", "TEXT"),

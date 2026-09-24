@@ -50,7 +50,7 @@ MEDIA_KINDS = {
     "video": (_HAS_MEDIA + ("mr.from_article=0 AND (mm.content_type LIKE 'video/%' OR mm.kept_only=1 OR "
                             f"(mm.content_type IS NULL AND {_VIDEO_EXT[0]})))"), _VIDEO_EXT[1]),
     "audio": (_HAS_MEDIA + ("mm.url=r.url AND mm.status != 'skipped' AND (mm.content_type LIKE 'audio/%' OR "
-                            f"(mm.status != 'ok' AND {_AUDIO_EXT[0]})))"), _AUDIO_EXT[1]),
+                            f"(mm.status != 'ok' AND (mm.episode=1 OR {_AUDIO_EXT[0]}))))"), _AUDIO_EXT[1]),
 }
 
 _IMG = re.compile(r"!\[[^\]]*\]\([^)]*\)")
@@ -284,6 +284,7 @@ def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: lis
         i["audio"] = sounds.get(i["oid"])
         meta = json.loads(i.pop("rmeta") or "{}")
         i["nsfw"], i["spoiler"] = bool(meta.get("nsfw")), bool(meta.get("spoiler"))
+        i["episode"] = meta.get("episode")  # a podcast episode: its page and running time
         if meta.get("untitled") and i["excerpt"]:  # a fediverse post has text, not a title: show the text once
             i["title"], i["excerpt"] = i["excerpt"], ""
         attach_group(i, copies.get(i["dupe_key"]) or [])
@@ -352,23 +353,48 @@ def thumbnails(conn: Conn,
     return out
 
 
+# A podcast episode's post is kept, so its audio is being saved without play being pressed.
+_EPISODE_KEPT = ("EXISTS (SELECT 1 FROM media_refs kr JOIN objects ko ON ko.id=kr.object_id "
+                 "JOIN archived_threads kt ON kt.id=ko.thread_id WHERE kr.media_id=m.id "
+                 "AND kt.retention='manual' AND kt.trashed_at IS NULL)")
+
+
 def audio(conn: Conn, links: list[tuple[int, str | None]]) -> dict[int, dict[str, Any]]:
     """The audio file each of these (object id, current link) posts links to,
     for the player bar in its feed entry: its media row's id, status
     (pending until it's downloaded, which happens once the post is scrolled
-    to: Bouncer.fetch_audio) and error. Links that turned out not to be audio,
-    or that settings leave out, have none."""
+    to: Bouncer.fetch_audio; "play" for a podcast episode nobody has pressed
+    play on or kept yet) and error, and how far into it you've listened
+    (position and duration in seconds, finished). Links that turned out not to
+    be audio, or that settings leave out, have none."""
     links = [(oid, url) for oid, url in links if url]
     if not links:
         return {}
     pairs = " OR ".join("(r.object_id=? AND m.url=?)" for _ in links)
     rows = conn.execute(
-        f"SELECT r.object_id, m.id, m.url, m.status, m.content_type, m.error FROM media_refs r "
-        f"JOIN media m ON m.id=r.media_id WHERE ({pairs}) AND m.status != 'skipped'",
+        f"SELECT r.object_id, m.id, m.url, m.status, m.content_type, m.error, m.episode, "
+        f"m.wanted_at IS NULL AND NOT {_EPISODE_KEPT} AS unasked, "
+        f"l.position, l.duration, l.finished FROM media_refs r "
+        f"JOIN media m ON m.id=r.media_id LEFT JOIN listening l ON l.media_id=m.id "
+        f"WHERE ({pairs}) AND m.status != 'skipped'",
         [v for pair in links for v in pair]).fetchall()
-    return {r["object_id"]: {"id": r["id"], "status": r["status"], "error": r["error"]} for r in rows
+    return {r["object_id"]: {"id": r["id"], "error": r["error"], "episode": bool(r["episode"]),
+                             "status": "play" if r["episode"] and r["status"] == "pending" and r["unasked"]
+                             else r["status"],
+                             "position": r["position"] or 0, "duration": r["duration"],
+                             "finished": bool(r["finished"])}
+            for r in rows
             if (r["content_type"] or "").startswith("audio/")
-            or (r["status"] != "ok" and looks_like_audio(r["url"]))}
+            or (r["status"] != "ok" and (r["episode"] or looks_like_audio(r["url"])))}
+
+
+def listened(conn: Conn, media_id: int, position: int, duration: int | None, finished: bool, now: str) -> None:
+    """Where you are in an audio file: carried on from there next time it's
+    played, and shown in its player bar ("12 min left", "Played")."""
+    conn.execute("INSERT INTO listening(media_id, position, duration, finished, updated_at) VALUES (?,?,?,?,?) "
+                 "ON CONFLICT(media_id) DO UPDATE SET position=excluded.position, "
+                 "duration=COALESCE(excluded.duration, listening.duration), finished=excluded.finished, "
+                 "updated_at=excluded.updated_at", (media_id, max(0, position), duration, int(finished), now))
 
 
 # Posts whose text, pictures and votes are read when they're scrolled into view

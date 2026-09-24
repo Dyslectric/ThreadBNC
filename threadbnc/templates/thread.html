@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "_macros.html" import when, state_badges, votes, copy_where, icon, keep_button, trash_button %}
+{% from "_feed.html" import audio_bar with context %}
 {% block title %}{{ root.o.title if root else 'Thread' }}{% endblock %}
 
 {% macro event_list(events, show_source=False) -%}
@@ -205,7 +206,9 @@
   {% elif n_copies > 1 %}
   <p class="small copies-note"><span class="pill new">×{{ n_copies }}</span> The same {{ 'link' if o.url else 'text' }} was posted {{ n_copies - 1 }} other time{{ 's' if n_copies > 2 }}. <a href="/t/{{ t.id }}">Show them together</a></p>
   {% endif %}
-  {% if o.url | safe_url %}<p class="post-link"><a href="{{ o.url | safe_url }}" rel="noreferrer noopener nofollow" target="_blank">{{ o.url }}</a></p>
+  {% if o.url | safe_url %}{% set episode = post_audio.episode if post_audio else none %}
+    {% set page = (episode.page if episode and episode.page else o.url) | safe_url %}
+    {% if page %}<p class="post-link"><a href="{{ page }}" rel="noreferrer noopener nofollow" target="_blank">{{ page }}</a></p>{% endif %}
     {% if article and article.status == 'ok' %}
       <p class="article-cta"><a class="button read-article" href="/t/{{ t.id }}/article" aria-expanded="false">{{ icon('article') }}Read article</a>
         <span class="small muted">{{ article.word_count }} words · saved {{ when(article.fetched_at) }}</span></p>
@@ -213,7 +216,9 @@
     {% elif article and article.status == 'failed' %}<form method="post" action="/t/{{ t.id }}/article/retry" class="small muted article-cta">Couldn't save the linked article: {{ article.error }}. <button class="link">Try again</button></form>
     {% endif %}
     {% set m = media_for(o.url) %}
-    {% if m and m.status == 'ok' and m.content_type != 'image/svg+xml' %}
+    {% if post_audio and post_audio.audio %}
+      <div class="post-media" id="p{{ t.id }}"{% if post_audio.audio.status == 'pending' %} data-audio="pending"{% endif %}>{{ audio_bar(post_audio) }}</div>
+    {% elif m and m.status == 'ok' and m.content_type != 'image/svg+xml' %}
       <div class="post-media">
       {% if m.content_type.startswith('video/') and o.url | youtube_video %}{% set pm = preview(o) %}<video class="media" src="/media/{{ m.id }}"{% if pm %} poster="/media/{{ pm.id }}"{% endif %} controls playsinline preload="metadata"></video>
       {% elif m.content_type.startswith('video/') %}<video class="media" src="/media/{{ m.id }}" controls loop muted playsinline preload="metadata"></video>
