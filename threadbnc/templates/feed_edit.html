@@ -1,21 +1,28 @@
 {% extends "base.html" %}
 {% from "_macros.html" import icon %}
-{% block title %}{{ 'Edit ' ~ custom.name if custom else 'New feed' }}{% endblock %}
+{% block title %}{{ 'Edit your feed' if home else 'Edit ' ~ custom.name if custom else 'New feed' }}{% endblock %}
 {% block content %}
 <p class="small"><a href="{{ '/f/' ~ custom.id if custom else '/' }}">← {{ custom.name if custom else 'Your feed' }}</a></p>
-<h1>{{ 'Edit “' ~ custom.name ~ '”' if custom else 'New feed' }}</h1>
-<p class="muted">A feed of your own: the communities you pick, shown the way you choose. The communities stay in your main feed too.</p>
+<h1>{{ 'Edit your feed' if home else 'Edit “' ~ custom.name ~ '”' if custom else 'New feed' }}</h1>
+{% if home %}
+<p class="muted">Your main feed: the communities you follow, shown the way you choose. One you leave out is still followed and saved, on its own page and in any feed of your own that has it.</p>
+{% else %}
+<p class="muted">A feed of your own: the communities you pick, shown the way you choose. They stay in your main feed unless you <a href="/feed/edit">leave them out of it</a>.</p>
+{% endif %}
 {% if error %}<div class="flash error" role="alert">{{ icon('alert') }} <span>{{ error }}</span></div>{% endif %}
 
-<form method="post" action="{{ '/f/' ~ custom.id ~ '/edit' if custom else '/feeds' }}" class="stack">
+<form method="post" action="{{ '/feed/edit' if home else '/f/' ~ custom.id ~ '/edit' if custom else '/feeds' }}" class="stack">
+  {% if not home %}
   <section class="card">
     <label>Name <input name="name" value="{{ custom.name if custom else '' }}" maxlength="80" required
                        placeholder="News, Photos, Linux…" autofocus></label>
   </section>
+  {% endif %}
 
   <section class="card">
     <h2>Communities</h2>
-    {% if not communities %}<p class="muted">You don't follow any communities yet. <a href="/communities#follow">Follow some</a> first.</p>{% endif %}
+    {% if not communities %}<p class="muted">You don't follow any communities yet. <a href="/communities#follow">Follow some</a> first.</p>
+    {% elif home %}<p class="small muted">Newly followed communities are shown until you leave them out here.</p>{% endif %}
     {% set g = namespace(fedi=[], reddit=[], youtube=[], bluesky=[], feeds=[]) %}
     {% for c in communities %}
       {% if is_reddit(c.canonical_ap_id) %}{% set g.reddit = g.reddit + [c] %}
@@ -37,19 +44,20 @@
 
   <section class="card">
     <h2>Shown by default</h2>
+    {% set view_mode = view_chosen if home else custom.view_mode if custom else none %}
     <div class="row">
       <label>Sort <select name="sort">{% for k, v in sorts.items() %}<option value="{{ k }}" {{ 'selected' if settings.sort == k }}>{{ v }}</option>{% endfor %}</select></label>
       <label>From <select name="t">{% for k, v in windows.items() %}<option value="{{ k }}" {{ 'selected' if settings.window == k }}>{{ v }}</option>{% endfor %}</select></label>
       <label>Show <select name="unread">{% for k, v in shows.items() %}<option value="{{ k }}" {{ 'selected' if settings.unread == k }}>{{ v }}</option>{% endfor %}</select></label>
       <label>As <select name="view">
         {% for k, v in [('auto', 'Pick by how many have images'), ('list', 'Posts'), ('pictures', 'Pictures'), ('tiles', 'Grid')] %}
-        <option value="{{ k }}" {{ 'selected' if (custom and custom.view_mode == k) or (k == 'auto' and not (custom and custom.view_mode)) }}>{{ v }}</option>{% endfor %}
+        <option value="{{ k }}" {{ 'selected' if view_mode == k or (k == 'auto' and not view_mode) }}>{{ v }}</option>{% endfor %}
       </select></label>
     </div>
-    <p class="small muted">You can still change these on the feed; its ⚙ menu can make what you're looking at the new default.</p>
+    <p class="small muted">You can still change these on the feed; its ⚙ menu can make what you're looking at the new default.{% if home %} Community pages use the sort, time range and filter here too.{% endif %}</p>
   </section>
 
-  <div class="row"><button>{{ 'Save' if custom else 'Create feed' }}</button></div>
+  <div class="row"><button>{{ 'Save' if custom or home else 'Create feed' }}</button></div>
 </form>
 
 {% if custom %}

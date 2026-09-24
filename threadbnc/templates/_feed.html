@@ -391,7 +391,7 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
   <section class="card fl-feeds">
     <h2>Feeds</h2>
     <ul class="follow-list">
-      <li><a href="/" class="{{ 'on' if home }}"{% if home %} aria-current="page"{% endif %}><span class="fl-name">All communities</span></a></li>
+      <li><a href="/" class="{{ 'on' if home }}"{% if home %} aria-current="page"{% endif %}><span class="fl-name">{{ 'All communities' if follows | rejectattr('in_home') | list | length == 0 else 'Your feed' }}</span></a></li>
       {% for f in custom_feeds() %}
       <li><a href="/f/{{ f.id }}" class="{{ 'on' if feed_id == f.id }}"{% if feed_id == f.id %} aria-current="page"{% endif %}
              title="{{ f.community_ids | length }} communit{{ 'y' if f.community_ids | length == 1 else 'ies' }}">

@@ -87,7 +87,10 @@ CREATE TABLE IF NOT EXISTS community_follows (
     -- 1 = check the community on its server every poll_interval_minutes. Off by
     -- default for Lemmy and PieFed, whose posts arrive by push (federation.py);
     -- always on for feeds and subreddits, which can't push.
-    polling INTEGER NOT NULL DEFAULT 1
+    polling INTEGER NOT NULL DEFAULT 1,
+    -- 1 = its posts are in the main feed; 0 = left out of it (still in its own
+    -- page and any of your feeds that has it).
+    in_home INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS archived_threads (
@@ -626,6 +629,7 @@ COLUMN_MIGRATIONS = [
     ("articles", "title_key", "TEXT"),
     ("article_links", "link_key", "TEXT"),
     ("discussions", "content", "TEXT"),
+    ("community_follows", "in_home", "INTEGER NOT NULL DEFAULT 1"),
 ]
 
 # Tables with an integer `id` key: inserts into these get `RETURNING id` on

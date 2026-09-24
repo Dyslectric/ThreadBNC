@@ -972,7 +972,9 @@ class Bouncer:
                 "poll_interval_minutes=excluded.poll_interval_minutes, "
                 "retention_days=excluded.retention_days, source_domain=excluded.source_domain, "
                 "source_ref=excluded.source_ref, capture_since=excluded.capture_since, next_poll_at=?, "
-                "polling=excluded.polling",
+                "polling=excluded.polling, "
+                # Following again puts it back in the main feed; changing a follow leaves that be.
+                "in_home=CASE WHEN community_follows.active=1 THEN community_follows.in_home ELSE 1 END",
                 (cid, now, "1970-01-01T00:00:00.000000Z" if backfill else now, interval, days,
                  ref.domain, ref.qualified, now, int(polled), now),
             )

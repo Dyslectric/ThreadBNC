@@ -126,3 +126,37 @@ def test_following_panel_collapses_and_stays_collapsed(client):
     assert 'data-remember="/feed/sidebar">' in page and 'data-remember="/feed/sidebar" open' not in page
     client.post("/feed/sidebar", data={"collapsed": "0"})
     assert 'data-remember="/feed/sidebar" open' in client.get("/").text
+
+
+def test_communities_can_be_left_out_of_the_main_feed(client, bouncer):
+    math, physics = community_id(bouncer, "math"), community_id(bouncer, "physics")
+    page = client.get("/feed/edit").text
+    assert f'name="community" value="{math}" checked' in page
+    r = client.post("/feed/edit", data={"community": [str(math)], "sort": "new", "t": "all", "unread": "",
+                                        "view": "auto"}, follow_redirects=False)
+    assert r.headers["location"] == "/"
+    page = client.get("/").text
+    assert titles(page) == ["post 2", "post 1"]
+    assert '<span class="fl-name">Your feed</span>' in page  # not "All communities" any more
+    # Still followed, on its own page and in a feed of your own.
+    assert "post 3" in client.get(f"/c/{physics}").text
+    fid = client.post("/feeds", data={"name": "Science", "community": [str(physics)]},
+                      follow_redirects=False).headers["location"]
+    assert titles(client.get(fid).text) == ["post 4", "post 3"]
+    # Mark all read on the main feed reaches only what it shows.
+    client.post("/feed/mark-read")
+    assert one(bouncer, "SELECT COUNT(*) FROM archived_threads WHERE last_viewed_at IS NULL")[0] == 2
+    # Following it again puts it back.
+    client.post("/feed/edit", data={"sort": "new", "t": "all", "unread": ""})
+    assert "every community out of your feed" in client.get("/").text
+    with bouncer.db.transaction() as conn:
+        conn.execute("UPDATE community_follows SET active=0 WHERE community_id=?", (math,))
+    bouncer.follow_community(f"!math@{DOMAIN}", 15, 30, False)
+    assert one(bouncer, "SELECT in_home FROM community_follows WHERE community_id=?", math)[0] == 1
+    assert one(bouncer, "SELECT in_home FROM community_follows WHERE community_id=?", physics)[0] == 0
+
+
+def test_editing_the_main_feed_saves_its_defaults(client):
+    client.post("/feed/edit", data={"community": [], "sort": "top", "t": "week", "unread": "posts", "view": "tiles"})
+    s = client.get("/feed/edit").text
+    assert '<option value="top" selected>' in s and '<option value="tiles" selected>' in s
