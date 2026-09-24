@@ -131,6 +131,11 @@ class FakeBluesky:
         def answer(status, data):
             return httpx.Response(status, json=data)
 
+        for key, value in (body or {}).items():  # as Bluesky's servers check a request's fields
+            if value is None:
+                return answer(400, {"error": "InvalidRequest",
+                                    "message": f"Expected string value type (got null) at $.{key}"})
+
         if str(u) == f"https://plc.directory/{DAVE}":
             return answer(200, {"id": DAVE, "service": [{"id": "#atproto_pds", "type": "AtprotoPersonalDataServer",
                                                            "serviceEndpoint": PDS}]})
