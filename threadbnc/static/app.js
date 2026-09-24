@@ -1028,7 +1028,8 @@ document.documentElement.classList.add("js");
   // inside it, under the paragraph with the link, on a narrow one. Opening one
   // from a column replaces the columns after it. Without this they're pages.
   // A YouTube link opens its video's box the same way, and anywhere else
-  // (a post, a comment) under the paragraph with the link.
+  // (a post, a comment) under the paragraph with the link; a livestream's
+  // link (Twitch, YouTube live, Owncast) its player.
   const WIDE = matchMedia("(min-width: 1100px)");
   const deckOf = (el) => el.closest("[data-deck]");
   const cols = (deck) => [...deck.children];
@@ -1120,7 +1121,7 @@ document.documentElement.classList.add("js");
       const r = await fetch(paneUrl(link.href), { credentials: "same-origin" });
       if (!r.ok || new URL(r.url).origin !== location.origin) throw new Error("HTTP " + r.status);
       const doc = new DOMParser().parseFromString(await r.text(), "text/html");
-      const article = $("article.reader, article.video-box", doc);
+      const article = $("article.reader, article.video-box, article.live-box", doc);
       if (!article) throw new Error("not an article");
       if (!box.isConnected) return; // closed while it was being read
       $(".dive-content", box).replaceChildren(document.adoptNode(article));
@@ -1148,8 +1149,8 @@ document.documentElement.classList.add("js");
       }
       return;
     }
-    const link = ev.target.closest("a.article-link, a[data-dive], a.video-link");
-    if (!link || !(deckOf(link) || link.matches(".video-link"))) return;
+    const link = ev.target.closest("a.article-link, a[data-dive], a.video-link, a.live-link");
+    if (!link || !(deckOf(link) || link.matches(".video-link, .live-link"))) return;
     if (ev.button !== 0 || ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.altKey) return;
     ev.preventDefault();
     if (link.classList.contains("dived")) {
@@ -1268,9 +1269,66 @@ document.documentElement.classList.add("js");
       });
   });
 
+  // ---- livestreams: their players, and which sites are Owncast servers ---------------
+  // A livestream's box gets its player once it's on the page (so closing the
+  // box stops it). Twitch's player wants the name this site is reached by.
+  // Links to sites' front pages might be Owncast servers: they're asked about
+  // once shown (the server remembers), and the ones that are open theirs too.
+  function startPlayers() {
+    for (const box of $$("article.live-box:not([data-started])")) {
+      box.dataset.started = "1";
+      const frame = document.createElement("iframe");
+      let src = box.dataset.embed;
+      if ("parent" in box.dataset) src += "&parent=" + encodeURIComponent(location.hostname);
+      frame.src = src;
+      frame.title = box.dataset.label || "Player";
+      frame.allow = "autoplay; fullscreen; picture-in-picture; encrypted-media";
+      frame.allowFullscreen = true;
+      frame.referrerPolicy = "strict-origin-when-cross-origin"; // YouTube's player won't play without it
+      $(".live-player", box).replaceChildren(frame);
+    }
+  }
+
+  const askedHosts = new Set();
+  let hostTimer = null;
+
+  function owncastHost(a) {
+    if (a.closest(".live-box") || !a.href) return null;
+    try {
+      const u = new URL(a.href);
+      if (u.protocol !== "https:" || u.pathname !== "/" || u.search || u.hash || u.username) return null;
+      if (u.origin === location.origin) return null;
+      return u.host;
+    } catch (e) { return null; }
+  }
+
+  function askOwncast() {
+    hostTimer = null;
+    const hosts = [...new Set($$("a[target=_blank]").map(owncastHost).filter((h) => h && !askedHosts.has(h)))];
+    if (!hosts.length) return;
+    hosts.forEach((h) => askedHosts.add(h));
+    fetch("/live/owncast?" + new URLSearchParams(hosts.slice(0, 50).map((h) => ["hosts", h])),
+      { credentials: "same-origin", headers: FETCH })
+      .then((r) => (r.ok ? r.json() : []))
+      .then((found) => {
+        const owncast = new Set(found);
+        for (const a of $$("a[target=_blank]")) {
+          const host = owncastHost(a);
+          if (!host || !owncast.has(host)) continue;
+          a.href = "/live/owncast/" + host;
+          a.removeAttribute("target");
+          a.classList.add("live-link");
+          a.title = "Owncast live stream: watch it here";
+        }
+      })
+      .catch(() => {});
+  }
+
   new MutationObserver(() => {
     if (!titleTimer) titleTimer = setTimeout(askTitles, 200);
+    if (!hostTimer) hostTimer = setTimeout(askOwncast, 200);
     watchSaving();
+    startPlayers();
   }).observe(document.documentElement, { childList: true, subtree: true });
 
   // Crossing between wide and narrow: columns and inline articles don't carry over, so close them.
@@ -1459,6 +1517,8 @@ document.documentElement.classList.add("js");
     watchArticles(document);
     askTitles();
     watchSaving();
+    askOwncast();
+    startPlayers();
     if (location.hash === "#follow") {
       const input = $("#follow input[name=community]");
       if (input) input.focus();

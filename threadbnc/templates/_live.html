@@ -1,0 +1,21 @@
+{# The box a livestream link opens (web.py live_box): the stream's own player, which app.js puts in
+   once it's shown (Twitch's needs this site's name), and a link to watch it on its site. `pane`: opened
+   under the link, or beside the article it's in (app.js), so it closes rather than going back. #}
+{% from "_macros.html" import icon %}
+<article class="live-box" id="live-{{ s.kind }}-{{ s.key }}" data-embed="{{ s.embed }}"{% if s.needs_parent %} data-parent{% endif %}
+  data-label="{{ s.site }} player">
+  <p class="small reader-nav">
+    {% if pane %}<button type="button" class="link" data-dive-close>{{ icon('x') }} Close</button>
+      · <a href="{{ s.href }}">Open on its own</a>
+    {% else %}<a href="/" data-back>← Back</a>{% endif %}
+  </p>
+  <header>
+    <div class="small muted">{{ s.site }} · {{ 'live stream' if s.is_channel else 'video' }}</div>
+    <h2>{{ title or s.key }}</h2>
+  </header>
+  <div class="live-player"><p class="small muted">The player needs JavaScript.</p></div>
+  <div class="row">
+    <a class="button secondary" href="{{ s.page }}" rel="noreferrer noopener nofollow" target="_blank">{{ icon('external') }} Watch on {{ s.site if s.kind != 'owncast' else s.key }}</a>
+    {% if s.kind == 'youtube' and not s.is_channel %}<a class="button secondary" href="/youtube/v/{{ s.key }}">{{ icon('arrow-down') }} Save it here</a>{% endif %}
+  </div>
+</article>

@@ -36,7 +36,7 @@ from urllib.parse import urlencode, urljoin, urlparse
 
 import httpx
 
-from .. import youtube
+from .. import livestream, youtube
 from ..db import fmt_ts, parse_ts
 from ..render import looks_like_audio
 from .base import (
@@ -543,6 +543,19 @@ class FeedFetcher:
             raise RemoteUnavailable(f"{url}: not JSON") from exc
         title = str(data.get("title") or "").strip()
         return (title, str(data.get("author_name") or "").strip() or None) if title else None
+
+    def is_owncast(self, host: str) -> bool:
+        """Whether the site at `host` is an Owncast server: its /api/status,
+        small JSON, says so. A site without one (a 404, a web page) isn't."""
+        status, _, body, _ = self._get(f"https://{host}/api/status", {"Accept": "application/json"})
+        if status != 200:
+            if status >= 500:
+                raise RemoteUnavailable(f"{host}: HTTP {status}")
+            return False
+        try:
+            return livestream.owncast_status_ok(json.loads(body))
+        except ValueError:
+            return False
 
     def _youtube_api(self, context: dict[str, Any], token: str) -> youtube.CommentPage:
         """One page from YouTube's comments API, asked as the video's page would."""

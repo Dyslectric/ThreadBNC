@@ -150,6 +150,7 @@ def _video_links(state: Any) -> None:
     rendering (sole_link and extract_media_urls see the links as written)."""
     if "titles" not in state.env:
         return
+    from .livestream import stream_of
     from .youtube import video_id  # youtube.py imports this module
 
     for block in state.tokens:
@@ -157,6 +158,12 @@ def _video_links(state: Any) -> None:
             continue
         kids = block.children
         for i, tok in enumerate(kids):
+            stream = stream_of(str(tok.attrGet("href") or "")) if tok.type == "link_open" else None
+            if stream:  # a livestream opens its player here instead (livestream.py)
+                tok.attrSet("href", stream.href)
+                tok.attrSet("class", "live-link")
+                tok.attrSet("title", stream.link_title)
+                continue
             vid = video_id(str(tok.attrGet("href") or "")) if tok.type == "link_open" else None
             if not vid:
                 continue
@@ -301,7 +308,7 @@ def _rule_image(self: Any, tokens: list[Token], idx: int, options: Any, env: dic
 def _rule_link_open(self: Any, tokens: list[Token], idx: int, options: Any, env: dict[str, Any]) -> str:
     tok = tokens[idx]
     env["link_stack"].append(str(tok.attrGet("href") or ""))
-    if not str(tok.attrGet("class") or "").startswith("video-link"):  # a video's box opens here
+    if not str(tok.attrGet("class") or "").startswith(("video-link", "live-link")):  # their boxes open here
         tok.attrSet("target", "_blank")
     return self.renderToken(tokens, idx, options, env)
 

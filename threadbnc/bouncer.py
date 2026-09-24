@@ -24,7 +24,7 @@ import traceback
 from datetime import timedelta
 from typing import Any, Callable
 
-from . import articles, media, store, thumbs, youtube
+from . import articles, livestream, media, store, thumbs, youtube
 from . import feed as feed_mod
 from .adapters import (
     BSKY_DOMAIN,
@@ -93,6 +93,8 @@ REDDIT_MIN_SPACING = 30.0  # seconds
 # Titles for YouTube links on a page asked of YouTube in one go (youtube_titles):
 # a second apart, so a page full of links doesn't hold the request for long.
 YOUTUBE_TITLES_AT_ONCE = 12
+# Sites asked whether they're Owncast servers in one go (owncast_hosts), likewise.
+OWNCAST_ASKED_AT_ONCE = 8
 
 
 def _plus(ts: str, **delta: float) -> str:
@@ -728,6 +730,30 @@ class Bouncer:
                     conn.execute("UPDATE objects SET score=?, upvotes=?, downvotes=NULL, last_seen_at=? WHERE id=?",
                                  (watch.likes, watch.likes, now, r["oid"]))
         return True
+
+    def owncast_hosts(self, hosts: list[str]) -> list[str]:
+        """Of the sites whose front pages a page just shown links to (app.js
+        asks), the Owncast servers: as known, and the rest asked (once a
+        month), a few at a time."""
+        hosts = [h for h in dict.fromkeys(h.lower() for h in hosts) if livestream.is_host(h)]
+        now = utcnow()
+        with self.db.connect() as conn:
+            ask = livestream.owncast_to_ask(conn, hosts, now)
+        for host in ask[:OWNCAST_ASKED_AT_ONCE]:
+            if self._stop.is_set():
+                break
+            try:
+                found = self.rss_adapter.fetcher.is_owncast(host)
+            except RemotePaused:
+                continue
+            except RemoteError as exc:  # not answering, or not a public address: not one, for now
+                log.info("asking %s whether it's an Owncast server failed: %s", host, exc)
+                found = False
+            with self.db.transaction() as conn:
+                livestream.save_owncast(conn, host, found, now)
+        with self.db.connect() as conn:
+            known = livestream.owncast_known(conn, hosts)
+        return [h for h in hosts if known.get(h)]
 
     def youtube_titles(self, vids: list[str]) -> dict[str, str]:
         """Titles for YouTube links on a page just shown (app.js asks): the

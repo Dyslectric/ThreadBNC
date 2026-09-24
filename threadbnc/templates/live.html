@@ -1,0 +1,5 @@
+{% extends "base.html" %}
+{% block title %}{{ title or s.key }} · {{ s.site }}{% endblock %}
+{% block content %}
+<div class="video-page">{% include "_live.html" %}</div>
+{% endblock %}

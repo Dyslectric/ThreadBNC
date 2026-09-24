@@ -252,6 +252,14 @@ CREATE TABLE IF NOT EXISTS youtube_videos (
     probe_error TEXT
 );
 
+-- Sites whose front pages are linked, asked once a month whether they're an
+-- Owncast server (see livestream.py), so links to them open its player.
+CREATE TABLE IF NOT EXISTS owncast_hosts (
+    host TEXT PRIMARY KEY,    -- with :port, if the link had one
+    is_owncast INTEGER NOT NULL DEFAULT 0,
+    checked_at TEXT NOT NULL
+);
+
 -- Web pages posts link to, read by the bouncer (see articles.py). Keyed by the
 -- link as posted; content_html is the extracted article, already sanitised.
 CREATE TABLE IF NOT EXISTS articles (
