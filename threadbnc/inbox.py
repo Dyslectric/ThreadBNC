@@ -94,11 +94,15 @@ class Inbox:
             raise
         now = utcnow()
         with self.db.transaction() as conn:
-            known = {(r["kind"], r["remote_id"]) for r in conn.execute(
-                "SELECT kind, remote_id FROM inbox_items WHERE account_id=?", (account.id,))}
+            rows = conn.execute("SELECT kind, remote_id, unread FROM inbox_items WHERE account_id=?",
+                                (account.id,)).fetchall()
+            known = {(r["kind"], r["remote_id"]) for r in rows}
+            read_here = {(r["kind"], r["remote_id"]) for r in rows if not r["unread"]}
             new = 0
             for item in items:
                 new += (item.kind, item.remote_id) not in known
+                if account.is_bluesky and (item.kind, item.remote_id) in read_here:
+                    item.unread = False  # Bluesky can't mark one read, so what was read here stays read
                 self._store(conn, account, item, now)
             conn.execute("UPDATE accounts SET inbox_checked_at=?, inbox_error=NULL WHERE id=?", (now, account.id))
         return new
@@ -108,6 +112,8 @@ class Inbox:
         who = item.author.username
         if account.is_reddit:
             who = who if who.startswith("r/") else f"u/{who}"  # messages from a subreddit's moderators
+        elif account.is_bluesky:
+            who = f"@{who}"
         else:
             who = f"{who}@{item.author.domain}"
         conn.execute(

@@ -28,6 +28,30 @@ _URL_RE = re.compile(r"https?://[^\s<>()\[\]\"']+[^\s<>()\[\]\"'.,;:!?*_~]", re.
 _SPOILER_RE = re.compile(r"^:::\s*spoiler\s*(.*?)\n(.*?)\n:::[ \t]*$", re.MULTILINE | re.DOTALL)
 
 
+_ESCAPE = re.compile(r"([\\`*_\[\]<>])")
+_LINE_START = re.compile(r"^(\s*)([#>+-]|\d+[.)])(?=\s|$)")
+
+
+def escape_markdown(text: str) -> str:
+    """Plain text that Markdown shows as written, within a line."""
+    return _ESCAPE.sub(r"\\\1", text)
+
+
+def plain_lines(lines: list[str]) -> str | None:
+    """Lines of plain text (already escaped with escape_markdown, links made
+    links) as Markdown that keeps them: line breaks kept, blank lines as
+    paragraph breaks, and nothing at the start of one taken for a heading,
+    quote or list."""
+    lines = [_LINE_START.sub(lambda m: m.group(1) + m.group(2)[:-1] + "\\" + m.group(2)[-1], line.rstrip())
+             for line in lines]
+    out = ""
+    for i, line in enumerate(lines):
+        if i:  # a hard line break between lines of a paragraph; blank lines stay paragraph breaks
+            out += "\\\n" if line and lines[i - 1] else "\n"
+        out += line
+    return out or None
+
+
 def looks_like_media(url: str | None) -> bool:
     if not url:
         return False

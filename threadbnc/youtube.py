@@ -34,6 +34,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from .db import Database, utcnow
+from .render import escape_markdown, plain_lines
 from .vault import TokenVault, VaultError
 
 FEED = "https://www.youtube.com/feeds/videos.xml"
@@ -279,8 +280,6 @@ def parse_watch(html: str) -> Watch | None:
 
 
 _URL = re.compile(r"https?://[^\s<>\"]+[^\s<>\".,;:!?)\]'’]")
-_ESCAPE = re.compile(r"([\\`*_\[\]<>])")
-_LINE_START = re.compile(r"^(\s*)([#>+-]|\d+[.)])(?=\s|$)")
 
 
 def description_markdown(text: str | None) -> str | None:
@@ -290,17 +289,11 @@ def description_markdown(text: str | None) -> str | None:
     for line in (text or "").strip().splitlines():
         parts, at = [], 0
         for m in _URL.finditer(line):
-            parts += [_ESCAPE.sub(r"\\\1", line[at:m.start()]), f"<{m.group(0)}>"]
+            parts += [escape_markdown(line[at:m.start()]), f"<{m.group(0)}>"]
             at = m.end()
-        parts.append(_ESCAPE.sub(r"\\\1", line[at:]))
-        lines.append(_LINE_START.sub(lambda m: m.group(1) + m.group(2)[:-1] + "\\" + m.group(2)[-1],
-                                     "".join(parts).rstrip()))
-    out = ""
-    for i, line in enumerate(lines):
-        if i:  # a hard line break between lines of a paragraph; blank lines stay paragraph breaks
-            out += "\\\n" if line and lines[i - 1] else "\n"
-        out += line
-    return out or None
+        parts.append(escape_markdown(line[at:]))
+        lines.append("".join(parts))
+    return plain_lines(lines)
 
 
 # -- comments ---------------------------------------------------------------------

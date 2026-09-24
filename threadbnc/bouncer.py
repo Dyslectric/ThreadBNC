@@ -3,8 +3,8 @@ followed communities and appends what it sees to the archive.
 
 It asks other servers as little as a browser would. Lemmy and PieFed posts
 arrive by push (federation.py); a community is only checked on a schedule
-when you turn that on, feeds and subreddits always are, and subreddits only
-while you're using ThreadBNC. A post's comments, linked article and videos
+when you turn that on, feeds, subreddits and Bluesky accounts and feeds
+always are, and subreddits only while you're using ThreadBNC. A post's comments, linked article and videos
 are fetched when it's opened or kept (open_threads), its article and the
 audio file it links to when it's scrolled into view in a feed too
 (fetch_articles, fetch_audio), as are a subreddit post's text, pictures and
@@ -27,6 +27,7 @@ from typing import Any, Callable
 from . import articles, media, store, thumbs, youtube
 from . import feed as feed_mod
 from .adapters import (
+    BSKY_DOMAIN,
     CommentList,
     CommunityRef,
     HttpClient,
@@ -54,9 +55,10 @@ from .adapters import (
 )
 from .actor import Actor
 from .adapters.activitypub import ActivityPubAdapter
+from .adapters.bluesky import BlueskyAdapter
 from .adapters.reddit import RedditAdapter
 from .adapters.rss import FeedFetcher, RssAdapter
-from .config import REDDIT_MIN_POLL_MINUTES, RSS_MIN_POLL_MINUTES, Settings
+from .config import BLUESKY_MIN_POLL_MINUTES, REDDIT_MIN_POLL_MINUTES, RSS_MIN_POLL_MINUTES, Settings
 from .db import Database, fmt_ts, parse_ts, utcnow
 from .reddit import RedditConnection
 from .vault import TokenVault
@@ -121,6 +123,7 @@ class Bouncer:
         # ThreadBNC's own ActivityPub identity, and the posts hashtags bring (tags.py).
         self.actor = Actor(settings.actor_domain, db, vault, self.http) if settings.actor_domain else None
         self.tag_adapter = ActivityPubAdapter(self.actor)
+        self.bluesky_adapter = BlueskyAdapter(self.http)
         self._adapter_factory = adapter_factory
         self._adapters: dict[str, tuple[ThreadiverseAdapter, str]] = {}  # domain -> (adapter, chosen at)
         # Extra work for each pass that needs accounts (e.g. private community join requests).
@@ -158,6 +161,8 @@ class Bouncer:
             return self.rss_adapter
         if domain == TAG_DOMAIN:
             return self.tag_adapter
+        if domain == BSKY_DOMAIN:
+            return self.bluesky_adapter
         if self._adapter_factory:
             return self._adapter_factory(domain)
         now = utcnow()
@@ -425,10 +430,12 @@ class Bouncer:
     @staticmethod
     def _votes_elsewhere(conn: Any, community_id: int | None) -> bool:
         """Feed articles have no votes, a subreddit's come with its listing
-        while you're using ThreadBNC (poll_follow), and a hashtag's posts are
+        while you're using ThreadBNC (poll_follow), as a Bluesky account's or
+        feed's likes do with every check of it, and a hashtag's posts are
         from anywhere, so their votes are read only when opened: none gets vote checks."""
         row = conn.execute("SELECT canonical_ap_id FROM communities WHERE id=?", (community_id,)).fetchone()
         return bool(row) and (is_rss(row["canonical_ap_id"]) or is_tag(row["canonical_ap_id"])
+                              or host_of(row["canonical_ap_id"]) == BSKY_DOMAIN
                               or is_reddit_host(host_of(row["canonical_ap_id"])))
 
     def _next_vote_check(self, conn: Any, community_id: int | None, created_at: str | None,
@@ -847,6 +854,8 @@ class Bouncer:
         community = adapter.fetch_community(ref)
         if ref.domain == RSS_DOMAIN:  # the feed's own URL (a page may have led to it)
             return CommunityRef(RSS_DOMAIN, community.local_id or ref.name, RSS_DOMAIN), community
+        if ref.domain == BSKY_DOMAIN:  # by DID, which stays the same when a handle changes
+            return CommunityRef(BSKY_DOMAIN, community.local_id or ref.name, BSKY_DOMAIN), community
         home = community.domain
         if home and home != ref.domain:
             try:  # poll the community's home instance when it speaks a supported API
@@ -859,8 +868,8 @@ class Bouncer:
 
     @staticmethod
     def always_polled(domain: str) -> bool:
-        """Feeds and subreddits can't push, so following them means checking them."""
-        return domain == RSS_DOMAIN or is_reddit_host(domain)
+        """Feeds, subreddits and Bluesky can't push, so following them means checking them."""
+        return domain in (RSS_DOMAIN, BSKY_DOMAIN) or is_reddit_host(domain)
 
     def follow_community(self, text: str, poll_interval_minutes: int | None = None,
                          retention_days: int | None = -1, backfill: bool = False,
@@ -915,6 +924,8 @@ class Bouncer:
             return max(asked or self.settings.reddit_poll_minutes, REDDIT_MIN_POLL_MINUTES)
         if domain == RSS_DOMAIN:
             return max(asked or self.settings.rss_poll_minutes, RSS_MIN_POLL_MINUTES)
+        if domain == BSKY_DOMAIN:
+            return max(asked or self.settings.bluesky_poll_minutes, BLUESKY_MIN_POLL_MINUTES)
         return asked or self.settings.default_follow_poll_minutes
 
     def set_polling(self, community_id: int, on: bool) -> None:
@@ -1124,7 +1135,7 @@ class Bouncer:
         alone: list[int] = []
         nowhere: list[Any] = []
         for r in due:
-            if r["source_domain"] in (RSS_DOMAIN, TAG_DOMAIN) or is_reddit_host(r["source_domain"]):
+            if r["source_domain"] in (RSS_DOMAIN, TAG_DOMAIN, BSKY_DOMAIN) or is_reddit_host(r["source_domain"]):
                 nowhere.append(r)  # their votes come another way (_votes_elsewhere)
             elif r["followed"] is None:
                 alone.append(r["id"])

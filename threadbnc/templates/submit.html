@@ -1,18 +1,26 @@
 {% extends "base.html" %}
 {% block title %}New post{% endblock %}
 {% block content %}
-{% set who = reddit_me if is_reddit(c.canonical_ap_id) else acting %}
+{% set bsky = is_bluesky(c.canonical_ap_id) %}
+{% set who = reddit_me if is_reddit(c.canonical_ap_id) else bluesky_me if bsky else acting %}
 <p class="small"><a href="/c/{{ c.id }}">← {{ chandle(c.name, c.canonical_ap_id, True) }}</a></p>
 <h1>New post in {{ chandle(c.name, c.canonical_ap_id) }}</h1>
 <section class="card">
-  {% if not who %}<p class="bad-text">{% if is_reddit(c.canonical_ap_id) %}<a href="/reddit">Log in with Reddit</a>{% else %}<a href="/accounts">Add an account</a>{% endif %} first.</p>{% endif %}
+  {% if not who %}<p class="bad-text">{% if is_reddit(c.canonical_ap_id) %}<a href="/reddit">Log in with Reddit</a>{% elif bsky %}<a href="/accounts#bluesky">Log in to Bluesky</a>{% else %}<a href="/accounts">Add an account</a>{% endif %} first.</p>
+  {% elif bsky and c.canonical_ap_id != who.actor_ap_id %}<p class="bad-text">On Bluesky you can only post to your own account, {{ who.handle }}.</p>{% endif %}
   <form method="post" action="/c/{{ c.id }}/submit" class="stack">
+    {% if bsky %}
+    <label>Post <span class="muted small">(plain text, up to 300 characters; links, @mentions and #hashtags become links)</span>
+      <textarea name="title" rows="5" required maxlength="300"></textarea></label>
+    <label>Link card <span class="muted small">(optional)</span> <input type="url" name="url" placeholder="https://"></label>
+    {% else %}
     <label>Title <input name="title" required maxlength="200"></label>
     <label>Link <span class="muted small">(optional)</span> <input type="url" name="url" placeholder="https://"></label>
     <label>Text <span class="muted small">(optional, Markdown)</span> <textarea name="body" rows="10"></textarea></label>
+    {% endif %}
     <div class="row">
       <button {{ 'disabled' if not who }}>Post as {{ who.handle if who else '…' }}</button>
-      <span class="small muted">{% if who and not who.is_reddit %}Posted from {{ who.domain }}. {% endif %}It will be kept in the archive automatically.</span>
+      <span class="small muted">{% if who and not who.separate %}Posted from {{ who.domain }}. {% endif %}It will be kept in the archive automatically.</span>
     </div>
   </form>
 </section>

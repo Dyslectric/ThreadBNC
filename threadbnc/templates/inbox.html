@@ -75,7 +75,7 @@
       {% if i.kind == 'message' %}
         <span class="muted">sent you a message{% if i.subject %}: {{ i.subject }}{% endif %}</span>
       {% else %}
-        <span class="muted">{{ 'replied' if i.kind == 'reply' else 'mentioned you' }} on</span>
+        <span class="muted">{{ 'replied on' if i.kind == 'reply' else 'quoted your post in' if i.subject == 'Quoted your post' else 'mentioned you on' }}</span>
         {% if i.thread_id %}<a href="{{ open_url }}">{{ i.post_title or 'a post' }}</a>
         {% else %}<span>{{ i.post_title or 'a post' }}</span>{% endif %}
         {% if i.community_name %}<span class="muted">in {{ chandle(i.community_name, i.community_ap_id) }}</span>{% endif %}

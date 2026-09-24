@@ -10,10 +10,10 @@
 <section class="card" id="follow">
   <h2>Follow a community</h2>
   <form method="post" action="/follow" class="stack">
-    <input name="community" placeholder="!technology@lemmy.world  ·  https://lemmy.world/c/technology  ·  r/technology  ·  #hashtag  ·  youtube.com/@channel  ·  a feed or website URL" required>
+    <input name="community" placeholder="!technology@lemmy.world  ·  https://lemmy.world/c/technology  ·  r/technology  ·  #hashtag  ·  @someone.bsky.social  ·  youtube.com/@channel  ·  a feed or website URL" required>
     <div class="row">
       <label>Check every <input type="number" name="poll_interval_minutes" placeholder="{{ default_poll }}" min="1" class="num"
-        title="Blank: every {{ default_poll }} minutes, or {{ reddit_poll }} for a subreddit"> min</label>
+        title="Blank: every {{ default_poll }} minutes, {{ reddit_poll }} for a subreddit, or {{ bluesky_poll }} for Bluesky"> min</label>
       <label>Keep unkept posts for
         <select name="retention_days">
           {% for d in [7, 30, 90, 365] %}<option value="{{ d }}" {{ 'selected' if d == default_days }}>{{ d }} days</option>{% endfor %}
@@ -27,8 +27,11 @@
   </form>
   <p class="small muted">Lemmy and PieFed posts arrive through your own server as they're made{% if not push_handle %}, once
     it's set up (THREADBNC_RELAY_INBOXES); until then, only communities checked on a schedule bring posts{% endif %}.
-    Feeds, YouTube channels and subreddits are checked on a schedule.
-    Leave the interval blank for the default: {{ default_poll }} minutes, or {{ reddit_poll }} for subreddits.
+    Feeds, YouTube channels, subreddits and Bluesky are checked on a schedule.
+    Leave the interval blank for the default: {{ default_poll }} minutes, {{ reddit_poll }} for subreddits,
+    or {{ bluesky_poll }} for Bluesky.
+    For Bluesky, follow an account by its <code>@handle</code> or profile link, or a custom feed by its
+    <code>bsky.app/profile/…/feed/…</code> link. It's read without an account, so replies and likes can't be made from here.
     {% if not reddit %}To follow subreddits, <a href="/reddit">connect Reddit</a> first.{% else %}<a href="/reddit">Reddit settings</a>{% endif %}
     · <a href="/youtube">YouTube settings</a></p>
 </section>
@@ -36,7 +39,7 @@
 <section class="card" id="opml">
   <h2>Import or export feeds</h2>
   <p class="small muted">OPML carries RSS and Atom subscriptions between feed readers. Lemmy, PieFed, Reddit
-    and synthetic YouTube sources are not included because they are not portable feed URLs.</p>
+    Bluesky and synthetic YouTube sources are not included because they are not portable feed URLs.</p>
   <div class="row">
     <a class="button secondary small" href="/communities.opml">Export OPML</a>
     <form method="post" action="/communities/opml" enctype="multipart/form-data" class="row compact">

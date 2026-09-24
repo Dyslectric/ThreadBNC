@@ -1,9 +1,9 @@
 {% extends "base.html" %}
-{% from "_macros.html" import when %}
+{% from "_macros.html" import when, byname %}
 {% block title %}History{% endblock %}
 {% block content %}
 <p class="small"><a href="/t/{{ o.thread_id }}#o{{ o.id }}">← back to thread</a></p>
-<h1>History of {{ o.object_type }} by {{ o.username }}@{{ o.a_instance }}</h1>
+<h1>History of {{ o.object_type }} by {{ byname(o.username, o.a_instance) }}</h1>
 <p class="small muted"><code>{{ o.canonical_ap_id }}</code></p>
 
 <section class="card">

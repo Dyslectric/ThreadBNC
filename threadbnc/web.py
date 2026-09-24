@@ -36,7 +36,8 @@ from . import media as media_mod
 from . import storage as storage_mod
 from . import thumbs as thumbs_mod
 from .actor import ActorEndpoints
-from .adapters import RSS_PREFIX, RemoteError, host_of, is_reddit_host, is_rss, is_tag
+from .adapters import (BSKY_DOMAIN, RSS_PREFIX, CommunityRef, RemoteError, host_of, is_bluesky, is_reddit_host,
+                       is_rss, is_tag)
 from .adapters.base import RSS_DOMAIN, TAG_DOMAIN
 from .accounts import Account, AccountError, Poster
 from .bouncer import PUSHED_POLL_MINUTES, Bouncer
@@ -262,10 +263,16 @@ def is_reddit(ap_id: str | None) -> bool:
 
 def chandle(name: str, ap_id: str | None, plain: bool = False) -> Markup | str:
     """A community's handle: r/name for subreddits, the feed's title for feeds
-    (the channel's name for YouTube), #name for hashtags,
+    (the channel's name for YouTube), #name for hashtags, @handle for Bluesky
+    accounts and the feed's name for Bluesky feeds,
     !name@host otherwise (with the host dimmed unless `plain`)."""
     if is_reddit(ap_id):
         return f"r/{name}"
+    if is_bluesky(ap_id):
+        path = urlparse(ap_id or "").path
+        kind = "Bluesky feed" if "/feed/" in path else "Bluesky timeline" if path.endswith("/timeline") else "Bluesky"
+        name = name if "/feed/" in path or path.endswith("/timeline") else f"@{name}"
+        return f"{name} ({kind})" if plain else Markup('{}<span class="muted"> · {}</span>').format(name, kind)
     if is_tag(ap_id):
         return f"#{name}"
     if is_youtube_feed(ap_id):
@@ -363,8 +370,9 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     templates.env.filters.update(ago=ago, absolute=absolute, clock=clock,safe_url=safe_url, host=host_of,
                                  looks_like_media=looks_like_media, size=human_size, youtube_video=youtube.video_id,
                                  running_time=running_time)
-    # A Lemmy or PieFed community (not a subreddit or a feed): one that can be pushed.
+    # A Lemmy or PieFed community (not a subreddit, a feed or Bluesky): one that can be pushed.
     templates.env.tests["is_federated"] = lambda ap_id: (not is_rss(ap_id) and not is_tag(ap_id)
+                                                         and not is_bluesky(ap_id)
                                                          and not is_reddit_host(host_of(ap_id)))
     def static_url(name: str) -> str:
         # Cache-bust with the file's mtime so UI updates show up without a hard reload.
@@ -413,6 +421,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                                  password_login=bool(settings.password),
                                  proxy_login=bool(settings.proxy_auth_header), chandle=chandle,
                                  is_reddit=is_reddit, is_rss=is_rss, is_tag=is_tag, is_youtube=is_youtube_feed,
+                                 is_bluesky=is_bluesky,
                                  actor_handle=bouncer.actor.handle if bouncer.actor else None,
                                  reading_articles=bouncer.articles.enabled)
     app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
@@ -515,17 +524,18 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
 
     def acting(request: Request) -> Account | None:
         """The account forms act as: the one picked in the header, else the
-        default. Never the Reddit account: Poster.account_for switches to it by
-        itself for anything on Reddit."""
+        default. Never the Reddit or Bluesky account: Poster.account_for
+        switches to them by itself for anything there."""
         chosen = poster.get(request.session.get("acting_account"))
-        return chosen if chosen and not chosen.is_reddit else poster.default()
+        return chosen if chosen and not chosen.separate else poster.default()
 
     def render(request: Request, name: str, **ctx: Any) -> HTMLResponse:
         if request.session.get("auth"):
-            me, reddit_me = acting(request), poster.reddit_account()
+            me, reddit_me, bluesky_me = acting(request), poster.reddit_account(), poster.bluesky_account()
             ctx.setdefault("accounts", poster.list())
             ctx.setdefault("acting", me)
             ctx.setdefault("reddit_me", reddit_me)
+            ctx.setdefault("bluesky_me", bluesky_me)
             # Feed tiles use the same real vote controls as thread pages. Add
             # the viewer's current vote once for the whole page so rendering
             # the controls never turns into one database query per post.
@@ -533,7 +543,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             if isinstance(fp, feed_mod.FeedPage):
                 ap_ids = [c["canonical_ap_id"] for i in fp.items for c in i.get("copies", [])
                           if c.get("canonical_ap_id")]
-                mine = {**poster.my_votes(me, ap_ids), **poster.my_votes(reddit_me, ap_ids)}
+                mine = {**poster.my_votes(me, ap_ids), **poster.my_votes(reddit_me, ap_ids),
+                        **poster.my_votes(bluesky_me, ap_ids)}
                 for item in fp.items:
                     item["my_vote"] = next((mine.get(c.get("canonical_ap_id"), 0)
                                             for c in item.get("copies", [])
@@ -541,7 +552,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         return templates.TemplateResponse(request, name, ctx)
 
     def require_acting(request: Request) -> Account:
-        account = acting(request) or poster.reddit_account()
+        account = acting(request) or poster.reddit_account() or poster.bluesky_account()
         if account is None:
             raise AccountError("Add an account on the Accounts page first.")
         return account
@@ -1127,6 +1138,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                    GROUP BY c.id ORDER BY c.name""").fetchall()
         return render(request, "communities.html", follows=follows, others=others, push_handle=push_handle(),
                       default_poll=settings.default_follow_poll_minutes, reddit_poll=settings.reddit_poll_minutes,
+                      bluesky_poll=settings.bluesky_poll_minutes,
                       default_days=settings.default_follow_retention_days, reddit=bouncer.reddit.status())
 
     @app.get("/communities.opml")
@@ -1426,7 +1438,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                             "JOIN objects o ON o.id=t.root_object_id WHERE o.canonical_ap_id=?",
                             (p.ap_id,)).fetchone()
                         live.append({"post": p, "thread": th,
-                                     "retain_url": p.ap_id if is_reddit_host(ref.domain)
+                                     "retain_url": p.ap_id if is_reddit_host(ref.domain) or is_bluesky(p.ap_id)
                                      else f"https://{ref.domain}/post/{p.local_id}"})
             except RemoteError as exc:
                 live_error = str(exc)
@@ -1874,6 +1886,18 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                            "not your password.")
         return RedirectResponse("/accounts", status_code=303)
 
+    @app.post("/accounts/bluesky")
+    def add_bluesky_account(request: Request, identifier: str = Form(...), app_password: str = Form(...),
+                            code: str = Form("")):
+        try:
+            account = poster.add_bluesky(identifier, app_password, code)
+        except AccountError as exc:
+            flash(request, str(exc), "error")
+        else:
+            flash(request, f"Signed in to Bluesky as {account.handle}. Only an encrypted session is stored, "
+                           "not your app password.")
+        return RedirectResponse("/accounts#bluesky", status_code=303)
+
     @app.post("/accounts/{aid}/default")
     def default_account(request: Request, aid: int):
         poster.set_default(aid)
@@ -2084,7 +2108,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     @app.post("/accounts/act-as")
     def act_as(request: Request, account_id: int = Form(...)):
         chosen = poster.get(account_id)
-        if chosen and not chosen.is_reddit:
+        if chosen and not chosen.separate:
             request.session["acting_account"] = account_id
         return RedirectResponse(back(request, "/"), status_code=303)
 
@@ -2204,6 +2228,58 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                               "Restored on the server." if undo else
                               "Deleted on the server. The archive keeps what it saw.", anchor=f"o{oid}")
 
+    @app.post("/o/{oid}/bluesky-repost")
+    def bluesky_repost(request: Request, oid: int, on: str = Form("1")):
+        """Repost a Bluesky post or reply to your followers there, or undo it."""
+        def act(_account: Account) -> None:
+            poster.bluesky_repost(oid, on == "1")
+        return account_action(request, object_page(oid), act, "Reposted on Bluesky." if on == "1" else
+                              "Repost undone.", anchor=f"o{oid}")
+
+    @app.post("/o/{oid}/bluesky-quote")
+    def bluesky_quote(request: Request, oid: int, body: str = Form(...)):
+        """Post on your Bluesky account quoting a post or reply."""
+        def act(_account: Account) -> RedirectResponse:
+            return RedirectResponse(f"/t/{poster.bluesky_quote(oid, body)}", status_code=303)
+        return account_action(request, object_page(oid), act, "Posted your quote on Bluesky.")
+
+    @app.post("/bluesky/timeline")
+    def bluesky_timeline(request: Request):
+        """Follow your own Following timeline, like a feed."""
+        me = poster.bluesky_account()
+        if me is None:
+            flash(request, "Log in to Bluesky first.", "error")
+            return RedirectResponse("/accounts#bluesky", status_code=303)
+        try:
+            cid = bouncer.follow_community(me.actor_ap_id + "/timeline", backfill=True, keep_existing=True)
+        except RemoteError as exc:
+            flash(request, f"Couldn't follow your timeline: {exc}", "error")
+            return RedirectResponse("/accounts#bluesky", status_code=303)
+        return RedirectResponse(f"/c/{cid}", status_code=303)
+
+    @app.get("/bluesky/post")
+    def bluesky_post(request: Request):
+        """Write a post on your Bluesky account: its page's new-post form (it's
+        stored as a community, like any account you follow, without following it)."""
+        me = poster.bluesky_account()
+        if me is None:
+            flash(request, "Log in to Bluesky first.", "error")
+            return RedirectResponse("/accounts#bluesky", status_code=303)
+        with db.connect() as conn:
+            row = conn.execute("SELECT id FROM communities WHERE canonical_ap_id=?", (me.actor_ap_id,)).fetchone()
+        if row is None:
+            try:
+                community = bouncer.bluesky_adapter.fetch_community(
+                    CommunityRef(BSKY_DOMAIN, me.actor_ap_id.rsplit("/", 1)[-1], BSKY_DOMAIN))
+            except RemoteError as exc:
+                flash(request, f"Couldn't reach Bluesky: {exc}", "error")
+                return RedirectResponse("/accounts#bluesky", status_code=303)
+            with db.transaction() as conn:
+                cid = store.upsert_community(conn, community, utcnow())
+        else:
+            cid = row["id"]
+        return RedirectResponse(f"/c/{cid}/submit", status_code=303)
+
     @app.get("/c/{cid}/submit", response_class=HTMLResponse)
     def submit_form(request: Request, cid: int):
         with db.connect() as conn:
@@ -2233,7 +2309,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         out = []
         for r in rows:
             c = dict(r, host=host_of(r["canonical_ap_id"]), label=chandle(r["name"], r["canonical_ap_id"], True))
-            if is_rss(r["canonical_ap_id"]):
+            if is_rss(r["canonical_ap_id"]) or is_bluesky(r["canonical_ap_id"]):
                 continue
             if is_reddit(r["canonical_ap_id"]):
                 if not reddit_me or not c["followed"]:
@@ -2576,13 +2652,16 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         md, media_for, preview = md_for(list(nodes))
         me = acting(request)
         ap_ids = [o["canonical_ap_id"] for o in objs]
-        my_votes = {**poster.my_votes(me, ap_ids), **poster.my_votes(poster.reddit_account(), ap_ids)}
+        my_votes = {**poster.my_votes(me, ap_ids), **poster.my_votes(poster.reddit_account(), ap_ids),
+                    **poster.my_votes(poster.bluesky_account(), ap_ids)}
+        my_reposts = poster.my_reposts(poster.bluesky_account(), ap_ids)
         powers = {th["cid"]: mod.powers(me, th["cid"]) for th in threads.values()}
         counts = {c["id"]: c["n_comments"] for c in copies}
         post_copies = [{"t": threads[i], "o": roots[i]["o"], "n_comments": counts.get(i, raw_comments),
                         "reddit": is_reddit(roots[i]["o"]["canonical_ap_id"])} for i in tids if i in roots]
         return render(request, "thread.html", t=t, root=root, total_comments=len(displayed),
                       raw_comments=raw_comments, md=md, media_for=media_for, preview=preview, my_votes=my_votes,
+                      my_reposts=my_reposts,
                       me=me, powers_by_community=powers, new_count=new_count, changed_count=changed_count,
                       comment_sort=sort, comment_sorts=COMMENT_SORTS, instance=instance, since=since,
                       grouped=len(tids) > 1, post_copies=post_copies, merge=merge, article=article,

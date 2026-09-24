@@ -1,4 +1,4 @@
-{% from "_macros.html" import when, state_badges, votes, vote_breakdown, copy_where, icon, keep_button, read_button, trash_button %}
+{% from "_macros.html" import when, state_badges, votes, vote_breakdown, copy_where, byname, icon, keep_button, read_button, trash_button %}
 {% from "_macros.html" import pager as load_more %}
 
 {# base: URL prefix ending in "?" or "&" that keeps any fixed params (e.g. tab).
@@ -188,14 +188,17 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
 
 {# Compact, actionable vote controls for every view. Reddit exposes one score, so
    it sits between its arrow buttons; ActivityPub exposes both counts, which
-   live inside their respective buttons. Feeds can't be voted on: a YouTube
-   video's likes (read when it's scrolled to) are just shown. `breakdown`: offer
+   live inside their respective buttons. Bluesky has just likes: one button,
+   as your Bluesky account, and only shown once you've logged in to it. Feeds
+   can't be voted on: a YouTube video's likes (read when it's scrolled to)
+   are just shown. `breakdown`: offer
    the counts each copy's server reported, for a post posted more than once. #}
 {% macro tile_votes(i, breakdown=False) -%}
-{% if is_rss(i.canonical_ap_id) %}{{ votes(i.upvotes, i.downvotes, i.score) }}{% else %}
+{% set bsky = is_bluesky(i.canonical_ap_id) %}
+{% if is_rss(i.canonical_ap_id) or (bsky and not bluesky_me) %}{{ votes(i.upvotes, i.downvotes, i.score) }}{% else %}
 {% set eligible = [] %}{% set handles = [] %}
 {% for c in i.copies %}
-  {% set acct = none if is_rss(c.canonical_ap_id) or is_tag(c.c_ap) else (reddit_me if is_reddit(c.canonical_ap_id) else acting) %}
+  {% set acct = none if is_rss(c.canonical_ap_id) or is_tag(c.c_ap) else (reddit_me if is_reddit(c.canonical_ap_id) else bluesky_me if is_bluesky(c.canonical_ap_id) else acting) %}
   {% if acct %}{% set _ = eligible.append(c) %}{% if acct.handle not in handles %}{% set _ = handles.append(acct.handle) %}{% endif %}{% endif %}
 {% endfor %}
 {% set reddit = is_reddit(i.canonical_ap_id) %}
@@ -203,10 +206,10 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
 {% set every = (' on all ' ~ eligible | length ~ ' copies') if eligible | length > 1 else '' %}
 {% set as_whom = handles | join(' and ') %}
 <div class="tile-votes obj-actions {{ 'reddit-votes' if reddit else 'activitypub-votes' }}"{% if eligible %} id="a{{ eligible[0].oid }}"{% endif %}>
-  {% for direction, word, glyph in [(1, 'upvote', '▲'), (-1, 'downvote', '▼')] %}
+  {% for direction, word, glyph in ([(1, 'like', '▲')] if bsky else [(1, 'upvote', '▲'), (-1, 'downvote', '▼')]) %}
     {% set on = mine == direction %}
     {% set count = i.upvotes if direction == 1 else i.downvotes %}
-    {% set label = ('Remove ' if on else '') ~ word ~ ((' as ' ~ as_whom ~ every) if eligible else '') %}
+    {% set label = (('Remove ' ~ word) if on else (word | capitalize)) ~ ((' as ' ~ as_whom ~ every) if eligible else '') %}
     {% if eligible %}<form method="post" action="/o/{{ eligible[0].oid }}/vote" class="inline" data-inplace="a{{ eligible[0].oid }}" data-vote>
       <input type="hidden" name="score" value="{{ 0 if on else direction }}">
       {% for c in eligible[1:] %}<input type="hidden" name="also" value="{{ c.oid }}">{% endfor %}
@@ -274,7 +277,7 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
   <div class="pc-main">
     <div class="pc-meta small">
       {% if show_community %}<a class="pc-community" href="/c/{{ i.community_id }}">{{ chandle(i.cname, i.c_ap) }}</a> ·{% endif %}
-      <span>{{ i.username }}{% if not is_rss(i.c_ap) %}@{{ i.a_instance }}{% endif %}</span> · {{ when(i.created_at) }}
+      <span>{{ byname(i.username, i.a_instance, i.c_ap) }}</span> · {{ when(i.created_at) }}
       {{ state_badges(i) }}
     </div>
     {% if i.group %}
@@ -316,7 +319,7 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
 <article class="picture-card {{ 'unread' if i.unread }} {{ 'kept' if i.all_kept }} {{ 'veiled' if veiled }}" {{ entry_attrs(i) }}>
   <div class="pc-meta small">
     {% if show_community %}<a class="pc-community" href="/c/{{ i.community_id }}">{{ chandle(i.cname, i.c_ap) }}</a> ·{% endif %}
-    <span>{{ i.username }}{% if not is_rss(i.c_ap) %}@{{ i.a_instance }}{% endif %}</span> · {{ when(i.created_at) }}
+    <span>{{ byname(i.username, i.a_instance, i.c_ap) }}</span> · {{ when(i.created_at) }}
     {{ state_badges(i) }}
   </div>
   <h3 class="pc-title"><a href="/t/{{ i.id }}">{{ i.title }}</a></h3>
@@ -371,14 +374,16 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
 
 {% macro sidebar(follows, current_id=none, feed_id=none) %}
 {# Grouped by kind of source once the list is long enough to need it. #}
-{% set g = namespace(fedi=[], reddit=[], youtube=[], feeds=[]) %}
+{% set g = namespace(fedi=[], reddit=[], youtube=[], bluesky=[], feeds=[]) %}
 {% for f in follows %}
   {% if is_reddit(f.canonical_ap_id) %}{% set g.reddit = g.reddit + [f] %}
+  {% elif is_bluesky(f.canonical_ap_id) %}{% set g.bluesky = g.bluesky + [f] %}
   {% elif is_youtube(f.canonical_ap_id) %}{% set g.youtube = g.youtube + [f] %}
   {% elif is_rss(f.canonical_ap_id) %}{% set g.feeds = g.feeds + [f] %}
   {% else %}{% set g.fedi = g.fedi + [f] %}{% endif %}
 {% endfor %}
-{% set groups = [('Lemmy & PieFed', g.fedi), ('Reddit', g.reddit), ('YouTube', g.youtube), ('Feeds', g.feeds)] | selectattr(1) | list %}
+{% set groups = [('Lemmy & PieFed', g.fedi), ('Reddit', g.reddit), ('YouTube', g.youtube), ('Bluesky', g.bluesky),
+                  ('Feeds', g.feeds)] | selectattr(1) | list %}
 {% set grouped = follows | length > 8 and groups | length > 1 %}
 {% set home = current_id is none and feed_id is none %}
 <aside class="sidebar" id="feed-sidebar" data-live aria-label="Feeds and communities you follow">
@@ -413,7 +418,7 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
       <li class="fl-add"><a href="/communities#follow">{{ icon('plus') }}<span class="fl-name">Follow</span></a></li>
     </ul>
     <form method="post" action="/follow" class="stack follow-quick">
-      <input name="community" placeholder="!community@instance, r/name, a YouTube channel or a feed URL" required aria-label="Community to follow">
+      <input name="community" placeholder="!community@instance, r/name, @someone.bsky.social, a YouTube channel or a feed URL" required aria-label="Community to follow">
       <input type="hidden" name="backfill" value="1">
       <button class="small">Follow</button>
     </form>

@@ -7,6 +7,10 @@ It isn't in the header switcher: anything on Reddit is done as it
 automatically, and everything else as the account picked in the switcher
 (see account_for).
 
+Bluesky: signing in with a handle and an app password adds your Bluesky
+account (adapters/bluesky.py), which works the same way: anything on Bluesky
+is done as it. Its session is refreshed before it runs out, whenever it's used.
+
 Every write happens on the account's *home* server (the only place its token
 is valid), so targets are resolved there first by ActivityPub id. What the
 server returns is recorded in the archive immediately -- your comment shows up
@@ -23,8 +27,8 @@ from urllib.parse import urlparse
 
 from . import store
 from .adapters import (
-    REDDIT_DOMAIN, RemoteAuthError, RemoteError, RemoteRejected, ThreadiverseAdapter, host_of, is_reddit_host,
-    is_rss,
+    BSKY_DOMAIN, REDDIT_DOMAIN, RemoteAuthError, RemoteError, RemoteRejected, ThreadiverseAdapter, host_of,
+    is_bluesky, is_reddit_host, is_rss,
 )
 from .bouncer import Bouncer
 from .db import utcnow
@@ -37,9 +41,11 @@ TITLE_MAX = 200  # Lemmy's limit; Reddit allows 300
 EXCERPT_CHARS = 500  # how much of a feed article a post of it quotes
 NO_REDDIT_LOGIN = ("To vote, comment or post on Reddit, log in with Reddit on the Reddit page (an app-only "
                    "connection can only read).")
+NO_BLUESKY_LOGIN = "To like, reply or post on Bluesky, log in to Bluesky on the Accounts page."
 REDDIT_READ_ONLY_LOGIN = ("Connect Reddit again on the Reddit page to allow voting, commenting and posting; "
                           "this sign-in was made before ThreadBNC asked for that and can only read.")
 T = TypeVar("T")
+REPOSTED = "#repost"  # my_votes keeps your Bluesky reposts too, as <post's id>#repost
 
 
 class AccountError(Exception):
@@ -84,8 +90,19 @@ class Account:
         return self.domain == REDDIT_DOMAIN
 
     @property
+    def is_bluesky(self) -> bool:
+        return self.domain == BSKY_DOMAIN
+
+    @property
+    def separate(self) -> bool:
+        """Used only for things on its own site (Reddit, Bluesky), never picked in the header."""
+        return self.is_reddit or self.is_bluesky
+
+    @property
     def handle(self) -> str:
-        return f"u/{self.username}" if self.is_reddit else f"{self.username}@{self.domain}"
+        if self.is_reddit:
+            return f"u/{self.username}"
+        return f"@{self.username}" if self.is_bluesky else f"{self.username}@{self.domain}"
 
     @classmethod
     def from_row(cls, r: Any) -> "Account":
@@ -122,6 +139,8 @@ class Poster:
         self.bouncer = bouncer
         self.db = bouncer.db
         self.vault = vault
+        # Feeds only shown to someone signed in are read as your Bluesky account.
+        bouncer.bluesky_adapter.reading_session = self.bluesky_token
 
     # -- account management -------------------------------------------------
     def list(self) -> list[Account]:
@@ -137,9 +156,9 @@ class Poster:
         return Account.from_row(r) if r else None
 
     def default(self) -> Account | None:
-        """The account to act as when none is picked. Never the Reddit account,
-        which is only ever used for things on Reddit."""
-        accounts = [a for a in self.list() if not a.is_reddit]
+        """The account to act as when none is picked. Never the Reddit or
+        Bluesky account, which are only ever used for things there."""
+        accounts = [a for a in self.list() if not a.separate]
         return next((a for a in accounts if a.is_default), accounts[0] if accounts else None)
 
     # -- the Reddit account --------------------------------------------------------
@@ -176,15 +195,59 @@ class Poster:
         if is_rss(ap_id):
             raise AccountError("Feed articles can't be commented on or voted on, and feeds can't be posted to. "
                                "Use ↗ Post to share the article in one of your communities.")
+        if is_bluesky(ap_id):
+            bluesky = self.bluesky_account()
+            if bluesky is None:
+                raise AccountError(NO_BLUESKY_LOGIN)
+            return bluesky
         if is_reddit_host(host_of(ap_id)):
             reddit = self.reddit_account()
             if reddit is None:
                 status = self.bouncer.reddit.status()
                 raise AccountError(REDDIT_READ_ONLY_LOGIN if status and status["mode"] == "user" else NO_REDDIT_LOGIN)
             return reddit
-        if account.is_reddit:
+        if account.separate:
             raise AccountError("Add a Lemmy or PieFed account on the Accounts page to do that.")
         return account
+
+    # -- the Bluesky account -------------------------------------------------------
+    def bluesky_account(self) -> Account | None:
+        return next((a for a in self.list() if a.is_bluesky), None)
+
+    def add_bluesky(self, identifier: str, app_password: str, code: str | None = None) -> Account:
+        """Sign in to Bluesky with a handle (or email) and an app password.
+        There's one Bluesky account: signing in as another replaces it."""
+        if not identifier.strip() or not app_password.strip():
+            raise AccountError("Your handle and an app password are both needed.")
+        adapter = self.bouncer.adapter_for(BSKY_DOMAIN)
+        try:
+            token = adapter.login(identifier, app_password.strip(), (code or "").strip() or None)
+        except RemoteAuthError as exc:
+            if exc.code == "AuthFactorTokenRequired":
+                raise AccountError("Bluesky emailed you a sign-in code: enter it too, or use an app password, "
+                                   "which doesn't need one.") from exc
+            raise AccountError(f"Bluesky didn't accept that: {exc}") from exc
+        except RemoteError as exc:
+            raise AccountError(f"Couldn't reach Bluesky: {exc}") from exc
+        before = self.bluesky_account()
+        account = self.add_session(BSKY_DOMAIN, token)
+        if before and before.id != account.id:
+            self.remove(before.id)
+        return account
+
+    def bluesky_token(self) -> str | None:
+        """Your Bluesky session, fresh, for reading feeds only shown to someone
+        signed in. None if you aren't, or it no longer works."""
+        account = self.bluesky_account()
+        if account is None or account.status != "ok":
+            return None
+        try:
+            return self._session(account)[1]
+        except (AccountError, RemoteError, VaultError) as exc:
+            if isinstance(exc, RemoteAuthError):
+                self._mark(account, "needs_login", str(exc))
+            log.info("the Bluesky session can't be used: %s", exc)
+            return None
 
     def add(self, server: str, username: str, password: str, totp: str | None = None) -> Account:
         """Log in and keep the resulting session token (encrypted). The password
@@ -214,7 +277,8 @@ class Poster:
             raise AccountError(f"Couldn't reach {domain}: {exc}") from exc
         now = utcnow()
         with self.db.transaction() as conn:
-            first = conn.execute("SELECT COUNT(*) FROM accounts WHERE domain!=?", (REDDIT_DOMAIN,)).fetchone()[0] == 0
+            first = domain != BSKY_DOMAIN and conn.execute(
+                "SELECT COUNT(*) FROM accounts WHERE domain NOT IN (?,?)", (REDDIT_DOMAIN, BSKY_DOMAIN)).fetchone()[0] == 0
             conn.execute(
                 "INSERT INTO accounts(domain, software, username, actor_ap_id, display_name, token_enc, status, "
                 "is_default, is_admin, added_at) VALUES (?,?,?,?,?,?,'ok',?,?,?) "
@@ -277,8 +341,8 @@ class Poster:
             conn.execute("DELETE FROM my_votes WHERE account_id=?", (account_id,))
             conn.execute("DELETE FROM accounts WHERE id=?", (account_id,))
             if not conn.execute("SELECT 1 FROM accounts WHERE is_default=1").fetchone():
-                conn.execute("UPDATE accounts SET is_default=1 WHERE id=(SELECT MIN(id) FROM accounts WHERE domain!=?)",
-                             (REDDIT_DOMAIN,))
+                conn.execute("UPDATE accounts SET is_default=1 WHERE id=(SELECT MIN(id) FROM accounts "
+                             "WHERE domain NOT IN (?,?))", (REDDIT_DOMAIN, BSKY_DOMAIN))
 
     # -- helpers ----------------------------------------------------------------
     def _session(self, account: Account) -> tuple[ThreadiverseAdapter, str]:
@@ -291,7 +355,14 @@ class Poster:
             row = conn.execute("SELECT token_enc FROM accounts WHERE id=?", (account.id,)).fetchone()
         if row is None or not row["token_enc"] or account.status != "ok":
             raise AccountError(f"{account.handle} needs to log in again (Accounts page).")
-        return self.bouncer.adapter_for(account.domain), self.vault.decrypt(row["token_enc"])
+        adapter, token = self.bouncer.adapter_for(account.domain), self.vault.decrypt(row["token_enc"])
+        if account.is_bluesky:  # its access token lasts a couple of hours: renew it first when it's nearly out
+            fresh = adapter.fresh(token)  # type: ignore[attr-defined]
+            if fresh != token:
+                with self.db.transaction() as conn:
+                    conn.execute("UPDATE accounts SET token_enc=? WHERE id=?", (self.vault.encrypt(fresh), account.id))
+                token = fresh
+        return adapter, token
 
     def _run(self, account: Account, fn: Callable[[ThreadiverseAdapter, str], T]) -> T:
         """Run a write as `account`, turning auth failures into a re-login prompt."""
@@ -386,17 +457,21 @@ class Poster:
         if c is None:
             raise AccountError("Community not found.")
         account = self.account_for(account, c["canonical_ap_id"])
+        url = (url or "").strip() or None
+        # A Bluesky link card shows the page's title, description and picture: read them first.
+        card = {"card": self.bouncer.articles.link_card(url)} if account.is_bluesky and url else {}
 
         def act(adapter: ThreadiverseAdapter, token: str) -> Any:
             found = adapter.resolve_as(token, c["canonical_ap_id"])
             if "community" not in found:
                 raise AccountError(f"{account.domain} couldn't find that community.")
             return adapter, adapter.create_post(token, found["community"], title, (body or "").strip() or None,
-                                                (url or "").strip() or None)
+                                                url, **card)
 
         adapter, post = self._run(account, act)
+        # A new Bluesky post may not have reached the AppView yet: store it as made, without reading it back.
         return self.bouncer._ingest_post(post, account.domain, post.local_id, adapter, source_url=post.ap_id,
-                                         retention="manual")
+                                         retention="manual", capture=account.is_bluesky)
 
     # -- reposting -------------------------------------------------------------------
     def repost_draft(self, thread_id: int) -> dict[str, Any]:
@@ -529,6 +604,43 @@ class Poster:
             elif score != old:
                 conn.execute("UPDATE objects SET upvotes=upvotes+?, downvotes=downvotes+?, score=score+? WHERE id=?",
                              ((score == 1) - (old == 1), (score == -1) - (old == -1), score - old, object_id))
+
+    # -- Bluesky reposts and quotes ------------------------------------------------------
+    def _bluesky_target(self, object_id: int) -> tuple[Account, Any]:
+        obj = self._object(object_id)
+        if not is_bluesky(obj["canonical_ap_id"]):
+            raise AccountError("Only Bluesky posts can be reposted or quoted there.")
+        return self.account_for(self.bluesky_account() or self.default(), obj["canonical_ap_id"]), obj  # type: ignore[arg-type]
+
+    def bluesky_repost(self, object_id: int, on: bool = True) -> None:
+        """Repost a Bluesky post or reply to your followers there, or undo it."""
+        account, obj = self._bluesky_target(object_id)
+        kind = obj["object_type"]
+        self._run(account, lambda adapter, token: adapter.repost(  # type: ignore[attr-defined]
+            token, self._local_id(adapter, token, account.domain, object_id, kind), on))
+        key = obj["canonical_ap_id"] + REPOSTED
+        with self.db.transaction() as conn:
+            if on:
+                conn.execute("INSERT INTO my_votes(account_id, object_ap_id, score, voted_at) VALUES (?,?,1,?) "
+                             "ON CONFLICT(account_id, object_ap_id) DO UPDATE SET voted_at=excluded.voted_at",
+                             (account.id, key, utcnow()))
+            else:
+                conn.execute("DELETE FROM my_votes WHERE account_id=? AND object_ap_id=?", (account.id, key))
+
+    def bluesky_quote(self, object_id: int, text: str) -> int:
+        """Post on your Bluesky account quoting a post or reply. Returns the new post's thread id."""
+        if not text.strip():
+            raise AccountError("Write something first.")
+        account, obj = self._bluesky_target(object_id)
+        kind = obj["object_type"]
+        adapter, post = self._run(account, lambda adapter, token: (adapter, adapter.quote(  # type: ignore[attr-defined]
+            token, self._local_id(adapter, token, account.domain, object_id, kind), text)))
+        return self.bouncer._ingest_post(post, account.domain, post.local_id, adapter, source_url=post.ap_id,
+                                         retention="manual", capture=True)
+
+    def my_reposts(self, account: Account | None, ap_ids: list[str]) -> set[str]:
+        """Which of these Bluesky posts you've reposted from here."""
+        return {k[: -len(REPOSTED)] for k in self.my_votes(account, [a + REPOSTED for a in ap_ids])}
 
     def my_votes(self, account: Account | None, ap_ids: list[str]) -> dict[str, int]:
         if account is None or not ap_ids:
