@@ -720,11 +720,20 @@ document.documentElement.classList.add("js");
     return $$(".inline-panel", scope).filter((p) => p.dataset.owner === (owner.id || "thread"));
   }
 
+  // The post's text (or video), then the article, then the comments. Panels
+  // already in order aren't moved, so a video playing in one carries on.
+  const PANEL_ORDER = ["post", "article", "comments"];
   function orderInlinePanels(owner) {
     const panels = panelsForOwner(owner);
-    const article = panels.find((panel) => panel.dataset.kind === "article");
-    const comments = panels.find((panel) => panel.dataset.kind === "comments");
-    if (article && comments && article.parentElement === comments.parentElement) comments.before(article);
+    for (const [index, panel] of panels.entries()) {
+      const next = panels[index + 1];
+      if (!next || next.parentElement !== panel.parentElement) continue;
+      if (PANEL_ORDER.indexOf(next.dataset.kind) < PANEL_ORDER.indexOf(panel.dataset.kind)) {
+        panel.before(next);
+        orderInlinePanels(owner);
+        return;
+      }
+    }
   }
 
   function updateInlinePanels(owner) {
@@ -858,10 +867,13 @@ document.documentElement.classList.add("js");
     url.searchParams.set("refreshed", "1");
     url.searchParams.set("inline", "1");
     const doc = await fetchDoc(url.href);
+    // A saved YouTube video's player, then its description.
+    const video = $("article.post > .post-media video", doc);
+    const player = video && video.closest(".post-media");
     const content = $("article.post > .md", doc);
-    if (!content) throw new Error("post text not found");
-    content.classList.add("expanded-post-content");
-    body.replaceChildren(document.adoptNode(content));
+    if (!player && !content) throw new Error("post text not found");
+    if (content) content.classList.add("expanded-post-content");
+    body.replaceChildren(...[player, content].filter(Boolean).map((el) => document.adoptNode(el)));
     panel.removeAttribute("aria-busy");
   }
 

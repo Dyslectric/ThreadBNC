@@ -257,6 +257,7 @@ def test_videos_are_saved_only_when_kept(settings, bouncer, yt, downloads):
     assert downloads == [] and video_media(bouncer)["status"] == "pending"
     client = logged_in(settings, bouncer)
     assert "Keep this post to save the video." in client.get(f"/t/{tid}").text
+    assert "Show the saved video" not in client.get(f"/c/{cid}").text
 
     with bouncer.db.transaction() as conn:
         conn.execute("UPDATE archived_threads SET retention='manual' WHERE id=?", (tid,))
@@ -268,6 +269,9 @@ def test_videos_are_saved_only_when_kept(settings, bouncer, yt, downloads):
     page = client.get(f"/t/{tid}").text
     assert f'<video class="media" src="/media/{m["id"]}"' in page
     assert "controls playsinline preload" in page  # with sound, no loop
+    for view in ("list", "pictures", "tiles"):  # its text button shows the player too (app.js)
+        feed = client.get(f"/c/{cid}?view={view}").text
+        assert f'class="act read-post" href="/t/{tid}#post-text" title="Show the saved video' in feed, view
 
     # With the thumbnail saved too, it stays the picture: in the feed, and as the player's cover.
     thumb = one(bouncer, "SELECT id FROM media WHERE url='https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg'")[0]

@@ -218,8 +218,10 @@ def test_vote_counts_shown(settings, server, bouncer):
     tiles = client.get("/?view=tiles").text
     assert 'class="tile-action-row tile-action-primary"' in tiles
     assert 'class="tile-action-row tile-action-secondary actions"' in tiles
-    assert 'class="vote up"' in tiles and "▲ 12" in tiles
-    assert 'class="vote down"' in tiles and "▼ 3" in tiles
+    for view in ("list", "pictures", "tiles"):  # vote buttons in every view
+        feed = client.get(f"/?view={view}").text
+        assert 'class="vote up"' in feed and "▲ 12" in feed, view
+        assert 'class="vote down"' in feed and "▼ 3" in feed, view
     page = client.get(f"/t/{tid}").text
     assert "▲ 12" in page and "▲ 5" in page and "▼ 1" in page
     # vote changes are current state, not edits

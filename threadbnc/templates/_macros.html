@@ -27,6 +27,13 @@
 {% if breakdown and breakdown | length > 1 %}<span class="votes has-breakdown" tabindex="0" role="button" aria-expanded="false" aria-label="{{ up or 0 }} upvotes, {{ down or 0 }} downvotes in total across {{ breakdown | length }} copies. Show votes by server">
   {%- if up is not none %}<span class="up" aria-hidden="true">▲ {{ up }}</span>{% if down is not none %} <span class="down" aria-hidden="true">▼ {{ down }}</span>{% endif %}
   {%- elif score is not none %}<span class="muted">{{ score }} pts</span>{% endif %}
+  {{ vote_breakdown(breakdown, up, down, score) }}</span>
+{%- elif up is not none %}<span class="votes" title="{{ up }} upvotes, {{ down or 0 }} downvotes{{ (' · score ' ~ score) if score is not none }}"><span class="sr-only">{{ up }} upvote{{ 's' if up != 1 }}{% if down is not none %}, {{ down }} downvote{{ 's' if down != 1 }}{% endif %}</span><span class="up" aria-hidden="true">▲ {{ up }}</span>{% if down is not none %} <span class="down" aria-hidden="true">▼ {{ down }}</span>{% endif %}</span>
+{%- elif score is not none %}<span class="votes muted">{{ score }} pts</span>{% endif %}
+{%- endmacro %}
+
+{# The popover for votes(), with the counts each copy's server reported. #}
+{% macro vote_breakdown(breakdown, up, down, score=none) -%}
   <span class="vote-breakdown" role="tooltip">
     <span class="vb-title">Votes by server</span>
     <table>
@@ -39,9 +46,7 @@
         {% if up is not none %}<td class="up">▲ {{ up }}</td><td class="down">{% if down is not none %}▼ {{ down }}{% endif %}</td>
         {% else %}<td colspan="2">{{ score if score is not none else '—' }}</td>{% endif %}</tr>
     </table>
-  </span></span>
-{%- elif up is not none %}<span class="votes" title="{{ up }} upvotes, {{ down or 0 }} downvotes{{ (' · score ' ~ score) if score is not none }}"><span class="sr-only">{{ up }} upvote{{ 's' if up != 1 }}{% if down is not none %}, {{ down }} downvote{{ 's' if down != 1 }}{% endif %}</span><span class="up" aria-hidden="true">▲ {{ up }}</span>{% if down is not none %} <span class="down" aria-hidden="true">▼ {{ down }}</span>{% endif %}</span>
-{%- elif score is not none %}<span class="votes muted">{{ score }} pts</span>{% endif %}
+  </span>
 {%- endmacro %}
 
 {# Where a duplicated post was posted: community and poster for each copy. #}
