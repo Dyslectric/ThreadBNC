@@ -1,22 +1,53 @@
-{# A discussion expanded in its Discussions list (_discussions.html; app.js
-   asks for it): its text first, then its replies. `peek` comes from
-   Discussions.peek, or discussions.saved_peek for a post here. #}
-{% from "_macros.html" import when %}
-<div class="discussion-peek" data-peek-body>
-  {% if peek.body %}<div class="md">{{ md(peek.body) }}</div>
-  {% elif peek.text %}<p class="discussion-text">{{ peek.text }}</p>
-  {% else %}<p class="muted">No text, just the link.</p>{% endif %}
-  {% if peek.error %}<p class="bad-text">Couldn't read its replies: {{ peek.error }}</p>{% endif %}
-  {% if peek.replies is not none %}
-  <h4>{{ peek.count }} {{ 'reply' if peek.count == 1 else 'replies' }}</h4>
-  {% if peek.replies %}
-  <ul class="plain peek-replies">{% for r in peek.replies recursive %}<li>
-    <p class="muted peek-meta">{{ r.author }}{% if r.created_at %} · {{ when(r.created_at) }}{% endif %}
-      {%- if r.gone %} · <span class="bad-text">{{ r.gone }}</span>{% endif %}</p>
-    <div class="md">{{ md(r.body) }}</div>
-    {% if r.children %}<ul class="plain peek-replies">{{ loop(r.children) }}</ul>{% endif %}
-  </li>{% endfor %}</ul>
-  {% endif %}
-  {% if peek.more %}<p class="muted">{{ peek.more }} more: open it to read them all.</p>{% endif %}
-  {% elif not peek.error %}<p class="muted">Its replies are where it was written.</p>{% endif %}
+{# A discussion found elsewhere, expanded in its Discussions list (_discussions.html;
+   app.js asks for it): the same panels as a post opened in the feed, its text
+   then its replies. `peek` comes from Discussions.peek. Read, not saved, so
+   there's nothing to reply to here: opening it here saves it. #}
+{% from "_macros.html" import when, icon %}
+<div class="discussion-peek inline-panels discussion-panels" data-peek-body>
+  <section class="inline-panel post-panel card-inline-panel" data-kind="post">
+    <button type="button" class="inline-panel-rail" aria-label="Collapse the text" title="Collapse the text"></button>
+    <div class="inline-panel-body">
+      {% if peek.body %}<div class="md expanded-post-content">{{ md(peek.body) }}</div>
+      {% elif peek.text %}<p class="discussion-text">{{ peek.text }}</p>
+      {% else %}<p class="muted">No text, just the link.</p>{% endif %}
+    </div>
+  </section>
+  <section class="inline-panel comments-panel card-inline-panel" data-kind="comments">
+    <button type="button" class="inline-panel-rail" aria-label="Collapse the replies" title="Collapse the replies"></button>
+    <div class="inline-panel-body">
+      <section class="comments">
+        <div class="comments-head">
+          <h2>{% if peek.replies is not none %}{{ peek.count }} {{ 'reply' if peek.count == 1 else 'replies' }}{% else %}Replies{% endif %}</h2>
+        </div>
+        {% if peek.error %}<p class="small bad-text">Couldn't read its replies: {{ peek.error }}</p>{% endif %}
+        {% if peek.replies %}
+        <div class="toolbar js-only">
+          <button type="button" class="small secondary" data-action="expand-all">Expand all</button>
+          <button type="button" class="small secondary" data-action="collapse-all">Collapse all</button>
+          <button type="button" class="small secondary" data-action="collapse-replies">Top-level only</button>
+        </div>
+        {% for r in peek.replies recursive %}{% set n = r.children | length %}
+        <details open class="comment d{{ (loop.depth0) % 8 }}">
+          <summary class="meta small">
+            <span class="fold" aria-hidden="true">{{ icon('chevron-down') }}</span>
+            <span class="author">{{ r.author }}</span>{% if r.created_at %} · {{ when(r.created_at) }}{% endif %}
+            {%- if r.score is not none %} · <span class="votes">{{ r.score }} point{{ 's' if r.score != 1 }}</span>{% endif %}
+            {%- if r.gone %} <span class="pill {{ 'bad' if r.gone == 'removed' else 'warn' }}">{{ r.gone }}</span>{% endif %}
+            <span class="collapsed-note">{% if n %}{{ n }} repl{{ 'ies' if n != 1 else 'y' }} hidden{% else %}collapsed{% endif %}</span>
+          </summary>
+          <button type="button" class="bar" title="Collapse this thread" aria-label="Collapse this thread"></button>
+          <div class="content">
+            <div class="md {{ 'faded' if r.gone }}">{{ md(r.body) }}</div>
+            {% if r.children %}<button type="button" class="replies-toggle" data-action="show-replies">{{ icon('chevron-down') }} Show {{ n }} repl{{ 'ies' if n != 1 else 'y' }}</button>
+            <div class="replies">{{ loop(r.children) }}</div>{% endif %}
+          </div>
+        </details>
+        {% endfor %}
+        {% elif peek.replies is not none %}<p class="small muted">No replies yet.</p>
+        {% endif %}
+        {% if peek.more %}<p class="small muted">{{ peek.more }} more: open it to read them all.</p>{% endif %}
+        {% if peek.replies is none and not peek.error %}<p class="small muted">Its replies are where it was written.</p>{% endif %}
+      </section>
+    </div>
+  </section>
 </div>

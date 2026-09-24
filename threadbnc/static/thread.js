@@ -24,6 +24,13 @@
   document.addEventListener("click", (ev) => {
     const root = ev.target.closest("#comments");
     if (!root || root.closest(".inline-panel")) return; // app.js owns dynamically placed trees
+    const rail = ev.target.closest("button.section-rail");
+    if (rail) {
+      const section = rail.closest("details.comment-section");
+      section.open = false;
+      scrollIntoViewIfNeeded(section);
+      return;
+    }
     const bar = ev.target.closest("button.bar");
     if (bar) {
       const d = bar.closest("details.comment");
@@ -36,7 +43,11 @@
     const action = btn.dataset.action;
     const clearHidden = () =>
       root.querySelectorAll(".replies-hidden").forEach((d) => d.classList.remove("replies-hidden"));
-    if (action === "expand-all") { clearHidden(); all().forEach((d) => (d.open = true)); }
+    if (action === "expand-all") {
+      clearHidden();
+      all().forEach((d) => (d.open = true));
+      root.querySelectorAll("details.comment-section").forEach((d) => (d.open = true));
+    }
     if (action === "collapse-all") { clearHidden(); all().forEach((d) => (d.open = false)); }
     if (action === "collapse-replies") {
       all().forEach((d) => {
@@ -102,8 +113,9 @@
       say("New comments arrived. They'll show when you reload, after you post your reply.");
       return;
     }
-    const shown = new Map([...now.querySelectorAll("details.comment[id]")].map((d) => [d.id, d.open]));
-    for (const d of fresh.querySelectorAll("details.comment[id]")) if (shown.has(d.id)) d.open = shown.get(d.id);
+    const kept = "details.comment[id], details.comment-section[id]";
+    const shown = new Map([...now.querySelectorAll(kept)].map((d) => [d.id, d.open]));
+    for (const d of fresh.querySelectorAll(kept)) if (shown.has(d.id)) d.open = shown.get(d.id);
     now.replaceWith(document.adoptNode(fresh));
   }
 

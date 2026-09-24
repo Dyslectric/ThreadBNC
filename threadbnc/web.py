@@ -2905,6 +2905,12 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         counts = {c["id"]: c["n_comments"] for c in copies}
         post_copies = [{"t": threads[i], "o": roots[i]["o"], "n_comments": counts.get(i, raw_comments),
                         "reddit": is_reddit(roots[i]["o"]["canonical_ap_id"])} for i in tids if i in roots]
+        if len(tids) > 1 and root is not None:
+            # Each copy's comments in a section of their own. A comment squashed
+            # across copies sits in the first one's, with pills for the others.
+            for pc in post_copies:
+                pc["comments"] = [n for n in root["children"] if n["members"][0]["src"]["id"] == pc["t"]["id"]]
+                pc["shown"] = sum(1 + n["descendants"] for n in pc["comments"])
         return render(request, "thread.html", t=t, root=root, total_comments=len(displayed),
                       raw_comments=raw_comments, md=md, media_for=media_for, preview=preview, my_votes=my_votes,
                       my_reposts=my_reposts,
@@ -3036,16 +3042,6 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             raise HTTPException(404)
         return render(request, "discussion_peek.html", peek=discussions.peek(d),
                       md=lambda text, titles=video_titles(): render_markdown(text, None, titles))
-
-    @app.get("/t/{tid}/peek", response_class=HTMLResponse)
-    def thread_peek(request: Request, tid: int):
-        """A post here, expanded in a Discussions list: its text and comments as saved."""
-        with db.connect() as conn:
-            if conn.execute("SELECT 1 FROM archived_threads WHERE id=?", (tid,)).fetchone() is None:
-                raise HTTPException(404)
-            peek = discussions_mod.saved_peek(conn, tid)
-        md, _media_for, _preview = md_for(peek["object_ids"])
-        return render(request, "discussion_peek.html", peek=peek, md=md)
 
     @app.get("/jobs/{job_id}/wait", response_class=HTMLResponse)
     def job_wait(request: Request, job_id: int):

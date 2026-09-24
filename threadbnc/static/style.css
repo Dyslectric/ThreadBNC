@@ -186,14 +186,14 @@ table.timeline td { padding: 6px 12px 6px 0; vertical-align: top; }
 .comment.d4 { --c: var(--d4); } .comment.d5 { --c: var(--d5); }
 .comment.d6 { --c: var(--d6); } .comment.d7 { --c: var(--d7); }
 
-.comments > .comment { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+.comments > .comment, .comment-section-body > .comment { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
   padding: 8px 10px 8px 21px; margin: 10px 0 0; }
 /* --rail: x of the thread line's centre, so the toggle knob sits on top of it */
 .comment { position: relative; padding-left: 19px; margin-top: 8px; --rail: 5.5px; --knob: 14px; }
-.comments > .comment { --rail: 9.5px; }
+.comments > .comment, .comment-section-body > .comment { --rail: 9.5px; }
 .comment > summary { list-style: none; cursor: pointer; padding: 2px 6px 2px 0; border-radius: 6px;
   margin-left: -19px; padding-left: 19px; position: relative; }
-.comments > .comment > summary { margin-left: -21px; padding-left: 21px; }
+.comments > .comment > summary, .comment-section-body > .comment > summary { margin-left: -21px; padding-left: 21px; }
 .comment > summary::-webkit-details-marker { display: none; }
 .comment > summary .fold { position: absolute; left: calc(var(--rail) - var(--knob) / 2); top: 4px;
   width: var(--knob); height: var(--knob); border-radius: 50%; display: grid; place-items: center;
@@ -214,7 +214,7 @@ table.timeline td { padding: 6px 12px 6px 0; vertical-align: top; }
 /* the coloured bar: click to collapse */
 .comment > .bar { position: absolute; left: 0; top: 1.7em; bottom: 0; width: 12px; padding: 0; margin: 0;
   background: none; border: none; border-radius: 0; cursor: pointer; }
-.comments > .comment > .bar { left: 4px; top: calc(1.7em + 8px); bottom: 8px; }
+.comments > .comment > .bar, .comment-section-body > .comment > .bar { left: 4px; top: calc(1.7em + 8px); bottom: 8px; }
 .comment > .bar::before { content: ""; position: absolute; left: 4px; top: 0; bottom: 0; width: 3px;
   border-radius: 3px; background: var(--c); opacity: 0.55; transition: opacity .1s, width .1s, left .1s; }
 .comment > .bar:hover::before, .comment > .bar:focus-visible::before { opacity: 1; width: 5px; left: 3px; }
@@ -235,17 +235,38 @@ table.timeline td { padding: 6px 12px 6px 0; vertical-align: top; }
 .comment.flash-target > summary { outline: 2px solid var(--c); outline-offset: 1px; }
 .card.post.is-changed { border-color: var(--warn); }
 
+/* a copy's comments, when a post was posted in several places: collapsible, with its own box */
+.comment-section { position: relative; margin: 14px 0 0; padding-left: 16px; }
+.comment-section > summary { list-style: none; cursor: pointer; display: flex; flex-wrap: wrap; align-items: center;
+  gap: 4px 8px; margin-left: -16px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 7%, var(--card)); }
+.comment-section > summary::-webkit-details-marker { display: none; }
+.comment-section > summary:hover { background: color-mix(in srgb, var(--accent) 13%, var(--card)); }
+.comment-section > summary:focus-visible { outline: 2px solid var(--ring); }
+.comment-section > summary .fold { display: grid; place-items: center; color: var(--accent); }
+.comment-section > summary .fold .i { width: 14px; height: 14px; stroke-width: 2.5; transition: transform .15s; }
+.comment-section:not([open]) > summary .fold .i { transform: rotate(-90deg); }
+.comment-section-where { font-weight: 600; }
+.comment-section > .section-rail { position: absolute; left: 0; top: 2.6em; bottom: 0; width: 12px; padding: 0; margin: 0;
+  background: none; border: none; border-radius: 0; cursor: pointer; }
+.section-rail::before { content: ""; position: absolute; left: 4px; top: 0; bottom: 0; width: 3px; border-radius: 3px;
+  background: var(--accent); opacity: .4; transition: opacity .1s, width .1s, left .1s; }
+.section-rail:hover::before, .section-rail:focus-visible::before { opacity: 1; width: 5px; left: 3px; }
+.comment-section-body { padding: 4px 0 2px; }
+.section-compose { margin: 6px 0 0; }
+.section-empty, .comment-hint { margin: 8px 0 4px; }
+
 .toolbar { gap: 6px; flex-wrap: wrap; margin: 4px 0 6px; position: sticky; top: var(--header-h); z-index: 2;
   background: var(--bg); padding: 6px 0; }
 
 @media (max-width: 600px) {
   .comment { padding-left: 13px; --rail: 4.5px; --knob: 12px; }
-  .comments > .comment { --rail: 8.5px; }
+  .comments > .comment, .comment-section-body > .comment { --rail: 8.5px; }
   .comment > summary .fold { top: 5px; }
   .comment > summary .fold .i { width: 8px; height: 8px; }
   .comment > summary { margin-left: -13px; padding-left: 13px; }
-  .comments > .comment { padding-left: 16px; }
-  .comments > .comment > summary { margin-left: -16px; padding-left: 16px; }
+  .comments > .comment, .comment-section-body > .comment { padding-left: 16px; }
+  .comments > .comment > summary, .comment-section-body > .comment > summary { margin-left: -16px; padding-left: 16px; }
   .comment > .bar { width: 9px; }
   .comment > .bar::before { left: 3px; }
 }
@@ -844,16 +865,15 @@ details.discussion[open] .discussion-icon { color: var(--accent); }
 .discussion-head { flex: 1; min-width: 0; }
 .discussion-title { color: var(--accent); }
 details.discussion > summary .chev { flex: none; margin-top: 3px; color: var(--muted); }
-.discussion-panel { margin: 4px 0 8px 26px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px;
-  background: var(--bg); }
+.discussion-panel { margin: 2px 0 10px 26px; }
 .discussion-actions { margin: 0 0 6px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; }
 .discussions .discussion-actions form.inline { margin: 0; }
-.discussion-text { white-space: pre-wrap; margin: 0 0 6px; }
-.discussion-peek h4 { font-size: 0.8rem; color: var(--muted); font-weight: 600; margin: 10px 0 2px; }
-.discussion-peek > p:last-child, .discussion-peek .md > :last-child { margin-bottom: 0; }
-.discussions .peek-replies > li { padding: 0; margin: 0; border: none; }
-.peek-replies .peek-replies { margin-left: 4px; padding-left: 12px; border-left: 2px solid var(--line); }
-.peek-meta { margin: 8px 0 2px; }
+.discussion-toggles { display: inline-flex; gap: 12px; margin-left: auto; }
+.discussion-toggle { display: inline-flex; align-items: center; gap: 4px; }
+.discussion-text { white-space: pre-wrap; margin: 0; }
+.discussion-panels { font-size: calc(1em / 0.85); } /* undoes .small: the text reads as it does in the feed */
+.discussion-panels .inline-panel-body > .md:last-child > :last-child { margin-bottom: 0; }
+.discussions .discussion-panels form.inline { margin-left: 0; }
 
 /* ---- kept articles: the articles here that link to them, beside the article (below it when narrow) ---- */
 .reader-col { container-type: inline-size; }
@@ -966,6 +986,12 @@ a.article-link.dived, a[data-dive].dived, a.video-link.dived, a.live-link.dived 
 .inline-panel .comments-head h2 { font-size: 1.15rem; }
 .inline-panel .toolbar { top: var(--header-h); background: var(--card); }
 .inline-panel .expanded-post-content { font-size: 1rem; }
+.inline-panel .compose textarea { min-height: 4.2em; }
+/* a discussion, opened: its text and its replies in panels, as under a post in the feed */
+.discussion-panels > .card-inline-panel:first-child { margin-top: 6px; }
+.discussion-panels .inline-panel-body { padding: 12px 14px 14px; }
+.discussion-panels .comments-head h2 { font-size: 1rem; }
+.discussion-toggle[aria-expanded="true"] { font-weight: 600; }
 
 /* List/picture/thread cards really contain their expansion. The inset border
    joins the new content to the card instead of looking like a detached card. */

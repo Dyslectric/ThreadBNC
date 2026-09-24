@@ -106,6 +106,10 @@ def test_thread_page_combines_copies_and_squashes_repeated_comments(settings, bo
     squashed = page.index("Source is paywalled")
     assert squashed < page.index("reply under math copy") and squashed < page.index("reply under physics copy")
     assert "Votes by server" in page
+    # Each copy's comments are a section of their own; the squashed one sits in the first's.
+    math, physics = page.index(f'id="cs{t1}"'), page.index(f'id="cs{t2}"')
+    assert math < squashed < page.index("Only in math") < physics < page.index("Only in physics")
+    assert 'class="section-rail"' in page
     # Viewing one copy marks both read.
     assert one(bouncer, "SELECT COUNT(*) FROM archived_threads WHERE last_viewed_at IS NULL")[0] == 0
     alone = client.get(f"/t/{t1}?merge=0").text
@@ -117,6 +121,9 @@ def test_comment_goes_to_the_chosen_copies(settings, bouncer, server, pair):
     client = client_for(settings, bouncer, account=True)
     page = client.get(f"/t/{t1}").text
     assert 'name="to"' in page
+    # Each copy's section has a box of its own, for a comment on just that one.
+    sections = page[page.index(f'id="cs{t1}"'):]
+    assert f'action="/t/{t1}/reply"' in sections and f'action="/t/{t2}/reply"' in sections
     roots = {t: one(bouncer, "SELECT root_object_id FROM archived_threads WHERE id=?", t)[0] for t in pair}
     r = client.post(f"/t/{t1}/reply", data={"body": "on both", "choose": "1", "to": [roots[t1], roots[t2]]},
                     follow_redirects=False)

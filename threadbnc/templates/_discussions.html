@@ -3,15 +3,21 @@
    that are probably the same story. `talk` comes from web.py's talk_about.
    While a look elsewhere is under way (data-job), app.js swaps in the answer. #}
 {% from "_macros.html" import when, icon %}
-{# One of them: a chat bubble, what it says and where, opening into a panel
-   with what it's for (caller("actions")), then what it says in full and its
-   replies, which app.js fetches from `peek` (discussion_peek.html). #}
-{% macro item(title, peek) -%}
-<details class="discussion" data-peek="{{ peek }}">
+{# One of them: a chat bubble, what it says and where, opening into what
+   it's for (caller("actions")), then the panels a post opens into in the
+   feed: its text, then its comments. app.js fills them in: for a post saved
+   here (`thread`) from its page, with its comments to reply to and vote on;
+   for one found elsewhere from `peek` (discussion_peek.html). #}
+{% macro item(title, peek=none, thread=none) -%}
+<details class="discussion"{% if thread %} data-thread="{{ thread }}"{% else %} data-peek="{{ peek }}"{% endif %}>
   <summary>{{ icon('comment', 'discussion-icon') }}<span class="discussion-head"><span class="discussion-title">{{ title }}</span>
     <span class="muted">{{ caller("meta") }}</span></span>{{ icon('chevron-down', 'chev') }}</summary>
   <div class="discussion-panel">
-    <div class="discussion-actions">{{ caller("actions") }}</div>
+    <div class="discussion-actions">{{ caller("actions") }}
+      <span class="discussion-toggles js-only">
+        <button type="button" class="link discussion-toggle" data-show="post" aria-expanded="true">{{ icon('article') }}Text</button>
+        <button type="button" class="link discussion-toggle" data-show="comments" aria-expanded="true">{{ icon('comment') }}Comments</button>
+      </span></div>
     <div class="discussion-peek" data-peek-body></div>
   </div>
 </details>
@@ -24,7 +30,7 @@
   {% if talk.posted %}
   <h3>{{ 'Also posted' if talk.thread_id else 'Posted' }} here</h3>
   <ul class="plain discussion-list">{% for d in talk.posted %}<li>
-    {%- call(part) item(d.title, "/t/" ~ d.id ~ "/peek") %}
+    {%- call(part) item(d.title, thread=d.id) %}
       {%- if part == "meta" %}· {{ chandle(d.name, d.canonical_ap_id) }}{% if d.created_at %} · {{ when(d.created_at) }}{% endif %}
       {%- else %}<a href="/t/{{ d.id }}">Read it here</a>{% endif %}
     {%- endcall %}</li>{% endfor %}</ul>
@@ -32,7 +38,7 @@
   {% if talk.found %}
   <h3>Elsewhere</h3>
   <ul class="plain discussion-list">{% for d in talk.found %}<li>
-    {%- call(part) item(d.title, "/t/" ~ d.thread_id ~ "/peek" if d.thread_id else "/discussions/" ~ d.id) %}
+    {%- call(part) item(d.title, "/discussions/" ~ d.id, d.thread_id) %}
       {%- if part == "meta" %}·
         {%- if d.place %} {{ d.place }}{% endif %}
         {%- if d.author %} · {{ d.author }}{% endif %}
