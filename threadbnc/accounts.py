@@ -23,8 +23,8 @@ from urllib.parse import urlparse
 
 from . import store
 from .adapters import (
-    REDDIT_DOMAIN, RemoteAuthError, RemoteError, RemoteRejected, ThreadiverseAdapter, host_of, is_reddit_host,
-    is_rss,
+    REDDIT_DOMAIN, RemoteAuthError, RemoteError, RemoteRejected, ThreadiverseAdapter, host_of, is_bluesky,
+    is_reddit_host, is_rss,
 )
 from .bouncer import Bouncer
 from .db import utcnow
@@ -176,6 +176,8 @@ class Poster:
         if is_rss(ap_id):
             raise AccountError("Feed articles can't be commented on or voted on, and feeds can't be posted to. "
                                "Use ↗ Post to share the article in one of your communities.")
+        if is_bluesky(ap_id):
+            raise AccountError("ThreadBNC only reads Bluesky: reply to or like this on Bluesky itself.")
         if is_reddit_host(host_of(ap_id)):
             reddit = self.reddit_account()
             if reddit is None:

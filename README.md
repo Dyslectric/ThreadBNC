@@ -261,6 +261,19 @@ link is read once, when you follow it, to find the channel's id.
 - **The YouTube page** (`/youtube`, linked from Accounts) sets the largest video downloaded (2000 MB by default) and the **resolution** videos are saved at (1080p). They're saved as YouTube encoded them and aren't otherwise transcoded: the **Videos** media settings are for other videos. Lowering the resolution scales videos already saved at more than it down to it, in the background, at a steady quality (H.264, CRF 23); raising it doesn't bring back what was scaled down. "720p" is the shorter side, so upright videos and Shorts count the same. A community that doesn't archive videos saves no YouTube videos.
 - **Session:** YouTube often asks servers to "confirm you're not a bot". On the YouTube page, paste your browser's youtube.com cookies (a `cookies.txt` export or a `Cookie` header) and, optionally, a PO token. They're encrypted like account tokens and used only for these downloads. Saving a session retries videos that failed. A spare Google account is safest: YouTube can suspend accounts it thinks are downloading.
 
+## Bluesky
+
+Follow a Bluesky account by pasting its `@handle` (`@someone.bsky.social`) or profile link
+(`bsky.app/profile/…`) into the follow box, or a custom feed by its `bsky.app/profile/…/feed/…` link. They get
+their own **Bluesky** group in the sidebar and in the feed editor. Everything is read from Bluesky's public API
+(`public.api.bsky.app`), with no account.
+
+- **What arrives:** an account's own posts, not its replies or reposts; a feed's posts in the feed's order. A post's title is the start of its text. Pictures show like any other post's, a link card becomes the post's link (its article is saved as usual), and a quoted post shows as a quote under the text. Videos come as a stream rather than a file, so only their cover picture is kept.
+- **Checking** is every 30 minutes by default (`THREADBNC_BLUESKY_POLL_MINUTES`, at least 5): one request per account or feed, which also updates the likes on the posts it lists. A feed that's only shown to someone signed in to Bluesky can't be followed; the follow box says so.
+- **Replies:** opening a post reads its replies, ten deep, as its comments, in one request. They aren't read again within five minutes.
+- **Read only:** likes show as votes, but nothing can be liked, replied to or posted from here. Reposting a Bluesky post to one of your Lemmy communities works like any other repost.
+- **Keeping one post:** a `bsky.app/profile/…/post/…` link can be kept like any post link.
+
 ## Hashtags
 
 Follow a hashtag (`#selfhosted` in the Communities box) and public posts with it arrive in your feed from across
@@ -535,6 +548,7 @@ API (each call with `Authorization: Bearer $THREADBNC_API_TOKEN`):
 | `THREADBNC_REDDIT_POLL_MINUTES` | `60` | Default check interval for followed subreddits (at least 10) |
 | `THREADBNC_REDDIT_MIN_REQUEST_INTERVAL` | `2.0` | Seconds between requests to Reddit (at least 1) |
 | `THREADBNC_RSS_POLL_MINUTES` | `60` | Default check interval for followed feeds (at least 5) |
+| `THREADBNC_BLUESKY_POLL_MINUTES` | `30` | Default check interval for followed Bluesky accounts and feeds (at least 5) |
 | `THREADBNC_INBOX_POLL_MINUTES` | `5` | How often each account's inbox is checked (Reddit's: at least 10) |
 | `THREADBNC_MEDIA_DIR` | `<data>/media` | Where archived images/videos are stored |
 | `THREADBNC_MEDIA_MAX_MB` | `25` | Largest picture, video or audio file archived as it is; bigger files are skipped and linked to the original (the Storage page and each community can set this for each kind of file) |

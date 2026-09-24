@@ -16,14 +16,15 @@
   <section class="card">
     <h2>Communities</h2>
     {% if not communities %}<p class="muted">You don't follow any communities yet. <a href="/communities#follow">Follow some</a> first.</p>{% endif %}
-    {% set g = namespace(fedi=[], reddit=[], youtube=[], feeds=[]) %}
+    {% set g = namespace(fedi=[], reddit=[], youtube=[], bluesky=[], feeds=[]) %}
     {% for c in communities %}
       {% if is_reddit(c.canonical_ap_id) %}{% set g.reddit = g.reddit + [c] %}
+      {% elif is_bluesky(c.canonical_ap_id) %}{% set g.bluesky = g.bluesky + [c] %}
       {% elif is_youtube(c.canonical_ap_id) %}{% set g.youtube = g.youtube + [c] %}
       {% elif is_rss(c.canonical_ap_id) %}{% set g.feeds = g.feeds + [c] %}
       {% else %}{% set g.fedi = g.fedi + [c] %}{% endif %}
     {% endfor %}
-    {% for label, cs in [('Lemmy & PieFed', g.fedi), ('Reddit', g.reddit), ('YouTube', g.youtube), ('Feeds', g.feeds)] if cs %}
+    {% for label, cs in [('Lemmy & PieFed', g.fedi), ('Reddit', g.reddit), ('YouTube', g.youtube), ('Bluesky', g.bluesky), ('Feeds', g.feeds)] if cs %}
     <fieldset class="feed-picks">
       <legend class="small muted">{{ label }}</legend>
       {% for c in cs %}

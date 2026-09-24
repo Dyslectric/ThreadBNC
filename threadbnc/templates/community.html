@@ -14,14 +14,15 @@
         {% if c.title %}<p class="muted">{{ c.title }}</p>{% endif %}
       </div>
       <div class="row">
-      {% if not is_rss(c.canonical_ap_id) and not is_tag(c.canonical_ap_id) and (reddit_me if is_reddit(c.canonical_ap_id) else acting) %}<a class="button secondary small" href="/c/{{ c.id }}/submit">{{ icon('pencil') }} New post</a>{% endif %}
+      {% if not is_rss(c.canonical_ap_id) and not is_tag(c.canonical_ap_id) and not is_bluesky(c.canonical_ap_id) and (reddit_me if is_reddit(c.canonical_ap_id) else acting) %}<a class="button secondary small" href="/c/{{ c.id }}/submit">{{ icon('pencil') }} New post</a>{% endif %}
       {% if following and follow.polling %}
         <form method="post" action="/c/{{ c.id }}/refresh" class="inline" title="Check for new posts now{{ ', last checked ' ~ (follow.last_polled_at | ago) if follow.last_polled_at }}">
           <button class="secondary small">{{ icon('refresh') }} Refresh</button></form>
       {% endif %}
       {% if following %}
         <details class="settings">
-          {% set federated = not is_rss(c.canonical_ap_id) and not is_reddit(c.canonical_ap_id) and not is_tag(c.canonical_ap_id) %}
+          {% set federated = not is_rss(c.canonical_ap_id) and not is_reddit(c.canonical_ap_id) and not is_tag(c.canonical_ap_id)
+                             and not is_bluesky(c.canonical_ap_id) %}
           <summary class="button secondary small" title="{{ 'From the relay' if is_tag(c.canonical_ap_id) and follow.push_state == 'subscribed' else 'Pushed' if follow.push_state == 'subscribed' else ('Checked every ' ~ follow.poll_interval_minutes ~ ' min' if follow.polling else 'Not arriving') }} · unkept posts kept {{ (follow.retention_days ~ ' days') if follow.retention_days is not none else 'forever' }}">{{ icon('check') }} Following{{ icon('chevron-down', 'chev') }}</summary>
           <div class="card settings-card">
             <form method="post" action="/c/{{ c.id }}/follow-settings" class="stack">
@@ -33,6 +34,7 @@
             </form>
             <p class="small muted">A number of days, or "forever". Posts you keep never expire.
               {% if is_tag(c.canonical_ap_id) %}Replies and votes are read when you open a post.
+              {% elif is_bluesky(c.canonical_ap_id) %}Replies are read when you open a post; likes are updated with each check.
               {% else %}Comments are read when you open a post; votes on new posts are updated often at first, then less,
               and not after a week.{% endif %}</p>
             {% if federated %}

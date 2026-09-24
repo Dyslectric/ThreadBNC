@@ -36,7 +36,7 @@ from . import media as media_mod
 from . import storage as storage_mod
 from . import thumbs as thumbs_mod
 from .actor import ActorEndpoints
-from .adapters import RSS_PREFIX, RemoteError, host_of, is_reddit_host, is_rss, is_tag
+from .adapters import RSS_PREFIX, RemoteError, host_of, is_bluesky, is_reddit_host, is_rss, is_tag
 from .adapters.base import RSS_DOMAIN, TAG_DOMAIN
 from .accounts import Account, AccountError, Poster
 from .bouncer import PUSHED_POLL_MINUTES, Bouncer
@@ -262,10 +262,15 @@ def is_reddit(ap_id: str | None) -> bool:
 
 def chandle(name: str, ap_id: str | None, plain: bool = False) -> Markup | str:
     """A community's handle: r/name for subreddits, the feed's title for feeds
-    (the channel's name for YouTube), #name for hashtags,
+    (the channel's name for YouTube), #name for hashtags, @handle for Bluesky
+    accounts and the feed's name for Bluesky feeds,
     !name@host otherwise (with the host dimmed unless `plain`)."""
     if is_reddit(ap_id):
         return f"r/{name}"
+    if is_bluesky(ap_id):
+        kind = "Bluesky feed" if "/feed/" in (ap_id or "") else "Bluesky"
+        name = name if "/feed/" in (ap_id or "") else f"@{name}"
+        return f"{name} ({kind})" if plain else Markup('{}<span class="muted"> · {}</span>').format(name, kind)
     if is_tag(ap_id):
         return f"#{name}"
     if is_youtube_feed(ap_id):
@@ -363,8 +368,9 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     templates.env.filters.update(ago=ago, absolute=absolute, clock=clock,safe_url=safe_url, host=host_of,
                                  looks_like_media=looks_like_media, size=human_size, youtube_video=youtube.video_id,
                                  running_time=running_time)
-    # A Lemmy or PieFed community (not a subreddit or a feed): one that can be pushed.
+    # A Lemmy or PieFed community (not a subreddit, a feed or Bluesky): one that can be pushed.
     templates.env.tests["is_federated"] = lambda ap_id: (not is_rss(ap_id) and not is_tag(ap_id)
+                                                         and not is_bluesky(ap_id)
                                                          and not is_reddit_host(host_of(ap_id)))
     def static_url(name: str) -> str:
         # Cache-bust with the file's mtime so UI updates show up without a hard reload.
@@ -413,6 +419,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                                  password_login=bool(settings.password),
                                  proxy_login=bool(settings.proxy_auth_header), chandle=chandle,
                                  is_reddit=is_reddit, is_rss=is_rss, is_tag=is_tag, is_youtube=is_youtube_feed,
+                                 is_bluesky=is_bluesky,
                                  actor_handle=bouncer.actor.handle if bouncer.actor else None,
                                  reading_articles=bouncer.articles.enabled)
     app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
@@ -1127,6 +1134,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                    GROUP BY c.id ORDER BY c.name""").fetchall()
         return render(request, "communities.html", follows=follows, others=others, push_handle=push_handle(),
                       default_poll=settings.default_follow_poll_minutes, reddit_poll=settings.reddit_poll_minutes,
+                      bluesky_poll=settings.bluesky_poll_minutes,
                       default_days=settings.default_follow_retention_days, reddit=bouncer.reddit.status())
 
     @app.get("/communities.opml")
@@ -1426,7 +1434,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                             "JOIN objects o ON o.id=t.root_object_id WHERE o.canonical_ap_id=?",
                             (p.ap_id,)).fetchone()
                         live.append({"post": p, "thread": th,
-                                     "retain_url": p.ap_id if is_reddit_host(ref.domain)
+                                     "retain_url": p.ap_id if is_reddit_host(ref.domain) or is_bluesky(p.ap_id)
                                      else f"https://{ref.domain}/post/{p.local_id}"})
             except RemoteError as exc:
                 live_error = str(exc)
@@ -2233,7 +2241,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         out = []
         for r in rows:
             c = dict(r, host=host_of(r["canonical_ap_id"]), label=chandle(r["name"], r["canonical_ap_id"], True))
-            if is_rss(r["canonical_ap_id"]):
+            if is_rss(r["canonical_ap_id"]) or is_bluesky(r["canonical_ap_id"]):
                 continue
             if is_reddit(r["canonical_ap_id"]):
                 if not reddit_me or not c["followed"]:

@@ -49,10 +49,15 @@
   </span>
 {%- endmacro %}
 
+{# Who posted something: name@server, @handle on Bluesky, and just the name for a feed's author. #}
+{% macro byname(username, instance, ap_id=none) -%}
+{% if instance == 'bsky.app' %}@{{ username }}{% elif ap_id and is_rss(ap_id) %}{{ username }}{% else %}{{ username }}@{{ instance }}{% endif %}
+{%- endmacro %}
+
 {# Where a duplicated post was posted: community and poster for each copy. #}
 {% macro copy_where(c) -%}
 <a href="/t/{{ c.id }}" class="copy-where"><span class="pc-community">{{ chandle(c.cname, c.c_ap) }}</span></a>
-<span class="muted">by</span> <span>{{ c.username }}@{{ c.a_instance }}</span>
+<span class="muted">by</span> <span>{{ byname(c.username, c.a_instance) }}</span>
 {%- endmacro %}
 
 {% macro state_badges(o) -%}

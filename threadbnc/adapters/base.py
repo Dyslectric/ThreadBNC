@@ -221,6 +221,42 @@ def normalize_tag(text: str) -> str:
     return tag
 
 
+# Bluesky accounts and custom feeds, read through its public API (adapters/bluesky.py).
+# Everything from there is known by its bsky.app address: accounts
+# https://bsky.app/profile/<did>, feeds .../profile/<did>/feed/<name>, posts and
+# replies .../profile/<did>/post/<rkey>. A followed account's "community" name is
+# its DID, a feed's "<did>/feed/<name>".
+BSKY_DOMAIN = "bsky.app"
+_BSKY_PROFILE = re.compile(r"^/profile/([^/?#]+)(?:/(feed|post)/([^/?#]+))?/?$")
+_BSKY_HANDLE = re.compile(r"^@?([a-z0-9-]+(?:\.[a-z0-9-]+)+)$", re.I)
+_AT_FEED = re.compile(r"^at://([^/]+)/app\.bsky\.feed\.generator/([^/?#]+)$")
+
+
+def is_bluesky(ap_id: str | None) -> bool:
+    return host_of(ap_id or "") == BSKY_DOMAIN
+
+
+def _bluesky_ref(text: str) -> CommunityRef | None:
+    """A Bluesky account or feed: its bsky.app link, @handle, or a feed's at:// address."""
+    m = _AT_FEED.match(text)
+    if m:
+        return CommunityRef(BSKY_DOMAIN, f"{m.group(1)}/feed/{m.group(2)}", BSKY_DOMAIN)
+    if text.startswith("@") and text.count("@") == 1:
+        m = _BSKY_HANDLE.match(text)
+        if not m:
+            raise ValueError(f"Not a Bluesky handle: {text}")
+        return CommunityRef(BSKY_DOMAIN, m.group(1).lower(), BSKY_DOMAIN)
+    parsed = urlparse(text if "://" in text else "https://" + text)
+    if (parsed.hostname or "").lower() not in (BSKY_DOMAIN, "www." + BSKY_DOMAIN):
+        return None
+    m = _BSKY_PROFILE.match(parsed.path or "")
+    if not m or m.group(2) == "post":
+        raise ValueError("Not a Bluesky account or feed (expected https://bsky.app/profile/name "
+                         "or https://bsky.app/profile/name/feed/feed-name)")
+    actor = m.group(1) if m.group(1).startswith("did:") else m.group(1).lower()
+    return CommunityRef(BSKY_DOMAIN, f"{actor}/feed/{m.group(3)}" if m.group(2) else actor, BSKY_DOMAIN)
+
+
 def is_reddit_host(host: str | None) -> bool:
     host = (host or "").lower().split(":")[0]
     return host in ("reddit.com", "redd.it") or host.endswith(".reddit.com")
@@ -256,6 +292,11 @@ def parse_thread_url(url: str) -> ThreadRef:
     path = parsed.path or "/"
     if is_reddit_host(domain):
         return _reddit_thread_ref(domain, path)
+    if domain in (BSKY_DOMAIN, "www." + BSKY_DOMAIN):
+        m = _BSKY_PROFILE.match(path)
+        if not m or m.group(2) != "post":
+            raise ValueError("Not a Bluesky post (expected https://bsky.app/profile/name/post/id)")
+        return ThreadRef(BSKY_DOMAIN, "post", f"{m.group(1)}/{m.group(3)}")
     if parsed.port:
         domain = f"{domain}:{parsed.port}"
     for pat in _COMMENT_PATTERNS:
@@ -273,8 +314,12 @@ def parse_community_ref(text: str) -> CommunityRef:
     """Accepts !name@host, name@host, https://host/c/name, https://host/c/name@home,
     subreddits: r/name or https://www.reddit.com/r/name, and feeds: rss:<url>, a
     YouTube channel or playlist link, or any other web address (a feed, or a
-    page that links to one), and hashtags: #name or tag:name."""
+    page that links to one), hashtags: #name or tag:name, and Bluesky accounts
+    and feeds: @handle.bsky.social or a bsky.app/profile link."""
     text = text.strip()
+    bluesky = _bluesky_ref(text)
+    if bluesky:
+        return bluesky
     if text.startswith("#") or text.lower().startswith(TAG_PREFIX):
         tag = normalize_tag(text[len(TAG_PREFIX):] if text.lower().startswith(TAG_PREFIX) else text)
         return CommunityRef(TAG_DOMAIN, tag, TAG_DOMAIN)

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import when, state_badges, votes, icon, keep_button, pager as load_more %}
+{% from "_macros.html" import when, state_badges, votes, byname, icon, keep_button, pager as load_more %}
 {% block title %}{{ ('Search: ' ~ q) if q else 'Search' }}{% endblock %}
 
 {% macro earlier(h) -%}
@@ -14,7 +14,7 @@
 
 {% macro where(h) -%}
 {% if h.cname %}<a class="pc-community" href="/c/{{ h.cid }}">{{ chandle(h.cname, h.c_ap) }}</a> · {% endif %}
-{% if h.username %}<span>{{ h.username }}@{{ h.a_instance }}</span> · {% endif %}
+{% if h.username %}<span>{{ byname(h.username, h.a_instance) }}</span> · {% endif %}
 {{ when(h.created_at or h.first_seen_at) }}
 {%- endmacro %}
 
