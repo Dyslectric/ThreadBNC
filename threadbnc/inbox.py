@@ -54,6 +54,8 @@ class Inbox:
         """Why this account's inbox can't be checked, or None."""
         if account.status != "ok":
             return f"{account.handle} needs to log in again (Accounts page)."
+        if account.is_mastodon:
+            return "Mastodon notifications don't come to the Inbox yet."
         if account.is_reddit:
             status = self.poster.bouncer.reddit.status()
             if not status or not status.get("can_inbox"):
@@ -178,6 +180,8 @@ class Inbox:
                 "FROM accounts a")}
         out = []
         for account in self.poster.list():
+            if account.is_mastodon:  # not checked (can_check), so not listed either
+                continue
             r = rows.get(account.id)
             out.append({"account": account, "checked_at": r["inbox_checked_at"] if r else None,
                         "error": self.can_check(account) or (r["inbox_error"] if r else None),

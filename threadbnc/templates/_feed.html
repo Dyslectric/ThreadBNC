@@ -195,10 +195,11 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
    the counts each copy's server reported, for a post posted more than once. #}
 {% macro tile_votes(i, breakdown=False) -%}
 {% set bsky = is_bluesky(i.canonical_ap_id) %}
-{% if is_rss(i.canonical_ap_id) or (bsky and not bluesky_me) %}{{ votes(i.upvotes, i.downvotes, i.score) }}{% else %}
+{% set masto = is_tag(i.c_ap) %}
+{% if is_rss(i.canonical_ap_id) or (bsky and not bluesky_me) or (masto and not mastodon_me) %}{{ votes(i.upvotes, i.downvotes, i.score) }}{% else %}
 {% set eligible = [] %}{% set handles = [] %}
 {% for c in i.copies %}
-  {% set acct = none if is_rss(c.canonical_ap_id) or is_tag(c.c_ap) else (reddit_me if is_reddit(c.canonical_ap_id) else bluesky_me if is_bluesky(c.canonical_ap_id) else acting) %}
+  {% set acct = none if is_rss(c.canonical_ap_id) else (mastodon_me if is_tag(c.c_ap) else reddit_me if is_reddit(c.canonical_ap_id) else bluesky_me if is_bluesky(c.canonical_ap_id) else acting) %}
   {% if acct %}{% set _ = eligible.append(c) %}{% if acct.handle not in handles %}{% set _ = handles.append(acct.handle) %}{% endif %}{% endif %}
 {% endfor %}
 {% set reddit = is_reddit(i.canonical_ap_id) %}
@@ -206,7 +207,7 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
 {% set every = (' on all ' ~ eligible | length ~ ' copies') if eligible | length > 1 else '' %}
 {% set as_whom = handles | join(' and ') %}
 <div class="tile-votes obj-actions {{ 'reddit-votes' if reddit else 'activitypub-votes' }}"{% if eligible %} id="a{{ eligible[0].oid }}"{% endif %}>
-  {% for direction, word, glyph in ([(1, 'like', '▲')] if bsky else [(1, 'upvote', '▲'), (-1, 'downvote', '▼')]) %}
+  {% for direction, word, glyph in ([(1, 'like', '▲')] if bsky or masto else [(1, 'upvote', '▲'), (-1, 'downvote', '▼')]) %}
     {% set on = mine == direction %}
     {% set count = i.upvotes if direction == 1 else i.downvotes %}
     {% set label = (('Remove ' ~ word) if on else (word | capitalize)) ~ ((' as ' ~ as_whom ~ every) if eligible else '') %}

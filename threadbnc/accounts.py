@@ -11,6 +11,11 @@ Bluesky: signing in with a handle and an app password adds your Bluesky
 account (adapters/bluesky.py), which works the same way: anything on Bluesky
 is done as it. Its session is refreshed before it runs out, whenever it's used.
 
+Mastodon: signing in on your Mastodon server's own page (OAuth; see
+adapters/mastodon.py) adds your Mastodon account (or GoToSocial, Akkoma...).
+Posts that came from hashtags, and their replies, are liked and replied to as
+it, the same way.
+
 Every write happens on the account's *home* server (the only place its token
 is valid), so targets are resolved there first by ActivityPub id. What the
 server returns is recorded in the archive immediately -- your comment shows up
@@ -19,19 +24,25 @@ in the thread without waiting for it to federate to the community's server.
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+import json
 import logging
 import re
+import secrets
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any, Callable, TypeVar
 from urllib.parse import urlparse
 
 from . import store
 from .adapters import (
-    BSKY_DOMAIN, REDDIT_DOMAIN, RemoteAuthError, RemoteError, RemoteRejected, ThreadiverseAdapter, host_of,
-    is_bluesky, is_reddit_host, is_rss,
+    BSKY_DOMAIN, REDDIT_DOMAIN, TAG_DOMAIN, RemoteAuthError, RemoteError, RemoteRejected, ThreadiverseAdapter,
+    host_of, is_bluesky, is_reddit_host, is_rss,
 )
 from .bouncer import Bouncer
-from .db import utcnow
+from .db import parse_ts, utcnow
 from .vault import TokenVault, VaultError
 
 log = logging.getLogger("threadbnc.accounts")
@@ -42,6 +53,12 @@ EXCERPT_CHARS = 500  # how much of a feed article a post of it quotes
 NO_REDDIT_LOGIN = ("To vote, comment or post on Reddit, log in with Reddit on the Reddit page (an app-only "
                    "connection can only read).")
 NO_BLUESKY_LOGIN = "To like, reply or post on Bluesky, log in to Bluesky on the Accounts page."
+NO_MASTODON_LOGIN = ("To like or reply to posts from hashtags, sign in to your Mastodon account on the "
+                     "Accounts page.")
+MASTODON = "mastodon"  # the software of a Mastodon account, whatever its server runs
+MASTODON_PENDING = "mastodon_signin"  # the sign-in waiting for your server to send you back
+MASTODON_APPS = "mastodon_apps"  # ThreadBNC's app on each server: {domain: {redirect_uri, client_id, secret_enc}}
+MASTODON_WAIT = timedelta(minutes=15)
 REDDIT_READ_ONLY_LOGIN = ("Connect Reddit again on the Reddit page to allow voting, commenting and posting; "
                           "this sign-in was made before ThreadBNC asked for that and can only read.")
 T = TypeVar("T")
@@ -84,6 +101,7 @@ class Account:
     is_default: bool
     last_error: str | None
     is_admin: bool = False
+    software: str | None = None
 
     @property
     def is_reddit(self) -> bool:
@@ -94,20 +112,27 @@ class Account:
         return self.domain == BSKY_DOMAIN
 
     @property
+    def is_mastodon(self) -> bool:
+        return self.software == MASTODON
+
+    @property
     def separate(self) -> bool:
-        """Used only for things on its own site (Reddit, Bluesky), never picked in the header."""
-        return self.is_reddit or self.is_bluesky
+        """Used only for things on its own site (Reddit, Bluesky), or from
+        hashtags (Mastodon), never picked in the header."""
+        return self.is_reddit or self.is_bluesky or self.is_mastodon
 
     @property
     def handle(self) -> str:
         if self.is_reddit:
             return f"u/{self.username}"
+        if self.is_mastodon:
+            return f"@{self.username}@{self.domain}"
         return f"@{self.username}" if self.is_bluesky else f"{self.username}@{self.domain}"
 
     @classmethod
     def from_row(cls, r: Any) -> "Account":
         return cls(r["id"], r["domain"], r["username"], r["actor_ap_id"], r["display_name"], r["status"],
-                   bool(r["is_default"]), r["last_error"], bool(r["is_admin"]))
+                   bool(r["is_default"]), r["last_error"], bool(r["is_admin"]), r["software"])
 
 
 def _excerpt(body: str | None) -> str:
@@ -156,8 +181,8 @@ class Poster:
         return Account.from_row(r) if r else None
 
     def default(self) -> Account | None:
-        """The account to act as when none is picked. Never the Reddit or
-        Bluesky account, which are only ever used for things there."""
+        """The account to act as when none is picked. Never the Reddit,
+        Bluesky or Mastodon account, which are only ever used for their own things."""
         accounts = [a for a in self.list() if not a.separate]
         return next((a for a in accounts if a.is_default), accounts[0] if accounts else None)
 
@@ -200,6 +225,11 @@ class Poster:
             if bluesky is None:
                 raise AccountError(NO_BLUESKY_LOGIN)
             return bluesky
+        if self._from_hashtag(ap_id):
+            mastodon = self.mastodon_account()
+            if mastodon is None:
+                raise AccountError(NO_MASTODON_LOGIN)
+            return mastodon
         if is_reddit_host(host_of(ap_id)):
             reddit = self.reddit_account()
             if reddit is None:
@@ -209,6 +239,14 @@ class Poster:
         if account.separate:
             raise AccountError("Add a Lemmy or PieFed account on the Accounts page to do that.")
         return account
+
+    def _from_hashtag(self, ap_id: str) -> bool:
+        """A post or reply that came from a hashtag: from anywhere on the
+        fediverse, so acted on as your Mastodon account."""
+        with self.db.connect() as conn:
+            return conn.execute("SELECT 1 FROM objects o JOIN archived_threads t ON t.id=o.thread_id "
+                                "WHERE o.canonical_ap_id=? AND t.source_domain=?",
+                                (ap_id, TAG_DOMAIN)).fetchone() is not None
 
     # -- the Bluesky account -------------------------------------------------------
     def bluesky_account(self) -> Account | None:
@@ -251,6 +289,85 @@ class Poster:
             log.info("the Bluesky session can't be used: %s", exc)
             return None
 
+    # -- the Mastodon account -------------------------------------------------------
+    def mastodon_account(self) -> Account | None:
+        return next((a for a in self.list() if a.is_mastodon), None)
+
+    def _setting(self, key: str) -> dict[str, Any]:
+        raw = self.db.get_setting(key)
+        return json.loads(raw) if raw else {}
+
+    def _save_setting(self, key: str, value: dict[str, Any] | None) -> None:
+        with self.db.transaction() as conn:
+            if value is None:
+                conn.execute("DELETE FROM app_settings WHERE key=?", (key,))
+            else:
+                conn.execute("INSERT INTO app_settings(key, value) VALUES (?, ?) "
+                             "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, json.dumps(value)))
+
+    def start_mastodon(self, server: str, redirect_uri: str) -> str:
+        """Begin signing in to a Mastodon account. Returns the page on its
+        server to approve ThreadBNC on."""
+        domain = _domain_from(server)
+        adapter = self.bouncer.mastodon_for(domain)
+        apps = self._setting(MASTODON_APPS)
+        app = apps.get(domain)
+        try:
+            if not app or app["redirect_uri"] != redirect_uri:  # an app is registered for one return address
+                adapter.check_server()
+                client_id, secret = adapter.register_app(redirect_uri)
+                app = {"redirect_uri": redirect_uri, "client_id": client_id, "secret_enc": self.vault.encrypt(secret)}
+                self._save_setting(MASTODON_APPS, {**apps, domain: app})
+        except RemoteError as exc:
+            raise AccountError(f"{domain} doesn't look like a Mastodon server (or one with Mastodon's API, like "
+                               f"GoToSocial or Akkoma): {exc}. For Lemmy or PieFed, use the form below.") from exc
+        state, verifier = secrets.token_urlsafe(24), secrets.token_urlsafe(48)
+        challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
+        url = adapter.authorize_url(app["client_id"], redirect_uri, state, challenge)
+        self._save_setting(MASTODON_PENDING, {"domain": domain, "state": state, "verifier": verifier,
+                                              "created_at": utcnow(), "authorize_url": url})
+        return url
+
+    def mastodon_pending_url(self) -> str | None:
+        """The approval page of a sign-in that's been started, if any."""
+        pending = self._setting(MASTODON_PENDING)
+        started = parse_ts(pending.get("created_at"))
+        if not started or parse_ts(utcnow()) - started > MASTODON_WAIT:  # type: ignore[operator]
+            return None
+        return pending["authorize_url"]
+
+    def finish_mastodon(self, state: str, code: str | None, error: str | None) -> tuple[Account | None, str]:
+        """Your server sent you back. Returns the account (None if it didn't
+        work) and what to tell you."""
+        pending = self._setting(MASTODON_PENDING)
+        if not pending or not hmac.compare_digest(pending["state"], state or ""):
+            return None, "That Mastodon sign-in link is unknown or was already used. Start again."
+        self._save_setting(MASTODON_PENDING, None)  # single use
+        domain = pending["domain"]
+        started = parse_ts(pending["created_at"])
+        if started is None or parse_ts(utcnow()) - started > MASTODON_WAIT:  # type: ignore[operator]
+            return None, "That Mastodon sign-in took too long. Start again."
+        if error or not code:
+            return None, (f"You declined on {domain}, so nothing was signed in." if error == "access_denied"
+                          else f"{domain} didn't finish the sign-in ({error or 'no code'}).")
+        app = self._setting(MASTODON_APPS).get(domain)
+        if not app:
+            return None, "ThreadBNC's app on that server was forgotten. Start again."
+        adapter = self.bouncer.mastodon_for(domain)
+        try:
+            token = adapter.exchange_code(app["client_id"], self.vault.decrypt(app["secret_enc"]), code,
+                                          app["redirect_uri"], pending["verifier"])
+        except (RemoteError, VaultError) as exc:
+            return None, f"{domain} refused the sign-in: {exc}"
+        before = self.mastodon_account()
+        try:
+            account = self.add_session(domain, token, adapter)
+        except AccountError as exc:
+            return None, str(exc)
+        if before and before.id != account.id:  # one Mastodon account: signing in as another replaces it
+            self.remove(before.id)
+        return account, f"Signed in to Mastodon as {account.handle}."
+
     def add(self, server: str, username: str, password: str, totp: str | None = None) -> Account:
         """Log in and keep the resulting session token (encrypted). The password
         is used once and never stored. Re-adding an account refreshes its token."""
@@ -266,11 +383,11 @@ class Poster:
             raise AccountError(f"Couldn't reach {domain}: {exc}") from exc
         return self.add_session(domain, token)
 
-    def add_session(self, domain: str, token: str) -> Account:
+    def add_session(self, domain: str, token: str, adapter: ThreadiverseAdapter | None = None) -> Account:
         """Keep a session the server gave us (after a password or single
         sign-on login), encrypted, and learn who it belongs to."""
         try:
-            adapter = self.bouncer.adapter_for(domain)
+            adapter = adapter or self.bouncer.adapter_for(domain)
             me = adapter.whoami(token)
             roles = adapter.my_roles(token)
         except RemoteAuthError as exc:
@@ -279,8 +396,9 @@ class Poster:
             raise AccountError(f"Couldn't reach {domain}: {exc}") from exc
         now = utcnow()
         with self.db.transaction() as conn:
-            first = domain != BSKY_DOMAIN and conn.execute(
-                "SELECT COUNT(*) FROM accounts WHERE domain NOT IN (?,?)", (REDDIT_DOMAIN, BSKY_DOMAIN)).fetchone()[0] == 0
+            first = domain != BSKY_DOMAIN and adapter.software != MASTODON and conn.execute(
+                "SELECT COUNT(*) FROM accounts WHERE domain NOT IN (?,?) AND COALESCE(software, '')!=?",
+                (REDDIT_DOMAIN, BSKY_DOMAIN, MASTODON)).fetchone()[0] == 0
             conn.execute(
                 "INSERT INTO accounts(domain, software, username, actor_ap_id, display_name, token_enc, status, "
                 "is_default, is_admin, added_at) VALUES (?,?,?,?,?,?,'ok',?,?,?) "
@@ -344,7 +462,8 @@ class Poster:
             conn.execute("DELETE FROM accounts WHERE id=?", (account_id,))
             if not conn.execute("SELECT 1 FROM accounts WHERE is_default=1").fetchone():
                 conn.execute("UPDATE accounts SET is_default=1 WHERE id=(SELECT MIN(id) FROM accounts "
-                             "WHERE domain NOT IN (?,?))", (REDDIT_DOMAIN, BSKY_DOMAIN))
+                             "WHERE domain NOT IN (?,?) AND COALESCE(software, '')!=?)",
+                             (REDDIT_DOMAIN, BSKY_DOMAIN, MASTODON))
 
     # -- helpers ----------------------------------------------------------------
     def _session(self, account: Account) -> tuple[ThreadiverseAdapter, str]:
@@ -357,7 +476,9 @@ class Poster:
             row = conn.execute("SELECT token_enc FROM accounts WHERE id=?", (account.id,)).fetchone()
         if row is None or not row["token_enc"] or account.status != "ok":
             raise AccountError(f"{account.handle} needs to log in again (Accounts page).")
-        adapter, token = self.bouncer.adapter_for(account.domain), self.vault.decrypt(row["token_enc"])
+        adapter = (self.bouncer.mastodon_for(account.domain) if account.is_mastodon
+                   else self.bouncer.adapter_for(account.domain))
+        token = self.vault.decrypt(row["token_enc"])
         if account.is_bluesky:  # its access token lasts a couple of hours: renew it first when it's nearly out
             fresh = adapter.fresh(token)  # type: ignore[attr-defined]
             if fresh != token:

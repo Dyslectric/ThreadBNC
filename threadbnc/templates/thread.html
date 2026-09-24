@@ -44,16 +44,19 @@
    Votes go to every copy of a squashed comment or duplicated post. Copies on
    Reddit are acted on as your Reddit account (reddit_me), automatically; they
    are left out when you aren't logged in with Reddit. The same goes for
-   Bluesky (bluesky_me), where a vote is a like and nothing can be edited. #}
+   Bluesky (bluesky_me), where a vote is a like and nothing can be edited,
+   and for posts from hashtags, done as your Mastodon account (mastodon_me):
+   likes too, and your replies can be deleted but not edited. #}
 {% macro actions(n, is_post=False) -%}
 {% set w = [] %}{% set hs = [] %}
-{% for m in n.members %}{% set acct = none if is_rss(m.o.canonical_ap_id) or is_tag(t.c_ap) else (reddit_me if is_reddit(m.o.canonical_ap_id) else bluesky_me if is_bluesky(m.o.canonical_ap_id) else me) %}
+{% for m in n.members %}{% set acct = none if is_rss(m.o.canonical_ap_id) else (mastodon_me if is_tag(m.src.c_ap) else reddit_me if is_reddit(m.o.canonical_ap_id) else bluesky_me if is_bluesky(m.o.canonical_ap_id) else me) %}
   {% if acct %}{% set _ = w.append(m) %}{% if acct.handle not in hs %}{% set _ = hs.append(acct.handle) %}{% endif %}{% endif %}{% endfor %}
 {% if w %}
   {% set o = w[0].o %}
   {% set bsky = is_bluesky(o.canonical_ap_id) %}
-  {% set who = reddit_me if is_reddit(o.canonical_ap_id) else bluesky_me if bsky else me %}
-  {% set up_word, remove_up = ('Like', 'Remove like') if bsky else ('Upvote', 'Remove upvote') %}
+  {% set masto = is_tag(w[0].src.c_ap) %}
+  {% set who = mastodon_me if masto else reddit_me if is_reddit(o.canonical_ap_id) else bluesky_me if bsky else me %}
+  {% set up_word, remove_up = ('Like', 'Remove like') if bsky or masto else ('Upvote', 'Remove upvote') %}
   {% set as_whom = hs | join(' and ') %}
   {% set ns = namespace(mine=0) %}
   {% for m in w %}{% if not ns.mine %}{% set ns.mine = my_votes.get(m.o.canonical_ap_id, 0) %}{% endif %}{% endfor %}
@@ -71,7 +74,7 @@
         data-on="{{ remove_up }} as {{ as_whom ~ every }}" data-off="{{ up_word }} as {{ as_whom ~ every }}"
         aria-label="{{ label }}{{ (', ' ~ n.agg.upvotes ~ ' so far') if n.agg.upvotes is not none }}"><span aria-hidden="true">▲ {{ n.agg.upvotes if n.agg.upvotes is not none else '' }}</span></button>
     </form>
-    {% if not bsky %}
+    {% if not (bsky or masto) %}
     <form method="post" action="/o/{{ o.id }}/vote" class="inline" data-inplace="a{{ o.id }}" data-vote>
       <input type="hidden" name="score" value="{{ 0 if mine == -1 else -1 }}">
       {% for m in also %}<input type="hidden" name="also" value="{{ m.o.id }}">{% endfor %}
@@ -100,7 +103,7 @@
       <details class="reply-box">
         <summary>Reply</summary>
         <form method="post" action="/t/{{ t.id }}/reply" class="stack">
-          <textarea name="body" rows="4" required placeholder="Reply as {{ as_whom }} {{ '(plain text, up to 300 characters)' if bsky else '(Markdown)' }}"{% if bsky %} maxlength="300"{% endif %}></textarea>
+          <textarea name="body" rows="4" required placeholder="Reply as {{ as_whom }} {{ '(plain text, up to 300 characters)' if bsky else '(plain text)' if masto else '(Markdown)' }}"{% if bsky %} maxlength="300"{% endif %}></textarea>
           {% if also %}
             {% set items = [] %}
             {% for m in w %}{% set _ = items.append((m.o.id, 'Reply to the one in ' ~ chandle(m.src.cname, m.src.c_ap, True), True)) %}{% endfor %}
@@ -111,12 +114,13 @@
       </details>
     {% endif %}
     {% if owned %}
-      {% if not bsky %}<a href="/o/{{ o.id }}/edit">Edit</a>{% endif %}
+      {% if not (bsky or masto) %}<a href="/o/{{ o.id }}/edit">Edit</a>{% endif %}
       <details class="reply-box">
         <summary>{{ 'Restore' if o.cur_deleted else 'Delete' }}</summary>
         <form method="post" action="/o/{{ o.id }}/delete">
           {% if o.cur_deleted and who.is_reddit %}<p class="muted">Reddit can't bring back deleted posts or comments.</p>
           {% elif o.cur_deleted and bsky %}<p class="muted">Bluesky can't bring back deleted posts.</p>
+          {% elif o.cur_deleted and masto %}<p class="muted">Mastodon can't bring back deleted posts.</p>
           {% elif o.cur_deleted %}<input type="hidden" name="restore" value="1">
             <button class="small">Restore on {{ who.domain }}</button>
           {% else %}<p class="muted">Deletes it on the server. The archive keeps what it has seen.</p>
@@ -291,13 +295,13 @@
 {% if talk %}{% include "_discussions.html" %}{% endif %}
 
 {% set writable_copies = [] %}{% set hs = [] %}
-{% for pc in post_copies %}{% set acct = none if is_rss(pc.o.canonical_ap_id) or is_tag(t.c_ap) else (reddit_me if pc.reddit else bluesky_me if is_bluesky(pc.o.canonical_ap_id) else me) %}
+{% for pc in post_copies %}{% set acct = none if is_rss(pc.o.canonical_ap_id) else (mastodon_me if is_tag(pc.t.c_ap) else reddit_me if pc.reddit else bluesky_me if is_bluesky(pc.o.canonical_ap_id) else me) %}
   {% if acct %}{% set _ = writable_copies.append(pc) %}{% if acct.handle not in hs %}{% set _ = hs.append(acct.handle) %}{% endif %}{% endif %}{% endfor %}
 {% set as_whom = hs | join(' and ') %}
 {% if not t.trashed_at and writable_copies %}
 <section class="card compose">
   <form method="post" action="/t/{{ t.id }}/reply" class="stack">
-    <textarea name="body" rows="4" required placeholder="Add a comment as {{ as_whom }} {{ '(plain text, up to 300 characters)' if is_bluesky(o.canonical_ap_id) else '(Markdown)' }}"{% if is_bluesky(o.canonical_ap_id) %} maxlength="300"{% endif %} id="compose" aria-label="Your comment"></textarea>
+    <textarea name="body" rows="4" required placeholder="Add a comment as {{ as_whom }} {{ '(plain text, up to 300 characters)' if is_bluesky(o.canonical_ap_id) else '(plain text)' if is_tag(t.c_ap) else '(Markdown)' }}"{% if is_bluesky(o.canonical_ap_id) %} maxlength="300"{% endif %} id="compose" aria-label="Your comment"></textarea>
     {% if writable_copies | length > 1 %}
       {% set items = [] %}
       {% for pc in writable_copies %}{% set _ = items.append((pc.o.id, chandle(pc.t.cname, pc.t.c_ap, True) ~ ' (posted by ' ~ pc.o.username ~ ')' ~ (' · locked' if pc.o.cur_locked else ''), not (pc.o.cur_locked or pc.o.cur_removed or pc.o.cur_deleted))) %}{% endfor %}
@@ -311,7 +315,8 @@
 <p class="small muted">This is on Bluesky. <a href="/accounts#bluesky">Log in to Bluesky</a> to like and reply here, or do it
   through <a href="{{ o.canonical_ap_id | safe_url }}" rel="noreferrer noopener nofollow" target="_blank">the original</a>.</p>
 {% elif is_tag(t.c_ap) and not t.trashed_at %}
-<p class="small muted">This came from a hashtag, from {{ o.a_instance or 'another server' }}. Reply or vote there, through
+<p class="small muted">This came from a hashtag, from {{ o.a_instance or 'another server' }}.
+  <a href="/accounts#mastodon">Sign in to Mastodon</a> to like and reply here, or do it through
   <a href="{{ o.canonical_ap_id | safe_url }}" rel="noreferrer noopener nofollow" target="_blank">the original</a>{% if accounts %},
   or <a href="/t/{{ t.id }}/repost">repost it</a> to discuss it on your own server{% endif %}.</p>
 {% elif not accounts %}
