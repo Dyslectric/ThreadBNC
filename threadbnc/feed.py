@@ -276,6 +276,7 @@ def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: lis
         # screen: when they last were ("" never). None when they're fresh, or it has none.
         kind = preview_kind(i["source_domain"], i["c_ap"], i["url"])
         i["preview"] = (i["previewed_at"] or "") if preview_due(kind, i["previewed_at"], now) else None
+        i["full_text"] = kind == "youtube"  # a video's description is shown whole, not as an excerpt
         i["excerpt"] = excerpt(i["body"])
         i["thumb"] = thumbs.get(i["oid"])
         i["article"] = i["oid"] in readable

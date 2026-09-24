@@ -126,7 +126,7 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
 {# The post's own Markdown, distinct from the linked article. #}
 {% macro post_content_link(i, short=False) -%}
 {% if i.body_link %}<a class="act direct-link" href="{{ i.body_link }}" target="_blank" rel="noreferrer noopener nofollow" title="Open the link" aria-label="Open link">{{ icon('link') }}<span{% if short %} class="sr-only"{% endif %}>Open link</span></a>
-{% elif i.body %}<a class="act read-post" href="/t/{{ i.id }}#post-text" title="Show the post text here" aria-expanded="false">{{ icon('article') }}<span{% if short %} class="sr-only"{% endif %}>Post text</span></a>{% endif %}
+{% elif i.body and not i.full_text %}<a class="act read-post" href="/t/{{ i.id }}#post-text" title="Show the post text here" aria-expanded="false">{{ icon('article') }}<span{% if short %} class="sr-only"{% endif %}>Post text</span></a>{% endif %}
 {%- endmacro %}
 
 {% macro repost_link(i, short=False) -%}
@@ -261,7 +261,8 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
       {{ icon('refresh') }}{% for ch in i.change_summary %}<span class="pill {{ ch.tone }}">{{ ch.label }}{% if ch.n > 1 %} ×{{ ch.n }}{% endif %}</span>{% endfor %}
       <span class="muted">{{ when(i.last_change) }}</span></a>
     {% endif %}
-    {% if i.excerpt %}<p class="pc-excerpt">{{ i.excerpt }}</p>{% endif %}
+    {% if i.full_text and i.body %}<div class="md pc-description">{{ i.body | markdown }}</div>
+    {% elif i.excerpt %}<p class="pc-excerpt">{{ i.excerpt }}</p>{% endif %}
     <div class="pc-actions actions small">
       {{ post_content_link(i) }}
       <a class="act inline-comments" href="/t/{{ i.id }}#comments" aria-expanded="false">{{ icon('comment') }}<span>{{ i.n_comments }} comment{{ 's' if i.n_comments != 1 }}</span></a>
@@ -292,8 +293,9 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
   <h3 class="pc-title"><a href="/t/{{ i.id }}">{{ i.title }}</a></h3>
   {% if i.url | safe_url and not (i.thumb and i.thumb.is_link) %}<div class="pc-link small"><a href="{{ i.url | safe_url }}" target="_blank" rel="noreferrer noopener nofollow">{{ i.url | host }}{{ icon('external') }}</a></div>{% endif %}
   {{ audio_bar(i) }}
-  {% if i.thumb %}<div class="picture-media">{{ gallery(i, veiled, 'picture') }}</div>
-  {% elif i.excerpt %}<p class="pc-excerpt">{{ i.excerpt }}</p>{% endif %}
+  {% if i.thumb %}<div class="picture-media">{{ gallery(i, veiled, 'picture') }}</div>{% endif %}
+  {% if i.full_text and i.body %}<div class="md pc-description">{{ i.body | markdown }}</div>
+  {% elif i.excerpt and not i.thumb %}<p class="pc-excerpt">{{ i.excerpt }}</p>{% endif %}
   <div class="pc-actions actions small">
     {{ post_content_link(i) }}
     <a class="act inline-comments" href="/t/{{ i.id }}#comments" aria-expanded="false">{{ icon('comment') }}<span>{{ i.n_comments }} comment{{ 's' if i.n_comments != 1 }}</span></a>

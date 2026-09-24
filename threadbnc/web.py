@@ -343,7 +343,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     templates = Jinja2Templates(directory=str(HERE / "templates"))
     templates.env.filters.update(ago=ago, absolute=absolute, clock=clock,safe_url=safe_url, host=host_of,
-                                 looks_like_media=looks_like_media, size=human_size, youtube_video=youtube.video_id)
+                                 looks_like_media=looks_like_media, size=human_size, youtube_video=youtube.video_id,
+                                 markdown=render_markdown)
     # A Lemmy or PieFed community (not a subreddit or a feed): one that can be pushed.
     templates.env.tests["is_federated"] = lambda ap_id: not is_rss(ap_id) and not is_reddit_host(host_of(ap_id))
     def static_url(name: str) -> str:

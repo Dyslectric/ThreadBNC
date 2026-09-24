@@ -412,7 +412,15 @@ def test_videos_scrolled_to_get_their_description_and_likes(settings, bouncer, y
     assert (row["score"], row["upvotes"], row["downvotes"]) == (1234, 1234, None)
     assert client.get("/feed/articles", params={"ids": [tid]}).json()["previewed"][str(tid)]
     page = client.get(f"/c/{cid}").text
-    assert "Building a computer. Parts: https://eater.net/6502_kit" in page and "▲ 1234" in page
+    # The description shown whole, as written: its line breaks and links, not an excerpt.
+    assert 'class="md pc-description"' in page and "Building a computer.<br>" in page and "▲ 1234" in page
+    assert 'href="https://eater.net/6502_kit"' in page and "* not bold *" in page
+    assert "read-post" not in page  # no Post text button for what's already all there
+    with bouncer.db.connect() as conn:
+        conn.execute("UPDATE revisions SET body=? WHERE object_id=(SELECT root_object_id FROM archived_threads "
+                     "WHERE id=?)", ("long " * 200 + "the end", tid))
+    assert "the end" in client.get(f"/c/{cid}").text
+    assert "the end" in client.get(f"/c/{cid}?view=pictures").text
     tiles = client.get(f"/c/{cid}?view=tiles").text
     assert "▲ 1234" in tiles and "Add an account to vote" not in tiles  # likes are shown, not voted on
 
