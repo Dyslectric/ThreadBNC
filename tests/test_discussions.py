@@ -373,10 +373,13 @@ def test_a_post_here_expands_from_what_was_saved(server, dbouncer, looking):
     t2 = dbouncer.ingest_url(f"https://{DOMAIN}/post/2")
     dbouncer.articles.fetch_pending()
     part = client.get(f"/t/{t1}").text
-    assert f'data-peek="/t/{t2}/peek"' in part
+    assert f'data-thread="{t2}"' in part
+    # app.js opens it into the panels the feed does: its own page's text, then its comments.
     server.down = True  # nobody's asked
-    panel = client.get(f"/t/{t2}/peek").text
-    assert panel.index("Posted again.") < panel.index("Saw this one already.") and "1 reply" in panel
+    panel = client.get(f"/t/{t2}?inline=1").text
+    comments = panel[panel.index('<section class="comments"'):]
+    assert panel.index("Posted again.") < panel.index('<section class="comments"')
+    assert "Saw this one already." in comments and "1 comment" in comments
 
 
 def test_feed_articles_are_discussed_too(server, dbouncer, looking, monkeypatch):

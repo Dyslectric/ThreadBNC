@@ -235,6 +235,14 @@ document.documentElement.classList.add("js");
       vote(form);
       return;
     }
+    // Commenting, replying or deleting in comments opened under a post: done
+    // here, and the comments shown again, rather than leaving for the post's page.
+    const panelComments = form.closest(".inline-panel .comments");
+    if (panelComments && !form.dataset.inplace && form.method.toLowerCase() === "post") {
+      ev.preventDefault();
+      submitInPanel(form, submitter);
+      return;
+    }
     const ids = (form.dataset.inplace || "").split(/\s+/).filter(Boolean);
     if (!ids.length || form.method.toLowerCase() !== "post") return;
     ev.preventDefault();
@@ -752,16 +760,23 @@ document.documentElement.classList.add("js");
     }
   }
 
-  function updateInlinePanels(owner) {
-    if (!owner) return;
-    orderInlinePanels(owner);
-    const allPanels = panelsForOwner(owner);
+  // Panels shown one after another join up into one box. Returns the ones shown.
+  function joinPanels(allPanels) {
     const panels = allPanels.filter((p) => !p.hidden);
-    owner.classList.toggle("panel-owner-open", panels.length > 0);
     for (const panel of allPanels) panel.classList.remove("panel-continuation", "panel-followed");
     for (const [index, panel] of panels.entries()) {
       panel.classList.toggle("panel-continuation", index > 0);
       panel.classList.toggle("panel-followed", index < panels.length - 1);
+    }
+    return panels;
+  }
+
+  function updateInlinePanels(owner) {
+    if (!owner) return;
+    orderInlinePanels(owner);
+    const panels = joinPanels(panelsForOwner(owner));
+    owner.classList.toggle("panel-owner-open", panels.length > 0);
+    for (const [index, panel] of panels.entries()) {
       if (!owner.matches(".tile")) continue;
       const ownerBox = owner.getBoundingClientRect();
       const panelBox = panel.getBoundingClientRect();
@@ -882,18 +897,73 @@ document.documentElement.classList.add("js");
     url.hash = "";
     url.searchParams.set("refreshed", "1");
     url.searchParams.set("inline", "1");
-    const doc = await fetchDoc(url.href);
-    // A saved YouTube video's player, then its description.
-    const video = $("article.post > .post-media video", doc);
-    const player = video && video.closest(".post-media");
-    const content = $("article.post > .md", doc);
-    if (!player && !content) throw new Error("post text not found");
-    if (content) content.classList.add("expanded-post-content");
-    body.replaceChildren(...[player, content].filter(Boolean).map((el) => document.adoptNode(el)));
+    const parts = postParts(await fetchDoc(url.href));
+    if (!parts.length) throw new Error("post text not found");
+    body.replaceChildren(...parts);
     panel.removeAttribute("aria-busy");
   }
 
+  // What a post's page shows of the post itself: a saved YouTube video's
+  // player, then its text (or description).
+  function postParts(doc) {
+    const video = $("article.post > .post-media video", doc);
+    const player = video && video.closest(".post-media");
+    const content = $("article.post > .md", doc);
+    if (content) content.classList.add("expanded-post-content");
+    return [player, content].filter(Boolean).map((el) => document.adoptNode(el));
+  }
+
   function commentRoot(panel) { return $(".comments", panel); }
+
+  // Comments (and copies' sections) you opened or collapsed stay that way in a fresh copy.
+  const KEPT_OPEN = "details.comment[id], details.comment-section[id]";
+  function keepOpen(now, fresh) {
+    const shown = new Map($$(KEPT_OPEN, now).map((d) => [d.id, d.open]));
+    for (const d of $$(KEPT_OPEN, fresh)) if (shown.has(d.id)) d.open = shown.get(d.id);
+    fresh.id = now.id;
+  }
+
+  const writing = (root) => $$("textarea", root).some((t) => t.value.trim());
+
+  // The panel's comments again, as saved (after you comment, say). `show`: an
+  // element id in them to scroll to and flash, like your new comment.
+  async function reloadPanelComments(panel, show) {
+    const now = commentRoot(panel);
+    const url = new URL(panel.dataset.commentsUrl || `/t/${now.dataset.thread}?inline=1`, location.href);
+    url.searchParams.set("refreshed", "1");
+    const fresh = $(".comments", await fetchDoc(url.href));
+    if (!fresh || !now.isConnected) return;
+    keepOpen(now, fresh);
+    now.replaceWith(document.adoptNode(fresh));
+    const el = show && fresh.querySelector(`#${CSS.escape(show)}`);
+    if (!el) return;
+    for (let p = el.parentElement; p && p !== fresh; p = p.parentElement) {
+      if (p.matches("details")) { p.open = true; p.classList.remove("replies-hidden"); }
+    }
+    reveal(el);
+    el.classList.add("flash-target");
+    setTimeout(() => el.classList.remove("flash-target"), 1200);
+  }
+
+  async function submitInPanel(form, submitter) {
+    if (form.dataset.busy) return;
+    form.dataset.busy = "1";
+    if (submitter) submitter.disabled = true;
+    const panel = form.closest(".inline-panel");
+    try {
+      const data = await post(form.action, new URLSearchParams(new FormData(form, submitter)));
+      for (const m of data.messages || []) toast(m);
+      if (data.ok) {
+        const hash = new URL(data.redirect || location.href, location.href).hash.slice(1);
+        await reloadPanelComments(panel, hash);
+      }
+    } catch (e) {
+      toast({ kind: "error", text: "That didn't work (" + e.message + "). Try again." });
+    } finally {
+      delete form.dataset.busy;
+      if (submitter && submitter.isConnected) submitter.disabled = false;
+    }
+  }
 
   function setCommentsStatus(panel, text, bad = false) {
     let status = $("[data-inline-comment-status]", panel);
@@ -925,13 +995,15 @@ document.documentElement.classList.add("js");
       if (done) {
         if (failed) { setCommentsStatus(panel, `Couldn't check for new comments (${failed}). Showing the saved copy.`, true); return; }
         try {
+          const now = commentRoot(panel);
+          if (now && writing(now)) {
+            setCommentsStatus(panel, "New comments arrived. They'll show once you've posted yours.");
+            return;
+          }
           const doc = await fetchDoc(panel.dataset.commentsUrl || freshUrl);
           const fresh = $(".comments", doc);
-          const now = commentRoot(panel);
-          if (fresh && now) {
-            const shown = new Map($$("details.comment[id]", now).map((d) => [d.id, d.open]));
-            for (const d of $$("details.comment[id]", fresh)) if (shown.has(d.id)) d.open = shown.get(d.id);
-            if (now.id !== "comments") fresh.id = now.id;
+          if (fresh && now && now.isConnected) {
+            keepOpen(now, fresh);
             now.replaceWith(document.adoptNode(fresh));
           }
         } catch (e) { setCommentsStatus(panel, "New comments arrived; reload to show them."); }
@@ -967,13 +1039,13 @@ document.documentElement.classList.add("js");
     panel.setAttribute("aria-busy", "true");
     body.innerHTML = '<p class="muted inline-loading">Loading comments…</p>';
     let root = tid && $(".comments[data-inline-source]");
+    const commentsUrl = new URL(link.href, location.href);
+    commentsUrl.hash = "";
+    commentsUrl.searchParams.set("inline", "1");
+    panel.dataset.commentsUrl = commentsUrl.href;
     if (root && inlineOwner(link).matches("article.post")) {
       body.replaceChildren(root);
     } else {
-      const commentsUrl = new URL(link.href, location.href);
-      commentsUrl.hash = "";
-      commentsUrl.searchParams.set("inline", "1");
-      panel.dataset.commentsUrl = commentsUrl.href;
       const doc = await fetchDoc(commentsUrl.href);
       root = $(".comments", doc);
       if (!root) throw new Error("comments not found");
@@ -991,7 +1063,6 @@ document.documentElement.classList.add("js");
     panel.dataset.sorting = "true";
     panel.setAttribute("aria-busy", "true");
     const current = commentRoot(panel);
-    const shown = new Map($$("details.comment[id]", current).map((d) => [d.id, d.open]));
     const url = new URL(link.href, location.href);
     url.hash = "";
     url.searchParams.set("inline", "1");
@@ -1000,8 +1071,7 @@ document.documentElement.classList.add("js");
       const doc = await fetchDoc(url.href);
       const fresh = $(".comments", doc);
       if (!fresh) throw new Error("comments not found");
-      for (const d of $$('details.comment[id]', fresh)) if (shown.has(d.id)) d.open = shown.get(d.id);
-      fresh.id = current.id;
+      keepOpen(current, fresh);
       current.replaceWith(document.adoptNode(fresh));
       panel.dataset.commentsUrl = url.href;
     } finally {
@@ -1196,12 +1266,23 @@ document.documentElement.classList.add("js");
       return;
     }
     const all = () => $$("details.comment", root);
+    const rail = ev.target.closest("button.section-rail");
+    if (rail) {
+      const section = rail.closest("details.comment-section");
+      section.open = false;
+      reveal(section);
+      return;
+    }
     const bar = ev.target.closest("button.bar");
     if (bar) { bar.closest("details.comment").open = false; return; }
     const btn = ev.target.closest("[data-action]");
     if (!btn) return;
     const clear = () => $$(".replies-hidden", root).forEach((d) => d.classList.remove("replies-hidden"));
-    if (btn.dataset.action === "expand-all") { clear(); all().forEach((d) => (d.open = true)); }
+    if (btn.dataset.action === "expand-all") {
+      clear();
+      all().forEach((d) => (d.open = true));
+      $$("details.comment-section", root).forEach((d) => (d.open = true));
+    }
     if (btn.dataset.action === "collapse-all") { clear(); all().forEach((d) => (d.open = false)); }
     if (btn.dataset.action === "collapse-replies") all().forEach((d) => {
       d.open = true;
@@ -1213,7 +1294,7 @@ document.documentElement.classList.add("js");
       const next = marks.find((m) => m.getBoundingClientRect().top > headerH() + 1) || marks[0];
       if (next) {
         for (let p = next.parentElement; p && p !== root; p = p.parentElement) {
-          if (p.matches("details.comment")) { p.open = true; p.classList.remove("replies-hidden"); }
+          if (p.matches("details.comment, details.comment-section")) { p.open = true; p.classList.remove("replies-hidden"); }
         }
         next.open = true;
         reveal(next);
@@ -1491,7 +1572,7 @@ document.documentElement.classList.add("js");
         break;
       }
       case "c": {
-        const compose = $("#compose");
+        const compose = $("#comments .compose textarea");
         if (compose) { ev.preventDefault(); compose.focus(); }
         break;
       }
@@ -1558,18 +1639,79 @@ document.documentElement.classList.add("js");
     } catch (e) { /* the saved list stays; reloading shows the rest */ }
   }
 
-  // Each one opens into its own panel: what it says, then its replies, asked
-  // for the first time it's opened (discussion_peek.html).
+  // Each one opens into the panels a post opens into in the feed: its text,
+  // then its comments, asked for the first time it's opened. A post saved
+  // here is its own page's (its comments to reply to and vote on, checked for
+  // new ones); one found elsewhere is read there (discussion_peek.html).
+  function discussionPanel(kind, label, parts) {
+    const panel = document.createElement("section");
+    panel.className = `inline-panel ${kind}-panel card-inline-panel`;
+    panel.dataset.kind = kind;
+    panel.innerHTML = `<button type="button" class="inline-panel-rail" aria-label="Collapse the ${label}" title="Collapse the ${label}"></button><div class="inline-panel-body"></div>`;
+    $(".inline-panel-body", panel).append(...parts);
+    return panel;
+  }
+
+  async function loadSavedDiscussion(d, body) {
+    const tid = d.dataset.thread;
+    const url = new URL(`/t/${tid}?inline=1`, location.href);
+    const doc = await fetchDoc(url.href);
+    const comments = $(".comments", doc);
+    if (!comments) throw new Error("comments not found");
+    comments.id = `comments-${tid}`;
+    let text = postParts(doc);
+    if (!text.length) {
+      const none = document.createElement("p");
+      none.className = "muted";
+      none.textContent = "No text, just the link.";
+      text = [none];
+    }
+    const box = document.createElement("div");
+    box.className = "discussion-peek inline-panels discussion-panels";
+    box.dataset.peekBody = "";
+    const panel = discussionPanel("comments", "comments", [document.adoptNode(comments)]);
+    panel.dataset.commentsUrl = url.href;
+    box.append(discussionPanel("post", "text", text), panel);
+    body.replaceWith(box);
+    startInlineCommentCheck(panel, tid, $("#refreshing", comments)).catch((e) =>
+      setCommentsStatus(panel, `Couldn't check for new comments (${e.message}). Showing the saved copy.`, true));
+    return box;
+  }
+
+  function showDiscussionPanel(d, kind, on) {
+    const panel = $(`:scope > .discussion-panel > .discussion-panels > .inline-panel[data-kind="${kind}"]`, d);
+    if (!panel) return;
+    panel.hidden = !on;
+    const button = $(`:scope > .discussion-panel .discussion-toggle[data-show="${kind}"]`, d);
+    if (button) button.setAttribute("aria-expanded", String(on));
+    joinPanels($$(":scope > .inline-panel", panel.parentElement));
+  }
+
+  document.addEventListener("click", (ev) => {
+    const toggle = ev.target.closest(".discussion-toggle");
+    const rail = !toggle && ev.target.closest(".discussion-panels > .inline-panel > .inline-panel-rail");
+    if (!toggle && !rail) return;
+    ev.stopPropagation();
+    const d = (toggle || rail).closest("details.discussion");
+    if (toggle) showDiscussionPanel(d, toggle.dataset.show, toggle.getAttribute("aria-expanded") !== "true");
+    else showDiscussionPanel(d, rail.closest(".inline-panel").dataset.kind, false);
+  }, true);
+
   document.addEventListener("toggle", async (e) => {
     const d = e.target;
-    if (!d.matches || !d.matches("details.discussion[data-peek]") || !d.open || d.dataset.peeked) return;
+    if (!d.matches || !d.matches("details.discussion") || !d.open || d.dataset.peeked) return;
     const body = $("[data-peek-body]", d);
-    if (!body) return;
+    if (!body || (!d.dataset.thread && !d.dataset.peek)) return;
     d.dataset.peeked = "true";
     body.innerHTML = '<p class="muted">Loading…</p>';
     try {
-      const fresh = $("[data-peek-body]", await fetchDoc(d.dataset.peek));
-      if (fresh) body.replaceWith(document.adoptNode(fresh));
+      let box;
+      if (d.dataset.thread) box = await loadSavedDiscussion(d, body);
+      else {
+        box = $("[data-peek-body]", await fetchDoc(d.dataset.peek));
+        if (box) body.replaceWith(document.adoptNode(box));
+      }
+      if (box) joinPanels($$(":scope > .inline-panel", box));
     } catch (err) {
       body.innerHTML = '<p class="bad-text">Couldn\'t load it. Close and open it again to try again.</p>';
       delete d.dataset.peeked;

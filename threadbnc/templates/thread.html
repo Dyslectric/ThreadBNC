@@ -294,42 +294,47 @@
 </article>
 {% if talk %}{% include "_discussions.html" %}{% endif %}
 
-{% set writable_copies = [] %}{% set hs = [] %}
+{# Who comments on each copy: your Mastodon account on one from a hashtag,
+   your Reddit and Bluesky accounts on theirs, else the acting one; nobody on
+   a feed's article. #}
+{% set writers = {} %}{% set writable_copies = [] %}{% set hs = [] %}
 {% for pc in post_copies %}{% set acct = none if is_rss(pc.o.canonical_ap_id) else (mastodon_me if is_tag(pc.t.c_ap) else reddit_me if pc.reddit else bluesky_me if is_bluesky(pc.o.canonical_ap_id) else me) %}
+  {% set _ = writers.update({pc.t.id: acct}) %}
   {% if acct %}{% set _ = writable_copies.append(pc) %}{% if acct.handle not in hs %}{% set _ = hs.append(acct.handle) %}{% endif %}{% endif %}{% endfor %}
 {% set as_whom = hs | join(' and ') %}
-{% if not t.trashed_at and writable_copies %}
-<section class="card compose">
-  <form method="post" action="/t/{{ t.id }}/reply" class="stack">
-    <textarea name="body" rows="4" required placeholder="Add a comment as {{ as_whom }} {{ '(plain text, up to 300 characters)' if is_bluesky(o.canonical_ap_id) else '(plain text)' if is_tag(t.c_ap) else '(Markdown)' }}"{% if is_bluesky(o.canonical_ap_id) %} maxlength="300"{% endif %} id="compose" aria-label="Your comment"></textarea>
-    {% if writable_copies | length > 1 %}
-      {% set items = [] %}
-      {% for pc in writable_copies %}{% set _ = items.append((pc.o.id, chandle(pc.t.cname, pc.t.c_ap, True) ~ ' (posted by ' ~ pc.o.username ~ ')' ~ (' · locked' if pc.o.cur_locked else ''), not (pc.o.cur_locked or pc.o.cur_removed or pc.o.cur_deleted))) %}{% endfor %}
-      {{ targets(items) }}
-    {% endif %}
-    <div class="row"><button>Comment as {{ as_whom }}</button>
-      {% if (accounts | rejectattr('separate') | list | length) > 1 %}<span class="small muted">Switch accounts in the header{{ '; Reddit copies always get your Reddit account' if reddit_me and writable_copies | selectattr('reddit') | list }}.</span>{% endif %}</div>
-  </form>
-</section>
-{% elif is_bluesky(o.canonical_ap_id) and not t.trashed_at %}
-<p class="small muted">This is on Bluesky. <a href="/accounts#bluesky">Log in to Bluesky</a> to like and reply here, or do it
-  through <a href="{{ o.canonical_ap_id | safe_url }}" rel="noreferrer noopener nofollow" target="_blank">the original</a>.</p>
-{% elif is_tag(t.c_ap) and not t.trashed_at %}
-<p class="small muted">This came from a hashtag, from {{ o.a_instance or 'another server' }}.
-  <a href="/accounts#mastodon">Sign in to Mastodon</a> to like and reply here, or do it through
-  <a href="{{ o.canonical_ap_id | safe_url }}" rel="noreferrer noopener nofollow" target="_blank">the original</a>{% if accounts %},
-  or <a href="/t/{{ t.id }}/repost">repost it</a> to discuss it on your own server{% endif %}.</p>
-{% elif not accounts %}
-<p class="small muted"><a href="/accounts">Add an account</a> to comment, vote or post from here.</p>
-{% elif not writable_copies and not t.trashed_at and is_rss(o.canonical_ap_id) %}
-<p class="small muted">This is an article from a feed, which has no comments.
-  <a href="/t/{{ t.id }}/repost">Post it</a> to your communities to discuss it there.</p>
-{% elif not writable_copies and not t.trashed_at %}
-<p class="small muted">This is on Reddit. <a href="/reddit">Log in with Reddit</a> to vote and comment here, or
-  <a href="/t/{{ t.id }}/repost">repost it</a> to discuss it on your own server.</p>
-{% endif %}
 
-<section class="comments" id="comments" data-inline-source>
+{# Why a copy can't be commented on from here, and where it can. #}
+{% macro hint(pc) -%}
+{% set po = pc.o %}
+{% if is_bluesky(po.canonical_ap_id) %}
+<p class="small muted comment-hint">This is on Bluesky. <a href="/accounts#bluesky">Log in to Bluesky</a> to like and reply here, or do it
+  through <a href="{{ po.canonical_ap_id | safe_url }}" rel="noreferrer noopener nofollow" target="_blank">the original</a>.</p>
+{% elif is_tag(pc.t.c_ap) %}
+<p class="small muted comment-hint">This came from a hashtag, from {{ po.a_instance or 'another server' }}.
+  <a href="/accounts#mastodon">Sign in to Mastodon</a> to like and reply here, or do it through
+  <a href="{{ po.canonical_ap_id | safe_url }}" rel="noreferrer noopener nofollow" target="_blank">the original</a>{% if accounts %},
+  or <a href="/t/{{ pc.t.id }}/repost">repost it</a> to discuss it on your own server{% endif %}.</p>
+{% elif not accounts %}
+<p class="small muted comment-hint"><a href="/accounts">Add an account</a> to comment, vote or post from here.</p>
+{% elif is_rss(po.canonical_ap_id) %}
+<p class="small muted comment-hint">This is an article from a feed, which has no comments.
+  <a href="/t/{{ pc.t.id }}/repost">Post it</a> to your communities to discuss it there.</p>
+{% else %}
+<p class="small muted comment-hint">This is on Reddit. <a href="/reddit">Log in with Reddit</a> to vote and comment here, or
+  <a href="/t/{{ pc.t.id }}/repost">repost it</a> to discuss it on your own server.</p>
+{% endif %}
+{%- endmacro %}
+
+{# What a comment box on a copy says it's for. #}
+{% macro as_what(pc, who) -%}
+{{ who }} {{ '(plain text, up to 300 characters)' if is_bluesky(pc.o.canonical_ap_id) else '(plain text)' if is_tag(pc.t.c_ap) else '(Markdown)' }}
+{%- endmacro %}
+
+{# The comments, with the box to add one first: on this page, and in what the
+   feed and Discussions lists open under a post (app.js). A post posted in
+   several places has a section for each copy's comments, each collapsible
+   and with its own box. #}
+<section class="comments" id="comments" data-inline-source data-thread="{{ t.id }}">
   <div class="comments-head">
     <h2>{{ total_comments }} comment{{ 's' if total_comments != 1 }}
       {% if grouped or raw_comments != total_comments %}<span class="small muted">
@@ -347,7 +352,22 @@
      data-url="/t/{{ t.id }}?refreshed=1&amp;sort={{ comment_sort }}&amp;merge={{ merge }}" data-post="o{{ o.id }}"
      {{ 'hidden' if is_rss(o.canonical_ap_id) and not is_youtube(t.c_ap) }}>Checking for new comments…</p>{% endif %}
   {% if since %}<p class="small muted">Highlighting changes since your last visit {{ when(since) }}{% if new_count or changed_count %}: {{ new_count }} new, {{ changed_count }} changed{% endif %}.</p>{% endif %}
-  {% if total_comments %}
+  {% if not t.trashed_at and writable_copies %}
+  <div class="compose">
+    <form method="post" action="/t/{{ t.id }}/reply" class="stack">
+      <textarea name="body" rows="3" required placeholder="Add a comment as {{ as_what(post_copies[0], as_whom) }}"{% if is_bluesky(o.canonical_ap_id) %} maxlength="300"{% endif %} aria-label="Your comment"></textarea>
+      {% if writable_copies | length > 1 %}
+        {% set items = [] %}
+        {% for pc in writable_copies %}{% set _ = items.append((pc.o.id, chandle(pc.t.cname, pc.t.c_ap, True) ~ ' (posted by ' ~ pc.o.username ~ ')' ~ (' · locked' if pc.o.cur_locked else ''), not (pc.o.cur_locked or pc.o.cur_removed or pc.o.cur_deleted))) %}{% endfor %}
+        {{ targets(items) }}
+      {% endif %}
+      <div class="row"><button>Comment as {{ as_whom }}</button>
+        {% if (accounts | rejectattr('separate') | list | length) > 1 %}<span class="small muted">Switch accounts in the header{{ '; Reddit copies always get your Reddit account' if reddit_me and writable_copies | selectattr('reddit') | list }}.</span>{% endif %}</div>
+    </form>
+  </div>
+  {% elif not t.trashed_at and not grouped and post_copies %}{{ hint(post_copies[0]) }}
+  {% endif %}
+  {% if total_comments or grouped %}
   <div class="toolbar js-only">
     <button type="button" class="small secondary" data-action="expand-all">Expand all</button>
     <button type="button" class="small secondary" data-action="collapse-all">Collapse all</button>
@@ -357,7 +377,37 @@
     {% endif %}
   </div>
   {% endif %}
-  {% for child in root.children %}{{ comment(child, 0) }}{% endfor %}
+  {% if grouped %}
+    {% for pc in post_copies %}{% set where = chandle(pc.t.cname, pc.t.c_ap, True) %}
+    <details open class="comment-section" id="cs{{ pc.t.id }}">
+      <summary class="comment-section-head">
+        <span class="fold" aria-hidden="true">{{ icon('chevron-down') }}</span>
+        <span class="comment-section-where">{{ chandle(pc.t.cname, pc.t.c_ap) }}</span>
+        <span class="small muted">{{ pc.shown }} comment{{ 's' if pc.shown != 1 }} · posted by {{ byname(pc.o.username, pc.o.a_instance, pc.o.canonical_ap_id) }}</span>
+        {% if pc.t.id == t.id %}<span class="pill muted small">this one</span>{% endif %}
+        <span class="small">{{ state_badges(pc.o) }}</span>
+      </summary>
+      <button type="button" class="section-rail" title="Collapse the comments in {{ where }}" aria-label="Collapse the comments in {{ where }}"></button>
+      <div class="comment-section-body">
+        {% if not t.trashed_at %}{% set who = writers[pc.t.id] %}
+          {% if who %}
+          <details class="reply-box section-compose small">
+            <summary>Comment on this one</summary>
+            <form method="post" action="/t/{{ pc.t.id }}/reply" class="stack">
+              <textarea name="body" rows="3" required placeholder="Comment in {{ where }} as {{ as_what(pc, who.handle) }}"{% if is_bluesky(pc.o.canonical_ap_id) %} maxlength="300"{% endif %} aria-label="Your comment in {{ where }}"></textarea>
+              <button class="small">Comment as {{ who.handle }}</button>
+            </form>
+          </details>
+          {% else %}{{ hint(pc) }}{% endif %}
+        {% endif %}
+        {% for child in pc.comments %}{{ comment(child, 0) }}{% endfor %}
+        {% if not pc.comments %}<p class="small muted section-empty">No comments on this one yet.</p>{% endif %}
+      </div>
+    </details>
+    {% endfor %}
+  {% else %}
+    {% for child in root.children %}{{ comment(child, 0) }}{% endfor %}
+  {% endif %}
 </section>
 <script src="{{ static_url('thread.js') }}" defer></script>
 {% endif %}

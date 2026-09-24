@@ -406,26 +406,6 @@ def reply_tree(comments: list[NComment]) -> tuple[list[dict[str, Any]], int]:
                    "gone": "deleted" if c.deleted else "removed" if c.removed else None} for c in comments])
 
 
-def saved_peek(conn: Conn, thread_id: int) -> dict[str, Any]:
-    """A post saved here, expanded: its text and its comments as saved (its
-    own page reads them again when it's opened). `object_ids`: for the saved
-    copies of their pictures."""
-    rows = conn.execute(
-        "SELECT o.id, o.object_type, o.parent_id, o.created_at, o.score, o.cur_deleted, o.cur_removed, "
-        "r.body, a.username, a.instance FROM objects o JOIN revisions r ON r.object_id=o.id "
-        "AND r.seq=o.revision_count LEFT JOIN actors a ON a.id=o.author_id WHERE o.thread_id=? "
-        "ORDER BY o.created_at, o.id", (thread_id,)).fetchall()
-    post = next((r for r in rows if r["object_type"] == "post"), None)
-    comments = [r for r in rows if r["object_type"] == "comment"]
-    tree, more = _tree([{"key": r["id"], "parent": r["parent_id"], "body": r["body"], "created_at": r["created_at"],
-                         "score": r["score"],
-                         "author": f"{r['username']}@{r['instance']}" if r["instance"] else r["username"] or "someone",
-                         "gone": "deleted" if r["cur_deleted"] else "removed" if r["cur_removed"] else None}
-                        for r in comments])
-    return {"body": post["body"] if post else None, "text": None, "replies": tree, "count": len(comments),
-            "more": more, "error": None, "object_ids": [r["id"] for r in rows]}
-
-
 def openable(url: str) -> bool:
     """A post that can be opened here (Lemmy, PieFed, Reddit, Bluesky)."""
     try:
