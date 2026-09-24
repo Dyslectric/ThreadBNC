@@ -188,15 +188,17 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
 
 {# Compact, actionable vote controls for every view. Reddit exposes one score, so
    it sits between its arrow buttons; ActivityPub exposes both counts, which
-   live inside their respective buttons. Feeds and Bluesky can't be voted on
-   here: a YouTube video's likes (read when it's scrolled to) and a Bluesky
-   post's are just shown. `breakdown`: offer
+   live inside their respective buttons. Bluesky has just likes: one button,
+   as your Bluesky account, and only shown once you've logged in to it. Feeds
+   can't be voted on: a YouTube video's likes (read when it's scrolled to)
+   are just shown. `breakdown`: offer
    the counts each copy's server reported, for a post posted more than once. #}
 {% macro tile_votes(i, breakdown=False) -%}
-{% if is_rss(i.canonical_ap_id) or is_bluesky(i.canonical_ap_id) %}{{ votes(i.upvotes, i.downvotes, i.score) }}{% else %}
+{% set bsky = is_bluesky(i.canonical_ap_id) %}
+{% if is_rss(i.canonical_ap_id) or (bsky and not bluesky_me) %}{{ votes(i.upvotes, i.downvotes, i.score) }}{% else %}
 {% set eligible = [] %}{% set handles = [] %}
 {% for c in i.copies %}
-  {% set acct = none if is_rss(c.canonical_ap_id) or is_bluesky(c.canonical_ap_id) or is_tag(c.c_ap) else (reddit_me if is_reddit(c.canonical_ap_id) else acting) %}
+  {% set acct = none if is_rss(c.canonical_ap_id) or is_tag(c.c_ap) else (reddit_me if is_reddit(c.canonical_ap_id) else bluesky_me if is_bluesky(c.canonical_ap_id) else acting) %}
   {% if acct %}{% set _ = eligible.append(c) %}{% if acct.handle not in handles %}{% set _ = handles.append(acct.handle) %}{% endif %}{% endif %}
 {% endfor %}
 {% set reddit = is_reddit(i.canonical_ap_id) %}
@@ -204,10 +206,10 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
 {% set every = (' on all ' ~ eligible | length ~ ' copies') if eligible | length > 1 else '' %}
 {% set as_whom = handles | join(' and ') %}
 <div class="tile-votes obj-actions {{ 'reddit-votes' if reddit else 'activitypub-votes' }}"{% if eligible %} id="a{{ eligible[0].oid }}"{% endif %}>
-  {% for direction, word, glyph in [(1, 'upvote', '▲'), (-1, 'downvote', '▼')] %}
+  {% for direction, word, glyph in ([(1, 'like', '▲')] if bsky else [(1, 'upvote', '▲'), (-1, 'downvote', '▼')]) %}
     {% set on = mine == direction %}
     {% set count = i.upvotes if direction == 1 else i.downvotes %}
-    {% set label = ('Remove ' if on else '') ~ word ~ ((' as ' ~ as_whom ~ every) if eligible else '') %}
+    {% set label = (('Remove ' ~ word) if on else (word | capitalize)) ~ ((' as ' ~ as_whom ~ every) if eligible else '') %}
     {% if eligible %}<form method="post" action="/o/{{ eligible[0].oid }}/vote" class="inline" data-inplace="a{{ eligible[0].oid }}" data-vote>
       <input type="hidden" name="score" value="{{ 0 if on else direction }}">
       {% for c in eligible[1:] %}<input type="hidden" name="also" value="{{ c.oid }}">{% endfor %}

@@ -36,7 +36,8 @@ from . import media as media_mod
 from . import storage as storage_mod
 from . import thumbs as thumbs_mod
 from .actor import ActorEndpoints
-from .adapters import RSS_PREFIX, RemoteError, host_of, is_bluesky, is_reddit_host, is_rss, is_tag
+from .adapters import (BSKY_DOMAIN, RSS_PREFIX, CommunityRef, RemoteError, host_of, is_bluesky, is_reddit_host,
+                       is_rss, is_tag)
 from .adapters.base import RSS_DOMAIN, TAG_DOMAIN
 from .accounts import Account, AccountError, Poster
 from .bouncer import PUSHED_POLL_MINUTES, Bouncer
@@ -522,17 +523,18 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
 
     def acting(request: Request) -> Account | None:
         """The account forms act as: the one picked in the header, else the
-        default. Never the Reddit account: Poster.account_for switches to it by
-        itself for anything on Reddit."""
+        default. Never the Reddit or Bluesky account: Poster.account_for
+        switches to them by itself for anything there."""
         chosen = poster.get(request.session.get("acting_account"))
-        return chosen if chosen and not chosen.is_reddit else poster.default()
+        return chosen if chosen and not chosen.separate else poster.default()
 
     def render(request: Request, name: str, **ctx: Any) -> HTMLResponse:
         if request.session.get("auth"):
-            me, reddit_me = acting(request), poster.reddit_account()
+            me, reddit_me, bluesky_me = acting(request), poster.reddit_account(), poster.bluesky_account()
             ctx.setdefault("accounts", poster.list())
             ctx.setdefault("acting", me)
             ctx.setdefault("reddit_me", reddit_me)
+            ctx.setdefault("bluesky_me", bluesky_me)
             # Feed tiles use the same real vote controls as thread pages. Add
             # the viewer's current vote once for the whole page so rendering
             # the controls never turns into one database query per post.
@@ -540,7 +542,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             if isinstance(fp, feed_mod.FeedPage):
                 ap_ids = [c["canonical_ap_id"] for i in fp.items for c in i.get("copies", [])
                           if c.get("canonical_ap_id")]
-                mine = {**poster.my_votes(me, ap_ids), **poster.my_votes(reddit_me, ap_ids)}
+                mine = {**poster.my_votes(me, ap_ids), **poster.my_votes(reddit_me, ap_ids),
+                        **poster.my_votes(bluesky_me, ap_ids)}
                 for item in fp.items:
                     item["my_vote"] = next((mine.get(c.get("canonical_ap_id"), 0)
                                             for c in item.get("copies", [])
@@ -548,7 +551,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         return templates.TemplateResponse(request, name, ctx)
 
     def require_acting(request: Request) -> Account:
-        account = acting(request) or poster.reddit_account()
+        account = acting(request) or poster.reddit_account() or poster.bluesky_account()
         if account is None:
             raise AccountError("Add an account on the Accounts page first.")
         return account
@@ -1882,6 +1885,18 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                            "not your password.")
         return RedirectResponse("/accounts", status_code=303)
 
+    @app.post("/accounts/bluesky")
+    def add_bluesky_account(request: Request, identifier: str = Form(...), app_password: str = Form(...),
+                            code: str = Form("")):
+        try:
+            account = poster.add_bluesky(identifier, app_password, code)
+        except AccountError as exc:
+            flash(request, str(exc), "error")
+        else:
+            flash(request, f"Signed in to Bluesky as {account.handle}. Only an encrypted session is stored, "
+                           "not your app password.")
+        return RedirectResponse("/accounts#bluesky", status_code=303)
+
     @app.post("/accounts/{aid}/default")
     def default_account(request: Request, aid: int):
         poster.set_default(aid)
@@ -2092,7 +2107,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     @app.post("/accounts/act-as")
     def act_as(request: Request, account_id: int = Form(...)):
         chosen = poster.get(account_id)
-        if chosen and not chosen.is_reddit:
+        if chosen and not chosen.separate:
             request.session["acting_account"] = account_id
         return RedirectResponse(back(request, "/"), status_code=303)
 
@@ -2211,6 +2226,29 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         return account_action(request, object_page(oid), lambda a: poster.delete(a, oid, deleted=not undo),
                               "Restored on the server." if undo else
                               "Deleted on the server. The archive keeps what it saw.", anchor=f"o{oid}")
+
+    @app.get("/bluesky/post")
+    def bluesky_post(request: Request):
+        """Write a post on your Bluesky account: its page's new-post form (it's
+        stored as a community, like any account you follow, without following it)."""
+        me = poster.bluesky_account()
+        if me is None:
+            flash(request, "Log in to Bluesky first.", "error")
+            return RedirectResponse("/accounts#bluesky", status_code=303)
+        with db.connect() as conn:
+            row = conn.execute("SELECT id FROM communities WHERE canonical_ap_id=?", (me.actor_ap_id,)).fetchone()
+        if row is None:
+            try:
+                community = bouncer.bluesky_adapter.fetch_community(
+                    CommunityRef(BSKY_DOMAIN, me.actor_ap_id.rsplit("/", 1)[-1], BSKY_DOMAIN))
+            except RemoteError as exc:
+                flash(request, f"Couldn't reach Bluesky: {exc}", "error")
+                return RedirectResponse("/accounts#bluesky", status_code=303)
+            with db.transaction() as conn:
+                cid = store.upsert_community(conn, community, utcnow())
+        else:
+            cid = row["id"]
+        return RedirectResponse(f"/c/{cid}/submit", status_code=303)
 
     @app.get("/c/{cid}/submit", response_class=HTMLResponse)
     def submit_form(request: Request, cid: int):
@@ -2584,7 +2622,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         md, media_for, preview = md_for(list(nodes))
         me = acting(request)
         ap_ids = [o["canonical_ap_id"] for o in objs]
-        my_votes = {**poster.my_votes(me, ap_ids), **poster.my_votes(poster.reddit_account(), ap_ids)}
+        my_votes = {**poster.my_votes(me, ap_ids), **poster.my_votes(poster.reddit_account(), ap_ids),
+                    **poster.my_votes(poster.bluesky_account(), ap_ids)}
         powers = {th["cid"]: mod.powers(me, th["cid"]) for th in threads.values()}
         counts = {c["id"]: c["n_comments"] for c in copies}
         post_copies = [{"t": threads[i], "o": roots[i]["o"], "n_comments": counts.get(i, raw_comments),

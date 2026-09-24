@@ -3,8 +3,15 @@
 Everything is read from Bluesky's public API (public.api.bsky.app), with no
 account: the posts a followed account makes (not its replies or reposts), or
 what a custom feed lists; a post's replies when it's opened, as its comments;
-and its likes, as its votes, from each check of the account or feed. Nothing
-can be posted, replied to or liked from here.
+and its likes, as its votes, from each check of the account or feed.
+
+Signed in with your own account (an app password; see accounts.py), you can
+like, reply, post and delete your own posts, and feeds that are only shown to
+someone signed in are read as you. Writes go to your account's own server
+(its PDS, found from its DID document when you log in), and signed-in reads
+go through it to Bluesky's AppView, as the app does. The session (both of its
+tokens, and the PDS) is kept encrypted like any account's, as JSON; its short-
+lived access token is refreshed before it runs out (`fresh`).
 
 Bluesky posts have no titles. Like a Mastodon post's, one's title is the start
 of its text, and its text is shown once (the "untitled" metadata). Pictures
@@ -19,11 +26,14 @@ so reading it again keeps it where it was.
 
 from __future__ import annotations
 
+import base64
+import json
 import re
-from typing import Any
-from urllib.parse import quote
+import time
+from typing import Any, Callable
+from urllib.parse import quote, urlencode, urlparse
 
-from ..db import fmt_ts, parse_ts
+from ..db import fmt_ts, parse_ts, utcnow
 from ..render import escape_markdown, plain_lines
 from .activitypub import title_from
 from .base import (
@@ -36,11 +46,24 @@ from .base import (
     NPost,
     RemoteAuthError,
     RemoteNotFound,
+    RemoteRejected,
+    RemoteUnavailable,
     ThreadiverseAdapter,
     ThreadRef,
 )
 
 API = "public.api.bsky.app"
+APPVIEW = "did:web:api.bsky.app#bsky_appview"  # where a PDS sends signed-in reads on (atproto-proxy)
+ENTRYWAY = "https://bsky.social"  # signs in accounts hosted by Bluesky when only an email is given
+PLC = "https://plc.directory"
+LIKE = "app.bsky.feed.like"
+POST_CHARS = 300  # Bluesky's limit, in graphemes; counted here in characters
+REFRESH_BEFORE = 300  # seconds before the access token runs out that it's refreshed
+_AUTH_ERRORS = {"ExpiredToken", "InvalidToken", "AuthMissing", "AuthenticationRequired", "AuthFactorTokenRequired",
+                "AccountTakedown"}
+_WRITE_URL = re.compile(r"https?://[^\s<>\"]+[^\s<>\".,;:!?)\]'’]")
+_WRITE_MENTION = re.compile(r"(?<![\w@])@([a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+)")
+_WRITE_TAG = re.compile(r"(?<![\w#&])#([^\s#.,;:!?()\[\]{}\"']{1,64})")
 POST = "app.bsky.feed.post"
 GENERATOR = "app.bsky.feed.generator"
 THREAD_VIEW = "app.bsky.feed.defs#threadViewPost"
@@ -101,6 +124,35 @@ def rich_markdown(text: str | None, facets: Any = None) -> str | None:
         at = end
     pieces.append(escape_markdown(data[at:].decode("utf-8", "replace")))
     return plain_lines("".join(pieces).strip().split("\n"))
+
+
+def facets_for(text: str, did_of: Callable[[str], str | None]) -> list[dict[str, Any]]:
+    """The links, @mentions and #hashtags in something you write, as Bluesky
+    marks them (UTF-8 byte offsets), so they're links there too. A mention of
+    a handle that isn't anyone's stays plain text."""
+    out: list[dict[str, Any]] = []
+
+    def span(m: re.Match[str], feature: dict[str, Any]) -> None:
+        start = len(text[:m.start()].encode("utf-8"))
+        out.append({"index": {"byteStart": start, "byteEnd": start + len(m.group(0).encode("utf-8"))},
+                    "features": [feature]})
+
+    for m in _WRITE_URL.finditer(text):
+        span(m, {"$type": "app.bsky.richtext.facet#link", "uri": m.group(0)})
+    links = [(f["index"]["byteStart"], f["index"]["byteEnd"]) for f in out]
+
+    def in_link(m: re.Match[str]) -> bool:
+        start = len(text[:m.start()].encode("utf-8"))
+        return any(a <= start < b for a, b in links)
+
+    for m in _WRITE_MENTION.finditer(text):
+        did = None if in_link(m) else did_of(m.group(1).lower())
+        if did:
+            span(m, {"$type": "app.bsky.richtext.facet#mention", "did": did})
+    for m in _WRITE_TAG.finditer(text):
+        if not in_link(m) and not m.group(1).isdigit():
+            span(m, {"$type": "app.bsky.richtext.facet#tag", "tag": m.group(1)})
+    return sorted(out, key=lambda f: f["index"]["byteStart"])
 
 
 def _when(value: Any) -> str | None:
@@ -189,12 +241,149 @@ class BlueskyAdapter(ThreadiverseAdapter):
         self._dids: dict[str, str] = {}  # handle -> DID
         self._communities: dict[str, NCommunity] = {}  # followed name -> the account or feed
         self._cursors: dict[tuple[str, int], str] = {}  # (name, page) -> where that page starts
+        # Your signed-in session, fresh, for feeds only shown to someone signed
+        # in (accounts.py sets it); None when you haven't signed in.
+        self.reading_session: Callable[[], str | None] | None = None
 
     def _get(self, method: str, **params: Any) -> Any:
         data = self.http.get_json(API, f"/xrpc/{method}", params)
         if not isinstance(data, dict):
             raise RemoteNotFound(f"{API}: {method} answered with something unexpected")
         return data
+
+    # -- as your account ---------------------------------------------------------
+    def _xrpc(self, base: str, method: str, *, bearer: str | None = None, params: dict[str, Any] | None = None,
+              body: dict[str, Any] | None = None, appview: bool = False) -> Any:
+        """One call to a PDS (or the entryway): a query with `params`, or a
+        procedure (POST) with `body`. Bluesky's errors come as {error, message}."""
+        url = f"{base.rstrip('/')}/xrpc/{method}"
+        if params:
+            url += "?" + urlencode({k: v for k, v in params.items() if v is not None}, doseq=True)
+        headers = {"Accept": "application/json"}
+        if bearer:
+            headers["Authorization"] = f"Bearer {bearer}"
+        if appview:
+            headers["atproto-proxy"] = APPVIEW
+        content = None
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+            content = json.dumps(body).encode()
+        # Asked for while you wait (signing in, liking, replying), so not spaced out
+        # like background reads; a server that asked us to wait is still left alone.
+        resp = self.http.send("POST" if body is not None else "GET", url, headers=headers, content=content,
+                              throttle=False)
+        try:
+            data = resp.json() if resp.content else {}
+        except ValueError:
+            data = {}
+        if resp.status_code == 200:
+            return data
+        error = str(data.get("error") or "") if isinstance(data, dict) else ""
+        message = str(data.get("message") or error or f"HTTP {resp.status_code}") if isinstance(data, dict) else ""
+        host = urlparse(url).hostname
+        if resp.status_code == 401 or error in _AUTH_ERRORS:
+            raise RemoteAuthError(f"{host}: {message}", error or "AuthenticationRequired")
+        if resp.status_code == 404 or error in ("NotFound", "RecordNotFound", "PostNotFound"):
+            raise RemoteNotFound(f"{host}: {message}")
+        if resp.status_code >= 500:
+            raise RemoteUnavailable(f"{host}: {message}")
+        if body is not None:
+            raise RemoteRejected(f"Bluesky refused: {message}", error)
+        raise RemoteUnavailable(f"{host}: {message}")
+
+    @staticmethod
+    def _session(token: str) -> dict[str, str]:
+        try:
+            s = json.loads(token)
+            assert s["did"] and s["pds"] and s["access"] and s["refresh"]
+        except (ValueError, KeyError, TypeError, AssertionError) as exc:
+            raise RemoteAuthError("The saved Bluesky session isn't readable; log in again", "InvalidToken") from exc
+        return s
+
+    def _pds_of(self, did: str) -> str:
+        """Where an account lives: its PDS, from its DID document."""
+        if did.startswith("did:plc:"):
+            resp = self.http.send("GET", f"{PLC}/{did}", headers={"Accept": "application/json"})
+        elif did.startswith("did:web:"):
+            resp = self.http.send("GET", f"https://{did[len('did:web:'):]}/.well-known/did.json",
+                                  headers={"Accept": "application/json"})
+        else:
+            raise RemoteNotFound(f"{did} isn't a kind of account ThreadBNC knows")
+        if resp.status_code != 200:
+            raise RemoteUnavailable(f"Couldn't read where {did} lives: HTTP {resp.status_code}")
+        for service in (resp.json().get("service") or []):
+            if str(service.get("id", "")).endswith("#atproto_pds"):
+                return str(service["serviceEndpoint"]).rstrip("/")
+        raise RemoteNotFound(f"{did} has no server listed")
+
+    def login(self, username: str, password: str, totp: str | None = None) -> str:
+        """Sign in with a handle (or the email of an account Bluesky hosts) and
+        an app password, at the account's own PDS. `totp`: the code Bluesky
+        emails when a main password is used with two-factor sign-in on."""
+        who = username.strip().lstrip("@")
+        pds = ENTRYWAY if "@" in who else self._pds_of(self._did(who.lower()))
+        got = self._xrpc(pds, "com.atproto.server.createSession",
+                         body={"identifier": who, "password": password, "authFactorToken": totp or None})
+        doc_pds = next((str(s.get("serviceEndpoint")) for s in (got.get("didDoc") or {}).get("service") or []
+                        if str(s.get("id", "")).endswith("#atproto_pds")), None)
+        return json.dumps({"did": got["did"], "handle": got.get("handle") or who, "pds": (doc_pds or pds).rstrip("/"),
+                           "access": got["accessJwt"], "refresh": got["refreshJwt"]})
+
+    @staticmethod
+    def _expires(jwt: str) -> float:
+        try:
+            payload = jwt.split(".")[1]
+            return float(json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))["exp"])
+        except (IndexError, ValueError, KeyError, TypeError):
+            return 0.0
+
+    def fresh(self, token: str) -> str:
+        """The session, its access token refreshed if it's about to run out.
+        The caller keeps what comes back when it differs."""
+        s = self._session(token)
+        if self._expires(s["access"]) - time.time() > REFRESH_BEFORE:
+            return token
+        got = self._xrpc(s["pds"], "com.atproto.server.refreshSession", bearer=s["refresh"], body={})
+        return json.dumps({**s, "handle": got.get("handle") or s["handle"],
+                           "access": got["accessJwt"], "refresh": got["refreshJwt"]})
+
+    def whoami(self, token: str) -> NActor:
+        s = self._session(token)
+        try:
+            p = self._get("app.bsky.actor.getProfile", actor=s["did"])
+        except RemoteNotFound:
+            p = {}
+        return NActor(profile_url(s["did"]), str(p.get("handle") or s["handle"]), BSKY_DOMAIN,
+                      p.get("displayName") or None)
+
+    def my_roles(self, token: str) -> dict[str, bool]:
+        return {}
+
+    def logout(self, token: str) -> None:
+        s = self._session(token)
+        self._xrpc(s["pds"], "com.atproto.server.deleteSession", bearer=s["refresh"], body={})
+
+    def _as_me(self, token: str, method: str, appview: bool = False, **params: Any) -> Any:
+        s = self._session(token)
+        return self._xrpc(s["pds"], method, bearer=s["access"], params=params, appview=appview)
+
+    def _write(self, token: str, method: str, body: dict[str, Any]) -> Any:
+        s = self._session(token)
+        return self._xrpc(s["pds"], method, bearer=s["access"], body={"repo": s["did"], **body})
+
+    def _signed_in_feed(self, uri: str, limit: int, cursor: str | None) -> Any:
+        """A feed only shown to someone signed in, read as you, if you are."""
+        token = self.reading_session() if self.reading_session else None
+        if not token:
+            raise RemoteAuthError(f"The Bluesky feed {web_url(uri)} is only shown to someone signed in: "
+                                  "log in to Bluesky on the Accounts page to follow it", "AuthMissing")
+        return self._as_me(token, "app.bsky.feed.getFeed", appview=True, feed=uri, limit=limit, cursor=cursor)
+
+    def _feed(self, uri: str, limit: int, cursor: str | None = None) -> Any:
+        try:
+            return self._get("app.bsky.feed.getFeed", feed=uri, limit=limit, cursor=cursor)
+        except RemoteAuthError:
+            return self._signed_in_feed(uri, limit, cursor)
 
     def _did(self, actor: str) -> str:
         if actor.startswith("did:"):
@@ -225,10 +414,9 @@ class BlueskyAdapter(ThreadiverseAdapter):
             if got.get("isOnline") is False or got.get("isValid") is False:
                 raise RemoteNotFound(f"The Bluesky feed {web_url(uri)} isn't working at the moment")
             try:  # some feeds are only served to someone signed in: say so now, not at every check
-                self._get("app.bsky.feed.getFeed", feed=uri, limit=1)
+                self._feed(uri, limit=1)
             except RemoteAuthError as exc:
-                raise RemoteNotFound(f"The Bluesky feed {web_url(uri)} is only shown to someone signed in "
-                                     "to Bluesky, which ThreadBNC isn't") from exc
+                raise RemoteNotFound(str(exc)) from exc
             creator = (view.get("creator") or {}).get("handle")
             about = "\n\n".join(x for x in (view.get("description"), f"A feed by @{creator}" if creator else None) if x)
             c = NCommunity(ap_id=web_url(uri), name=str(view.get("displayName") or rkey), domain=BSKY_DOMAIN,
@@ -252,8 +440,7 @@ class BlueskyAdapter(ThreadiverseAdapter):
         community = self._community(name)
         actor, _, rkey = name.partition("/feed/")
         if rkey:
-            data = self._get("app.bsky.feed.getFeed", feed=f"at://{actor}/{GENERATOR}/{rkey}",
-                             limit=min(limit, 100), cursor=cursor)
+            data = self._feed(f"at://{actor}/{GENERATOR}/{rkey}", limit=min(limit, 100), cursor=cursor)
         else:
             data = self._get("app.bsky.feed.getAuthorFeed", actor=actor, filter="posts_no_replies",
                              limit=min(limit, 100), cursor=cursor)
@@ -346,3 +533,125 @@ class BlueskyAdapter(ThreadiverseAdapter):
 
         walk(thread, None)
         return out
+
+    # -- writing, as your account ---------------------------------------------------
+    def _mention_did(self, handle: str) -> str | None:
+        try:
+            return self._did(handle)
+        except (RemoteNotFound, RemoteUnavailable):
+            return None
+
+    def _record(self, text: str) -> dict[str, Any]:
+        text = text.strip()
+        if len(text) > POST_CHARS:
+            raise RemoteRejected(f"Bluesky posts are at most {POST_CHARS} characters; this is {len(text)}.",
+                                 "TooLong")
+        record: dict[str, Any] = {"$type": POST, "text": text, "createdAt": utcnow()}
+        facets = facets_for(text, self._mention_did)
+        if facets:
+            record["facets"] = facets
+        return record
+
+    def _ref(self, local: str) -> dict[str, str]:
+        """A strong reference (at:// address and CID) to what a like or reply
+        points at, from any local id the archive has for it: "<uri> <cid>"
+        (resolve_as), "<followed name> <uri>" (a post) or "<uri>" (a reply).
+        Without a CID, the post is read for it."""
+        parts = local.split()
+        uri = next((p for p in parts if p.startswith("at://")), None)
+        if uri is None:
+            raise RemoteNotFound(f"{local}: not a Bluesky post")
+        after = parts[parts.index(uri) + 1:]
+        if after:
+            return {"uri": uri, "cid": after[0]}
+        posts = self._get("app.bsky.feed.getPosts", uris=[uri]).get("posts") or []
+        cid = next((p.get("cid") for p in posts if isinstance(p, dict) and p.get("uri") == uri), None)
+        if not cid:
+            raise RemoteNotFound(f"{web_url(uri)} was deleted")
+        return {"uri": uri, "cid": cid}
+
+    def resolve_as(self, token: str, ap_id: str) -> dict[str, str]:
+        """A post's or reply's local id for writing: its at:// address and the
+        version (CID) a like or reply points at. Your own account's: its DID."""
+        m = re.match(r"^https://bsky\.app/profile/([^/]+)(?:/post/([^/?#]+))?$", ap_id)
+        if not m:
+            return {}
+        if not m.group(2):
+            return {"community": m.group(1)}
+        try:
+            ref = self._ref(f"at://{m.group(1)}/{POST}/{m.group(2)}")
+        except RemoteNotFound:
+            return {}
+        return {"post": f"{ref['uri']} {ref['cid']}", "comment": f"{ref['uri']} {ref['cid']}"}
+
+    def create_comment(self, token: str, post_local_id: str, body: str,
+                       parent_local_id: str | None = None) -> NComment:
+        """Reply to a post, or to a reply in its thread."""
+        s = self._session(token)
+        root = self._ref(post_local_id)
+        parent = self._ref(parent_local_id) if parent_local_id else root
+        record = {**self._record(body), "reply": {"root": root, "parent": parent}}
+        got = self._write(token, "com.atproto.repo.createRecord", {"collection": POST, "record": record})
+        return NComment(ap_id=web_url(got["uri"]), local_id=got["uri"],
+                        parent_local_id=parent["uri"] if parent_local_id else None,
+                        body=rich_markdown(record["text"], record.get("facets")), created_at=record["createdAt"],
+                        updated_at=None, deleted=False, removed=False,
+                        author=NActor(profile_url(s["did"]), s["handle"], BSKY_DOMAIN), score=0, upvotes=0)
+
+    def create_post(self, token: str, community_local_id: str, title: str, body: str | None,
+                    url: str | None) -> NPost:
+        """A new post on your own account. Bluesky posts have no title: the
+        title and text go together, and a link becomes its card."""
+        s = self._session(token)
+        if community_local_id != s["did"]:
+            raise RemoteRejected("On Bluesky you can only post to your own account.", "NotYours")
+        record = self._record("\n\n".join(x.strip() for x in (title, body or "") if x and x.strip()))
+        view_embed = None
+        if url:
+            card = {"uri": url, "title": urlparse(url).hostname or url, "description": ""}
+            record["embed"] = {"$type": "app.bsky.embed.external", "external": card}
+            view_embed = {"$type": "app.bsky.embed.external#view", "external": card}
+        got = self._write(token, "com.atproto.repo.createRecord", {"collection": POST, "record": record})
+        view = {"uri": got["uri"], "cid": got.get("cid"), "record": record, "embed": view_embed,
+                "author": {"did": s["did"], "handle": s["handle"]}, "likeCount": 0, "replyCount": 0}
+        return self._post(view, self._community(s["did"]), s["did"])
+
+    def _like_of(self, token: str, uri: str) -> str | None:
+        """The like you gave this post, if you did (the AppView knows)."""
+        posts = self._as_me(token, "app.bsky.feed.getPosts", appview=True, uris=[uri]).get("posts") or []
+        view = next((p for p in posts if isinstance(p, dict) and p.get("uri") == uri), None)
+        return ((view or {}).get("viewer") or {}).get("like")
+
+    def _vote(self, token: str, local_id: str, score: int) -> None:
+        ref = self._ref(local_id)
+        if score == -1:
+            raise RemoteRejected("Bluesky has likes, not downvotes.", "NoDownvotes")
+        like = self._like_of(token, ref["uri"])
+        if score == 1 and not like:
+            self._write(token, "com.atproto.repo.createRecord",
+                        {"collection": LIKE, "record": {"$type": LIKE, "subject": ref, "createdAt": utcnow()}})
+        elif score == 0 and like:
+            self._write(token, "com.atproto.repo.deleteRecord", {"collection": LIKE, "rkey": like.rsplit("/", 1)[-1]})
+
+    def vote_post(self, token: str, local_id: str, score: int) -> None:
+        self._vote(token, local_id, score)
+
+    def vote_comment(self, token: str, local_id: str, score: int) -> None:
+        self._vote(token, local_id, score)
+
+    def _delete(self, token: str, local_id: str, deleted: bool) -> None:
+        if not deleted:
+            raise RemoteRejected("Bluesky can't bring back a deleted post.", "NoUndelete")
+        uri = next(p for p in local_id.split() if p.startswith("at://"))
+        self._write(token, "com.atproto.repo.deleteRecord", {"collection": POST, "rkey": uri.rsplit("/", 1)[-1]})
+
+    def delete_post(self, token: str, local_id: str, deleted: bool = True) -> None:
+        self._delete(token, local_id, deleted)
+
+    def delete_comment(self, token: str, local_id: str, deleted: bool = True) -> None:
+        self._delete(token, local_id, deleted)
+
+    def edit_post(self, *_a: Any, **_k: Any) -> Any:
+        raise RemoteRejected("Bluesky posts can't be edited: delete it and post again.", "NoEdits")
+
+    edit_comment = edit_post

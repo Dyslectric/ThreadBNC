@@ -14,6 +14,7 @@
         {% if c.title %}<p class="muted">{{ c.title }}</p>{% endif %}
       </div>
       <div class="row">
+      {% if bluesky_me and c.canonical_ap_id == bluesky_me.actor_ap_id %}<a class="button secondary small" href="/c/{{ c.id }}/submit">{{ icon('pencil') }} New post</a>{% endif %}
       {% if not is_rss(c.canonical_ap_id) and not is_tag(c.canonical_ap_id) and not is_bluesky(c.canonical_ap_id) and (reddit_me if is_reddit(c.canonical_ap_id) else acting) %}<a class="button secondary small" href="/c/{{ c.id }}/submit">{{ icon('pencil') }} New post</a>{% endif %}
       {% if following and follow.polling %}
         <form method="post" action="/c/{{ c.id }}/refresh" class="inline" title="Check for new posts now{{ ', last checked ' ~ (follow.last_polled_at | ago) if follow.last_polled_at }}">

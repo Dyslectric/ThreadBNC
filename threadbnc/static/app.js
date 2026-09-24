@@ -164,15 +164,16 @@ document.documentElement.classList.add("js");
   // again afterwards (on a big thread that's a lot to download and re-render),
   // unless the server says something went wrong: then it shows what's true.
   function showVote(box, mine, copies) {
+    // Bluesky posts have a like button only: no down button.
     const up = $("button.vote.up", box), down = $("button.vote.down", box);
-    const old = up.classList.contains("on") ? 1 : down.classList.contains("on") ? -1 : 0;
+    const old = up.classList.contains("on") ? 1 : down && down.classList.contains("on") ? -1 : 0;
     const redditScore = $(".reddit-score", box);
     if (redditScore) {
       const n = redditScore.textContent.match(/-?\d+/);
       if (n) redditScore.textContent = redditScore.textContent.replace(
         n[0], String(+n[0] + copies * (mine - old)));
     }
-    for (const [btn, dir] of [[up, 1], [down, -1]]) {
+    for (const [btn, dir] of [[up, 1], [down, -1]].filter(([b]) => b)) {
       const on = mine === dir;
       const count = $("span", btn);
       const n = count.textContent.match(/-?\d+/);

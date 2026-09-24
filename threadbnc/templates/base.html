@@ -39,7 +39,7 @@
     </form>
     <a class="icon-button search-link" href="/search{{ ('?community=' ~ scoped.id) if scoped }}" title="Search" aria-label="Search">{{ icon('search') }}</a>
     {% endif %}
-    {% set switchable = accounts | rejectattr('is_reddit') | list if accounts else [] %}
+    {% set switchable = accounts | rejectattr('separate') | list if accounts else [] %}
     {% set tc = trash_count() %}
     <details class="menu account-menu" id="account-menu" data-live>
       <summary title="Accounts, trash, theme and more">{{ icon('user') }}<span class="label">{{ acting.handle if acting else 'Menu' }}</span>

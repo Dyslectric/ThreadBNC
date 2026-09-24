@@ -22,7 +22,17 @@
         <div class="small muted"><code>{{ a.actor_ap_id }}</code>
           {% if a.last_error %}<div class="bad-text">{{ a.last_error }}</div>{% endif %}</div>
       </div>
-      {% if a.is_reddit %}
+      {% if a.is_bluesky %}
+      <span class="small muted">Used automatically for anything on Bluesky · <a href="/bluesky/post">Write a post</a></span>
+      <details class="reply-box">
+        <summary class="small">Remove…</summary>
+        <form method="post" action="/accounts/{{ a.id }}/remove">
+          <p class="small muted">Ends the session on Bluesky and forgets it here. Followed accounts and feeds, and everything saved, stay.
+            The app password keeps working until you revoke it in Bluesky's settings.</p>
+          <button class="small danger">Remove {{ a.handle }}</button>
+        </form>
+      </details>
+      {% elif a.is_reddit %}
       <span class="small muted">Used automatically for anything on Reddit · <a href="/reddit">Reddit settings</a></span>
       <details class="reply-box">
         <summary class="small">Remove…</summary>
@@ -61,6 +71,32 @@
   {% else %}
     <p class="muted">Follow subreddits and repost from them to your own communities. <a href="/reddit">Connect Reddit →</a></p>
   {% endif %}
+</section>
+
+<section class="card narrow-form" id="bluesky">
+  <h2>Bluesky</h2>
+  {% if bluesky_me %}
+    <p>Signed in as <strong>{{ bluesky_me.handle }}</strong>{% if bluesky_me.status != 'ok' %} <span class="pill bad">needs login</span>{% endif %}
+      · <a href="/bluesky/post">Write a post →</a></p>
+    <p class="small muted">Likes, replies and posts on Bluesky are made as {{ bluesky_me.handle }} automatically, and feeds only
+      shown to someone signed in are read as you. Sign in again below to renew the session or switch accounts.</p>
+  {% else %}
+    <p class="muted">Follow Bluesky accounts and feeds without signing in. Sign in to like, reply and post, and to follow feeds
+      that are only shown to someone signed in.</p>
+  {% endif %}
+  <form method="post" action="/accounts/bluesky" class="stack" autocomplete="off">
+    <label>Handle <input name="identifier" required placeholder="you.bsky.social" autocomplete="username"
+      value="{{ bluesky_me.username if bluesky_me else '' }}"></label>
+    <label>App password <input type="password" name="app_password" required placeholder="xxxx-xxxx-xxxx-xxxx"
+      autocomplete="current-password"></label>
+    <details class="small"><summary>Using your main password with two-factor sign-in?</summary>
+      <label>Code Bluesky emailed you <input name="code" autocomplete="one-time-code"></label></details>
+    <button>{{ 'Sign in again' if bluesky_me else 'Sign in to Bluesky' }}</button>
+  </form>
+  <p class="small muted">Make an app password in Bluesky under <a href="https://bsky.app/settings/app-passwords"
+    rel="noreferrer noopener" target="_blank">Settings → Privacy and security → App passwords</a>. It can't change your
+    password or account settings, and you can revoke it there at any time. It's used once to sign in and not stored: ThreadBNC
+    keeps Bluesky's session, encrypted.</p>
 </section>
 
 <section class="card">

@@ -266,12 +266,14 @@ link is read once, when you follow it, to find the channel's id.
 Follow a Bluesky account by pasting its `@handle` (`@someone.bsky.social`) or profile link
 (`bsky.app/profile/…`) into the follow box, or a custom feed by its `bsky.app/profile/…/feed/…` link. They get
 their own **Bluesky** group in the sidebar and in the feed editor. Everything is read from Bluesky's public API
-(`public.api.bsky.app`), with no account.
+(`public.api.bsky.app`), with no account, unless you sign in (below).
 
 - **What arrives:** an account's own posts, not its replies or reposts; a feed's posts in the feed's order. A post's title is the start of its text. Pictures show like any other post's, a link card becomes the post's link (its article is saved as usual), and a quoted post shows as a quote under the text. Videos come as a stream rather than a file, so only their cover picture is kept.
-- **Checking** is every 30 minutes by default (`THREADBNC_BLUESKY_POLL_MINUTES`, at least 5): one request per account or feed, which also updates the likes on the posts it lists. A feed that's only shown to someone signed in to Bluesky can't be followed; the follow box says so.
+- **Checking** is every 30 minutes by default (`THREADBNC_BLUESKY_POLL_MINUTES`, at least 5): one request per account or feed, which also updates the likes on the posts it lists. A feed that's only shown to someone signed in is read as your account once you've signed in; until then the follow box says it can't be followed.
 - **Replies:** opening a post reads its replies, ten deep, as its comments, in one request. They aren't read again within five minutes.
-- **Read only:** likes show as votes, but nothing can be liked, replied to or posted from here. Reposting a Bluesky post to one of your Lemmy communities works like any other repost.
+- **Signing in:** on the Accounts page, sign in with your handle and an [app password](https://bsky.app/settings/app-passwords) (Settings → Privacy and security → App passwords). The app password is used once and not stored; ThreadBNC keeps Bluesky's session, encrypted, and renews it before it runs out. Like the Reddit account, it isn't in the header switcher: anything on Bluesky is done as it.
+- **Signed in**, you can like and unlike posts and replies (the up button; Bluesky has no downvotes), reply to posts and replies (plain text, 300 characters; links, @mentions and #hashtags become links on Bluesky), delete your own posts and replies (they can't be edited or brought back), and write posts on your own account (Accounts → Write a post, or New post on your account's page), with an optional link card. Notifications aren't read into the Inbox yet.
+- Signed out, likes show as votes but nothing can be liked, replied to or posted. Reposting a Bluesky post to one of your Lemmy communities works either way.
 - **Keeping one post:** a `bsky.app/profile/…/post/…` link can be kept like any post link.
 
 ## Hashtags
