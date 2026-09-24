@@ -171,6 +171,26 @@ class HttpClient:
             raise RemoteUnavailable(f"{url}: HTTP {resp.status_code} {err}")
         return data
 
+    def send(self, method: str, url: str, *, headers: dict[str, str] | None = None, content: bytes | None = None,
+             throttle: bool = True) -> httpx.Response:
+        """One request whose headers the caller builds (signed ActivityPub
+        requests, actor.py), spaced and paused like the rest. Raises
+        RemoteUnavailable when the server can't be reached and RemotePaused on
+        429; any other answer is the caller's to read."""
+        host = (httpx.URL(url).host or "").lower()
+        if throttle:
+            self._throttle(host)
+        else:
+            self.throttle.check(host)
+        try:
+            resp = self._client.request(method, url, headers=headers, content=content)
+        except httpx.HTTPError as exc:
+            raise RemoteUnavailable(f"{host}: {type(exc).__name__}: {exc}") from exc
+        self.throttle.note(host, resp.status_code, resp.headers)
+        if resp.status_code == 429:
+            raise RemotePaused(f"{url}: HTTP 429 (too many requests)", self.throttle.paused_for(host))
+        return resp
+
     def redirect_target(self, domain: str, path: str) -> str | None:
         """Where https://{domain}{path} redirects to (its Location), without following it."""
         self.throttle.check(domain)

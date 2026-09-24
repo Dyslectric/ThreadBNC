@@ -35,8 +35,9 @@ from . import feed as feed_mod
 from . import media as media_mod
 from . import storage as storage_mod
 from . import thumbs as thumbs_mod
-from .adapters import RSS_PREFIX, RemoteError, host_of, is_reddit_host, is_rss
-from .adapters.base import RSS_DOMAIN
+from .actor import ActorEndpoints
+from .adapters import RSS_PREFIX, RemoteError, host_of, is_reddit_host, is_rss, is_tag
+from .adapters.base import RSS_DOMAIN, TAG_DOMAIN
 from .accounts import Account, AccountError, Poster
 from .bouncer import PUSHED_POLL_MINUTES, Bouncer
 from .inbox import KINDS as INBOX_KINDS, Inbox
@@ -51,6 +52,7 @@ from .sso import CALLBACK_PATH, SingleSignOn, callback_url
 PROXY_SECRET_HEADER = "X-ThreadBNC-Proxy-Secret"
 from .config import Settings, load_settings
 from .federation import Federation, InboxRelay, summarize
+from .tags import TagRelays
 from .db import fmt_ts, open_database, parse_ts, utcnow
 from .render import MediaInfo, looks_like_media, render_markdown
 from .vault import TokenVault
@@ -260,10 +262,12 @@ def is_reddit(ap_id: str | None) -> bool:
 
 def chandle(name: str, ap_id: str | None, plain: bool = False) -> Markup | str:
     """A community's handle: r/name for subreddits, the feed's title for feeds
-    (the channel's name for YouTube),
+    (the channel's name for YouTube), #name for hashtags,
     !name@host otherwise (with the host dimmed unless `plain`)."""
     if is_reddit(ap_id):
         return f"r/{name}"
+    if is_tag(ap_id):
+        return f"#{name}"
     if is_youtube_feed(ap_id):
         return f"{name} (YouTube)" if plain else Markup('{}<span class="muted"> · YouTube</span>').format(name)
     if is_rss(ap_id):
@@ -328,6 +332,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     bouncer.hooks.append(inbox.sweep)
     # Your own servers' inboxes, relayed through ThreadBNC so what they receive is pushed here too.
     federation = Federation(poster, settings.relay_inboxes) if settings.relay_inboxes else None
+    # ThreadBNC's own ActivityPub identity, following hashtags through a relay.
+    tags = TagRelays(bouncer, bouncer.actor, settings.tag_relay) if bouncer.actor else None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -345,7 +351,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     templates.env.filters.update(ago=ago, absolute=absolute, clock=clock,safe_url=safe_url, host=host_of,
                                  looks_like_media=looks_like_media, size=human_size, youtube_video=youtube.video_id)
     # A Lemmy or PieFed community (not a subreddit or a feed): one that can be pushed.
-    templates.env.tests["is_federated"] = lambda ap_id: not is_rss(ap_id) and not is_reddit_host(host_of(ap_id))
+    templates.env.tests["is_federated"] = lambda ap_id: (not is_rss(ap_id) and not is_tag(ap_id)
+                                                         and not is_reddit_host(host_of(ap_id)))
     def static_url(name: str) -> str:
         # Cache-bust with the file's mtime so UI updates show up without a hard reload.
         return f"/static/{name}?v={int((HERE / 'static' / name).stat().st_mtime)}"
@@ -387,7 +394,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                                  feed_windows=FEED_WINDOWS, feed_shows=FEED_SHOWS,
                                  password_login=bool(settings.password),
                                  proxy_login=bool(settings.proxy_auth_header), chandle=chandle,
-                                 is_reddit=is_reddit, is_rss=is_rss, is_youtube=is_youtube_feed,
+                                 is_reddit=is_reddit, is_rss=is_rss, is_tag=is_tag, is_youtube=is_youtube_feed,
+                                 actor_handle=bouncer.actor.handle if bouncer.actor else None,
                                  reading_articles=bouncer.articles.enabled)
     app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
 
@@ -478,7 +486,10 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     if federation:  # outermost: deliveries to your servers' inboxes never reach sessions or sign-in
         app.add_middleware(InboxRelay, relays=settings.relay_inboxes, accept=federation.queue,
                            refuse=federation.refused)
+    if tags:  # outermost too: other servers reach the actor and its inbox without signing in
+        app.add_middleware(ActorEndpoints, actor=bouncer.actor, receive=tags.receive, expects=tags.expects)
     app.state.federation = federation
+    app.state.tags = tags
 
     def push_handle() -> str | None:
         account = federation.account() if federation else None
@@ -1156,7 +1167,14 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             return RedirectResponse(back(request, "/communities"), status_code=303)
         with db.connect() as conn:
             f = conn.execute("SELECT * FROM community_follows WHERE community_id=?", (cid,)).fetchone()
-        if f["push_state"] == "subscribed":
+        if f["source_domain"] == TAG_DOMAIN:
+            if f["push_state"] == "pending":
+                flash(request, f"Following. {bouncer.actor.handle} asked the relay for posts tagged "  # type: ignore[union-attr]
+                               f"#{f['source_ref']}; they arrive as they're made, from now on.")
+            else:
+                flash(request, f"Following, but the relay couldn't be asked for its posts yet: {f['push_error']}. "
+                               "It's asked again every half hour.", "warn-flash")
+        elif f["push_state"] == "subscribed":
             flash(request, f"Following. {push_handle()} subscribed, so posts arrive as they're made.")
         elif f["polling"]:
             flash(request, f"Following. It's checked every {f['poll_interval_minutes']} minutes.")

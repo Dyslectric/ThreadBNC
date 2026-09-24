@@ -74,6 +74,11 @@ class Settings:
     # they receive is pushed to it too (federation.py): domain -> Lemmy's own address.
     relay_inboxes: dict[str, str] = field(default_factory=dict)
     inbox_poll_minutes: int = 5  # replies, mentions and messages; Reddit's at least REDDIT_MIN_POLL_MINUTES
+    # ThreadBNC's own ActivityPub identity (actor.py), at https://{actor_domain}/threadbnc/actor.
+    # Without it, hashtags can't be followed (tags.py).
+    actor_domain: str | None = None
+    # The relay that passes on public posts with a hashtag, {tag} standing for it.
+    tag_relay: str = "https://relay.fedi.buzz/tag/{tag}"
 
 
 def _load_secret(data_dir: Path) -> str:
@@ -128,4 +133,6 @@ def load_settings() -> Settings:
         rss_poll_minutes=max(RSS_MIN_POLL_MINUTES, _env_int("THREADBNC_RSS_POLL_MINUTES", 60)),
         inbox_poll_minutes=max(1, _env_int("THREADBNC_INBOX_POLL_MINUTES", 5)),
         relay_inboxes=_relays(os.environ.get("THREADBNC_RELAY_INBOXES", "")),
+        actor_domain=os.environ.get("THREADBNC_ACTOR_DOMAIN", "").strip().lower() or None,
+        tag_relay=os.environ.get("THREADBNC_TAG_RELAY", "").strip() or "https://relay.fedi.buzz/tag/{tag}",
     )

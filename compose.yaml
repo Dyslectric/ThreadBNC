@@ -43,6 +43,10 @@ services:
       # Your own Lemmy servers whose inboxes are routed through ThreadBNC, for pushes
       # (see README, "Pushes from your own server"): domain=Lemmy's address, comma-separated.
       THREADBNC_RELAY_INBOXES: ${THREADBNC_RELAY_INBOXES:-}
+      # ThreadBNC's own ActivityPub identity, for following hashtags (see README, "Hashtags"):
+      # the domain it's on, e.g. one your Lemmy server runs on, and the relay that passes on tagged posts.
+      THREADBNC_ACTOR_DOMAIN: ${THREADBNC_ACTOR_DOMAIN:-}
+      THREADBNC_TAG_RELAY: ${THREADBNC_TAG_RELAY:-}
       # Signed in by a reverse proxy (e.g. Authentik forward auth); see README.
       THREADBNC_PROXY_AUTH_HEADER: ${THREADBNC_PROXY_AUTH_HEADER:-}
       THREADBNC_PROXY_SECRET: ${THREADBNC_PROXY_SECRET:-}

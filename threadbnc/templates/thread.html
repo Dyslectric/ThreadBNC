@@ -45,7 +45,7 @@
    are left out when you aren't logged in with Reddit. #}
 {% macro actions(n, is_post=False) -%}
 {% set w = [] %}{% set hs = [] %}
-{% for m in n.members %}{% set acct = none if is_rss(m.o.canonical_ap_id) else (reddit_me if is_reddit(m.o.canonical_ap_id) else me) %}
+{% for m in n.members %}{% set acct = none if is_rss(m.o.canonical_ap_id) or is_tag(t.c_ap) else (reddit_me if is_reddit(m.o.canonical_ap_id) else me) %}
   {% if acct %}{% set _ = w.append(m) %}{% if acct.handle not in hs %}{% set _ = hs.append(acct.handle) %}{% endif %}{% endif %}{% endfor %}
 {% if w %}
   {% set o = w[0].o %}
@@ -258,7 +258,7 @@
 </article>
 
 {% set writable_copies = [] %}{% set hs = [] %}
-{% for pc in post_copies %}{% set acct = none if is_rss(pc.o.canonical_ap_id) else (reddit_me if pc.reddit else me) %}
+{% for pc in post_copies %}{% set acct = none if is_rss(pc.o.canonical_ap_id) or is_tag(t.c_ap) else (reddit_me if pc.reddit else me) %}
   {% if acct %}{% set _ = writable_copies.append(pc) %}{% if acct.handle not in hs %}{% set _ = hs.append(acct.handle) %}{% endif %}{% endif %}{% endfor %}
 {% set as_whom = hs | join(' and ') %}
 {% if not t.trashed_at and writable_copies %}
@@ -274,6 +274,10 @@
       {% if (accounts | rejectattr('is_reddit') | list | length) > 1 %}<span class="small muted">Switch accounts in the header{{ '; Reddit copies always get your Reddit account' if reddit_me and writable_copies | selectattr('reddit') | list }}.</span>{% endif %}</div>
   </form>
 </section>
+{% elif is_tag(t.c_ap) and not t.trashed_at %}
+<p class="small muted">This came from a hashtag, from {{ o.a_instance or 'another server' }}. Reply or vote there, through
+  <a href="{{ o.canonical_ap_id | safe_url }}" rel="noreferrer noopener nofollow" target="_blank">the original</a>{% if accounts %},
+  or <a href="/t/{{ t.id }}/repost">repost it</a> to discuss it on your own server{% endif %}.</p>
 {% elif not accounts %}
 <p class="small muted"><a href="/accounts">Add an account</a> to comment, vote or post from here.</p>
 {% elif not writable_copies and not t.trashed_at and is_rss(o.canonical_ap_id) %}

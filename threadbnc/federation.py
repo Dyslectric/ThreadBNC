@@ -43,7 +43,8 @@ from starlette.concurrency import run_in_threadpool
 
 from . import store
 from .accounts import Account, AccountError, Poster
-from .adapters import NComment, NPost, RemoteError, RemoteNotFound, RemotePaused, ThreadiverseAdapter, host_of, is_reddit_host, is_rss
+from .adapters import (NComment, NPost, RemoteError, RemoteNotFound, RemotePaused, ThreadiverseAdapter, host_of,
+                       is_reddit_host, is_rss, is_tag)
 from .db import fmt_ts, parse_ts, utcnow
 
 log = logging.getLogger(__name__)
@@ -241,7 +242,7 @@ def with_payload(item: NPost | NComment, payload: dict[str, Any]) -> NPost | NCo
 
 
 def _federated(ap_id: str) -> bool:
-    return not is_rss(ap_id) and not is_reddit_host(host_of(ap_id))
+    return not is_rss(ap_id) and not is_tag(ap_id) and not is_reddit_host(host_of(ap_id))
 
 
 # --- the push worker ------------------------------------------------------------

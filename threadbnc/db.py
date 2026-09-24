@@ -81,6 +81,9 @@ CREATE TABLE IF NOT EXISTS community_follows (
     push_error TEXT,
     push_changed_at TEXT,
     last_push_at TEXT,
+    -- Hashtags (tags.py): the relay actor followed, and the Follow sent to it.
+    push_actor TEXT,
+    push_follow_id TEXT,
     -- 1 = check the community on its server every poll_interval_minutes. Off by
     -- default for Lemmy and PieFed, whose posts arrive by push (federation.py);
     -- always on for feeds and subreddits, which can't push.
@@ -524,6 +527,8 @@ COLUMN_MIGRATIONS = [
     ("media", "transcode_error", "TEXT"),
     # Follows from before polling was opt-in keep being checked, so upgrading doesn't empty anyone's feed.
     ("community_follows", "polling", "INTEGER NOT NULL DEFAULT 1"),
+    ("community_follows", "push_actor", "TEXT"),
+    ("community_follows", "push_follow_id", "TEXT"),
 ]
 
 # Tables with an integer `id` key: inserts into these get `RETURNING id` on

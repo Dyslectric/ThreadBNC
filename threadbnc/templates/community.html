@@ -14,25 +14,27 @@
         {% if c.title %}<p class="muted">{{ c.title }}</p>{% endif %}
       </div>
       <div class="row">
-      {% if not is_rss(c.canonical_ap_id) and (reddit_me if is_reddit(c.canonical_ap_id) else acting) %}<a class="button secondary small" href="/c/{{ c.id }}/submit">{{ icon('pencil') }} New post</a>{% endif %}
+      {% if not is_rss(c.canonical_ap_id) and not is_tag(c.canonical_ap_id) and (reddit_me if is_reddit(c.canonical_ap_id) else acting) %}<a class="button secondary small" href="/c/{{ c.id }}/submit">{{ icon('pencil') }} New post</a>{% endif %}
       {% if following and follow.polling %}
         <form method="post" action="/c/{{ c.id }}/refresh" class="inline" title="Check for new posts now{{ ', last checked ' ~ (follow.last_polled_at | ago) if follow.last_polled_at }}">
           <button class="secondary small">{{ icon('refresh') }} Refresh</button></form>
       {% endif %}
       {% if following %}
         <details class="settings">
-          {% set federated = not is_rss(c.canonical_ap_id) and not is_reddit(c.canonical_ap_id) %}
-          <summary class="button secondary small" title="{{ 'Pushed' if follow.push_state == 'subscribed' else ('Checked every ' ~ follow.poll_interval_minutes ~ ' min' if follow.polling else 'Not arriving') }} · unkept posts kept {{ (follow.retention_days ~ ' days') if follow.retention_days is not none else 'forever' }}">{{ icon('check') }} Following{{ icon('chevron-down', 'chev') }}</summary>
+          {% set federated = not is_rss(c.canonical_ap_id) and not is_reddit(c.canonical_ap_id) and not is_tag(c.canonical_ap_id) %}
+          <summary class="button secondary small" title="{{ 'From the relay' if is_tag(c.canonical_ap_id) and follow.push_state == 'subscribed' else 'Pushed' if follow.push_state == 'subscribed' else ('Checked every ' ~ follow.poll_interval_minutes ~ ' min' if follow.polling else 'Not arriving') }} · unkept posts kept {{ (follow.retention_days ~ ' days') if follow.retention_days is not none else 'forever' }}">{{ icon('check') }} Following{{ icon('chevron-down', 'chev') }}</summary>
           <div class="card settings-card">
             <form method="post" action="/c/{{ c.id }}/follow-settings" class="stack">
-              <label>Check every <input type="number" name="poll_interval_minutes" min="1" class="num" value="{{ follow.poll_interval_minutes }}"> minutes</label>
+              {% if is_tag(c.canonical_ap_id) %}<input type="hidden" name="poll_interval_minutes" value="{{ follow.poll_interval_minutes }}">
+              {% else %}<label>Check every <input type="number" name="poll_interval_minutes" min="1" class="num" value="{{ follow.poll_interval_minutes }}"> minutes</label>{% endif %}
               <label>Keep posts you haven't kept for
                 <input name="retention_days" class="num" value="{{ follow.retention_days if follow.retention_days is not none else 'forever' }}"> days</label>
               <button class="small">Save</button>
             </form>
             <p class="small muted">A number of days, or "forever". Posts you keep never expire.
-              Comments are read when you open a post; votes on new posts are updated often at first, then less,
-              and not after a week.</p>
+              {% if is_tag(c.canonical_ap_id) %}Replies and votes are read when you open a post.
+              {% else %}Comments are read when you open a post; votes on new posts are updated often at first, then less,
+              and not after a week.{% endif %}</p>
             {% if federated %}
             <div class="push-status small" id="push">
               {% if push_handle and follow.push_state == 'subscribed' %}
@@ -64,6 +66,21 @@
                 {% endif %}
               {% endif %}
             </div>
+            {% elif is_tag(c.canonical_ap_id) %}
+            <div class="push-status small">
+              {% if follow.push_state == 'subscribed' %}
+                <p><span class="pill good">{{ icon('refresh') }} From the relay</span> {{ actor_handle }} follows
+                  <a href="{{ follow.push_actor | safe_url }}" rel="noreferrer noopener nofollow" target="_blank">the relay's #{{ c.name }}</a>:
+                  public posts with this hashtag arrive as they're made{% if follow.last_push_at %}, last {{ when(follow.last_push_at) }}{% endif %}.
+                  Replies are read when you open a post.</p>
+              {% elif follow.push_state == 'pending' %}
+                <p><span class="pill warn">Waiting</span> {{ actor_handle }} asked the relay to follow #{{ c.name }};
+                  it hasn't answered yet. It's asked again every hour until it does.</p>
+              {% else %}
+                <p><span class="pill bad">Not arriving</span> The relay couldn't be asked for posts yet{% if follow.push_error %}:
+                  <span class="bad-text">{{ follow.push_error }}</span>{% endif %}. It's asked again every half hour.</p>
+              {% endif %}
+            </div>
             {% else %}
             <p class="small muted">Checked every {{ follow.poll_interval_minutes }} minutes, last
               {{ when(follow.last_polled_at) if follow.last_polled_at else 'not yet' }}.
@@ -93,7 +110,7 @@
     <nav class="tabs">
       <a href="/c/{{ c.id }}" class="{{ 'on' if tab == 'feed' }}">Feed</a>
       <a href="/c/{{ c.id }}?tab=kept" class="{{ 'on' if tab == 'kept' }}">{{ icon('star') }} Kept ({{ counts.get('manual', 0) }})</a>
-      {% if not is_rss(c.canonical_ap_id) %}<a href="/c/{{ c.id }}?tab=live" class="{{ 'on' if tab == 'live' }}">Live on server</a>{% endif %}
+      {% if not is_rss(c.canonical_ap_id) and not is_tag(c.canonical_ap_id) %}<a href="/c/{{ c.id }}?tab=live" class="{{ 'on' if tab == 'live' }}">Live on server</a>{% endif %}
       <a href="/c/{{ c.id }}?tab=media" class="{{ 'on' if tab == 'media' }}">Media</a>
       <a href="/c/{{ c.id }}?tab=log" class="{{ 'on' if tab == 'log' }}">Log</a>
       {% if powers.any %}<a href="/c/{{ c.id }}?tab=mod" class="{{ 'on' if tab == 'mod' }}">{{ icon('shield') }} Moderation</a>{% endif %}
