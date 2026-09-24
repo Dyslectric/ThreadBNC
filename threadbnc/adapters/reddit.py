@@ -184,6 +184,17 @@ class RedditAdapter(ThreadiverseAdapter):
             raise RemoteNotFound(f"reddit post {local_id} not found")
         return self._post(children[0]["data"])
 
+    def fetch_posts(self, local_ids: list[str]) -> list[NPost]:
+        """Several posts in one request (Reddit takes up to 100 ids at once),
+        for the feed's previews. Posts Reddit doesn't return are left out."""
+        out: list[NPost] = []
+        for i in range(0, len(local_ids), 100):
+            chunk = local_ids[i:i + 100]
+            data = self.reader.get("/api/info", {"id": ",".join(f"t3_{x}" for x in chunk)}) or {}
+            out += [self._post(c["data"]) for c in (data.get("data") or {}).get("children") or []
+                    if c.get("kind") == "t3"]
+        return out
+
     def fetch_comments(self, post_local_id: str) -> CommentList:
         """The newest comments of a thread, up to comment_limit. Reddit leaves
         the rest behind "load more" stubs, which aren't followed (each costs a

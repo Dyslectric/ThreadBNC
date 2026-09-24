@@ -139,8 +139,8 @@ class FakeReddit:
             return httpx.Response(200, json={"kind": "Listing", "data": {
                 "after": None, "children": [{"kind": "t3", "data": p} for p in posts]}}, headers=headers)
         if path == "/api/info":
-            pid = q["id"][0][3:]
-            kids = [{"kind": "t3", "data": self.posts[pid]}] if pid in self.posts else []
+            pids = [t[3:] for t in q["id"][0].split(",")]
+            kids = [{"kind": "t3", "data": self.posts[pid]} for pid in pids if pid in self.posts]
             return httpx.Response(200, json={"kind": "Listing", "data": {"children": kids}}, headers=headers)
         if path.startswith("/comments/"):
             pid = path.split("/")[2]
@@ -386,6 +386,46 @@ def test_follow_a_subreddit_conservatively(bouncer, reddit):
     # Can't be set faster than every 10 minutes.
     bouncer.update_follow(cid, 1, 30)
     assert one(bouncer, "SELECT poll_interval_minutes FROM community_follows")[0] == 10
+
+
+def test_posts_scrolled_to_get_their_text_pictures_and_votes(settings, bouncer, reddit):
+    """A subreddit post shown in the feed has its text, pictures and votes
+    read once it's on screen (app.js), all of them in one request, but not
+    its comments; they stay fresh a while, so scrolling back asks nothing."""
+    bouncer.reddit.connect_app("app1", "s3cret")
+    cid = bouncer.follow_community("r/pics", None, 30, backfill=True)
+    bouncer.poll_follow(cid)
+    tids = col(bouncer, "SELECT id FROM archived_threads ORDER BY id")
+    text_tid = one(bouncer, "SELECT t.id FROM archived_threads t JOIN objects o ON o.id=t.root_object_id "
+                            "WHERE o.canonical_ap_id LIKE '%/p2/'")[0]
+    reddit.posts["p2"].update(score=99, selftext="Some **text**\n\n![a](https://i.redd.it/pic.png)")
+    client = logged_in(settings, bouncer)
+    page = client.get(f"/c/{cid}").text
+    assert f'id="p{text_tid}"' in page and 'data-preview=""' in page
+    assert client.get("/feed/articles", params={"ids": tids}).json()["waiting"] == tids
+
+    before = len(reddit.requests)
+    assert client.post("/feed/articles", data={"ids": tids}).json()["ok"]
+    while bouncer.run_one_job():
+        pass
+    assert reddit.requests[before:].count("GET oauth.reddit.com/api/info") == 1
+    assert not any("/comments/" in r for r in reddit.requests[before:])
+    text = one(bouncer, "SELECT o.score, o.revision_count, o.last_changed_at, r.body FROM objects o "
+                        "JOIN revisions r ON r.object_id=o.id WHERE o.canonical_ap_id LIKE '%/p2/'")
+    assert text["body"].startswith("Some **text**") and text["score"] == 99
+    assert text["revision_count"] == 1 and text["last_changed_at"] is None  # filled in, not an edit
+    assert one(bouncer, "SELECT COUNT(*) FROM media WHERE url='https://i.redd.it/pic.png'")[0] == 1
+    status = client.get("/feed/articles", params={"ids": tids}).json()
+    assert status["waiting"] == [] and all(status["previewed"][str(t)] for t in tids)
+    page = client.get(f"/c/{cid}").text
+    assert "data-preview" not in page and "Some text" in page and "99 pts" in page
+
+    before = len(reddit.requests)
+    client.post("/feed/articles", data={"ids": tids})
+    while bouncer.run_one_job():
+        pass
+    assert reddit.requests[before:] == []  # read moments ago
+    assert len(col(bouncer, "SELECT id FROM jobs WHERE kind='previews'")) == 1  # not even asked for
 
 
 def test_unchanged_thread_costs_one_request(bouncer, reddit):

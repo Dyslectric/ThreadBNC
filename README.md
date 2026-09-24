@@ -118,8 +118,9 @@ When the same link or the same text post shows up more than once, whether repost
 ## Reddit
 
 Subreddits work like any other community: follow `r/name` (or paste `https://www.reddit.com/r/name`) and its
-posts land in your feed. Opening one reads its text and comments, and edits, removals and deletions seen then are
-kept as history. You can also keep a single Reddit post by pasting its link on the **Kept** page; share links from
+posts land in your feed. When a post scrolls into view in the feed, its text, pictures and votes are read, in one
+request for every post on screen, and not again for five minutes. Opening one reads its comments too, and edits,
+removals and deletions seen then are kept as history. You can also keep a single Reddit post by pasting its link on the **Kept** page; share links from
 the Reddit app (`/r/name/s/…`) work too.
 
 Logged in with Reddit, you can also vote, comment, reply, post, edit and delete there. To discuss a Reddit post on
@@ -235,7 +236,7 @@ Paste a channel or playlist link into the follow box: `youtube.com/@name`, `/cha
 `/playlist?list=…`. It gets its own **YouTube** group in the sidebar and in the feed editor. An `@name` or `/c/`
 link is read once, when you follow it, to find the channel's id.
 
-- **Checking:** YouTube's feeds have been unreliable (404 for every channel), so new videos are read from the channel's Videos tab, or the playlist's page: each one's title, thumbnail and rough upload time ("2 weeks ago"). The page shows the latest 30. Like subreddits, channels are only checked while you're using ThreadBNC, one at a time and spread across the check interval (60 minutes by default). There's no description, since the page doesn't carry one.
+- **Checking:** YouTube's feeds have been unreliable (404 for every channel), so new videos are read from the channel's Videos tab, or the playlist's page: each one's title, thumbnail and rough upload time ("2 weeks ago"). The page shows the latest 30. Like subreddits, channels are only checked while you're using ThreadBNC, one at a time and spread across the check interval (60 minutes by default). The page doesn't carry descriptions, so when a video's post scrolls into view in the feed, the video's own page is read for its description and likes. That happens once an hour at most.
 
 - **Videos are saved only for posts you keep.** Opening a post or scrolling past it downloads nothing. This covers any kept post that links to a YouTube video, a Lemmy or Reddit one included. [yt-dlp](https://github.com/yt-dlp/yt-dlp) does the downloading, with deno (installed by `requirements.txt`) solving YouTube's player challenges. With ffmpeg, video and sound are joined up to the chosen quality. Without it, YouTube often only has 360p as a single file.
 - **The YouTube page** (`/youtube`, linked from Accounts) sets the largest video downloaded (2000 MB by default) and the **resolution** videos are saved at (1080p). They're saved as YouTube encoded them and aren't otherwise transcoded: the **Videos** media settings are for other videos. Lowering the resolution scales videos already saved at more than it down to it, in the background, at a steady quality (H.264, CRF 23); raising it doesn't bring back what was scaled down. "720p" is the shorter side, so upright videos and Shorts count the same. A community that doesn't archive videos saves no YouTube videos.

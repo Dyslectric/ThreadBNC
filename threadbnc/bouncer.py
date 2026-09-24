@@ -7,7 +7,8 @@ when you turn that on, feeds and subreddits always are, and subreddits only
 while you're using ThreadBNC. A post's comments, linked article and videos
 are fetched when it's opened or kept (open_threads), its article and the
 audio file it links to when it's scrolled into view in a feed too
-(fetch_articles, fetch_audio), and its votes on a
+(fetch_articles, fetch_audio), as are a subreddit post's text, pictures and
+votes and a YouTube video's description and likes (fetch_previews), and its votes on a
 schedule that slows with age and stops after a week (check_votes), from one
 community listing where it can. A server that answers 429 is left alone for
 as long as it asks (adapters/http.py)."""
@@ -23,7 +24,7 @@ import traceback
 from datetime import timedelta
 from typing import Any, Callable
 
-from . import articles, media, store, thumbs
+from . import articles, media, store, thumbs, youtube
 from . import feed as feed_mod
 from .adapters import (
     CommunityRef,
@@ -594,6 +595,90 @@ class Bouncer:
             if m is not None:
                 self.media.fetch_one(m, wanted=True)
 
+    def fetch_previews(self, thread_ids: list[int]) -> None:
+        """Posts from subreddits and YouTube channels scrolled into view in a
+        feed: their text, pictures and votes, as a browser showing the post
+        would. A subreddit's listing is stored without the text (poll_follow)
+        and a channel's page has no descriptions or likes. Subreddit posts are
+        read in one request for all of them, a video's details from its page.
+        Ones read within feed.PREVIEW_FRESH aren't read again. Each is marked
+        read (previewed_at, which the feed watches for) once its pictures are
+        in too, so its entry is shown again only once, complete."""
+        now = utcnow()
+        with self.db.connect() as conn:
+            rows = [r for r in feed_mod.preview_rows(conn, thread_ids)
+                    if feed_mod.preview_due(r["kind"], r["previewed_at"], now)]
+        reddit = [r for r in rows if r["kind"] == "reddit"]
+        if reddit and self._reddit_previews(reddit):
+            self._fetch_pictures([r["oid"] for r in reddit])
+            self._previewed([r["id"] for r in reddit])
+        for r in rows:
+            if self._stop.is_set():
+                return
+            if r["kind"] == "youtube" and self._youtube_preview(r):
+                self._fetch_pictures([r["oid"]])
+                self._previewed([r["id"]])
+
+    def _previewed(self, thread_ids: list[int]) -> None:
+        now = utcnow()
+        with self.db.transaction() as conn:
+            for tid in thread_ids:
+                conn.execute("UPDATE archived_threads SET previewed_at=? WHERE id=?", (now, tid))
+
+    def _reddit_previews(self, rows: list[dict[str, Any]]) -> bool:
+        """Read these subreddit posts, in one request. False if Reddit didn't answer."""
+        now = utcnow()
+        try:
+            posts = self.reddit_adapter.fetch_posts([r["source_local_id"] for r in rows])
+        except RemoteError as exc:
+            log.warning("reading %d subreddit posts for the feed failed: %s", len(rows), exc)
+            return False
+        by_id = {p.local_id: p for p in posts}
+        result = store.ApplyResult()
+        with self.db.transaction() as conn:
+            store.record_instance_contact(conn, rows[0]["source_domain"], now, True)
+            for r in rows:
+                # One not returned is gone from Reddit: opening it finds out what happened.
+                if post := by_id.get(r["source_local_id"]):
+                    store.apply_post(conn, r["id"], post, r["source_domain"], now, False, result)
+        if posts:
+            self._enrich_moderation(self.reddit_adapter, result, posts[0].community)
+        return True
+
+    def _youtube_preview(self, r: dict[str, Any]) -> bool:
+        """Read a video's description and likes from its page. False if YouTube didn't answer."""
+        now = utcnow()
+        try:
+            watch = self.rss_adapter.fetcher.youtube_video(youtube.video_id(r["url"]) or "")
+        except RemoteNotFound:
+            watch = None  # gone, or never there: don't ask again until it's due
+        except RemoteError as exc:
+            log.warning("reading the YouTube video %s for the feed failed: %s", r["url"], exc)
+            return False
+        if watch is not None:
+            with self.db.transaction() as conn:
+                store.observe_text(conn, r["oid"], watch.description, now)
+                if watch.likes is not None:
+                    conn.execute("UPDATE objects SET score=?, upvotes=?, downvotes=NULL, last_seen_at=? WHERE id=?",
+                                 (watch.likes, watch.likes, now, r["oid"]))
+        return True
+
+    def _fetch_pictures(self, object_ids: list[int]) -> None:
+        """Pictures in these posts not downloaded yet, so the feed can show them."""
+        if not object_ids:
+            return
+        with self.db.connect() as conn:
+            pics = conn.execute(
+                f"SELECT DISTINCT m.* FROM media_refs mr JOIN media m ON m.id=mr.media_id "
+                f"WHERE mr.object_id IN ({','.join('?' * len(object_ids))}) AND mr.from_article=0 "
+                f"AND m.status='pending' AND m.held=0 AND m.kept_only=0 "
+                f"AND (m.next_attempt_at IS NULL OR m.next_attempt_at<=?) ORDER BY m.id",
+                [*object_ids, utcnow()]).fetchall()
+        for m in pics:
+            if self._stop.is_set():
+                return
+            self.media.fetch_one(m)
+
     def _aged_out(self, thread_id: int) -> None:
         """A feed article that's no longer in its feed: feeds only list their
         latest entries, so that's not deletion. Keep what we have and stop
@@ -1122,6 +1207,9 @@ class Bouncer:
                 self._finish_job(job["id"], "done", {"thread_ids": payload["thread_ids"]})
             elif job["kind"] == "audio":
                 self.fetch_audio(payload["thread_ids"])
+                self._finish_job(job["id"], "done", {"thread_ids": payload["thread_ids"]})
+            elif job["kind"] == "previews":
+                self.fetch_previews(payload["thread_ids"])
                 self._finish_job(job["id"], "done", {"thread_ids": payload["thread_ids"]})
             elif job["kind"] == "sync":
                 self.sync_thread(payload["thread_id"], force=True)

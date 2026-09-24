@@ -96,11 +96,14 @@
 {# Attributes every feed entry has: what app.js needs for shortcuts and read-on-scroll,
    and, while its linked article or the pictures in it aren't saved yet, to fetch
    them once it's scrolled to and show the pictures (data-pics: how many it shows now);
-   the same for the audio file it links to (data-audio), to show its player. #}
+   the same for the audio file it links to (data-audio), to show its player, and for
+   a subreddit post's text, pictures and votes or a YouTube video's description and
+   likes (data-preview: when they were last read, "" never). #}
 {% macro entry_attrs(i) -%}
 id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids or [i.id]) | join(' ') }}"
 {%- if i.article_waiting and reading_articles %} data-article-waiting data-pics="{{ i.thumb.pics | length if i.thumb else 0 }}"{% endif %}
 {%- if i.audio and i.audio.status == 'pending' %} data-audio="pending"{% endif %}
+{%- if i.preview is string %} data-preview="{{ i.preview }}"{% endif %}
 {%- endmacro %}
 
 {# A player for the audio file a post links to. It's downloaded once the post is
@@ -157,8 +160,10 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
 
 {# Compact, actionable vote controls for tiles. Reddit exposes one score, so
    it sits between its arrow buttons; ActivityPub exposes both counts, which
-   live inside their respective buttons. #}
+   live inside their respective buttons. Feeds can't be voted on: a YouTube
+   video's likes (read when it's scrolled to) are just shown. #}
 {% macro tile_votes(i) -%}
+{% if is_rss(i.canonical_ap_id) %}{{ votes(i.upvotes, i.downvotes, i.score) }}{% else %}
 {% set eligible = [] %}{% set handles = [] %}
 {% for c in i.copies %}
   {% set acct = none if is_rss(c.canonical_ap_id) else (reddit_me if is_reddit(c.canonical_ap_id) else acting) %}
@@ -185,6 +190,7 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
     {% if reddit and direction == 1 %}<span class="reddit-score" aria-label="{{ i.score or 0 }} points">{{ i.score or 0 }}</span>{% endif %}
   {% endfor %}
 </div>
+{% endif %}
 {%- endmacro %}
 
 {# A post as a grid tile: its pictures, else a text card. NSFW and

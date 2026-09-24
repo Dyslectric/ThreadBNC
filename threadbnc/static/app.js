@@ -461,12 +461,14 @@ document.documentElement.classList.add("js");
     history.replaceState(history.state, "", url.href);
   }
 
-  // ---- linked articles' pictures and audio, fetched as posts are scrolled to ---------
-  // A post whose linked article (or the pictures in it) isn't saved yet, or
-  // whose linked audio file isn't downloaded, asks the server for it once it's
-  // on screen, then checks back until that's done. Pictures that arrive join
-  // the post's carousel, and a downloaded audio file becomes its player, while
-  // it's on screen or when it's next scrolled to, so nothing changes size out of sight.
+  // ---- linked articles' pictures, audio and previews, fetched as posts are scrolled to --
+  // A post whose linked article (or the pictures in it) isn't saved yet, whose
+  // linked audio file isn't downloaded, or (a subreddit post or YouTube video)
+  // whose text, pictures and votes are due to be read, asks the server for it
+  // once it's on screen, then checks back until that's done. Pictures that
+  // arrive join the post's carousel, a downloaded audio file becomes its
+  // player, and text and votes read show in it, while it's on screen or when
+  // it's next scrolled to, so nothing changes size out of sight.
   const asked = new Set();      // thread ids asked for on this page
   const waitingOn = new Set();  // of those, the ones not done yet
   const onScreen = new Set();   // entry element ids
@@ -494,7 +496,7 @@ document.documentElement.classList.add("js");
         if (unshown.has(id)) showPictures([id]);
       }
     });
-    const waits = "[data-article-waiting], [data-audio]";
+    const waits = "[data-article-waiting], [data-audio], [data-preview]";
     const els = root.matches && root.matches(waits) ? [root] : $$(waits, root);
     for (const el of els) articleObserver.observe(el);
   }
@@ -529,7 +531,9 @@ document.documentElement.classList.add("js");
         if (!el) continue;
         const morePics = "pics" in el.dataset && (data.pics[tid] || 0) > Number(el.dataset.pics);
         const audio = (data.audio || {})[tid];
-        if (morePics || (el.dataset.audio && audio && audio !== el.dataset.audio)) {
+        const previewed = (data.previewed || {})[tid];
+        const read = "preview" in el.dataset && previewed !== undefined && previewed !== el.dataset.preview;
+        if (morePics || read || (el.dataset.audio && audio && audio !== el.dataset.audio)) {
           if (onScreen.has(el.id)) show.push(el.id); else unshown.add(el.id);
         } else if (!still.has(tid)) {
           articleObserver.unobserve(el);

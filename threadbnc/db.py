@@ -111,7 +111,8 @@ CREATE TABLE IF NOT EXISTS archived_threads (
     last_full_fetch_at TEXT,  -- last time the whole comment tree was fetched
     remote_comment_count INTEGER,
     remote_newest_comment_at TEXT,
-    opened_at TEXT            -- last opened on its own page (not just marked read): comments and articles are fetched then
+    opened_at TEXT,           -- last opened on its own page (not just marked read): comments and articles are fetched then
+    previewed_at TEXT         -- a subreddit post's or YouTube video's text, pictures and votes last read for the feed (Bouncer.fetch_previews)
 );
 
 CREATE TABLE IF NOT EXISTS objects (
@@ -518,6 +519,7 @@ COLUMN_MIGRATIONS = [
     ("articles", "kept_at", "TEXT"),
     ("articles", "opened_at", "TEXT"),
     ("archived_threads", "opened_at", "TEXT"),
+    ("archived_threads", "previewed_at", "TEXT"),
     ("media", "held", "INTEGER NOT NULL DEFAULT 0"),
     ("media", "kept_only", "INTEGER NOT NULL DEFAULT 0"),
     ("media", "transcoded_at", "TEXT"),

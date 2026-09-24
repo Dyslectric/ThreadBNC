@@ -60,12 +60,29 @@ PAGE = f"""<html><head><link rel="canonical" href="https://www.youtube.com/chann
 <script>var x = {{"channelId":"UCxxxxxxxxxxxxxxxxxxxxxx"}};</script></head><body></body></html>"""
 
 
+def watch_page(description, likes):
+    player = {"videoDetails": {"videoId": "dQw4w9WgXcQ", "shortDescription": description}}
+    data = {"contents": {"twoColumnWatchNextResults": {"results": {"results": {"contents": [
+        {"videoPrimaryInfoRenderer": {"videoActions": {"menuRenderer": {"topLevelButtons": [
+            {"segmentedLikeDislikeButtonViewModel": {"likeButtonViewModel": {"likeButtonViewModel": {
+                "toggleButtonViewModel": {"toggleButtonViewModel": {"defaultButtonViewModel": {"buttonViewModel": {
+                    "title": "1.2K"}}}},
+                "likeCountEntity": {"likeCountIfIndifferentNumber": str(likes)}}}}}]}}}}]}}}}}
+    return (f"<html><body><script>var ytInitialPlayerResponse = {json.dumps(player)};</script>"
+            f"<script>var ytInitialData = {json.dumps(data)};</script></body></html>")
+
+
+WATCH_PAGE = watch_page("Building a computer.\nParts: https://eater.net/6502_kit\n\n1. clock\n* not bold *", 1234)
+
+
 class FakeYouTube:
     def __init__(self) -> None:
         self.requests: list[httpx.Request] = []
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
+        if request.url.path == "/watch" and request.url.params.get("v") == "dQw4w9WgXcQ":
+            return httpx.Response(200, text=WATCH_PAGE, headers={"content-type": "text/html"})
         if request.url.path == "/feeds/videos.xml":  # YouTube's feeds, lately
             return httpx.Response(404, text="<html>Error 404</html>", headers={"content-type": "text/html"})
         if request.url.path == f"/channel/{CHANNEL}/videos":
@@ -358,3 +375,48 @@ def test_channels_are_checked_like_subreddits(bouncer, yt):
     now[0] += 3610  # one channel, checked hourly
     bouncer.tick()
     assert page_reads() == before + 1
+
+
+# -- previews in the feed ----------------------------------------------------------------------
+def test_the_watch_page_parser():
+    watch = youtube.parse_watch(WATCH_PAGE)
+    assert watch.likes == 1234
+    assert watch.description == ("Building a computer.\\\nParts: <https://eater.net/6502_kit>\n\n"
+                                 "1\\. clock\\\n\\* not bold \\*")
+    labelled = '<script>var ytInitialPlayerResponse = {"videoDetails": {}};</script>' \
+               '"accessibilityText":"like this video along with 5,678 other people"'
+    assert youtube.parse_watch(labelled) == youtube.Watch(None, 5678)
+    assert youtube.parse_watch("<html>no data</html>") is None
+
+
+def test_videos_scrolled_to_get_their_description_and_likes(settings, bouncer, yt):
+    """A video's post shown in the feed has its description and likes read
+    from its page once it's on screen (app.js), and not again for a while."""
+    cid = bouncer.follow_community(f"https://www.youtube.com/channel/{CHANNEL}", None, 30, backfill=True)
+    bouncer.poll_follow(cid)
+    tid = one(bouncer, "SELECT t.id FROM archived_threads t JOIN objects o ON o.id=t.root_object_id "
+                       "WHERE o.canonical_ap_id='rss:yt:video:dQw4w9WgXcQ'")[0]
+    client = logged_in(settings, bouncer)
+    assert 'data-preview=""' in client.get(f"/c/{cid}").text
+
+    def watches():
+        return sum(1 for r in yt.requests if r.url.path == "/watch")
+
+    client.post("/feed/articles", data={"ids": [tid]})
+    while bouncer.run_one_job():
+        pass
+    assert watches() == 1
+    row = one(bouncer, "SELECT o.score, o.upvotes, o.downvotes, o.revision_count, r.body FROM objects o "
+                       "JOIN revisions r ON r.object_id=o.id WHERE o.canonical_ap_id='rss:yt:video:dQw4w9WgXcQ'")
+    assert row["body"].startswith("Building a computer.") and row["revision_count"] == 1  # not an edit
+    assert (row["score"], row["upvotes"], row["downvotes"]) == (1234, 1234, None)
+    assert client.get("/feed/articles", params={"ids": [tid]}).json()["previewed"][str(tid)]
+    page = client.get(f"/c/{cid}").text
+    assert "Building a computer. Parts: https://eater.net/6502_kit" in page and "▲ 1234" in page
+    tiles = client.get(f"/c/{cid}?view=tiles").text
+    assert "▲ 1234" in tiles and "Add an account to vote" not in tiles  # likes are shown, not voted on
+
+    client.post("/feed/articles", data={"ids": [tid]})
+    while bouncer.run_one_job():
+        pass
+    assert watches() == 1  # read moments ago

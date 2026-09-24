@@ -8,8 +8,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from . import articles, dupes
-from .db import Conn, fmt_ts, parse_ts
+from . import articles, dupes, youtube
+from .adapters.base import is_reddit_host
+from .db import Conn, fmt_ts, parse_ts, utcnow
 from .render import AUDIO_EXTENSIONS, VIDEO_EXTENSIONS, looks_like_audio, sole_link
 
 # Posts of the same link or text are one feed entry; sorts use the group's totals.
@@ -54,14 +55,16 @@ MEDIA_KINDS = {
 
 _IMG = re.compile(r"!\[[^\]]*\]\([^)]*\)")
 _LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
-_MARKS = re.compile(r"(^|\s)(#{1,6}|>+|[-*+]|\d+\.)\s+|[*_`~|]|:::\s*spoiler")
+_MARKS = re.compile(r"(^|\s)(#{1,6}|>+|[-*+]|\d+\.)\s+|(?<!\\)[*`~|]|(?<![\w\\])_|_(?!\w)|:::\s*spoiler")
+_AUTOLINK = re.compile(r"<(https?://[^\s>]+)>")
+_ESCAPED = re.compile(r"\\([!-/:-@\[-`{-~])|\\$", re.M)  # "\*" is a plain "*"; "\" ending a line is a line break
 
 
 def excerpt(body: str | None, limit: int = 260) -> str:
     if not body:
         return ""
-    text = _LINK.sub(r"\1", _IMG.sub("", body))
-    text = " ".join(_MARKS.sub(" ", text).split())
+    text = _AUTOLINK.sub(r"\1", _LINK.sub(r"\1", _IMG.sub("", body)))
+    text = " ".join(_ESCAPED.sub(r"\1", _MARKS.sub(" ", text)).split())
     return text if len(text) <= limit else text[: limit - 1].rsplit(" ", 1)[0] + "…"
 
 
@@ -85,7 +88,7 @@ SELECT * FROM (
          MAX(last_activity) OVER (PARTITION BY dkey) AS g_activity
   FROM (
     SELECT t.id, t.retention, t.retained_at, t.promoted_at, t.expires_at, t.last_viewed_at, t.community_id,
-           t.source_domain, o.id AS oid, o.canonical_ap_id, o.created_at, o.score,
+           t.source_domain, t.previewed_at, o.id AS oid, o.canonical_ap_id, o.created_at, o.score,
            o.cur_deleted, o.cur_removed, o.cur_locked,
            o.cur_missing, o.revision_count, o.thumbnail_url, o.upvotes, o.downvotes, o.dupe_key,
            COALESCE(o.dupe_key, 'thread:' || t.id) AS dkey,
@@ -267,7 +270,12 @@ def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: lis
     readable = articles.readable(conn, [i["oid"] for i in items])
     waiting = articles.waiting(conn, [(i["oid"], i["url"]) for i in items])
     sounds = audio(conn, [(i["oid"], i["url"]) for i in items])
+    now = utcnow()
     for i in items:
+        # When this post's text, pictures and votes are to be read once it's on
+        # screen: when they last were ("" never). None when they're fresh, or it has none.
+        kind = preview_kind(i["source_domain"], i["c_ap"], i["url"])
+        i["preview"] = (i["previewed_at"] or "") if preview_due(kind, i["previewed_at"], now) else None
         i["excerpt"] = excerpt(i["body"])
         i["thumb"] = thumbs.get(i["oid"])
         i["article"] = i["oid"] in readable
@@ -356,6 +364,42 @@ def audio(conn: Conn, links: list[tuple[int, str | None]]) -> dict[int, dict[str
     return {r["object_id"]: {"id": r["id"], "status": r["status"], "error": r["error"]} for r in rows
             if (r["content_type"] or "").startswith("audio/")
             or (r["status"] != "ok" and looks_like_audio(r["url"]))}
+
+
+# Posts whose text, pictures and votes are read when they're scrolled into view
+# in a feed (Bouncer.fetch_previews), and how long what was read stays fresh:
+# a subreddit's posts (stored from its listing without their text) in one
+# request for all of them; a YouTube video's description and likes from its
+# page, a bigger ask, so less often.
+PREVIEW_FRESH = {"reddit": timedelta(minutes=5), "youtube": timedelta(hours=1)}
+
+
+def preview_kind(source_domain: str | None, community_ap_id: str | None, url: str | None) -> str | None:
+    """"reddit" or "youtube" for posts that get previews, None for the rest."""
+    if is_reddit_host(source_domain):
+        return "reddit"
+    if youtube.is_youtube_feed(community_ap_id) and youtube.video_id(url):
+        return "youtube"
+    return None
+
+
+def preview_due(kind: str | None, previewed_at: str | None, now: str) -> bool:
+    last = parse_ts(previewed_at)
+    return kind is not None and (last is None or parse_ts(now) - last >= PREVIEW_FRESH[kind])  # type: ignore[operator]
+
+
+def preview_rows(conn: Conn, thread_ids: list[int]) -> list[dict[str, Any]]:
+    """These threads (not in the trash) that get previews, each with its kind."""
+    if not thread_ids:
+        return []
+    rows = conn.execute(
+        f"SELECT t.id, t.root_object_id AS oid, t.community_id, t.source_domain, t.source_local_id, "
+        f"t.previewed_at, c.canonical_ap_id AS c_ap, r.url FROM archived_threads t "
+        f"JOIN objects o ON o.id=t.root_object_id JOIN revisions r ON r.object_id=o.id AND r.seq=o.revision_count "
+        f"LEFT JOIN communities c ON c.id=t.community_id "
+        f"WHERE t.trashed_at IS NULL AND t.id IN ({','.join('?' * len(thread_ids))})", thread_ids).fetchall()
+    out = [dict(r, kind=preview_kind(r["source_domain"], r["c_ap"], r["url"])) for r in rows]
+    return [r for r in out if r["kind"]]
 
 
 def followed_communities(conn: Conn) -> list[dict[str, Any]]:

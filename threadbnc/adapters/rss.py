@@ -450,6 +450,20 @@ class FeedFetcher:
         self._cache[url] = (time.monotonic(), None, None, parsed)
         return parsed
 
+    def youtube_video(self, vid: str) -> youtube.Watch:
+        """A video's description and likes, from its page (youtube.py), for its
+        post in the feed."""
+        page = youtube.watch_url(vid)
+        status, _, body, _ = self._get(page, {"Accept": "text/html", "Accept-Language": "en"})
+        if status in (404, 410):
+            raise RemoteNotFound(f"{page}: HTTP {status}")
+        if status != 200:
+            raise RemoteUnavailable(f"{page}: HTTP {status}")
+        watch = youtube.parse_watch(body.decode("utf-8", "replace"))
+        if watch is None:
+            raise RemoteUnavailable(f"{page}: no video details on the page (YouTube may have changed it)")
+        return watch
+
     def _youtube_channel_feed(self, page: str) -> str:
         """The feed of the channel an @handle or /c/ page is, read from the page
         (once, when it's followed)."""

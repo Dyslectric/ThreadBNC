@@ -775,17 +775,28 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             f"JOIN objects o ON o.id=t.root_object_id JOIN revisions r ON r.object_id=o.id "
             f"AND r.seq=o.revision_count WHERE t.id IN ({marks})", ids).fetchall()
 
+    def previews_due(conn: Any, ids: list[int]) -> dict[int, str]:
+        """Of these threads, the ones whose text, pictures and votes are due to
+        be read (feed.preview_due): when they last were ("" never)."""
+        now = utcnow()
+        return {r["id"]: r["previewed_at"] or "" for r in feed_mod.preview_rows(conn, ids)
+                if feed_mod.preview_due(r["kind"], r["previewed_at"], now)}
+
     @app.post("/feed/articles")
     def feed_articles(ids: list[int] = Form([])):
         """Posts app.js scrolled into view whose linked article (or its
-        pictures) isn't saved yet, or whose audio file isn't downloaded: fetch
-        them (Bouncer.fetch_articles, Bouncer.fetch_audio)."""
+        pictures) isn't saved yet, whose audio file isn't downloaded, or whose
+        text, pictures and votes are due to be read: fetch them
+        (Bouncer.fetch_articles, Bouncer.fetch_audio, Bouncer.fetch_previews)."""
         ids = ids[:50]
-        if ids and bouncer.articles.enabled:
-            bouncer.enqueue("articles", {"thread_ids": ids})
         with db.connect() as conn:
             rows = feed_roots(conn, ids)
             sounds = feed_mod.audio(conn, [(r["oid"], r["url"]) for r in rows])
+            previews = previews_due(conn, ids)
+        if previews:  # first: the text and votes are what the entry shows most
+            bouncer.enqueue("previews", {"thread_ids": list(previews)})
+        if ids and bouncer.articles.enabled:
+            bouncer.enqueue("articles", {"thread_ids": ids})
         if audio_ids := [r["id"] for r in rows if sounds.get(r["oid"], {}).get("status") == "pending"]:
             bouncer.enqueue("audio", {"thread_ids": audio_ids})
         return {"ok": True}
@@ -793,18 +804,23 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     @app.get("/feed/articles")
     def feed_articles_status(ids: list[int] = Query([])):
         """How those posts are getting on: which are still waiting on their
-        article, its pictures or their audio file, how many pictures each has
-        to show, and where each one's audio file is at."""
+        article, its pictures, their audio file or their text and votes, how
+        many pictures each has to show, where each one's audio file is at, and
+        when each one's text and votes were last read."""
         with db.connect() as conn:
             rows = feed_roots(conn, ids[:50])
             waiting = articles.waiting(conn, [(r["oid"], r["url"]) for r in rows]) \
                 if bouncer.articles.enabled else set()
             thumbs = feed_mod.thumbnails(conn, [(r["oid"], r["url"], r["thumbnail_url"]) for r in rows])
             sounds = feed_mod.audio(conn, [(r["oid"], r["url"]) for r in rows])
-        return {"waiting": [r["id"] for r in rows if r["oid"] in waiting
+            prows, now = feed_mod.preview_rows(conn, ids[:50]), utcnow()
+        due = {r["id"] for r in prows if feed_mod.preview_due(r["kind"], r["previewed_at"], now)}
+        previewed = {r["id"]: r["previewed_at"] or "" for r in prows}
+        return {"waiting": [r["id"] for r in rows if r["oid"] in waiting or r["id"] in due
                             or sounds.get(r["oid"], {}).get("status") == "pending"],
                 "pics": {r["id"]: len(thumbs[r["oid"]]["pics"]) if r["oid"] in thumbs else 0 for r in rows},
-                "audio": {r["id"]: sounds[r["oid"]]["status"] for r in rows if r["oid"] in sounds}}
+                "audio": {r["id"]: sounds[r["oid"]]["status"] for r in rows if r["oid"] in sounds},
+                "previewed": previewed}
 
     @app.post("/feed/settings")
     def feed_settings(request: Request, mark_read_on_scroll: str = Form("")):

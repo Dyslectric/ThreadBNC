@@ -342,6 +342,26 @@ def update_counts(conn: Conn, post: NPost, now: str) -> bool:
     return cur.rowcount > 0
 
 
+def observe_text(conn: Conn, object_id: int, body: str | None, now: str) -> bool:
+    """A post's text read on its own, from somewhere other than where its
+    other details came from (a YouTube video's description, from its page).
+    For a post stored without text it's part of the first observation, not
+    an edit; different text after that is. Returns whether anything changed."""
+    prev = conn.execute("SELECT * FROM revisions WHERE object_id=? ORDER BY seq DESC LIMIT 1",
+                        (object_id,)).fetchone()
+    if prev is None or not body or body == prev["body"]:
+        return False
+    meta = json.loads(prev["metadata_json"] or "{}")
+    if prev["body"]:
+        return record_revision(conn, object_id, now, title=prev["title"], body=body, url=prev["url"], meta=meta,
+                               remote_updated_at=prev["remote_updated_at"], hidden=False)[0]
+    conn.execute("UPDATE revisions SET body=?, content_hash=? WHERE id=?",
+                 (body, content_hash(prev["title"], body, prev["url"], meta), prev["id"]))
+    media.register(conn, object_id, media.media_candidates(prev["title"], body, prev["url"]), now)
+    dupes.refresh_key(conn, object_id)
+    return True
+
+
 def set_local_id(conn: Conn, object_id: int, domain: str, local_id: str) -> None:
     _set_local_id(conn, object_id, domain, local_id)
 

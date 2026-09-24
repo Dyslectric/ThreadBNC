@@ -236,6 +236,73 @@ def parse_page(html: str, url: str, now: datetime | None = None) -> Page | None:
     return Page(title, link, info.get("description") or None, videos)
 
 
+@dataclass
+class Watch:
+    description: str | None  # as Markdown (description_markdown)
+    likes: int | None
+
+
+def _player_response(html: str) -> dict[str, Any] | None:
+    m = re.search(r"(?:var ytInitialPlayerResponse|window\[\"ytInitialPlayerResponse\"\])\s*=\s*", html)
+    if not m:
+        return None
+    try:
+        data, _ = json.JSONDecoder().raw_decode(html, m.end())
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+_LIKES_LABEL = re.compile(r"along with ([\d,.\s]+) other", re.I)
+
+
+def _likes(data: dict[str, Any] | None, html: str) -> int | None:
+    """The like count: the like button's own number, else its label ("like
+    this video along with 1,234 other people"). None when likes are hidden."""
+    for _, v in _walk(data or {}, {"likeCountIfIndifferentNumber", "likeCount"}):
+        if isinstance(v, (str, int)) and str(v).isdigit():
+            return int(v)
+    m = _LIKES_LABEL.search(html)
+    digits = re.sub(r"\D", "", m.group(1)) if m else ""
+    return int(digits) if digits else None
+
+
+def parse_watch(html: str) -> Watch | None:
+    """A video's page: its description and likes. None if the page has no
+    data in it (YouTube may have changed it, or asked for a sign-in)."""
+    player = _player_response(html)
+    data = _initial_data(html)
+    if player is None and data is None:
+        return None
+    text = ((player or {}).get("videoDetails") or {}).get("shortDescription")  # the whole of it, despite the name
+    return Watch(description_markdown(text) if isinstance(text, str) else None, _likes(data, html))
+
+
+_URL = re.compile(r"https?://[^\s<>\"]+[^\s<>\".,;:!?)\]'’]")
+_ESCAPE = re.compile(r"([\\`*_\[\]<>])")
+_LINE_START = re.compile(r"^(\s*)([#>+-]|\d+[.)])(?=\s|$)")
+
+
+def description_markdown(text: str | None) -> str | None:
+    """A video description (plain text) as Markdown that shows as written: its
+    line breaks kept, links made links, and nothing in it taken as formatting."""
+    lines = []
+    for line in (text or "").strip().splitlines():
+        parts, at = [], 0
+        for m in _URL.finditer(line):
+            parts += [_ESCAPE.sub(r"\\\1", line[at:m.start()]), f"<{m.group(0)}>"]
+            at = m.end()
+        parts.append(_ESCAPE.sub(r"\\\1", line[at:]))
+        lines.append(_LINE_START.sub(lambda m: m.group(1) + m.group(2)[:-1] + "\\" + m.group(2)[-1],
+                                     "".join(parts).rstrip()))
+    out = ""
+    for i, line in enumerate(lines):
+        if i:  # a hard line break between lines of a paragraph; blank lines stay paragraph breaks
+            out += "\\\n" if line and lines[i - 1] else "\n"
+        out += line
+    return out or None
+
+
 def watch_url(vid: str) -> str:
     return f"https://www.youtube.com/watch?v={vid}"
 
