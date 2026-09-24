@@ -117,15 +117,24 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
    scrolled to; until then a bar the player's size says so. A podcast episode
    waits for Play to be pressed instead (or its post to be kept). The player
    carries on from where you were (data-at; app.js keeps it up to date), and
-   says how much is left. `target`: the element to re-render once Play is pressed. #}
+   says how much is left. With JavaScript it also has buttons to skip back 15
+   seconds and on 30, and to change the speed, which every player shares.
+   `target`: the element to re-render once Play is pressed. #}
 {% macro audio_bar(i, target=none) -%}
 {% if i.audio %}{% set a = i.audio %}
 {% set length = a.duration or (i.episode.seconds if i.episode else none) %}
 <div class="audio-bar">
   {% if a.status == 'ok' %}<audio src="/media/{{ a.id }}" controls preload="metadata" data-listen="{{ a.id }}"
     {%- if a.position and not a.finished %} data-at="{{ a.position }}"{% endif %}></audio>
-    {% if a.finished %}<span class="audio-where small muted">{{ icon('check') }}Played</span>
-    {% elif a.position and length and length > a.position %}<span class="audio-where small muted">{{ (length - a.position) | running_time }} left</span>{% endif %}
+    <div class="audio-row small">
+      <span class="audio-controls js-only">
+        <button type="button" class="act" data-skip="-15" title="Back 15 seconds" aria-label="Back 15 seconds">{{ icon('undo') }}15</button>
+        <button type="button" class="act" data-skip="30" title="Forward 30 seconds" aria-label="Forward 30 seconds">30{{ icon('undo', 'flip') }}</button>
+        {% set rate = '%g' % audio_rate() %}<button type="button" class="act audio-rate" data-rate="{{ rate }}" title="Playback speed: {{ rate }}×. Change it for every player" aria-label="Playback speed {{ rate }}×">{{ rate }}×</button>
+      </span>
+      {% if a.finished %}<span class="audio-where muted">{{ icon('check') }}Played</span>
+      {% elif a.position and length and length > a.position %}<span class="audio-where muted">{{ (length - a.position) | running_time }} left</span>{% endif %}
+    </div>
   {% elif a.status == 'play' %}<form method="post" action="/t/{{ i.id }}/play" data-inplace="{{ target or ('p' ~ i.id) }}" data-play="{{ i.id }}">
     <input type="hidden" name="anchor" value="p{{ i.id }}">
     <button class="audio-note audio-play small" title="Download the episode and play it">{{ icon('play') }}Play episode{% if length %} <span class="muted">· {{ length | running_time }}</span>{% endif %}</button></form>

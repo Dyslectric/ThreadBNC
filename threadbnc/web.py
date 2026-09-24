@@ -311,6 +311,10 @@ def word_diff(old: str | None, new: str | None) -> Markup:
     return Markup(" ".join(out))
 
 
+# The speeds the speed button goes through, in order (app.js has the same list).
+AUDIO_RATES = ("1", "1.25", "1.5", "1.75", "2", "0.75")
+
+
 def running_time(seconds: float | None) -> str:
     """How long a podcast episode runs, or has left: "1 h 02 min", "25 min", "40 s"."""
     s = int(seconds or 0)
@@ -370,6 +374,11 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         with db.connect() as conn:
             return conn.execute("SELECT COUNT(*) FROM archived_threads WHERE trashed_at IS NOT NULL").fetchone()[0]
 
+    def audio_rate() -> float:
+        """How fast audio plays (the speed button in players), the same on every device."""
+        value = db.get_setting("audio_rate")
+        return float(value) if value in AUDIO_RATES else 1.0
+
     def mark_on_scroll() -> bool:
         return db.get_setting("mark_read_on_scroll") == "1"
 
@@ -398,7 +407,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     templates.env.globals.update(event_label=event_label, tone=lambda e: TONE.get(e["event_type"], ""),
                                  thumb=thumb,
                                  static_url=static_url, trash_count=trash_count, inbox_count=inbox.unread_count,
-                                 mark_on_scroll=mark_on_scroll, themes=THEMES, custom_feeds=custom_feeds,
+                                 mark_on_scroll=mark_on_scroll, audio_rate=audio_rate, themes=THEMES, custom_feeds=custom_feeds,
                                  following_collapsed=following_collapsed, feed_sorts=FEED_SORTS,
                                  feed_windows=FEED_WINDOWS, feed_shows=FEED_SHOWS,
                                  password_login=bool(settings.password),
@@ -841,6 +850,16 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                 "pics": {r["id"]: len(thumbs[r["oid"]]["pics"]) if r["oid"] in thumbs else 0 for r in rows},
                 "audio": {r["id"]: sounds[r["oid"]]["status"] for r in rows if r["oid"] in sounds},
                 "previewed": previewed}
+
+    @app.post("/audio/rate")
+    def set_audio_rate(rate: str = Form("1")):
+        """The speed button in a player (app.js): every player plays at it from now on."""
+        if rate not in AUDIO_RATES:
+            raise HTTPException(400)
+        with db.transaction() as conn:
+            conn.execute("INSERT INTO app_settings(key, value) VALUES ('audio_rate', ?) "
+                         "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (rate,))
+        return {"ok": True}
 
     @app.post("/feed/settings")
     def feed_settings(request: Request, mark_read_on_scroll: str = Form("")):

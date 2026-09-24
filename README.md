@@ -229,6 +229,7 @@ enclosure is an **episode**. It gets a player bar in the feed, in every view, an
 
 - **Play episode** downloads it and plays it once it's there. Until then, nothing is downloaded: not when it arrives, scrolls into view or is opened. **Keeping** an episode downloads it too, so it's still there if the podcast goes away.
 - **Where you left off:** the position is saved as you listen, when you pause and when you leave the page, and the player starts from there next time. The bar says how much is left, or **Played** once you've heard the end.
+- **Skip and speed:** under each player, ⟲ 15 goes back 15 seconds and 30 ⟳ skips ahead 30. The speed button cycles through 1×, 1.25×, 1.5×, 1.75×, 2× and 0.75×. The speed applies to every player, and it's saved on the server, so it's the same on your other devices. These work for any audio a post links to, not just episodes.
 - The episode links to its **audio file**, so copies of the same file are shown once. Its web page is kept alongside it: the link under the title goes there.
 - Its **running time** comes from the feed (`itunes:duration`), and its picture is the episode's own or else the podcast's cover.
 - **Size:** episodes are saved up to 500 MB (`THREADBNC_PODCAST_MAX_MB`), whatever the Audio size limit is. Turning audio off for a community (its **Media** settings) turns episodes off too. Audio isn't transcoded.

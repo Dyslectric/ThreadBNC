@@ -73,6 +73,7 @@ document.documentElement.classList.add("js");
     if (wasCurrent) select(fresh, false);
     watchUnread(fresh);
     watchArticles(fresh);
+    showRate(fresh);
     return true;
   }
 
@@ -621,6 +622,54 @@ document.documentElement.classList.add("js");
   }, true);
   window.addEventListener("pagehide", () => {
     for (const a of $$("audio[data-listen]")) if (!a.paused) saveListening(a, false, true);
+  });
+
+  // Skipping back 15 seconds or on 30, and the speed every player plays at
+  // (saved on the server, so it's the same on your other devices).
+  const RATES = ["1", "1.25", "1.5", "1.75", "2", "0.75"];  // as web.py's AUDIO_RATES
+  let audioRate = null;
+
+  function currentRate() {
+    if (audioRate === null) {
+      const b = $(".audio-rate");
+      audioRate = b ? b.dataset.rate : "1";
+    }
+    return audioRate;
+  }
+
+  function applyRate(a) {
+    a.defaultPlaybackRate = a.playbackRate = Number(currentRate());
+  }
+
+  function showRate(root = document) {
+    const rate = currentRate();
+    for (const b of $$(".audio-rate", root)) {
+      b.dataset.rate = rate;
+      b.textContent = rate + "×";
+      b.title = `Playback speed: ${rate}×. Change it for every player`;
+      b.setAttribute("aria-label", `Playback speed ${rate}×`);
+    }
+  }
+
+  for (const type of ["loadedmetadata", "play"]) {
+    document.addEventListener(type, (ev) => {
+      if (ev.target instanceof HTMLAudioElement && ev.target.dataset.listen) applyRate(ev.target);
+    }, true);
+  }
+
+  document.addEventListener("click", (ev) => {
+    const button = ev.target.closest(".audio-controls button");
+    const a = button && button.closest(".audio-bar") && $("audio[data-listen]", button.closest(".audio-bar"));
+    if (!a) return;
+    if (button.dataset.skip) {
+      const to = a.currentTime + Number(button.dataset.skip);
+      a.currentTime = Math.max(0, Number.isFinite(a.duration) ? Math.min(to, a.duration - 1) : to);
+    } else if (button.classList.contains("audio-rate")) {
+      audioRate = RATES[(RATES.indexOf(currentRate()) + 1) % RATES.length];
+      for (const player of $$("audio[data-listen]")) applyRate(player);
+      showRate();
+      post("/audio/rate", { rate: audioRate }).catch(() => {});
+    }
   });
 
   // ---- being here ---------------------------------------------------------------------

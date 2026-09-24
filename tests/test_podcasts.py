@@ -234,5 +234,23 @@ def test_episodes_stored_before_podcasts_were_read_arent_edits(bouncer, pod, mon
     assert episode_media(bouncer)["episode"] == 1
 
 
+def test_skip_and_speed_buttons(settings, bouncer, pod):
+    cid = follow(bouncer)
+    tid = episode_thread(bouncer)
+    client = logged_in(settings, bouncer)
+    assert "data-skip" not in client.get(f"/c/{cid}").text  # nothing to skip through until it's saved
+    client.post(f"/t/{tid}/play")
+    run_jobs(bouncer)
+    page = client.get(f"/c/{cid}").text
+    assert 'data-skip="-15"' in page and 'data-skip="30"' in page and 'data-rate="1"' in page and '>1×</button>' in page
+
+    assert client.post("/audio/rate", data={"rate": "1.5"}).json()["ok"]
+    for url in (f"/c/{cid}", f"/t/{tid}"):  # every player, everywhere
+        text = client.get(url).text
+        assert 'data-rate="1.5"' in text and '>1.5×</button>' in text
+    assert client.post("/audio/rate", data={"rate": "9"}).status_code == 400
+    assert 'data-rate="1.5"' in client.get(f"/c/{cid}").text
+
+
 def test_running_time():
     assert [running_time(s) for s in (40, 90, 1500, 3723, None)] == ["40 s", "2 min", "25 min", "1 h 02 min", "0 s"]
