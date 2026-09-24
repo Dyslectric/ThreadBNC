@@ -57,7 +57,7 @@ ThreadBNC behaves like one more subscribed server, or like your own browser, nev
 | **★ Kept** | Keep a post by link, see kept threads grouped by community, recent changes and the bouncer queue. |
 | **Search** (`/search`, and the box in the header) | Every version of every archived post and comment. See [Search](#search). |
 | **Inbox** | Replies, mentions and private messages for all your accounts. See [Inbox](#inbox). |
-| **Storage** | How much space the archive takes: media and text by kind of content, by kind of thread (kept, auto-captured, in the trash) and by community, plus the database size and free disk space. Each community links to its Media settings. |
+| **Storage** | How much space the archive takes: media and text by kind of content, by kind of thread (kept, auto-captured, in the trash) and by community, plus the database size and free disk space. It also links to archive integrity checks and a portable export. Each community links to its Media settings. |
 | **Trash** | Hidden and unkept threads, restorable until the trash period ends. |
 | **Reddit** (`/reddit`, linked from Accounts) | Connect Reddit, and follow your Reddit subscriptions. |
 
@@ -218,6 +218,17 @@ edits kept as history, keeping and expiry, duplicate grouping and tiles.
 - **Feeds only list their latest entries.** An article that drops out of its feed is kept as last seen and marked "Dropped out of its feed", not recorded as missing, and isn't checked any more.
 - Fetches follow at most 5 redirects, refuse private and local addresses, and stop at 5 MB.
 
+### OPML import and export
+
+The **Communities** page imports and exports OPML 2.0 subscription lists. Import accepts nested folders, ignores
+duplicate URLs, and follows each HTTP(S) RSS or Atom feed with the chosen check interval and retention; feeds
+you already follow keep their own settings. Export
+contains every active RSS/Atom follow whose canonical feed address is an HTTP(S) URL.
+
+Lemmy, PieFed and Reddit communities are deliberately not written to OPML: they are not RSS subscriptions.
+ThreadBNC's synthetic YouTube sources are also omitted rather than exporting an address that another reader—or a
+later ThreadBNC import—could not reliably follow as the same source.
+
 ## YouTube
 
 Paste a channel or playlist link into the follow box: `youtube.com/@name`, `/channel/UC…`, `/user/…` or
@@ -361,6 +372,31 @@ docker compose exec -T db pg_dump -U threadbnc threadbnc | gzip > threadbnc-$(da
 docker run --rm -v threadbnc_media:/data -v "$PWD":/backup alpine tar czf /backup/media-$(date +%F).tgz -C /data .
 ```
 
+**Verify a restore, not just the backup files**
+
+The safest test uses a separate Compose project, so it cannot overwrite the live database or media volume. From a
+temporary copy of `compose.yaml` and `.env`, choose another host port and project name:
+
+```bash
+export COMPOSE_PROJECT_NAME=threadbnc_restore_test
+export THREADBNC_PORT=18080
+docker compose up -d db
+gzip -dc /path/to/threadbnc-YYYY-MM-DD.sql.gz \
+  | docker compose exec -T db psql -v ON_ERROR_STOP=1 -U threadbnc threadbnc
+docker run --rm -v threadbnc_restore_test_media:/data -v /path/to/backups:/backup alpine \
+  tar xzf /backup/media-YYYY-MM-DD.tgz -C /data
+docker compose run --rm app python -m threadbnc integrity --deep
+docker compose up -d app
+curl -fsS http://127.0.0.1:18080/healthz
+test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/)" = "303"
+docker compose down -v
+```
+
+The integrity command exits nonzero for database inconsistency, a missing or size-mismatched media file, or a bad
+checksum. It reports unreferenced files as warnings. After it passes, the health check and login redirect confirm
+that the restored application starts and remains private. Keep the test project's name distinct from the live
+project; `docker compose down -v` deletes only the test volumes in this example.
+
 ## CI
 
 `.github/workflows/ci.yml` runs on every push and pull request:
@@ -392,6 +428,9 @@ Other commands:
 | `python -m threadbnc archive URL` | Archive a thread from the shell |
 | `python -m threadbnc follow '!name@host' --every 15 --keep-days 30` | Follow a community |
 | `python -m threadbnc sync` | Run one bouncer pass and exit |
+| `python -m threadbnc integrity [--deep]` | Check database relationships and media files; `--deep` hashes every file |
+| `python -m threadbnc export archive.zip` | Write a credential-free portable archive |
+| `python -m threadbnc verify-export archive.zip` | Verify a portable archive's manifest and every SHA-256 checksum |
 | `python -m pytest` | Run the tests |
 
 API (each call with `Authorization: Bearer $THREADBNC_API_TOKEN`):
@@ -522,6 +561,40 @@ To set it up, list the server in `THREADBNC_RELAY_INBOXES` as `domain=Lemmy's ad
 
 ThreadBNC must be able to reach Lemmy's address (here, over a shared Docker network), and it calls your server's API without the usual per-server spacing.
 
+## Archive integrity and portable exports
+
+The **Storage → Check archive integrity** page runs a read-only consistency check. The quick check verifies the
+database, relationships between archived rows, media paths and file sizes. **Verify every media checksum** also
+reads every archived file and compares its SHA-256 hash, which is slower but appropriate after restoring a backup
+or moving storage. Files on disk that no archived row uses are reported as warnings; missing, changed or unsafe
+files and inconsistent database rows are errors. The command-line equivalent is:
+
+```bash
+python -m threadbnc integrity --deep
+```
+
+**Portable export** on the same page downloads a ZIP intended for long-term access and interchange. It contains:
+
+- UTF-8 JSON Lines under `data/` for communities, threads, posts, comments, every revision and state event,
+  articles, media metadata and custom feeds;
+- archived files under `media/`, using their content-addressed paths;
+- `subscriptions.opml`, `manifest.json`, a format README and `SHA256SUMS` covering every other member.
+
+The export intentionally excludes account tokens, Reddit and YouTube credentials, inbox state, private-community
+membership, pending jobs and application secrets. It is therefore portable and safer to store, but it is not a
+drop-in operational backup. Keep the Postgres/SQLite database and data directory backups described above when you
+want to restore a running ThreadBNC instance exactly as it was.
+
+Create and verify the same bundle without the browser:
+
+```bash
+python -m threadbnc export threadbnc-portable.zip
+python -m threadbnc verify-export threadbnc-portable.zip
+```
+
+Verification rejects unsafe or duplicate ZIP member names, checks the format manifest, verifies every recorded
+SHA-256 digest, and fails if the exporter had to omit a missing media file.
+
 ## Trash (unkeeping)
 
 - **Unkeep → trash** works on kept threads, and **Discard → trash** on auto-captured ones.
@@ -592,7 +665,6 @@ When a post links to a web page, the page is read when you open or keep the post
 
 ## Known limits / next steps
 
-- Lemmy 1.0's `/api/v4` is not targeted yet. The adapter speaks v3, which 0.19.x serves.
 - PieFed moderation attribution is always `unknown` for now, because its modlog API varies between versions.
 - ThreadBNC has no ActivityPub identity of its own: pushes need your own Lemmy server. Without one, Lemmy and PieFed communities have to be checked on a schedule.
 - Post pin/feature state, actor profile history, search, tags and notes are not implemented.

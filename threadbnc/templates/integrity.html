@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Archive integrity{% endblock %}
+{% block content %}
+<p class="small"><a href="/storage">← Storage</a></p>
+<div class="feed-head">
+  <div><h1>Archive integrity</h1><p class="muted">A read-only check of database relationships and archived files.</p></div>
+  {% if report.deep %}<a class="button secondary small" href="/storage/integrity">Run quick check</a>
+  {% else %}<a class="button small" href="/storage/integrity?deep=1">Verify every media checksum</a>{% endif %}
+</div>
+
+<section class="card">
+  <h2>{% if report.ok %}<span class="pill good">Pass</span> No integrity errors found{% else %}<span class="pill bad">Failed</span> Integrity errors found{% endif %}</h2>
+  <ul class="plain">
+    <li>Database: <strong>{{ report.database_check }}</strong></li>
+    <li>{{ '{:,}'.format(report.media_rows) }} archived media rows, {{ '{:,}'.format(report.media_files) }} files, {{ report.media_bytes | size }}</li>
+    {% if report.deep %}<li>{{ '{:,}'.format(report.checked_hashes) }} file checksum{{ 's' if report.checked_hashes != 1 }} verified</li>{% endif %}
+  </ul>
+</section>
+
+{% if report.issues %}
+<section class="card">
+  <h2>Findings ({{ report.issues | length }})</h2>
+  <ul class="plain">
+  {% for issue in report.issues %}
+    <li><span class="pill {{ 'bad' if issue.severity == 'error' else 'warn' }}">{{ issue.severity }}</span>
+      <strong>{{ issue.kind }}</strong> <span class="muted">{{ issue.detail }}</span></li>
+  {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+<section class="card">
+  <h2>Portable export</h2>
+  <p>Download a credential-free ZIP containing JSON Lines for the archive, followed RSS/Atom feeds as OPML,
+    archived media, a manifest, and SHA-256 checksums.</p>
+  <p class="small muted">This complements rather than replaces a database and media backup: account tokens,
+    inbox state, secrets and queued jobs are intentionally excluded.</p>
+  <a class="button" href="/export">Download portable archive</a>
+</section>
+{% endblock %}

@@ -409,6 +409,7 @@ details.settings > summary.button.secondary { color: var(--good); }
 .follow-row > div { flex: 1; min-width: 220px; }
 .row.compact { gap: 6px; font-size: 0.85em; }
 .row.compact input { padding: 3px 7px; width: 4.5em; }
+.row.compact input[type=file] { width: auto; }
 form.stack > button:last-child { align-self: flex-start; padding-inline: 20px; }
 form.stack.follow-quick > button:last-child, .card.narrow form.stack > button:last-child { align-self: stretch; }
 .group-head { margin-top: 14px; font-size: 0.95rem; }

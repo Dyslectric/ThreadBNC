@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
+from pathlib import Path
 
 from .bouncer import Bouncer
 from .config import load_settings
@@ -27,10 +29,25 @@ def main() -> None:
     f.add_argument("--poll", action="store_true",
                    help="check a Lemmy/PieFed community on a schedule (when your server can't get it pushed)")
     sub.add_parser("sync", help="run one bouncer pass and exit")
+    check = sub.add_parser("integrity", help="check database relationships and archived media")
+    check.add_argument("--deep", action="store_true", help="also hash every archived media file")
+    export = sub.add_parser("export", help="write a credential-free portable archive ZIP")
+    export.add_argument("output", type=Path)
+    verify = sub.add_parser("verify-export", help="verify a portable archive ZIP and its checksums")
+    verify.add_argument("archive", type=Path)
     args = parser.parse_args()
 
     logging.basicConfig(level=os.environ.get("THREADBNC_LOG", "INFO"),
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    if args.cmd == "verify-export":
+        from .portable import verify as verify_portable
+
+        result = verify_portable(args.archive)
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        if not result["ok"]:
+            raise SystemExit(1)
+        return
+
     settings = load_settings()
 
     if args.cmd == "serve":
@@ -39,6 +56,24 @@ def main() -> None:
         from .web import create_app
 
         uvicorn.run(create_app(settings), host=args.host, port=args.port, proxy_headers=True)
+        return
+
+    if args.cmd in ("integrity", "export"):
+        db = open_database(settings)
+        media_dir = settings.media_dir or settings.data_dir / "media"
+        if args.cmd == "integrity":
+            from .integrity import check as check_integrity
+
+            with db.connect() as conn:
+                report = check_integrity(db, conn, media_dir, args.deep)
+            print(json.dumps(report.as_dict(), indent=2, ensure_ascii=False))
+            if not report.ok:
+                raise SystemExit(1)
+        else:
+            from .portable import create as create_portable
+
+            manifest = create_portable(db, media_dir, args.output)
+            print(json.dumps({"output": str(args.output.resolve()), **manifest}, indent=2, ensure_ascii=False))
         return
 
     bouncer = Bouncer(open_database(settings), settings)

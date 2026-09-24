@@ -33,6 +33,22 @@
     · <a href="/youtube">YouTube settings</a></p>
 </section>
 
+<section class="card" id="opml">
+  <h2>Import or export feeds</h2>
+  <p class="small muted">OPML carries RSS and Atom subscriptions between feed readers. Lemmy, PieFed, Reddit
+    and synthetic YouTube sources are not included because they are not portable feed URLs.</p>
+  <div class="row">
+    <a class="button secondary small" href="/communities.opml">Export OPML</a>
+    <form method="post" action="/communities/opml" enctype="multipart/form-data" class="row compact">
+      <input type="file" name="file" accept=".opml,.xml,text/x-opml,application/xml,text/xml" required>
+      <label>Check every <input type="number" name="poll_interval_minutes" placeholder="{{ default_poll }}" min="5" class="num"> min</label>
+      <label>Keep for <input name="retention_days" class="num" value="{{ default_days if default_days is not none else 'forever' }}"> days</label>
+      <label class="check"><input type="checkbox" name="backfill" value="1" checked> Start with current entries</label>
+      <button class="small">Import OPML</button>
+    </form>
+  </div>
+</section>
+
 <section class="card">
   <h2>Following ({{ follows | length }})</h2>
   {% if not follows %}<p class="muted">Nothing yet.</p>{% endif %}

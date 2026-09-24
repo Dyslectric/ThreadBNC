@@ -723,10 +723,11 @@ class Bouncer:
 
     def follow_community(self, text: str, poll_interval_minutes: int | None = None,
                          retention_days: int | None = -1, backfill: bool = False,
-                         polling: bool | None = None) -> int:
+                         polling: bool | None = None, keep_existing: bool = False) -> int:
         """Follow a community. Lemmy and PieFed communities arrive by push
         through your own server (the follow hooks subscribe) and aren't checked
-        on a schedule unless `polling`; feeds and subreddits always are."""
+        on a schedule unless `polling`; feeds and subreddits always are.
+        With `keep_existing`, one already followed is left as it is."""
         ref, community = self.resolve_community(text)
         now = utcnow()
         interval = self.poll_interval(ref.domain, poll_interval_minutes)
@@ -734,6 +735,9 @@ class Bouncer:
         polled = self.always_polled(ref.domain) or bool(polling)
         with self.db.transaction() as conn:
             cid = store.upsert_community(conn, community, now)
+            if keep_existing and conn.execute("SELECT 1 FROM community_follows WHERE community_id=? AND active=1",
+                                              (cid,)).fetchone():
+                return cid
             conn.execute(
                 "INSERT INTO community_follows(community_id, active, followed_at, capture_since, "
                 "poll_interval_minutes, retention_days, source_domain, source_ref, next_poll_at, polling) "

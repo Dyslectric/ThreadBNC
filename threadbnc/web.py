@@ -9,7 +9,9 @@ import html
 import json
 import logging
 import math
+import os
 import re
+import tempfile
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -17,7 +19,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qsl, quote, urlencode, urlparse
 
-from fastapi import FastAPI, Form, HTTPException, Query, Request
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import (
     FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response,
 )
@@ -25,14 +27,15 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
 from starlette.middleware.sessions import SessionMiddleware
+from starlette.background import BackgroundTask
 
-from . import articles, dupes, store, youtube
+from . import articles, dupes, integrity, opml, portable, store, youtube
 from . import search as search_mod
 from . import feed as feed_mod
 from . import media as media_mod
 from . import storage as storage_mod
 from . import thumbs as thumbs_mod
-from .adapters import RemoteError, host_of, is_reddit_host, is_rss
+from .adapters import RSS_PREFIX, RemoteError, host_of, is_reddit_host, is_rss
 from .adapters.base import RSS_DOMAIN
 from .accounts import Account, AccountError, Poster
 from .bouncer import PUSHED_POLL_MINUTES, Bouncer
@@ -1071,6 +1074,71 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                       default_poll=settings.default_follow_poll_minutes, reddit_poll=settings.reddit_poll_minutes,
                       default_days=settings.default_follow_retention_days, reddit=bouncer.reddit.status())
 
+    @app.get("/communities.opml")
+    def export_opml():
+        with db.connect() as conn:
+            data = opml.export(opml.followed_rows(conn))
+        return Response(data, media_type="text/x-opml; charset=utf-8",
+                        headers={"Content-Disposition": 'attachment; filename="threadbnc-subscriptions.opml"'})
+
+    @app.post("/communities/opml")
+    def import_opml(request: Request, file: UploadFile = File(...),
+                    poll_interval_minutes: str = Form(""), retention_days: str = Form("30"),
+                    backfill: str | None = Form(None)):
+        """Follow each feed in an OPML file. Plain def, like /follow: each new
+        feed is fetched once to follow it. Feeds already followed are left as
+        they are, with their own interval and retention."""
+        data = file.file.read(opml.MAX_BYTES + 1)
+        try:
+            subscriptions = opml.parse(data)
+        except opml.OpmlError as exc:
+            flash(request, str(exc), "error")
+            return RedirectResponse("/communities#opml", status_code=303)
+        try:
+            days = None if retention_days.strip().lower() in ("", "forever", "none") else int(retention_days)
+            every = int(poll_interval_minutes) if poll_interval_minutes.strip() else None
+            if days is not None and days < 1:
+                raise ValueError
+            if every is not None and every < 5:
+                raise ValueError
+        except ValueError:
+            flash(request, "Use a retention of at least 1 day (or forever) and a check interval of at least 5 minutes.",
+                  "error")
+            return RedirectResponse("/communities#opml", status_code=303)
+        with db.connect() as conn:
+            rows = conn.execute("SELECT c.canonical_ap_id, f.community_id FROM community_follows f "
+                                "JOIN communities c ON c.id=f.community_id WHERE f.active=1").fetchall()
+        followed = {r["canonical_ap_id"].casefold() for r in rows}
+        followed_ids = {r["community_id"] for r in rows}
+        added = already = 0
+        failed: list[str] = []
+        for subscription in subscriptions:
+            ap_id = RSS_PREFIX + subscription.url  # an OPML entry is a feed, whatever its address looks like
+            if ap_id.casefold() in followed:
+                already += 1
+                continue
+            try:
+                cid = bouncer.follow_community(ap_id, every, days, bool(backfill), polling=True, keep_existing=True)
+            except (RemoteError, ValueError) as exc:
+                failed.append(f"{subscription.title}: {exc}")
+                continue
+            if cid in followed_ids:  # the address led to a feed already followed
+                already += 1
+            else:
+                added += 1
+                followed_ids.add(cid)
+        message = f"Imported {added:,} of {len(subscriptions):,} feed{'s' if len(subscriptions) != 1 else ''}."
+        if already:
+            message += f" {already:,} {'were' if already != 1 else 'was'} already followed."
+        if failed:
+            message += " Could not import " + "; ".join(failed[:5])
+            if len(failed) > 5:
+                message += f"; and {len(failed) - 5:,} more"
+            flash(request, message, "error")
+        else:
+            flash(request, message)
+        return RedirectResponse("/communities#opml", status_code=303)
+
     @app.post("/follow")
     def follow(request: Request, community: str = Form(...), poll_interval_minutes: str = Form(""),
                retention_days: str = Form("30"), backfill: str | None = Form(None),
@@ -1533,6 +1601,23 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                       by_rate=media_mod.BY_RATE, can_transcode=bouncer.media.can_transcode(),
                       transcoding=transcoding, thumbs=dict(shrunk, usage=thumbs_mod.usage(bouncer.media_dir)),
                       thumb_views=thumbs_mod.VIEWS)
+
+    @app.get("/storage/integrity", response_class=HTMLResponse)
+    def integrity_page(request: Request, deep: int = 0):
+        with db.connect() as conn:
+            report = integrity.check(db, conn, bouncer.media_dir, bool(deep))
+        return render(request, "integrity.html", report=report)
+
+    @app.get("/export")
+    def portable_export():
+        stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        handle, name = tempfile.mkstemp(prefix="threadbnc-export-", suffix=".zip", dir=settings.data_dir)
+        os.close(handle)
+        path = Path(name)
+        path.unlink(missing_ok=True)
+        portable.create(db, bouncer.media_dir, path)
+        return FileResponse(path, media_type="application/zip", filename=f"threadbnc-{stamp}.zip",
+                            background=BackgroundTask(path.unlink, missing_ok=True))
 
     @app.post("/storage/thumbnails")
     async def thumbnail_widths(request: Request):
