@@ -706,8 +706,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     @app.get("/", response_class=HTMLResponse)
     def home(request: Request, sort: str | None = None, t: str | None = None, unread: str | None = None,
              page: int = 1, view: str | None = None, at: str | None = None):
-        """The main feed: every followed community, as the address says or else
-        as its defaults say."""
+        """The main feed: every followed community not left out of it, as the
+        address says or else as its defaults say."""
         as_of, snapshot = feed_as_of(request, at)
         save_view("home_view", view)
         chosen = db.get_setting("home_view")
@@ -773,6 +773,27 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         return render(request, "feed_edit.html", custom=custom, communities=follows + others, chosen=chosen,
                       settings=feed_mod.feed_settings(custom, defaults) if custom else defaults, error=error,
                       sorts=FEED_SORTS, windows=FEED_WINDOWS, shows=FEED_SHOWS)
+
+    @app.get("/feed/edit", response_class=HTMLResponse)
+    def edit_home_feed(request: Request):
+        """Choose what the main feed shows: which followed communities, and how."""
+        with db.connect() as conn:
+            follows = feed_mod.followed_communities(conn)
+            defaults = feed_mod.load_defaults(conn)
+        return render(request, "feed_edit.html", custom=None, home=True, communities=follows,
+                      chosen={f["id"] for f in follows if f["in_home"]}, settings=defaults,
+                      view_chosen=db.get_setting("home_view"), error=None,
+                      sorts=FEED_SORTS, windows=FEED_WINDOWS, shows=FEED_SHOWS)
+
+    @app.post("/feed/edit")
+    def save_home_feed(request: Request, community: list[int] = Form([]), sort: str = Form("new"),
+                       t: str = Form("all"), unread: str = Form(""), view: str = Form("auto")):
+        with db.transaction() as conn:
+            feed_mod.save_home_communities(conn, community)
+            feed_mod.save_defaults(conn, feed_mod.FeedSettings.clean(sort, t, unread))
+        save_view("home_view", view)
+        flash(request, "Saved your feed.")
+        return RedirectResponse("/", status_code=303)
 
     @app.get("/feeds/new", response_class=HTMLResponse)
     def new_feed(request: Request):

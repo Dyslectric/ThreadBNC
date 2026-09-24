@@ -22,7 +22,7 @@
       <div class="feed-head">
         {% if custom %}
         <h1>{{ custom.name }} <a class="icon-button" href="/f/{{ custom.id }}/edit" title="Edit this feed" aria-label="Edit this feed">{{ icon('pencil') }}</a></h1>
-        {% else %}<h1>Your feed</h1>{% endif %}
+        {% else %}<h1>Your feed <a class="icon-button" href="/feed/edit" title="Choose what's in your feed" aria-label="Choose what's in your feed">{{ icon('pencil') }}</a></h1>{% endif %}
         {{ controls(base_url ~ '?', sort, window, unread, view=view, view_chosen=view_chosen,
                     feed_id=custom.id if custom else none, defaults=defaults) }}
       </div>
@@ -30,6 +30,7 @@
       {% if not feed.items %}
         <section class="card empty"><p class="muted">
           {% if custom and not custom.community_ids %}This feed has no communities yet. <a href="/f/{{ custom.id }}/edit">Choose some</a>.
+          {% elif not custom and not (follows | selectattr('in_home') | list) %}You've left every community out of your feed. <a href="/feed/edit">Choose some</a>.
           {% elif unread == 'comments' %}No new comments on posts you've read.{% elif unread %}You're all caught up.{% elif window != 'all' %}Nothing in this time range.{% else %}No posts captured yet. The bouncer checks followed communities every few minutes.{% endif %}
         </p></section>
       {% endif %}

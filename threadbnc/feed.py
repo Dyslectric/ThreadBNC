@@ -212,14 +212,15 @@ def delete_custom_feed(conn: Conn, feed_id: int) -> None:
 
 
 def _scope(community_id: int | None, community_ids: list[int] | None, column: str) -> tuple[str, list[Any]]:
-    """Which communities a feed covers: one, a custom feed's, or every followed one."""
+    """Which communities a feed covers: one, a custom feed's, or the main
+    feed's (every followed one not left out of it)."""
     if community_id is not None:
         return f"{column}=?", [community_id]
     if community_ids is not None:
         if not community_ids:
             return "1=0", []
         return f"{column} IN ({','.join('?' * len(community_ids))})", list(community_ids)
-    return f"{column} IN (SELECT community_id FROM community_follows WHERE active=1)", []
+    return f"{column} IN (SELECT community_id FROM community_follows WHERE active=1 AND in_home=1)", []
 
 
 def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: list[int] | None = None,
@@ -463,7 +464,7 @@ def followed_communities(conn: Conn) -> list[dict[str, Any]]:
     rows = conn.execute(
         """SELECT c.id, c.name, c.title, c.canonical_ap_id, f.poll_interval_minutes, f.retention_days,
                   f.last_polled_at, f.last_error, f.source_domain, f.push_state, f.push_error, f.last_push_at,
-                  f.polling,
+                  f.polling, f.in_home,
                   (SELECT COUNT(*) FROM archived_threads t WHERE t.community_id=c.id AND t.trashed_at IS NULL
                        AND t.last_viewed_at IS NULL AND {shown}) AS unread,
                   (SELECT COUNT(*) FROM archived_threads t WHERE t.community_id=c.id AND t.trashed_at IS NULL
@@ -471,6 +472,13 @@ def followed_communities(conn: Conn) -> list[dict[str, Any]]:
            FROM community_follows f JOIN communities c ON c.id=f.community_id
            WHERE f.active=1 ORDER BY c.name, c.canonical_ap_id""".format(shown=shown), params * 2).fetchall()
     return [dict(r) for r in rows]
+
+
+def save_home_communities(conn: Conn, community_ids: list[int]) -> None:
+    """Which followed communities the main feed shows; the rest are left out."""
+    shown = set(community_ids)
+    for (cid,) in conn.execute("SELECT community_id FROM community_follows WHERE active=1").fetchall():
+        conn.execute("UPDATE community_follows SET in_home=? WHERE community_id=?", (int(cid in shown), cid))
 
 
 def mark_read(conn: Conn, now: str, community_id: int | None = None,
