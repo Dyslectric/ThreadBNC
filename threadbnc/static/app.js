@@ -1558,6 +1558,24 @@ document.documentElement.classList.add("js");
     } catch (e) { /* the saved list stays; reloading shows the rest */ }
   }
 
+  // Each one opens into its own panel: what it says, then its replies, asked
+  // for the first time it's opened (discussion_peek.html).
+  document.addEventListener("toggle", async (e) => {
+    const d = e.target;
+    if (!d.matches || !d.matches("details.discussion[data-peek]") || !d.open || d.dataset.peeked) return;
+    const body = $("[data-peek-body]", d);
+    if (!body) return;
+    d.dataset.peeked = "true";
+    body.innerHTML = '<p class="muted">Loading…</p>';
+    try {
+      const fresh = $("[data-peek-body]", await fetchDoc(d.dataset.peek));
+      if (fresh) body.replaceWith(document.adoptNode(fresh));
+    } catch (err) {
+      body.innerHTML = '<p class="bad-text">Couldn\'t load it. Close and open it again to try again.</p>';
+      delete d.dataset.peeked;
+    }
+  }, true);
+
   document.addEventListener("DOMContentLoaded", () => {
     keepFeedAsOf();
     watchUnread(document);

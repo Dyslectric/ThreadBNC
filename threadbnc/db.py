@@ -353,6 +353,7 @@ CREATE TABLE IF NOT EXISTS discussions (
     score INTEGER,
     created_at TEXT,
     found_at TEXT NOT NULL,
+    content TEXT,             -- its text, as plain text, for its panel
     UNIQUE (article_id, url)
 );
 CREATE TABLE IF NOT EXISTS discussion_checks (
@@ -624,6 +625,7 @@ COLUMN_MIGRATIONS = [
     ("articles", "simhash", "TEXT"),
     ("articles", "title_key", "TEXT"),
     ("article_links", "link_key", "TEXT"),
+    ("discussions", "content", "TEXT"),
 ]
 
 # Tables with an integer `id` key: inserts into these get `RETURNING id` on

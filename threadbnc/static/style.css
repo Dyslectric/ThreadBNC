@@ -830,6 +830,28 @@ fieldset.feed-picks input[type=checkbox] { flex: none; width: 16px; margin: 0; }
 .discussions .similar-posts { margin: 2px 0 4px 1.2em; }
 .discussions form.inline { display: inline; margin-left: 4px; }
 .discussions-status { margin: 8px 0 0; }
+/* each one: a chat bubble and a line about it, opening into its own panel (discussion_peek.html) */
+.discussion-list > li { padding: 2px 0; }
+details.discussion > summary { list-style: none; display: flex; align-items: flex-start; gap: 8px; color: var(--text);
+  padding: 5px 6px; margin: 0 -6px; border-radius: 8px; }
+details.discussion > summary::-webkit-details-marker { display: none; }
+details.discussion > summary:hover { background: var(--hover); }
+details.discussion > summary:focus-visible { outline: 2px solid var(--ring); }
+.discussion-icon { flex: none; margin-top: 2px; color: var(--muted); }
+details.discussion[open] .discussion-icon { color: var(--accent); }
+.discussion-head { flex: 1; min-width: 0; }
+.discussion-title { color: var(--accent); }
+details.discussion > summary .chev { flex: none; margin-top: 3px; color: var(--muted); }
+.discussion-panel { margin: 4px 0 8px 26px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px;
+  background: var(--bg); }
+.discussion-actions { margin: 0 0 6px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; }
+.discussions .discussion-actions form.inline { margin: 0; }
+.discussion-text { white-space: pre-wrap; margin: 0 0 6px; }
+.discussion-peek h4 { font-size: 0.8rem; color: var(--muted); font-weight: 600; margin: 10px 0 2px; }
+.discussion-peek > p:last-child, .discussion-peek .md > :last-child { margin-bottom: 0; }
+.discussions .peek-replies > li { padding: 0; margin: 0; border: none; }
+.peek-replies .peek-replies { margin-left: 4px; padding-left: 12px; border-left: 2px solid var(--line); }
+.peek-meta { margin: 8px 0 2px; }
 
 /* ---- kept articles: the articles here that link to them, beside the article (below it when narrow) ---- */
 .reader-col { container-type: inline-size; }

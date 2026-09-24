@@ -1,0 +1,22 @@
+{# A discussion expanded in its Discussions list (_discussions.html; app.js
+   asks for it): its text first, then its replies. `peek` comes from
+   Discussions.peek, or discussions.saved_peek for a post here. #}
+{% from "_macros.html" import when %}
+<div class="discussion-peek" data-peek-body>
+  {% if peek.body %}<div class="md">{{ md(peek.body) }}</div>
+  {% elif peek.text %}<p class="discussion-text">{{ peek.text }}</p>
+  {% else %}<p class="muted">No text, just the link.</p>{% endif %}
+  {% if peek.error %}<p class="bad-text">Couldn't read its replies: {{ peek.error }}</p>{% endif %}
+  {% if peek.replies is not none %}
+  <h4>{{ peek.count }} {{ 'reply' if peek.count == 1 else 'replies' }}</h4>
+  {% if peek.replies %}
+  <ul class="plain peek-replies">{% for r in peek.replies recursive %}<li>
+    <p class="muted peek-meta">{{ r.author }}{% if r.created_at %} · {{ when(r.created_at) }}{% endif %}
+      {%- if r.gone %} · <span class="bad-text">{{ r.gone }}</span>{% endif %}</p>
+    <div class="md">{{ md(r.body) }}</div>
+    {% if r.children %}<ul class="plain peek-replies">{{ loop(r.children) }}</ul>{% endif %}
+  </li>{% endfor %}</ul>
+  {% endif %}
+  {% if peek.more %}<p class="muted">{{ peek.more }} more: open it to read them all.</p>{% endif %}
+  {% elif not peek.error %}<p class="muted">Its replies are where it was written.</p>{% endif %}
+</div>
