@@ -31,6 +31,7 @@ from starlette.background import BackgroundTask
 
 from . import articles, dupes, integrity, livestream, opml, portable, store, youtube
 from . import search as search_mod
+from . import discussions as discussions_mod
 from . import feed as feed_mod
 from . import media as media_mod
 from . import storage as storage_mod
@@ -354,6 +355,14 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     # ThreadBNC's own ActivityPub identity, following hashtags through a relay.
     tags = TagRelays(bouncer, bouncer.actor, settings.tag_relay) if bouncer.actor else None
 
+    def lemmy_servers() -> list[str]:
+        """Your own Lemmy and PieFed servers: the relayed ones, then the ones you have accounts on."""
+        return list(dict.fromkeys([*settings.relay_inboxes,
+                                   *(a.domain for a in poster.list() if not a.separate and a.status == "ok")]))
+
+    # Where articles are discussed elsewhere, looked for when one is opened.
+    discussions = discussions_mod.Discussions(bouncer, lemmy_servers, enabled=settings.find_discussions)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         if settings.embedded_bouncer:
@@ -367,6 +376,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     templates = Jinja2Templates(directory=str(HERE / "templates"))
+    templates.env.filters["discussion_place"] = lambda source: discussions_mod.SOURCES.get(source, source)
     templates.env.filters.update(ago=ago, absolute=absolute, clock=clock,safe_url=safe_url, host=host_of,
                                  looks_like_media=looks_like_media, size=human_size, youtube_video=youtube.video_id,
                                  livestream=livestream.stream_of,
@@ -2759,6 +2769,12 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                 (i == tid and article is not None and article["status"] == "pending"))]
             if stale:
                 refresh_job = bouncer.enqueue("open", {"thread_ids": stale})
+        talk = None
+        if article is not None:
+            job = discussions.request(article["id"]) if not refreshed and not t["trashed_at"] else None
+            with db.connect() as conn:
+                talk = talk_about(conn, article, t, tids,
+                                  [o["canonical_ap_id"] for o in objs if o["object_type"] == "post"], job)
         srcs = {i: {"id": i, "cname": th["cname"], "c_ap": th["c_ap"], "server": th["source_domain"]}
                 for i, th in threads.items()}
         nodes: dict[int, dict[str, Any]] = {}
@@ -2823,12 +2839,26 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                       me=me, powers_by_community=powers, new_count=new_count, changed_count=changed_count,
                       comment_sort=sort, comment_sorts=COMMENT_SORTS, instance=instance, since=since,
                       grouped=len(tids) > 1, post_copies=post_copies, merge=merge, article=article,
-                      n_copies=max(len(copies), 1), refresh_job=refresh_job, post_audio=post_audio,
+                      n_copies=max(len(copies), 1), refresh_job=refresh_job, post_audio=post_audio, talk=talk,
                       all_kept=all(th["retention"] == "manual" for th in threads.values()))
 
     def read_href(url: str) -> str:
         """Where a link to an article goes to be read here."""
         return "/read?url=" + quote(url, safe="")
+
+    def talk_about(conn: Any, a: Any, t: Any = None, tids: list[int] | None = None,
+                   ap_ids: list[str] | None = None, job: int | None = None) -> dict[str, Any]:
+        """Where an article is discussed, for _discussions.html: the posts of it
+        here (whichever link they used) but the ones on the page (`tids`, whose
+        posts are `ap_ids`), what was found elsewhere, and the articles that are
+        probably the same story. `job`: the look elsewhere under way."""
+        posted = articles.posted_in(conn, articles.same_page(conn, a["id"]), tids)
+        here = {p["id"] for p in posted}
+        found = discussions_mod.for_article(conn, a["id"], ap_ids)
+        similar = [{"a": s, "posts": articles.posted_in(conn, articles.same_page(conn, s["id"]), limit=3)}
+                   for s in articles.same_story(conn, a)] if a["status"] == "ok" else []
+        return {"article": a, "posted": posted, "found": [d for d in found["items"] if d["thread_id"] not in here],
+                "checks": found["checks"], "similar": similar, "job": job, "thread_id": t["id"] if t else None}
 
     def article_view(request: Request, a: Any, t: Any = None, o: Any = None, pane: bool = False) -> HTMLResponse:
         """An article in the reader: a post's (t, o) or one opened from a link.
@@ -2836,15 +2866,11 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         articles here that link to it. `pane`: just the article, for app.js to
         open beside (or inside) the one you're reading."""
         kept = bool(a["kept_at"] or (t and t["retention"] == "manual"))
+        job = discussions.request(a["id"])
         with db.connect() as conn:
             table = {**(media_mod.lookup_for_objects(conn, [o["id"]]) if o else {}),
                      **articles.media_lookup(conn, a["id"])}
-            discussed = conn.execute(  # posts that link here, besides this one
-                "SELECT t.id, r.title, c.name, c.canonical_ap_id FROM article_refs ar "
-                "JOIN archived_threads t ON t.root_object_id=ar.object_id AND t.trashed_at IS NULL "
-                "JOIN objects o ON o.id=t.root_object_id JOIN revisions r ON r.object_id=o.id AND r.seq=o.revision_count "
-                "JOIN communities c ON c.id=t.community_id WHERE ar.article_id=? AND t.id!=? ORDER BY t.id DESC LIMIT 10",
-                (a["id"], t["id"] if t else 0)).fetchall()
+            talk = talk_about(conn, a, t, [t["id"]] if t else None, [o["canonical_ap_id"]] if o else None, job)
             mentions = articles.mentioned_by(conn, a) if kept else []
         lead = table.get(a["lead_image_url"] or "")
         shown = lead and lead.status == "ok" and (lead.content_type or "").startswith("image/") \
@@ -2853,7 +2879,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                                   video_titles()) \
             if a["status"] == "ok" else None
         return render(request, "article_pane.html" if pane else "article.html", t=t, o=o, a=a, content=content,
-                      lead=lead if shown else None, discussed=discussed, kept=kept, mentions=mentions, pane=pane)
+                      lead=lead if shown else None, talk=talk, kept=kept, mentions=mentions, pane=pane)
 
     @app.get("/t/{tid}/article", response_class=HTMLResponse)
     def article_page(request: Request, tid: int, pane: bool = False):
@@ -2893,6 +2919,53 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         if a is None:
             raise HTTPException(404)
         return article_view(request, a, pane=pane)
+
+    @app.get("/a/{aid}/discussions", response_class=HTMLResponse)
+    def article_discussions(request: Request, aid: int, t: int | None = None):
+        """Just the article's discussions section (app.js swaps it in once a
+        look elsewhere is done), as the post `t`'s page, or the article's, shows it."""
+        with db.connect() as conn:
+            a = conn.execute("SELECT * FROM articles WHERE id=?", (aid,)).fetchone()
+            if a is None:
+                raise HTTPException(404)
+            thread = conn.execute(THREAD_SQL, (t,)).fetchone() if t else None
+            tids, ap_ids = [], []
+            if thread is not None:
+                key = conn.execute("SELECT dupe_key FROM objects WHERE id=?", (thread["root_object_id"],)).fetchone()
+                copies = dupes.load_copies(conn, [key[0]]).get(key[0], []) if key and key[0] else []
+                tids = list(dict.fromkeys([thread["id"], *(c["id"] for c in copies)]))
+                ap_ids = [c["canonical_ap_id"] for c in copies] + [r[0] for r in conn.execute(
+                    "SELECT canonical_ap_id FROM objects WHERE id=?", (thread["root_object_id"],))]
+            talk = talk_about(conn, a, thread, tids, ap_ids)
+        return render(request, "discussions.html", talk=talk)
+
+    @app.post("/discussions/{did}/open")
+    def discussion_open(request: Request, did: int):
+        """A post found elsewhere, opened here: saved like a post opened from a
+        link (it expires unless you keep it), then shown."""
+        with db.connect() as conn:
+            d = conn.execute("SELECT * FROM discussions WHERE id=?", (did,)).fetchone()
+            here = conn.execute("SELECT t.id FROM objects o JOIN archived_threads t ON t.root_object_id=o.id "
+                                "WHERE o.canonical_ap_id=?", (d["url"],)).fetchone() if d else None
+        if d is None or d["source"] not in discussions_mod.OPENABLE or not discussions_mod.openable(d["url"]):
+            raise HTTPException(404)
+        if here is not None:
+            return RedirectResponse(f"/t/{here['id']}", status_code=303)
+        job = bouncer.enqueue("ingest", {"url": d["url"], "retention": "auto"})
+        return RedirectResponse(f"/jobs/{job}/wait", status_code=303)
+
+    @app.get("/jobs/{job_id}/wait", response_class=HTMLResponse)
+    def job_wait(request: Request, job_id: int):
+        """Waiting for a post to be saved (discussion_open): on to it once it is."""
+        with db.connect() as conn:
+            j = conn.execute("SELECT * FROM jobs WHERE id=? AND kind='ingest'", (job_id,)).fetchone()
+        if j is None:
+            raise HTTPException(404)
+        result = json.loads(j["result_json"] or "null") or {}
+        if j["status"] == "done" and result.get("thread_id"):
+            return RedirectResponse(f"/t/{result['thread_id']}", status_code=303)
+        return render(request, "waiting.html", job=j, failed=j["status"] == "failed",
+                      url=json.loads(j["payload_json"]).get("url"))
 
     @app.post("/a/{aid}/retry")
     def article_try_again(request: Request, aid: int):

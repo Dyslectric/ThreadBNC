@@ -1526,10 +1526,46 @@ document.documentElement.classList.add("js");
     }
   }, true);
 
+  // ---- where an article is discussed ------------------------------------------------
+  // Opening a post or an article asks other places about it (discussions.py).
+  // Its Discussions section says so (data-job) until that's done, then the
+  // answer is swapped in. Readers opened into the page get the same, as they arrive.
+  const DISCUSSIONS_WAIT_MS = 90000;
+
+  function watchDiscussions(root) {
+    const boxes = root.matches && root.matches("[data-discussions][data-job]") ? [root] : $$("[data-discussions][data-job]", root);
+    for (const box of boxes) {
+      if (box.dataset.watching) continue;
+      box.dataset.watching = "true";
+      awaitDiscussions(box);
+    }
+  }
+
+  async function awaitDiscussions(box) {
+    const started = Date.now();
+    while (box.isConnected && Date.now() - started < DISCUSSIONS_WAIT_MS) {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      try {
+        const r = await fetch(`/api/jobs/${box.dataset.job}`, { credentials: "same-origin" });
+        const job = r.ok ? await r.json() : null;
+        if (job && (job.status === "done" || job.status === "failed")) break;
+      } catch (e) { /* try again */ }
+    }
+    if (!box.isConnected) return;
+    try {
+      const fresh = $("[data-discussions]", await fetchDoc(box.dataset.discussions));
+      if (fresh) box.replaceWith(document.adoptNode(fresh));
+    } catch (e) { /* the saved list stays; reloading shows the rest */ }
+  }
+
   document.addEventListener("DOMContentLoaded", () => {
     keepFeedAsOf();
     watchUnread(document);
     watchArticles(document);
+    watchDiscussions(document);
+    new MutationObserver((changes) => {
+      for (const c of changes) for (const el of c.addedNodes) if (el.nodeType === 1) watchDiscussions(el);
+    }).observe(document.body, { childList: true, subtree: true });
     askTitles();
     watchSaving();
     askOwncast();

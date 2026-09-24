@@ -1,0 +1,45 @@
+{# Where an article is discussed: posts of it here (whichever link they used),
+   what was found elsewhere when it was opened (discussions.py), and articles
+   that are probably the same story. `talk` comes from web.py's talk_about.
+   While a look elsewhere is under way (data-job), app.js swaps in the answer. #}
+{% from "_macros.html" import when, icon %}
+{% set a = talk.article %}
+{% if talk.posted or talk.found or talk.similar or talk.job or talk.checks %}
+<section class="discussions small" data-discussions="/a/{{ a.id }}/discussions{{ '?t=' ~ talk.thread_id if talk.thread_id }}"
+  {%- if talk.job %} data-job="{{ talk.job }}"{% endif %} aria-live="polite">
+  <h2>{{ icon('comment') }} Discussions</h2>
+  {% if talk.posted %}
+  <h3>{{ 'Also posted' if talk.thread_id else 'Posted' }} here</h3>
+  <ul class="plain">{% for d in talk.posted %}<li><a href="/t/{{ d.id }}">{{ d.title }}</a>
+    <span class="muted">· {{ chandle(d.name, d.canonical_ap_id) }}{% if d.created_at %} · {{ when(d.created_at) }}{% endif %}</span></li>{% endfor %}</ul>
+  {% endif %}
+  {% if talk.found %}
+  <h3>Elsewhere</h3>
+  <ul class="plain discussion-list">{% for d in talk.found %}<li>
+    {% if d.thread_id %}<a href="/t/{{ d.thread_id }}">{{ d.title }}</a>
+    {% elif d.url | safe_url %}<a href="{{ d.url | safe_url }}" rel="noreferrer noopener nofollow" target="_blank">{{ d.title }}{{ icon('external') }}</a>
+    {% else %}{{ d.title }}{% endif %}
+    <span class="muted">·
+      {%- if d.place %} {{ d.place }}{% endif %}
+      {%- if d.author %} · {{ d.author }}{% endif %}
+      {%- if d.count %} · {{ d.count }}{% endif %}
+      {%- if d.created_at %} · {{ when(d.created_at) }}{% endif %}</span>
+    {% if not d.thread_id and d.openable %}<form method="post" action="/discussions/{{ d.id }}/open" class="inline"><button class="link">Open here</button></form>{% endif %}
+  </li>{% endfor %}</ul>
+  {% endif %}
+  {% if talk.similar %}
+  <h3>Probably the same story</h3>
+  <ul class="plain">{% for s in talk.similar %}<li><a href="/a/{{ s.a.id }}">{{ s.a.title or s.a.url }}</a>
+    <span class="muted">· {{ s.a.site_name or ((s.a.fetched_from or s.a.url) | host) }}</span>
+    {% if s.posts %}<ul class="plain similar-posts">{% for d in s.posts %}<li><a href="/t/{{ d.id }}">{{ d.title }}</a>
+      <span class="muted">· {{ chandle(d.name, d.canonical_ap_id) }}</span></li>{% endfor %}</ul>{% endif %}</li>{% endfor %}</ul>
+  {% endif %}
+  <p class="muted discussions-status">
+    {%- if talk.job %}Looking for more elsewhere…
+    {%- elif talk.checks %}{% set last = talk.checks.values() | map(attribute='checked_at') | max %}
+      {%- if not talk.found %}Nothing found elsewhere. {% endif -%}
+      Looked at {{ talk.checks.keys() | map('discussion_place') | join(', ') }} {{ when(last) }}.
+      {%- for source, c in talk.checks.items() if c.error %} {% set p = source | discussion_place %}<span class="bad-text">{{ p[:1] | upper }}{{ p[1:] }}: {{ c.error }}</span>{% endfor %}
+    {%- endif %}</p>
+</section>
+{% endif %}

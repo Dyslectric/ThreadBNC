@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{# A post found elsewhere being saved to open here: this page checks again every
+   second, and the server sends you on to it once it's in. #}
+{% block head %}{% if not failed %}<meta http-equiv="refresh" content="1">{% endif %}{% endblock %}
+{% block title %}{{ 'Couldn\'t open it' if failed else 'Opening…' }}{% endblock %}
+{% block content %}
+<section class="card">
+  {% if failed %}
+  <h1>Couldn't open it here</h1>
+  <p class="bad-text">{{ job.error or 'The server didn\'t answer.' }}</p>
+  {% if url | safe_url %}<p><a class="button" href="{{ url | safe_url }}" rel="noreferrer noopener nofollow" target="_blank">Open the original</a></p>{% endif %}
+  {% else %}
+  <h1>Opening…</h1>
+  <p class="muted">Reading the post and its comments. This page moves on by itself once they're in.</p>
+  {% endif %}
+</section>
+{% endblock %}

@@ -41,6 +41,7 @@ ThreadBNC behaves like one more subscribed server, or like your own browser, nev
 
 - **Pushed, not polled.** Lemmy and PieFed communities are subscribed to by your own server, and their home servers send each post, comment and edit once, as federation intends. Nothing is checked on a schedule unless you turn it on for a community that can't be pushed, and then it's one listing per check, never comments.
 - **Fetched when you open it.** A post's comments, its linked article and its full videos are fetched when you open or keep it, and reopening within 5 minutes uses the saved copy.
+- **Discussions elsewhere, when you open it.** Opening a post with a linked article, or the article, asks your own Lemmy server, Reddit (when connected) and Bluesky (when you're signed in) for other posts of it, and a blog that federates or takes webmentions for its replies: once, then not again for an hour (see [Discussions](#discussions)).
 - **Votes, cheaply.** Votes are updated every 5 minutes for a post's first half hour, then every 10, every 30 until 6 hours, hourly until a day, daily until a week, and then not at all (opening a post still updates them). A pushed community's come from your own server; a checked community's from one listing covering all its posts; only a post kept on its own is asked about by itself.
 - **Hashtags through a relay.** A followed hashtag is one Follow to its relay. Each post it passes on is read once from its own server, a signed request like any receiving server makes, and its votes aren't checked in the background at all; opening it reads it again with its replies.
 - **Reddit only while you're here,** spread out, one subreddit at a time (see [Checking, conservatively](#checking-conservatively)).
@@ -573,6 +574,7 @@ API (each call with `Authorization: Bearer $THREADBNC_API_TOKEN`):
 | `THREADBNC_ACTOR_DOMAIN` | unset | The domain of ThreadBNC's own ActivityPub actor, for following hashtags (see [Hashtags](#hashtags)). Unset: hashtags can't be followed |
 | `THREADBNC_TAG_RELAY` | `https://relay.fedi.buzz/tag/{tag}` | The relay actor followed for each hashtag, `{tag}` standing for it |
 | `THREADBNC_ARTICLES` | `1` | Read the web pages posts link to and keep the article, for **Read article** (see [Linked articles](#linked-articles)); `0` turns it off |
+| `THREADBNC_DISCUSSIONS` | `1` | Look for where an article is discussed elsewhere when it's opened (see [Discussions](#discussions)); `0` turns it off |
 | `THREADBNC_PROXY_AUTH_HEADER` | unset | Header in which a signing-in reverse proxy passes the user's name, e.g. `X-authentik-username` |
 | `THREADBNC_PROXY_SECRET` | unset | Required with the above (16+ characters). The proxy must send it as `X-ThreadBNC-Proxy-Secret` |
 | `THREADBNC_PROXY_ALLOWED_USERS` | unset | Comma-separated usernames allowed in; unset = whoever the proxy lets through |
@@ -763,6 +765,15 @@ When a post links to a web page, the page is read when you open or keep the post
 - **What can't be saved:** pages behind a paywall or login, sites that refuse the bouncer (it identifies itself as ThreadBNC rather than posing as a browser), pages with fewer than 80 words of text, and pages over 5 MB. The thread page says why, and offers **Try again** when the site was down or refused.
 - Articles are deleted with the last thread that links to them.
 - `THREADBNC_ARTICLES=0` stops reading pages; links are still noted, and read once it's turned back on.
+
+### Discussions
+
+Under a post with a linked article (and in the reader) is where else the article is being talked about:
+
+- **Posted here:** other posts ThreadBNC has of the same page, even by another link. Links count as the same page when they differ only by `www.`/`m.`, `http`/`https`, a trailing slash, `index.html` or click-tracking parameters (`utm_*`, `fbclid` and the like); when one is an AMP copy (`/amp`, `amp.` sites, Google's AMP cache); when one wraps the other (the Wayback Machine, archive.today, 12ft.io, Google's and Facebook's redirects); or when reading them led to the same page (short links, feedburner) or the page names the other as its own address (`<link rel="canonical">`, `og:url`). So a feed's article and the posts of it in communities find each other.
+- **Elsewhere:** found when you open the post or the article, and again after an hour: posts of the link on your own Lemmy or PieFed server (every post federated to it, not only from communities you follow), on Reddit in any subreddit (when Reddit is connected), and on Bluesky (only when you're signed in to Bluesky, since it only searches for someone signed in); the replies to the post on a blog that federates (a WordPress, Ghost or WriteFreely blog whose page links its ActivityPub copy); and the replies and mentions a page has collected on webmention.io. Only posts of the article itself are listed, asked for by up to three of its addresses (Lemmy and Reddit match links exactly). **Open here** saves a Lemmy, PieFed, Reddit or Bluesky post like one opened from a link, with its comments, and it expires unless you keep it; replies open where they were written.
+- **Probably the same story:** articles here on other pages with nearly the same text (a wire story on several papers' sites) or the same headline within two days. They're listed, not merged.
+- `THREADBNC_DISCUSSIONS=0` stops looking elsewhere; posts of the same page here are still listed.
 
 ## Privacy
 

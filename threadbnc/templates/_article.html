@@ -37,13 +37,7 @@
   </header>
   {% if lead %}<img class="media reader-lead" src="/media/{{ lead.id }}" alt="">{% endif %}
   <div class="md reader-body">{{ content }}</div>
-  {% if discussed %}
-  <section class="reader-discussed small">
-    <h2>{{ 'Also posted' if t else 'Posted' }} in</h2>
-    <ul class="plain">{% for d in discussed %}<li><a href="/t/{{ d.id }}">{{ d.title }}</a>
-      <span class="muted">· {{ chandle(d.name, d.canonical_ap_id) }}</span></li>{% endfor %}</ul>
-  </section>
-  {% endif %}
+  {% include "_discussions.html" %}
   <footer class="reader-foot small muted">
     <p>Saved from {{ a.fetched_from | host }} {{ when(a.fetched_at) }}, as the bouncer read it: the page may have changed since,
       and some parts of it (videos, embeds, interactive pieces) aren't kept.
@@ -68,6 +62,7 @@
       {% if a.status != 'skipped' %}<form method="post" action="/a/{{ a.id }}/retry" class="inline" data-inplace="reader-{{ a.id }}"><button class="secondary">{{ icon('refresh') }} Try again</button></form>{% endif %}
     </div>
   </section>
+  {% include "_discussions.html" %}
   {% endif %}
  </div>
   {# Kept articles list the articles here that link to them. #}

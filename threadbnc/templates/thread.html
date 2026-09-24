@@ -288,6 +288,7 @@
     {% else %}<a class="act" href="/t/{{ t.id }}/repost" title="Post a copy in your communities">{{ icon('repost') }}<span>Repost</span></a>{% endif %}{% endif %}
   </div>
 </article>
+{% if talk %}{% include "_discussions.html" %}{% endif %}
 
 {% set writable_copies = [] %}{% set hs = [] %}
 {% for pc in post_copies %}{% set acct = none if is_rss(pc.o.canonical_ap_id) or is_tag(t.c_ap) else (reddit_me if pc.reddit else bluesky_me if is_bluesky(pc.o.canonical_ap_id) else me) %}

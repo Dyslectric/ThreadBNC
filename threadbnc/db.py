@@ -281,7 +281,12 @@ CREATE TABLE IF NOT EXISTS articles (
     first_seen_at TEXT NOT NULL,
     fetched_at TEXT,
     kept_at TEXT,             -- kept from the reader (an article opened from a link, not a post's)
-    opened_at TEXT            -- last read from a link in another article (kept a while after, see articles.py)
+    opened_at TEXT,           -- last read from a link in another article (kept a while after, see articles.py)
+    canonical_url TEXT,       -- where the page says it lives (<link rel="canonical">, og:url)
+    ap_url TEXT,              -- its ActivityPub copy, for a blog that federates (its replies are its comments)
+    webmention_url TEXT,      -- where it takes webmentions
+    simhash TEXT,             -- a fingerprint of its text, for "probably the same story" (links.py)
+    title_key TEXT            -- its headline, reduced (links.title_key), for the same
 );
 CREATE INDEX IF NOT EXISTS articles_pending ON articles(status, next_attempt_at);
 
@@ -299,6 +304,7 @@ CREATE INDEX IF NOT EXISTS article_media_media ON article_media(media_id);
 CREATE TABLE IF NOT EXISTS article_links (
     article_id INTEGER NOT NULL REFERENCES articles(id),
     url TEXT NOT NULL,
+    link_key TEXT,            -- links.key(url)
     PRIMARY KEY (article_id, url)
 );
 CREATE INDEX IF NOT EXISTS article_links_url ON article_links(url);
@@ -311,6 +317,51 @@ CREATE TABLE IF NOT EXISTS article_refs (
     PRIMARY KEY (object_id, article_id)
 );
 CREATE INDEX IF NOT EXISTS article_refs_article ON article_refs(article_id);
+
+-- What each article is known by (links.key): the link it was posted with, the
+-- address it was read from and the one the page gives as its own. Articles
+-- sharing a key are the same page, reached by different links.
+CREATE TABLE IF NOT EXISTS article_keys (
+    article_id INTEGER NOT NULL REFERENCES articles(id),
+    key TEXT NOT NULL,
+    PRIMARY KEY (article_id, key)
+);
+CREATE INDEX IF NOT EXISTS article_keys_key ON article_keys(key);
+
+-- Parts of each article's text fingerprint (links.bands), to find articles
+-- that are probably the same story.
+CREATE TABLE IF NOT EXISTS article_prints (
+    article_id INTEGER NOT NULL REFERENCES articles(id),
+    band INTEGER NOT NULL,
+    value INTEGER NOT NULL,
+    PRIMARY KEY (article_id, band)
+);
+CREATE INDEX IF NOT EXISTS article_prints_value ON article_prints(band, value);
+
+-- Conversations about an article found elsewhere when it was opened
+-- (discussions.py): posts of it on your Lemmy server, Reddit and Bluesky,
+-- replies to a blog that federates, and webmentions.
+CREATE TABLE IF NOT EXISTS discussions (
+    id INTEGER PRIMARY KEY,
+    article_id INTEGER NOT NULL REFERENCES articles(id),
+    source TEXT NOT NULL,     -- lemmy | reddit | bluesky | activitypub | webmention
+    url TEXT NOT NULL,        -- the post or reply
+    title TEXT,
+    place TEXT,               -- where: a community, a subreddit, a server
+    author TEXT,
+    comments INTEGER,
+    score INTEGER,
+    created_at TEXT,
+    found_at TEXT NOT NULL,
+    UNIQUE (article_id, url)
+);
+CREATE TABLE IF NOT EXISTS discussion_checks (
+    article_id INTEGER NOT NULL REFERENCES articles(id),
+    source TEXT NOT NULL,
+    checked_at TEXT NOT NULL,
+    error TEXT,
+    PRIMARY KEY (article_id, source)
+);
 
 -- Accounts ThreadBNC can act as. Only the server-issued session token is kept,
 -- encrypted (see vault.py); passwords are never stored.
@@ -567,13 +618,19 @@ COLUMN_MIGRATIONS = [
     ("community_follows", "polling", "INTEGER NOT NULL DEFAULT 1"),
     ("community_follows", "push_actor", "TEXT"),
     ("community_follows", "push_follow_id", "TEXT"),
+    ("articles", "canonical_url", "TEXT"),
+    ("articles", "ap_url", "TEXT"),
+    ("articles", "webmention_url", "TEXT"),
+    ("articles", "simhash", "TEXT"),
+    ("articles", "title_key", "TEXT"),
+    ("article_links", "link_key", "TEXT"),
 ]
 
 # Tables with an integer `id` key: inserts into these get `RETURNING id` on
 # Postgres so callers can keep using `cursor.lastrowid`.
 _ID_TABLES = {"instances", "actors", "communities", "archived_threads", "objects", "revisions",
               "state_events", "media", "jobs", "accounts", "mod_actions", "join_requests",
-              "inbox_items", "articles", "ap_inbox", "custom_feeds"}
+              "inbox_items", "articles", "ap_inbox", "custom_feeds", "discussions"}
 _INSERT_RE = re.compile(r"^\s*INSERT\s+INTO\s+(\w+)", re.IGNORECASE)
 _PG_WRITE_LOCK = 727_001  # advisory lock id: one writer at a time, like SQLite's BEGIN IMMEDIATE
 
@@ -721,6 +778,8 @@ class Database:
             elif col not in {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
         conn.execute("CREATE INDEX IF NOT EXISTS objects_dupe ON objects(dupe_key)")
+        conn.execute("CREATE INDEX IF NOT EXISTS article_links_key ON article_links(link_key)")
+        conn.execute("CREATE INDEX IF NOT EXISTS articles_title_key ON articles(title_key)")
         from .dupes import backfill
         backfill(conn)
         from .media import migrate_legacy

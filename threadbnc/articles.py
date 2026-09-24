@@ -12,6 +12,11 @@ Not every link can be read. Links to pictures, videos, social media, home pages
 and other threadiverse posts aren't tried; paywalls, sites that refuse the
 bouncer and pages with too little text are given up on, and the post just links
 to the original as before.
+
+Different links to the same page find each other by their keys (links.py): the
+link as posted, where it was read from and where the page says it lives. So an
+article lists every post of it here, whichever link each used, and the articles
+that are probably the same story; discussions.py adds what it found elsewhere.
 """
 
 from __future__ import annotations
@@ -29,6 +34,7 @@ import nh3
 import trafilatura
 from markupsafe import Markup
 
+from . import links as links_mod
 from .adapters.base import RemotePaused, host_of, is_reddit_host, parse_thread_url
 from .adapters.http import HostThrottle
 from .db import Conn, Database, fmt_ts, parse_ts, utcnow
@@ -105,6 +111,7 @@ def register(conn: Conn, object_id: int, url: str | None, now: str) -> None:
     conn.execute("INSERT INTO articles(url, first_seen_at, next_attempt_at) VALUES (?,?,?) "
                  "ON CONFLICT(url) DO NOTHING", (url, now, now))
     a = conn.execute("SELECT * FROM articles WHERE url=?", (url,)).fetchone()
+    add_keys(conn, a["id"], [url])
     conn.execute("INSERT INTO article_refs(object_id, article_id, first_seen_at) VALUES (?,?,?) "
                  "ON CONFLICT(object_id, article_id) DO NOTHING", (object_id, a["id"], now))
     if a["status"] == "ok":  # already read for another post: its pictures are this one's too
@@ -124,6 +131,16 @@ def register_all_existing(conn: Conn) -> None:
     for a in conn.execute("SELECT id, content_html FROM articles a WHERE status='ok' "
                           "AND NOT EXISTS (SELECT 1 FROM article_links l WHERE l.article_id=a.id)").fetchall():
         record_links(conn, a["id"], a["content_html"])
+    # Keys and fingerprints for articles read before links were matched by them.
+    for a in conn.execute("SELECT id, url, fetched_from, canonical_url FROM articles a WHERE NOT EXISTS "
+                          "(SELECT 1 FROM article_keys k WHERE k.article_id=a.id)").fetchall():
+        add_keys(conn, a["id"], [a["url"], a["fetched_from"], a["canonical_url"]])
+    for r in conn.execute("SELECT article_id, url FROM article_links WHERE link_key IS NULL").fetchall():
+        conn.execute("UPDATE article_links SET link_key=? WHERE article_id=? AND url=?",
+                     (links_mod.key(r["url"]) or "", r["article_id"], r["url"]))
+    for a in conn.execute("SELECT id, title, site_name, content_html FROM articles WHERE status='ok' "
+                          "AND simhash IS NULL").fetchall():
+        fingerprint(conn, a["id"], a["title"], a["site_name"], a["content_html"])
 
 
 def links_in(content_html: str | None) -> set[str]:
@@ -137,20 +154,94 @@ def links_in(content_html: str | None) -> set[str]:
 def record_links(conn: Conn, article_id: int, content_html: str | None) -> None:
     """Which pages the article links to, so an article can list the ones that mention it."""
     conn.execute("DELETE FROM article_links WHERE article_id=?", (article_id,))
-    conn.executemany("INSERT INTO article_links(article_id, url) VALUES (?,?)",
-                     [(article_id, url) for url in links_in(content_html)])
+    conn.executemany("INSERT INTO article_links(article_id, url, link_key) VALUES (?,?,?)",
+                     [(article_id, url, links_mod.key(url) or "") for url in links_in(content_html)])
+
+
+def add_keys(conn: Conn, article_id: int, urls: list[str | None]) -> None:
+    """Record what an article is known by, from these addresses of it."""
+    for k in {links_mod.key(u) for u in urls if u} - {None}:
+        conn.execute("INSERT INTO article_keys(article_id, key) VALUES (?,?) ON CONFLICT(article_id, key) DO NOTHING",
+                     (article_id, k))
+
+
+def keys_of(conn: Conn, article_id: int) -> list[str]:
+    return [r[0] for r in conn.execute("SELECT key FROM article_keys WHERE article_id=?", (article_id,))]
+
+
+def same_page(conn: Conn, article_id: int) -> list[int]:
+    """This article and the others that are the same page, reached by another link."""
+    ids = {r[0] for r in conn.execute(
+        "SELECT DISTINCT k2.article_id FROM article_keys k1 JOIN article_keys k2 ON k2.key=k1.key "
+        "WHERE k1.article_id=?", (article_id,))}
+    return sorted(ids | {article_id})
+
+
+def _marks(values: list[Any]) -> str:
+    return ",".join("?" * len(values))
 
 
 def mentioned_by(conn: Conn, a: Any, limit: int = 30) -> list[Any]:
-    """Other articles here that link to this one (at the address it was
-    linked by, or the one it was read from)."""
-    urls = {u for u in (a["url"], a["fetched_from"]) if u}
-    marks = ",".join("?" * len(urls))
+    """Other articles here that link to this one, by any of its addresses."""
+    keys = keys_of(conn, a["id"])
+    if not keys:
+        return []
+    same = same_page(conn, a["id"])
     return conn.execute(
         f"SELECT DISTINCT o.id, o.title, o.site_name, o.url, o.fetched_at FROM article_links l "
         f"JOIN articles o ON o.id=l.article_id AND o.status='ok' "
-        f"WHERE l.url IN ({marks}) AND o.id!=? ORDER BY o.fetched_at DESC LIMIT ?",
-        (*urls, a["id"], limit)).fetchall()
+        f"WHERE l.link_key IN ({_marks(keys)}) AND o.id NOT IN ({_marks(same)}) ORDER BY o.fetched_at DESC LIMIT ?",
+        (*keys, *same, limit)).fetchall()
+
+
+def posted_in(conn: Conn, article_ids: list[int], exclude: list[int] | None = None, limit: int = 20) -> list[Any]:
+    """The threads here whose post links to one of these articles, newest
+    first, leaving out the `exclude`d threads."""
+    exclude = exclude or [0]
+    return conn.execute(
+        f"SELECT DISTINCT t.id, r.title, c.name, c.canonical_ap_id, o.created_at, o.canonical_ap_id AS ap_id "
+        f"FROM article_refs ar "
+        f"JOIN archived_threads t ON t.root_object_id=ar.object_id AND t.trashed_at IS NULL "
+        f"JOIN objects o ON o.id=t.root_object_id JOIN revisions r ON r.object_id=o.id AND r.seq=o.revision_count "
+        f"JOIN communities c ON c.id=t.community_id "
+        f"WHERE ar.article_id IN ({_marks(article_ids)}) AND t.id NOT IN ({_marks(exclude)}) "
+        f"ORDER BY o.created_at DESC LIMIT ?",
+        (*article_ids, *exclude, limit)).fetchall()
+
+
+def fingerprint(conn: Conn, article_id: int, title: str | None, site: str | None,
+                content_html: str | None) -> None:
+    """Record what tells "probably the same story": the text's fingerprint
+    (in parts, to look up by) and the headline. '' when there's none."""
+    value = links_mod.simhash(links_mod.text_of(content_html))
+    conn.execute("UPDATE articles SET simhash=?, title_key=? WHERE id=?",
+                 (links_mod.hex64(value) or "", links_mod.title_key(title, site) or "", article_id))
+    conn.execute("DELETE FROM article_prints WHERE article_id=?", (article_id,))
+    if value is not None:
+        conn.executemany("INSERT INTO article_prints(article_id, band, value) VALUES (?,?,?)",
+                         [(article_id, i, part) for i, part in enumerate(links_mod.bands(value))])
+
+
+def same_story(conn: Conn, a: Any, limit: int = 10) -> list[Any]:
+    """Other articles here that are probably the same story, on another page:
+    nearly the same text, or the same headline at about the same time."""
+    same = same_page(conn, a["id"])
+    found: dict[int, Any] = {}
+    cols = "o.id, o.title, o.site_name, o.url, o.fetched_from, o.simhash, o.published"
+    mine = links_mod.unhex(a["simhash"])
+    if mine is not None:
+        parts = links_mod.bands(mine)
+        rows = conn.execute(
+            f"SELECT DISTINCT {cols} FROM article_prints p JOIN articles o ON o.id=p.article_id AND o.status='ok' "
+            f"WHERE " + " OR ".join("(p.band=? AND p.value=?)" for _ in parts),
+            [v for i, part in enumerate(parts) for v in (i, part)]).fetchall()
+        found.update((r["id"], r) for r in rows if links_mod.near(mine, links_mod.unhex(r["simhash"]) or 0))
+    if a["title_key"]:
+        for r in conn.execute(f"SELECT {cols} FROM articles o WHERE o.title_key=? AND o.status='ok'",
+                              (a["title_key"],)).fetchall():
+            if links_mod.same_time(a["published"], r["published"]):
+                found.setdefault(r["id"], r)
+    return [r for i, r in sorted(found.items(), reverse=True) if i not in same][:limit]
 
 
 def attach_pictures(conn: Conn, article_id: int, urls: list[str], now: str) -> None:
@@ -166,7 +257,8 @@ def collect_orphans(conn: Conn, now: str | None = None) -> int:
     cutoff = fmt_ts(parse_ts(now or utcnow()) - timedelta(days=STANDALONE_DAYS))  # type: ignore[operator]
     unwanted = ("NOT EXISTS (SELECT 1 FROM article_refs r WHERE r.article_id=articles.id) AND kept_at IS NULL "
                 "AND (opened_at IS NULL OR opened_at < ?)")
-    for table in ("article_media", "article_links"):
+    for table in ("article_media", "article_links", "article_keys", "article_prints", "discussions",
+                  "discussion_checks"):
         conn.execute(f"DELETE FROM {table} WHERE article_id IN (SELECT id FROM articles WHERE {unwanted})",
                      (cutoff,))
     return conn.execute(f"DELETE FROM articles WHERE {unwanted}", (cutoff,)).rowcount
@@ -178,7 +270,9 @@ def ensure(conn: Conn, url: str, now: str) -> Any:
     conn.execute("INSERT INTO articles(url, first_seen_at, next_attempt_at) VALUES (?,?,?) "
                  "ON CONFLICT(url) DO NOTHING", (url, now, now))
     conn.execute("UPDATE articles SET opened_at=? WHERE url=?", (now, url))
-    return conn.execute("SELECT * FROM articles WHERE url=?", (url,)).fetchone()
+    a = conn.execute("SELECT * FROM articles WHERE url=?", (url,)).fetchone()
+    add_keys(conn, a["id"], [url])
+    return a
 
 
 def media_lookup(conn: Conn, article_id: int) -> dict[str, Any]:
@@ -465,6 +559,7 @@ class ArticleFetcher:
 
     def fetch_one(self, row: Any) -> None:
         now = utcnow()
+        page: bytes | None = None
         try:
             page, final_url = self._download(row["url"])
             art = extract(page, final_url)
@@ -472,6 +567,8 @@ class ArticleFetcher:
             with self.db.transaction() as conn:
                 conn.execute("UPDATE articles SET status=?, error=?, attempts=attempts+1, fetched_at=? WHERE id=?",
                              ("skipped" if isinstance(exc, ArticleSkipped) else "failed", str(exc), now, row["id"]))
+                if page is not None:  # read, but not an article: where it lives still tells posts of it apart
+                    self._note_page(conn, row["id"], page, final_url)
             return
         except RemotePaused as exc:  # the site asked us to wait: not the page's fault
             with self.db.transaction() as conn:
@@ -500,8 +597,19 @@ class ArticleFetcher:
                  json.dumps(pics), art.words, final_url, now, row["id"]))
             attach_pictures(conn, row["id"], pics, now)
             record_links(conn, row["id"], art.content_html)
+            self._note_page(conn, row["id"], page, final_url)
+            fingerprint(conn, row["id"], art.title, art.site_name, art.content_html)
             for r in conn.execute("SELECT object_id FROM article_refs WHERE article_id=?", (row["id"],)).fetchall():
                 register_media(conn, r["object_id"], pics, now, from_article=True)
+
+    @staticmethod
+    def _note_page(conn: Conn, article_id: int, page: bytes, final_url: str) -> None:
+        """Where the page was read from and where it says it lives, as keys;
+        and where its replies and webmentions are, for discussions.py."""
+        found = links_mod.page_links(page, final_url)
+        conn.execute("UPDATE articles SET fetched_from=?, canonical_url=?, ap_url=?, webmention_url=? WHERE id=?",
+                     (final_url, found["canonical"], found["activitypub"], found["webmention"], article_id))
+        add_keys(conn, article_id, [final_url, found["canonical"]])
 
 
 
