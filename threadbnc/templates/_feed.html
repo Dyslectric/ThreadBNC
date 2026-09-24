@@ -106,14 +106,31 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
 {%- if i.preview is string %} data-preview="{{ i.preview }}"{% endif %}
 {%- endmacro %}
 
+{# Where a post links to, by its host. A podcast episode links to its audio
+   file, which plays in its bar: this is its page instead. #}
+{% macro post_link(i) -%}
+{% set url = (i.episode.page if i.episode and i.episode.page else i.url) | safe_url %}
+{% if url and not (i.thumb and i.thumb.is_link) %}<div class="pc-link small"><a href="{{ url }}" target="_blank" rel="noreferrer noopener nofollow">{{ url | host }}{{ icon('external') }}</a></div>{% endif %}
+{%- endmacro %}
+
 {# A player for the audio file a post links to. It's downloaded once the post is
-   scrolled to; until then a bar the player's size says so. #}
-{% macro audio_bar(i) -%}
-{% if i.audio %}
+   scrolled to; until then a bar the player's size says so. A podcast episode
+   waits for Play to be pressed instead (or its post to be kept). The player
+   carries on from where you were (data-at; app.js keeps it up to date), and
+   says how much is left. `target`: the element to re-render once Play is pressed. #}
+{% macro audio_bar(i, target=none) -%}
+{% if i.audio %}{% set a = i.audio %}
+{% set length = a.duration or (i.episode.seconds if i.episode else none) %}
 <div class="audio-bar">
-  {% if i.audio.status == 'ok' %}<audio src="/media/{{ i.audio.id }}" controls preload="metadata"></audio>
-  {% elif i.audio.status == 'pending' %}<span class="audio-note small muted">{{ icon('play') }}Fetching the audio…</span>
-  {% else %}<span class="audio-note small bad-text" title="{{ i.audio.error or '' }}">{{ icon('alert') }}Couldn't save the audio{% if i.audio.error %}: {{ i.audio.error }}{% endif %}</span>{% endif %}
+  {% if a.status == 'ok' %}<audio src="/media/{{ a.id }}" controls preload="metadata" data-listen="{{ a.id }}"
+    {%- if a.position and not a.finished %} data-at="{{ a.position }}"{% endif %}></audio>
+    {% if a.finished %}<span class="audio-where small muted">{{ icon('check') }}Played</span>
+    {% elif a.position and length and length > a.position %}<span class="audio-where small muted">{{ (length - a.position) | running_time }} left</span>{% endif %}
+  {% elif a.status == 'play' %}<form method="post" action="/t/{{ i.id }}/play" data-inplace="{{ target or ('p' ~ i.id) }}" data-play="{{ i.id }}">
+    <input type="hidden" name="anchor" value="p{{ i.id }}">
+    <button class="audio-note audio-play small" title="Download the episode and play it">{{ icon('play') }}Play episode{% if length %} <span class="muted">· {{ length | running_time }}</span>{% endif %}</button></form>
+  {% elif a.status == 'pending' %}<span class="audio-note small muted">{{ icon('play') }}Fetching the {{ 'episode' if a.episode else 'audio' }}…</span>
+  {% else %}<span class="audio-note small bad-text" title="{{ a.error or '' }}">{{ icon('alert') }}Couldn't save the {{ 'episode' if a.episode else 'audio' }}{% if a.error %}: {{ a.error }}{% endif %}</span>{% endif %}
 </div>
 {% endif %}
 {%- endmacro %}
@@ -254,7 +271,7 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
     </div>
     {% endif %}
     <h3 class="pc-title"><a href="/t/{{ i.id }}">{{ i.title }}</a></h3>
-    {% if i.url | safe_url and not (i.thumb and i.thumb.is_link) %}<div class="pc-link small"><a href="{{ i.url | safe_url }}" target="_blank" rel="noreferrer noopener nofollow">{{ i.url | host }}{{ icon('external') }}</a></div>{% endif %}
+    {{ post_link(i) }}
     {{ audio_bar(i) }}
     {% if i.change_summary %}
     <a class="pc-changes small" href="/t/{{ i.id }}{{ i.change_anchor }}" title="What changed lately">
@@ -290,7 +307,7 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
     {{ state_badges(i) }}
   </div>
   <h3 class="pc-title"><a href="/t/{{ i.id }}">{{ i.title }}</a></h3>
-  {% if i.url | safe_url and not (i.thumb and i.thumb.is_link) %}<div class="pc-link small"><a href="{{ i.url | safe_url }}" target="_blank" rel="noreferrer noopener nofollow">{{ i.url | host }}{{ icon('external') }}</a></div>{% endif %}
+  {{ post_link(i) }}
   {{ audio_bar(i) }}
   {% if i.thumb %}<div class="picture-media">{{ gallery(i, veiled, 'picture') }}</div>
   {% elif i.excerpt %}<p class="pc-excerpt">{{ i.excerpt }}</p>{% endif %}

@@ -255,6 +255,7 @@ document.documentElement.classList.add("js");
       const undo = (msgs.find((m) => m.undo) || {}).undo;
       const gone = form.dataset.gone;
       await refresh(ids, data.ok ? gone : null, undo);
+      if (form.dataset.play) awaitEpisode(form.dataset.play);
       const placed = gone && ids.some((id) => $(`[data-gone-for="${CSS.escape(id)}"]`));
       for (const m of msgs) {
         toast(placed ? { ...m, undo: null } : m, m.undo ? () => runUndo(m.undo, ids) : null);
@@ -534,7 +535,7 @@ document.documentElement.classList.add("js");
         const previewed = (data.previewed || {})[tid];
         const read = "preview" in el.dataset && previewed !== undefined && previewed !== el.dataset.preview;
         if (morePics || read || (el.dataset.audio && audio && audio !== el.dataset.audio)) {
-          if (onScreen.has(el.id)) show.push(el.id); else unshown.add(el.id);
+          if (onScreen.has(el.id) || playWhenReady.has(tid)) show.push(el.id); else unshown.add(el.id);
         } else if (!still.has(tid)) {
           articleObserver.unobserve(el);
         }
@@ -557,7 +558,70 @@ document.documentElement.classList.add("js");
       const track = $(`#${CSS.escape(id)} .gallery-track`);
       if (track && left) track.scrollTo({ left, behavior: "instant" });
     }
+    for (const id of ids) {
+      const player = $(`#${CSS.escape(id)} audio[data-listen]`);
+      if (player && playWhenReady.delete(id.slice(1))) player.play().catch(() => {});  // the browser may want a tap
+    }
   }
+
+  // ---- podcast episodes and other audio: carrying on where you left off ------------
+  // Play on an episode that isn't saved yet downloads it (POST /t/{id}/play);
+  // its bar is checked on like a post scrolled to, and plays once it's there.
+  // A player's position is saved as it plays, when it's paused and when you
+  // leave the page, and it starts from there next time (data-at).
+  const playWhenReady = new Set();  // thread ids
+
+  function awaitEpisode(tid) {
+    const player = $(`#p${CSS.escape(tid)} audio[data-listen]`);
+    if (player) { player.play().catch(() => {}); return; }  // it was quicker than the page
+    playWhenReady.add(tid);
+    asked.add(tid);
+    waitingOn.add(tid);
+    checkUntil = Math.max(checkUntil, Date.now() + 30 * 60000);  // an hour of audio can take a while
+    if (!checkTimer) checkTimer = setTimeout(checkArticles, 2500);
+  }
+
+  const savedAt = new WeakMap();  // player: when its position was last sent
+
+  function listenBody(a, finished) {
+    const body = new URLSearchParams({ position: String(Math.floor(finished ? a.duration || 0 : a.currentTime)) });
+    if (Number.isFinite(a.duration)) body.set("duration", String(Math.round(a.duration)));
+    if (finished) body.set("finished", "1");
+    return body;
+  }
+
+  function saveListening(a, finished = false, beacon = false) {
+    if (!a.dataset.listen || (!a.currentTime && !finished)) return;
+    savedAt.set(a, Date.now());
+    const url = `/media/${a.dataset.listen}/position`;
+    if (beacon && navigator.sendBeacon) navigator.sendBeacon(url, listenBody(a, finished));
+    else post(url, listenBody(a, finished)).catch(() => {});
+  }
+
+  // Media events don't bubble, so these listen in the capture phase.
+  document.addEventListener("loadedmetadata", (ev) => {
+    const a = ev.target;
+    if (!(a instanceof HTMLAudioElement) || !a.dataset.at || a.dataset.resumed) return;
+    a.dataset.resumed = "1";
+    const at = Number(a.dataset.at);
+    if (at > 0 && (!Number.isFinite(a.duration) || at < a.duration - 5)) a.currentTime = at;
+  }, true);
+  document.addEventListener("timeupdate", (ev) => {
+    const a = ev.target;
+    if (a instanceof HTMLAudioElement && !a.paused && Date.now() - (savedAt.get(a) || 0) > 15000) saveListening(a);
+  }, true);
+  for (const type of ["pause", "seeked"]) {
+    document.addEventListener(type, (ev) => {
+      const a = ev.target;
+      if (a instanceof HTMLAudioElement && !a.ended) saveListening(a);
+    }, true);
+  }
+  document.addEventListener("ended", (ev) => {
+    if (ev.target instanceof HTMLAudioElement) saveListening(ev.target, true);
+  }, true);
+  window.addEventListener("pagehide", () => {
+    for (const a of $$("audio[data-listen]")) if (!a.paused) saveListening(a, false, true);
+  });
 
   // ---- being here ---------------------------------------------------------------------
   // Subreddits are only checked while someone is using ThreadBNC: tell the

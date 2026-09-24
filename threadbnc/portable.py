@@ -18,7 +18,7 @@ FORMAT = "threadbnc-portable-1"
 TABLES = (
     "instances", "actors", "communities", "community_follows", "archived_threads", "objects",
     "object_local_ids", "revisions", "state_events", "media", "media_refs", "articles", "article_media",
-    "article_links", "article_refs", "custom_feeds", "custom_feed_communities",
+    "article_links", "article_refs", "custom_feeds", "custom_feed_communities", "listening",
 )
 README = """ThreadBNC portable archive
 

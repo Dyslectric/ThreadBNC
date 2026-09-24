@@ -1,6 +1,6 @@
 # ThreadBNC — Threadiverse bouncer + private archive
 
-A private, feed-first reader for Lemmy, PieFed, Reddit, RSS/Atom feeds and fediverse hashtags that keeps a history of what it observes. When a post or comment is edited, removed or deleted after the bouncer has seen it, the change is recorded alongside the earlier version instead of replacing it.
+A private, feed-first reader for Lemmy, PieFed, Reddit, RSS/Atom feeds, podcasts and fediverse hashtags that keeps a history of what it observes. When a post or comment is edited, removed or deleted after the bouncer has seen it, the change is recorded alongside the earlier version instead of replacing it.
 
 **Following and reading:**
 - Follow communities. Lemmy and PieFed posts arrive as they're made, pushed through your own Lemmy server (see [Pushes from your own server](#pushes-from-your-own-server)); feeds and subreddits are checked on a schedule.
@@ -45,6 +45,7 @@ ThreadBNC behaves like one more subscribed server, or like your own browser, nev
 - **Hashtags through a relay.** A followed hashtag is one Follow to its relay. Each post it passes on is read once from its own server, a signed request like any receiving server makes, and its votes aren't checked in the background at all; opening it reads it again with its replies.
 - **Reddit only while you're here,** spread out, one subreddit at a time (see [Checking, conservatively](#checking-conservatively)).
 - **Pictures at once, videos later.** Pictures and thumbnails are downloaded as posts arrive; full videos wait until you open or keep a post showing them.
+- **Podcast episodes only when you play them.** An episode's audio is downloaded when you press Play on it or keep it, never because it scrolled past or was opened: podcast hosts count every download as a listen.
 - **One request at a time,** at least a second apart per server (two for Reddit). A server that answers 429 Too Many Requests isn't contacted again until its `Retry-After` has passed, and that isn't counted as a failure.
 - Feeds are checked on a schedule, as feeds are meant to be, with conditional requests.
 
@@ -219,7 +220,20 @@ edits kept as history, keeping and expiry, duplicate grouping and tiles.
 - **Feeds have no comments or votes**, so article pages have no comment box. Once you post an article, its comments are on your copy, shown on the same page.
 - **Checking** is every 60 minutes by default (`THREADBNC_RSS_POLL_MINUTES`), and never more often than every 5. It uses conditional requests, so an unchanged feed costs one short "not modified" answer. One fetch serves every article from that feed for 5 minutes. Articles aren't re-checked for edits once saved.
 - **Feeds only list their latest entries.** An article that drops out of its feed is kept as last seen and marked "Dropped out of its feed", not recorded as missing, and isn't checked any more.
-- Fetches follow at most 5 redirects, refuse private and local addresses, and stop at 5 MB.
+- Fetches follow at most 5 redirects, refuse private and local addresses, and stop at 20 MB (podcast feeds list every episode ever made).
+
+### Podcasts
+
+A podcast is a feed like any other: paste its feed address into the follow box. Each entry with an audio
+enclosure is an **episode**. It gets a player bar in the feed, in every view, and on its page.
+
+- **Play episode** downloads it and plays it once it's there. Until then, nothing is downloaded: not when it arrives, scrolls into view or is opened. **Keeping** an episode downloads it too, so it's still there if the podcast goes away.
+- **Where you left off:** the position is saved as you listen, when you pause and when you leave the page, and the player starts from there next time. The bar says how much is left, or **Played** once you've heard the end.
+- The episode links to its **audio file**, so copies of the same file are shown once. Its web page is kept alongside it: the link under the title goes there.
+- Its **running time** comes from the feed (`itunes:duration`), and its picture is the episode's own or else the podcast's cover.
+- **Size:** episodes are saved up to 500 MB (`THREADBNC_PODCAST_MAX_MB`), whatever the Audio size limit is. Turning audio off for a community (its **Media** settings) turns episodes off too. Audio isn't transcoded.
+- Feeds you followed before ThreadBNC read episodes are brought up to date on their next check. Their episodes' links change to the audio file, and that isn't recorded as an edit.
+- Video podcasts (video enclosures) are read as plain articles.
 
 ### OPML import and export
 
@@ -525,6 +539,7 @@ API (each call with `Authorization: Bearer $THREADBNC_API_TOKEN`):
 | `THREADBNC_MEDIA_MAX_MB` | `25` | Largest picture, video or audio file archived as it is; bigger files are skipped and linked to the original (the Storage page and each community can set this for each kind of file) |
 | `THREADBNC_MEDIA_TRANSCODE` | `0` | `1`: pictures and videos over the size limit are shrunk to fit it with ffmpeg instead of skipped, unless the Storage page or a community says otherwise |
 | `THREADBNC_MEDIA_TRANSCODE_SOURCE_MAX_MB` | `1000` | Largest original downloaded to transcode; bigger files are skipped |
+| `THREADBNC_PODCAST_MAX_MB` | `500` | Largest podcast episode saved, whatever the Audio size limit is (see [Podcasts](#podcasts)) |
 | `THREADBNC_RELAY_INBOXES` | *(none)* | Your own Lemmy servers whose inboxes are routed through ThreadBNC, as `domain=Lemmy's address`, comma-separated (see [Pushes from your own server](#pushes-from-your-own-server)) |
 | `THREADBNC_ACTOR_DOMAIN` | unset | The domain of ThreadBNC's own ActivityPub actor, for following hashtags (see [Hashtags](#hashtags)). Unset: hashtags can't be followed |
 | `THREADBNC_TAG_RELAY` | `https://relay.fedi.buzz/tag/{tag}` | The relay actor followed for each hashtag, `{tag}` standing for it |

@@ -6,6 +6,11 @@ server RSS_DOMAIN. Entries have no comments or votes. Article HTML is turned
 into Markdown, so images in it are archived and show up in tiles like any
 other post's.
 
+A podcast episode (an entry with an audio enclosure) links to its audio file
+rather than its web page, so it plays from the post like any other audio link.
+Its page and running time are kept in the post's metadata ("episode"). The
+file itself is fetched only when you press play or keep the post (media.py).
+
 Feeds only list their latest entries, so an entry that drops out of the feed
 isn't gone: the adapter says so (`ages_out`) and the bouncer stops checking it
 instead of recording it as missing.
@@ -32,6 +37,7 @@ import httpx
 
 from .. import youtube
 from ..db import fmt_ts, parse_ts
+from ..render import looks_like_audio
 from .base import (
     RSS_DOMAIN,
     RSS_PREFIX,
@@ -48,7 +54,7 @@ from .base import (
 )
 from .http import HostThrottle
 
-MAX_FEED_BYTES = 5_000_000
+MAX_FEED_BYTES = 20_000_000  # podcasts list every episode ever made: 10 MB isn't unusual
 MAX_REDIRECTS = 5
 FEED_CACHE = 300  # seconds one fetch of a feed serves every thread from it
 ACCEPT = "application/rss+xml, application/atom+xml, application/xml;q=0.9, text/xml;q=0.9, */*;q=0.5"
@@ -58,6 +64,7 @@ RSS1 = "{http://purl.org/rss/1.0/}"
 CONTENT = "{http://purl.org/rss/1.0/modules/content/}encoded"
 DC = "{http://purl.org/dc/elements/1.1/}"
 MEDIA = "{http://search.yahoo.com/mrss/}"
+ITUNES = "{http://www.itunes.com/dtds/podcast-1.0.dtd}"
 
 
 # -- HTML -> Markdown -----------------------------------------------------------------
@@ -195,6 +202,13 @@ def _plain(text: str | None) -> str:
 # -- parsing -----------------------------------------------------------------------------
 
 @dataclass
+class Episode:
+    """A podcast entry's audio file (its enclosure), and how long it runs."""
+    url: str
+    seconds: int | None = None
+
+
+@dataclass
 class Entry:
     key: str
     link: str | None
@@ -204,6 +218,7 @@ class Entry:
     updated: str | None
     author: str | None
     thumb: str | None
+    episode: Episode | None = None
 
 
 @dataclass
@@ -213,6 +228,7 @@ class Feed:
     link: str | None
     description: str | None
     entries: list[Entry] = field(default_factory=list)
+    image: str | None = None  # a podcast's cover, for episodes without their own
 
 
 def _date(value: str | None) -> str | None:
@@ -247,6 +263,45 @@ def _thumb(item: ET.Element, base: str) -> str | None:
     return None
 
 
+def _image(el: ET.Element | None, base: str) -> str | None:
+    """A podcast's (or an episode's) cover: <itunes:image href>, or RSS's <image><url>."""
+    if el is None:
+        return None
+    found = el.find(ITUNES + "image")
+    url = (found.get("href") or found.text or "").strip() if found is not None else _t(el, "image/url")
+    return urljoin(base, url) if url else None
+
+
+def _seconds(value: str) -> int | None:
+    """<itunes:duration>: "1:02:03", "62:03", or seconds ("3723", "3723.5")."""
+    parts = value.strip().split(":")
+    try:
+        nums = [float(p) for p in parts]
+    except ValueError:
+        return None
+    if not nums or len(nums) > 3 or any(n < 0 for n in nums):
+        return None
+    total = 0.0
+    for n in nums:
+        total = total * 60 + n
+    return int(total) or None
+
+
+def _episode(item: ET.Element, base: str) -> Episode | None:
+    """The audio enclosure of an RSS item or Atom entry: <enclosure>, an audio
+    <media:content>, or an Atom link rel="enclosure". Video podcasts aren't
+    episodes here: their files are far bigger, and their pages usually play them."""
+    for el in [*item.iter("enclosure"), *item.iter(MEDIA + "content"), *item.findall(ATOM + "link")]:
+        if el.tag == ATOM + "link" and el.get("rel") != "enclosure":
+            continue
+        url = (el.get("url") or el.get("href") or "").strip()
+        kind = (el.get("type") or "").lower()
+        audio = kind.startswith("audio/") or el.get("medium") == "audio" or (not kind and looks_like_audio(url))
+        if url and audio and urlparse(urljoin(base, url)).scheme in ("http", "https"):
+            return Episode(urljoin(base, url), _seconds(_t(item, ITUNES + "duration")))
+    return None
+
+
 def _key(guid: str, link: str | None, title: str, published: str | None) -> str:
     if guid:
         return guid
@@ -259,10 +314,11 @@ def _rss_item(item: ET.Element, base: str, ns: str = "") -> Entry:
     link = urljoin(base, _t(item, ns + "link")) or None
     title = _plain(_t(item, ns + "title"))
     published = _date(_t(item, ns + "pubDate") or _t(item, DC + "date"))
-    html = _t(item, CONTENT) or _t(item, ns + "description")
+    html = _t(item, CONTENT) or _t(item, ns + "description") or _t(item, ITUNES + "summary")
     return Entry(key=_key(_t(item, "guid"), link, title, published), link=link, title=title, html=html,
-                 published=published, updated=None, author=_t(item, DC + "creator") or _t(item, "author") or None,
-                 thumb=_thumb(item, base))
+                 published=published, updated=None,
+                 author=_t(item, DC + "creator") or _t(item, "author") or _t(item, ITUNES + "author") or None,
+                 thumb=_thumb(item, base) or _image(item, base), episode=_episode(item, base))
 
 
 def _atom_text(el: ET.Element | None) -> str:
@@ -292,7 +348,8 @@ def _atom_entry(entry: ET.Element, base: str) -> Entry:
         html = "<br>".join(escape(line) for line in described.splitlines())
     return Entry(key=_key(_t(entry, ATOM + "id"), link, title, published or updated), link=link, title=title,
                  html=html, published=published or updated, updated=updated if updated != published else None,
-                 author=_t(entry, f"{ATOM}author/{ATOM}name") or None, thumb=_thumb(entry, base))
+                 author=_t(entry, f"{ATOM}author/{ATOM}name") or None, thumb=_thumb(entry, base),
+                 episode=_episode(entry, base))
 
 
 def parse_feed(data: bytes, url: str) -> Feed | None:
@@ -305,7 +362,8 @@ def parse_feed(data: bytes, url: str) -> Feed | None:
         ch = root.find("channel")
         link = _t(ch, "link") or None
         return Feed(url, _plain(_t(ch, "title")), link, _plain(_t(ch, "description")) or None,
-                    [_rss_item(i, link or url) for i in (ch.findall("item") if ch is not None else [])])
+                    [_rss_item(i, link or url) for i in (ch.findall("item") if ch is not None else [])],
+                    image=_image(ch, link or url))
     if root.tag == ATOM + "feed":
         link = _atom_link(root, url)
         return Feed(url, _plain(_atom_text(root.find(ATOM + "title"))), link,
@@ -552,18 +610,22 @@ class RssAdapter(ThreadiverseAdapter):
         body = html_to_markdown(e.html, e.link or feed.link or feed.url)
         host = urlparse(feed.link or feed.url).hostname or RSS_DOMAIN
         who = e.author or feed.title or host
+        meta: dict[str, Any] = {}
+        if e.episode:  # the post links to its audio; its page is kept alongside
+            meta["episode"] = {k: v for k, v in (("page", e.link), ("seconds", e.episode.seconds)) if v}
         return NPost(
             ap_id=RSS_PREFIX + e.key,
             local_id=f"{feed.url} {e.key}",  # the feed to look in, and the entry
             title=e.title or (_plain(e.html)[:80] + "…" if e.html else "(untitled)"),
             body=body or None,
-            url=e.link,
+            url=e.episode.url if e.episode else e.link,
             created_at=e.published,
             updated_at=e.updated,
             deleted=False, removed=False, locked=False,
             community=community_of(feed),
             author=NActor(f"{RSS_PREFIX}{feed.url}#author={who}", who, host),
-            thumbnail_url=e.thumb,
+            metadata=meta,
+            thumbnail_url=e.thumb or (feed.image if e.episode else None),
         )
 
     def resolve_url(self, ref: ThreadRef) -> str:
