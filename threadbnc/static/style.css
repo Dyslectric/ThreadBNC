@@ -512,6 +512,10 @@ a.sso-button:hover { background: var(--accent-hover); }
 fieldset.targets { border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px 8px; margin: 0;
   display: flex; flex-wrap: wrap; gap: 4px 16px; }
 fieldset.targets legend { color: var(--muted); padding: 0 4px; }
+/* The communities a post goes to: a group per kind, scrolling when there are many. */
+.post-targets { display: flex; flex-direction: column; gap: 8px; max-height: 18rem; overflow-y: auto; }
+.post-targets > details > fieldset { margin-top: 6px; }
+details.also-post > :not(summary) { margin: 8px 0 0; }
 fieldset.media-kind { border: 1px solid var(--line); border-radius: 10px; padding: 6px 14px 12px; margin: 0;
   display: flex; flex-direction: column; gap: 8px; }
 fieldset.media-kind legend { font-weight: 600; padding: 0 4px; }

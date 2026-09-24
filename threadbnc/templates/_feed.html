@@ -158,8 +158,8 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
 {%- endmacro %}
 
 {% macro repost_link(i, short=False) -%}
-{% if is_reddit(i.c_ap) %}<a class="act" href="/t/{{ i.id }}/repost" title="Post a copy in one of your communities">{{ icon('repost') }}<span class="{{ 'sr-only' if short }}">Repost</span></a>
-{% elif is_rss(i.c_ap) %}<a class="act" href="/t/{{ i.id }}/repost" title="Post this article to one of your communities">{{ icon('share') }}<span class="{{ 'sr-only' if short }}">Post</span></a>{% endif %}
+{% if is_reddit(i.c_ap) %}<a class="act" href="/t/{{ i.id }}/repost" title="Post a copy in your communities">{{ icon('repost') }}<span class="{{ 'sr-only' if short }}">Repost</span></a>
+{% elif is_rss(i.c_ap) %}<a class="act" href="/t/{{ i.id }}/repost" title="Post this article to your communities">{{ icon('share') }}<span class="{{ 'sr-only' if short }}">Post</span></a>{% endif %}
 {%- endmacro %}
 
 {# A post's pictures, swiped or stepped through with the arrows when there are several.

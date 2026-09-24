@@ -7,12 +7,12 @@
 <h1>Post this article</h1>
 <p class="muted">From {{ chandle(t.cname, t.c_ap) }} ·
   <a href="{{ draft.source | safe_url }}" target="_blank" rel="noreferrer noopener nofollow">article{{ icon('external') }}</a>.
-  Share it in one of your communities: a link post with a short excerpt, which you can edit or remove.</p>
+  Share it in your communities: a link post with a short excerpt, which you can edit or remove.</p>
 {% else %}
 <h1>Repost</h1>
 <p class="muted">From {{ chandle(t.cname, t.c_ap) }} ·
   <a href="{{ draft.source | safe_url }}" target="_blank" rel="noreferrer noopener nofollow">original{{ icon('external') }}</a>.
-  Post a copy in one of your communities. The text starts with a "cross-posted from" line linking back to the original.</p>
+  Post a copy in your communities. The text starts with a "cross-posted from" line linking back to the original.</p>
 {% endif %}
 {% include "_post_form.html" %}
 {% endblock %}

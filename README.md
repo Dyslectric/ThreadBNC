@@ -199,13 +199,18 @@ when you're logged in with Reddit, from your server to a subreddit you follow. I
 
 Then pick where it goes:
 
-- By default the list shows communities on the server of the account you're posting as, then ones you follow, then subreddits you follow. The community you used last is selected next time.
-- You can type any other `!name@server` (or `r/name`) instead.
+- By default the list shows communities on the server of the account you're posting as, then ones you follow, then subreddits you follow. The rest are folded away under **Other communities**. The ones you used last are ticked next time.
+- Tick several to post it in each. You can also type other `!name@server` (or `r/name`), separated by commas.
 - You can edit anything before posting.
 
 The new post is kept automatically. It has the same link, or the same text once the crosspost line and quoting are
 ignored, so ThreadBNC shows it together with the Reddit original as [duplicates](#duplicates-and-crossposts).
 The original records **You reposted this to !community@server**.
+
+Posting in several communities at once (a repost, an article, or **✎ New post**) makes one post in each, in turn.
+Every community typed in is looked up first, so a typo stops the post before anything goes out. Copies after the
+first start with a `cross-posted from:` line linking to the first; a repost's copies keep theirs, pointing at the
+original. If one fails (a ban, a rate limit), the rest still go, and the message says which failed and why.
 
 When you aren't logged in with Reddit, votes and comments on a mixed group go only to the non-Reddit copies.
 
@@ -350,7 +355,7 @@ On the **Accounts** page, add any Lemmy or PieFed account: the server, username,
 |---|---|
 | Thread page | Comment, reply to any comment, and upvote or downvote the post and each comment |
 | Your own posts and comments | Edit, and delete or restore |
-| Community page | **✎ New post** for a link and/or text post |
+| Community page | **✎ New post** for a link and/or text post, there and in any other communities you tick under **Also post in other communities** |
 | Communities page | **＋ Start a community** on a server where one of your accounts is an admin |
 
 **Starting a community**

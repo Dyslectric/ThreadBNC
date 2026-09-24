@@ -22,7 +22,7 @@
     <div class="actions reader-actions small" id="reader-actions-{{ a.id }}">
       {% if t %}
         {% if not t.trashed_at %}{{ keep_button(t.id, t.retention == 'manual', refresh=parts) }}{% endif %}
-        {% if accounts %}<a class="act" href="/t/{{ t.id }}/repost" title="Post a copy in one of your communities">{{ icon('repost') }}<span>Repost</span></a>{% endif %}
+        {% if accounts %}<a class="act" href="/t/{{ t.id }}/repost" title="Post a copy in your communities">{{ icon('repost') }}<span>Repost</span></a>{% endif %}
         <a class="act" href="/t/{{ t.id }}#comments">{{ icon('comment') }}<span>Comments</span></a>
       {% else %}
         <form method="post" action="/a/{{ a.id }}/{{ 'unkeep' if a.kept_at else 'keep' }}" class="inline" data-inplace="{{ parts }}">
@@ -30,7 +30,7 @@
             title="{{ 'Kept. Click to unkeep.' if a.kept_at else 'Keep this article: it stays until you unkeep it' }}">
             {{ icon('star-fill' if a.kept_at else 'star') }}<span>{{ 'Kept' if a.kept_at else 'Keep' }}</span></button>
         </form>
-        {% if accounts %}<a class="act" href="/a/{{ a.id }}/post" title="Post this article in one of your communities">{{ icon('share') }}<span>Repost</span></a>{% endif %}
+        {% if accounts %}<a class="act" href="/a/{{ a.id }}/post" title="Post this article in your communities">{{ icon('share') }}<span>Repost</span></a>{% endif %}
       {% endif %}
       {% if a.url | safe_url %}<a class="act" href="{{ a.url | safe_url }}" rel="noreferrer noopener nofollow" target="_blank">{{ icon('external') }}<span>Original</span></a>{% endif %}
     </div>

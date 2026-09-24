@@ -511,7 +511,7 @@ def test_repost_a_reddit_post_to_your_community(settings, bouncer, reddit, serve
     page = client.get(f"/t/{src}").text
     assert "Posted 2 times" in page and "You reposted this to !math@lemmy.test" in page
     # The next repost remembers where the last one went.
-    assert f'value="{mine}" selected' in client.get(f"/t/{src}/repost").text
+    assert f'value="{mine}" checked' in client.get(f"/t/{src}/repost").text
     assert account
 
 
@@ -604,7 +604,7 @@ def test_repost_from_your_server_to_a_subreddit(settings, bouncer, reddit, serve
     src = bouncer.ingest_url(f"https://{DOMAIN}/post/1")
     client = logged_in(settings, bouncer)
     form = client.get(f"/t/{src}/repost").text
-    assert "Subreddits (as u/dave)" in form and f'<option value="{sub}"' in form
+    assert "Subreddits (as u/dave)" in form and f'name="community_id" value="{sub}"' in form
     draft = poster.repost_draft(src)
     new = poster.repost(lemmy, src, sub, draft["title"], draft["body"], draft["url"])
     posted = next(p for p in reddit.posts.values() if p["author"] == "dave")

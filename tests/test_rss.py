@@ -215,7 +215,7 @@ def test_post_an_article_to_your_community(settings, bouncer, web, server, poste
     src = post_row(bouncer, "post-1")["tid"]
     client = logged_in(settings, bouncer)
     form = client.get(f"/t/{src}/repost").text
-    assert "Post this article" in form and "Jane&#39;s Blog (feed)" not in form.split("<select")[1]
+    assert "Post this article" in form and "Jane&#39;s Blog (feed)" not in form.split('class="post-targets"')[1]
     draft = poster.repost_draft(src)
     assert draft["url"] == "https://blog.example/posts/1"
     assert draft["body"] == "> Hello **world**.\n>\n> More text here." and "cross-posted" not in draft["body"]
