@@ -60,6 +60,8 @@ class Settings:
     podcast_max_bytes: int = 500_000_000
     # Read the web pages posts link to and keep the article text (articles.py).
     archive_articles: bool = True
+    # Look for where an article is discussed elsewhere when it's opened (discussions.py).
+    find_discussions: bool = True
     default_trash_days: int | None = 30
     credentials_key: str | None = None
     # Signed in by a reverse proxy (e.g. Traefik + Authentik forward auth): the
@@ -126,6 +128,7 @@ def load_settings() -> Settings:
         media_transcode_source_max_bytes=_env_int("THREADBNC_MEDIA_TRANSCODE_SOURCE_MAX_MB", 1000) * 1_000_000,
         podcast_max_bytes=_env_int("THREADBNC_PODCAST_MAX_MB", 500) * 1_000_000,
         archive_articles=_env_bool("THREADBNC_ARTICLES", True),
+        find_discussions=_env_bool("THREADBNC_DISCUSSIONS", True),
         default_trash_days=None if trash.lower() in ("", "none", "forever") else int(trash),
         credentials_key=os.environ.get("THREADBNC_CREDENTIALS_KEY") or None,
         proxy_auth_header=os.environ.get("THREADBNC_PROXY_AUTH_HEADER", "").strip() or None,

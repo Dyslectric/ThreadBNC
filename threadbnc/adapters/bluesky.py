@@ -516,6 +516,21 @@ class BlueskyAdapter(ThreadiverseAdapter):
             gallery=content.pictures if len(content.pictures) > 1 else [],
         )
 
+    def posts_linking(self, url: str, limit: int = 25) -> list[dict[str, Any]]:
+        """Posts that link to a page (in their text or a link card), most liked
+        first, as post views (discussions.py). Bluesky only searches for
+        someone signed in, so it's asked as you when you are."""
+        params = {"q": url, "url": url, "sort": "top", "limit": limit}
+        try:
+            data = self._get("app.bsky.feed.searchPosts", **params)
+        except (RemoteAuthError, RemoteUnavailable):
+            token = self.reading_session() if self.reading_session else None
+            if not token:
+                raise RemoteAuthError("Bluesky only searches for someone signed in: log in to Bluesky on the "
+                                      "Accounts page", "AuthMissing")
+            data = self._as_me(token, "app.bsky.feed.searchPosts", appview=True, **params)
+        return [p for p in data.get("posts") or [] if isinstance(p, dict) and p.get("uri")]
+
     def resolve_url(self, ref: ThreadRef) -> str:
         """A bsky.app post link's local id: the post, from its author's account."""
         actor, _, rkey = ref.local_id.partition("/")

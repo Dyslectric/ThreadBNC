@@ -203,6 +203,14 @@ class Lemmy1Adapter(LemmyAdapter):
             post.community.moderator_ap_ids = [m.ap_id for m in self._moderators(data)]
         return post
 
+    def posts_linking(self, url: str, limit: int = 20) -> list[NPost]:
+        """Posts of this link the server knows of: v4 searches posts by their
+        link alone with post_url_only, where v3 had a Url search type."""
+        data = self._call("GET", "/search", None, q=url, type_="posts", post_url_only=True, limit=limit) or {}
+        items = data.get("items") or data.get("results") or []
+        return [self._post(i) for i in items if isinstance(i, dict) and i.get("post")
+                and i.get("type_", "post") == "post"]
+
     def fetch_comment(self, local_id: str) -> tuple[NComment, str]:
         cv = (self._call("GET", "/comment", None, id=local_id) or {}).get("comment_view")
         if not cv:

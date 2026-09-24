@@ -195,6 +195,12 @@ class RedditAdapter(ThreadiverseAdapter):
                     if c.get("kind") == "t3"]
         return out
 
+    def posts_linking(self, url: str, limit: int = 25) -> list[NPost]:
+        """Every post of this exact link, in any subreddit (discussions.py)."""
+        data = self.reader.get("/api/info", {"url": url, "limit": limit}) or {}
+        return [self._post(c["data"]) for c in (data.get("data") or {}).get("children") or []
+                if c.get("kind") == "t3"]
+
     def fetch_comments(self, post_local_id: str) -> CommentList:
         """The newest comments of a thread, up to comment_limit. Reddit leaves
         the rest behind "load more" stubs, which aren't followed (each costs a

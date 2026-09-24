@@ -204,6 +204,12 @@ class LemmyAdapter(ThreadiverseAdapter):
             ]
         return post
 
+    def posts_linking(self, url: str, limit: int = 20) -> list[NPost]:
+        """Posts of this exact link that the server knows of: its own, and the
+        ones federated to it (discussions.py)."""
+        data = self._get("/search", q=url, type_="Url", listing_type="All", sort="New", limit=limit) or {}
+        return [self._post(pv) for pv in data.get("posts") or [] if isinstance(pv, dict) and pv.get("post")]
+
     def fetch_comment(self, local_id: str) -> tuple[NComment, str]:
         """One comment, and the local id of the post it's on."""
         cv = (self._get("/comment", id=local_id) or {}).get("comment_view")
