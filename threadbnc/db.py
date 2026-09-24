@@ -237,6 +237,21 @@ CREATE TABLE IF NOT EXISTS media_refs (
 );
 CREATE INDEX IF NOT EXISTS media_refs_media ON media_refs(media_id);
 
+-- YouTube videos linked in text (see youtube.py): their titles, for the links,
+-- and how big saving one would be, for the box a link opens.
+CREATE TABLE IF NOT EXISTS youtube_videos (
+    video_id TEXT PRIMARY KEY,
+    title TEXT,
+    channel TEXT,
+    title_checked_at TEXT,    -- YouTube asked for the title (found or not)
+    duration INTEGER,         -- seconds
+    size_bytes INTEGER,       -- the download at the YouTube page's resolution
+    size_approx INTEGER NOT NULL DEFAULT 0,  -- 1 = YouTube only estimated it
+    height INTEGER,
+    probed_at TEXT,
+    probe_error TEXT
+);
+
 -- Web pages posts link to, read by the bouncer (see articles.py). Keyed by the
 -- link as posted; content_html is the extracted article, already sanitised.
 CREATE TABLE IF NOT EXISTS articles (

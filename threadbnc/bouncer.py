@@ -90,6 +90,9 @@ OPEN_CACHE = timedelta(minutes=5)
 # out, one at a time, never closer together than this.
 ACTIVE_WINDOW = timedelta(minutes=30)
 REDDIT_MIN_SPACING = 30.0  # seconds
+# Titles for YouTube links on a page asked of YouTube in one go (youtube_titles):
+# a second apart, so a page full of links doesn't hold the request for long.
+YOUTUBE_TITLES_AT_ONCE = 12
 
 
 def _plus(ts: str, **delta: float) -> str:
@@ -725,6 +728,47 @@ class Bouncer:
                     conn.execute("UPDATE objects SET score=?, upvotes=?, downvotes=NULL, last_seen_at=? WHERE id=?",
                                  (watch.likes, watch.likes, now, r["oid"]))
         return True
+
+    def youtube_titles(self, vids: list[str]) -> dict[str, str]:
+        """Titles for YouTube links on a page just shown (app.js asks): the
+        ones known, and the rest asked of YouTube (oEmbed), unless it was
+        asked lately."""
+        now = utcnow()
+        with self.db.connect() as conn:
+            ask = youtube.titles_to_ask(conn, vids, now)
+        for vid in ask[:YOUTUBE_TITLES_AT_ONCE]:
+            if self._stop.is_set():
+                break
+            try:
+                found = self.rss_adapter.fetcher.youtube_title(vid)
+            except RemoteError as exc:
+                log.warning("asking YouTube for the title of %s failed: %s", vid, exc)
+                break  # YouTube isn't answering: the rest can wait for the next page
+            with self.db.transaction() as conn:
+                youtube.save_title(conn, vid, *(found or (None, None)), now)
+        with self.db.connect() as conn:
+            return youtube.titles(conn, vids)
+
+    def probe_youtube(self, vid: str) -> Any:
+        """A YouTube video's size (and title), for the box a link to it opens:
+        found with yt-dlp unless it was lately. Its youtube_videos row."""
+        now = utcnow()
+        with self.db.connect() as conn:
+            row = conn.execute("SELECT * FROM youtube_videos WHERE video_id=?", (vid,)).fetchone()
+        if youtube.probe_due(row, now, self.youtube.status()["max_height"]):
+            self.http.throttle.wait("www.youtube.com")
+            found, error = None, None
+            try:
+                found = youtube.probe(youtube.watch_url(vid), self.youtube)
+            except (youtube.VideoGone, youtube.VideoRetry) as exc:
+                error = str(exc)
+            except Exception as exc:  # yt-dlp's own trouble: say so in the box
+                log.warning("finding the size of YouTube video %s failed: %s", vid, traceback.format_exc())
+                error = f"{type(exc).__name__}: {exc}"
+            with self.db.transaction() as conn:
+                youtube.save_probe(conn, vid, found, error, now)
+                row = conn.execute("SELECT * FROM youtube_videos WHERE video_id=?", (vid,)).fetchone()
+        return row
 
     def _fetch_pictures(self, object_ids: list[int]) -> None:
         """Pictures in these posts not downloaded yet, so the feed can show them."""

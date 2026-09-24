@@ -1027,6 +1027,8 @@ document.documentElement.classList.add("js");
   // screen (a column each, two or three on screen, the newest scrolled to), or
   // inside it, under the paragraph with the link, on a narrow one. Opening one
   // from a column replaces the columns after it. Without this they're pages.
+  // A YouTube link opens its video's box the same way, and anywhere else
+  // (a post, a comment) under the paragraph with the link.
   const WIDE = matchMedia("(min-width: 1100px)");
   const deckOf = (el) => el.closest("[data-deck]");
   const cols = (deck) => [...deck.children];
@@ -1093,7 +1095,7 @@ document.documentElement.classList.add("js");
 
   async function dive(link) {
     const deck = deckOf(link);
-    const wide = WIDE.matches && !deck.classList.contains("inline-reader-deck");
+    const wide = !!deck && WIDE.matches && !deck.classList.contains("inline-reader-deck");
     const box = document.createElement(wide ? "div" : "section");
     const depth = diveDepth(link);
     box.className = wide ? "reader-col dive-col" : "dive-inline";
@@ -1118,7 +1120,7 @@ document.documentElement.classList.add("js");
       const r = await fetch(paneUrl(link.href), { credentials: "same-origin" });
       if (!r.ok || new URL(r.url).origin !== location.origin) throw new Error("HTTP " + r.status);
       const doc = new DOMParser().parseFromString(await r.text(), "text/html");
-      const article = $("article.reader", doc);
+      const article = $("article.reader, article.video-box", doc);
       if (!article) throw new Error("not an article");
       if (!box.isConnected) return; // closed while it was being read
       $(".dive-content", box).replaceChildren(document.adoptNode(article));
@@ -1146,11 +1148,12 @@ document.documentElement.classList.add("js");
       }
       return;
     }
-    const link = ev.target.closest("a.article-link, a[data-dive]");
-    if (!link || !deckOf(link) || ev.button !== 0 || ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.altKey) return;
+    const link = ev.target.closest("a.article-link, a[data-dive], a.video-link");
+    if (!link || !(deckOf(link) || link.matches(".video-link"))) return;
+    if (ev.button !== 0 || ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.altKey) return;
     ev.preventDefault();
     if (link.classList.contains("dived")) {
-      const box = [...$$(".dive-col, .dive-inline", deckOf(link))].find((b) => b.opener === link);
+      const box = [...$$(".dive-col, .dive-inline", deckOf(link) || document)].find((b) => b.opener === link);
       if (box) { closeDive(box); return; }
     }
     dive(link);
@@ -1201,6 +1204,74 @@ document.documentElement.classList.add("js");
       }
     }
   });
+
+  // ---- YouTube links' titles, and their boxes ------------------------------------------
+  // A link whose video's title isn't known here yet shows its address until
+  // the title is asked of YouTube, once the link is on the page. A box saving
+  // its video checks back until it's saved, then shows the player.
+  const askedTitles = new Set();
+  let titleTimer = null;
+
+  function askTitles() {
+    titleTimer = null;
+    const links = $$("a.video-link.untitled").filter((a) => !askedTitles.has(a.pathname.split("/").pop()));
+    const ids = [...new Set(links.map((a) => a.pathname.split("/").pop()))];
+    if (!ids.length) return;
+    ids.forEach((id) => askedTitles.add(id));
+    fetch("/youtube/titles?" + new URLSearchParams(ids.map((id) => ["ids", id])),
+      { credentials: "same-origin", headers: FETCH })
+      .then((r) => (r.ok ? r.json() : {}))
+      .then((titles) => {
+        for (const a of $$("a.video-link.untitled")) {
+          const title = titles[a.pathname.split("/").pop()];
+          if (title) { a.textContent = title; a.classList.remove("untitled"); }
+        }
+      })
+      .catch(() => {});
+  }
+
+  async function reloadVideoBox(box) {
+    const r = await fetch(box.dataset.src, { credentials: "same-origin" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const fresh = $("article.video-box", new DOMParser().parseFromString(await r.text(), "text/html"));
+    if (!fresh || !box.isConnected) return;
+    if (!box.closest(".dive-col, .dive-inline")) { // the page of its own: no Close there
+      const nav = $(".reader-nav", box);
+      if (nav) $(".reader-nav", fresh).replaceWith(nav);
+    }
+    box.replaceWith(document.adoptNode(fresh));
+  }
+
+  function watchSaving() {
+    for (const box of $$("article.video-box[data-video-saving]:not([data-watched])")) {
+      box.dataset.watched = "1";
+      const check = () => {
+        if (!box.isConnected) return;
+        reloadVideoBox(box).catch(() => setTimeout(check, 15000));
+      };
+      setTimeout(check, 5000);
+    }
+  }
+
+  document.addEventListener("submit", (ev) => {
+    const form = ev.target.closest("form[data-video-save]");
+    if (!form) return;
+    ev.preventDefault();
+    const box = form.closest("article.video-box");
+    const button = $("button", form);
+    if (button) button.disabled = true;
+    post(form.action, {})
+      .then(() => reloadVideoBox(box))
+      .catch((e) => {
+        if (button) button.disabled = false;
+        toast({ kind: "error", text: "Couldn't start saving the video (" + e.message + "). Try again." });
+      });
+  });
+
+  new MutationObserver(() => {
+    if (!titleTimer) titleTimer = setTimeout(askTitles, 200);
+    watchSaving();
+  }).observe(document.documentElement, { childList: true, subtree: true });
 
   // Crossing between wide and narrow: columns and inline articles don't carry over, so close them.
   WIDE.addEventListener("change", () => {
@@ -1386,6 +1457,8 @@ document.documentElement.classList.add("js");
     keepFeedAsOf();
     watchUnread(document);
     watchArticles(document);
+    askTitles();
+    watchSaving();
     if (location.hash === "#follow") {
       const input = $("#follow input[name=community]");
       if (input) input.focus();
