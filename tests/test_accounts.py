@@ -6,10 +6,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from threadbnc.accounts import AccountError, Poster
+from threadbnc.adapters import RemoteRejected
 from threadbnc.vault import TokenVault
 from threadbnc.web import create_app
 
-from .conftest import DOMAIN, FakeAdapter
+from .conftest import COMMUNITY, DOMAIN, FakeAdapter
 
 HOME = "home.test"
 
@@ -153,6 +154,75 @@ def test_submit_creates_a_kept_thread(server, bouncer, poster, thread):
     assert t["retention"] == "manual"
     assert one(bouncer, "SELECT r.title FROM revisions r WHERE r.object_id=?", t["root_object_id"])[0] == \
         "My new post"
+
+
+def two_communities(settings, server, bouncer, thread):
+    """A logged-in client, and two communities to post in: !math and !news."""
+    server.communities["news"] = dataclasses.replace(COMMUNITY, ap_id=f"https://{DOMAIN}/c/news", name="news")
+    math = one(bouncer, "SELECT community_id FROM archived_threads WHERE id=?", thread)[0]
+    news = bouncer.follow_community(f"!news@{DOMAIN}")
+    settings.credentials_key = "test-key"
+    client = TestClient(create_app(settings, bouncer))
+    client.post("/login", data={"password": "pw"})
+    client.post("/accounts", data={"server": HOME, "username": "dave", "password": "hunter2"})
+    return client, math, news
+
+
+def test_submit_to_several_communities(settings, server, bouncer, thread):
+    client, math, news = two_communities(settings, server, bouncer, thread)
+    form = client.get(f"/c/{math}/submit").text
+    assert "Also post in other communities" in form and f'name="community_id" value="{news}"' in form
+    assert f'name="community_id" value="{math}"' not in form  # the community it's for isn't offered again
+    r = client.post(f"/c/{math}/submit", data={"title": "Big news", "body": "hello", "community_id": [str(news)]},
+                    follow_redirects=False)
+    assert r.status_code == 303
+    first, second = [p for p in server.posts.values() if p.title == "Big news"]
+    assert first.body == "hello"
+    assert second.body == f"cross-posted from: {first.ap_id}\n\nhello"  # the copy points at the first
+    tid = one(bouncer, "SELECT t.id FROM archived_threads t JOIN objects o ON o.id=t.root_object_id "
+                       "WHERE o.canonical_ap_id=?", first.ap_id)[0]
+    assert r.headers["location"] == f"/t/{tid}"  # opens the first
+    assert "Posted in 2 communities" in client.get(r.headers["location"]).text
+
+
+def test_repost_to_several_keeps_the_original_crosspost_line(settings, server, bouncer, thread):
+    client, math, news = two_communities(settings, server, bouncer, thread)
+    body = f"cross-posted from: https://{DOMAIN}/post/1\n\n> body"
+    r = client.post(f"/t/{thread}/repost", data={"title": "Question", "body": body,
+                                                 "community_id": [str(math), str(news)]}, follow_redirects=False)
+    assert r.status_code == 303
+    copies = [p for p in server.posts.values() if p.ap_id.startswith(f"https://{HOME}/")]
+    assert [p.body for p in copies] == [body, body]
+    assert len(col(bouncer, "SELECT id FROM state_events WHERE thread_id=? AND event_type='reposted'", thread)) == 2
+    # Both are ticked next time.
+    form = client.get(f"/t/{thread}/repost").text
+    assert f'value="{math}" checked' in form and f'value="{news}" checked' in form
+
+
+def test_one_community_failing_doesnt_stop_the_rest(settings, server, bouncer, thread, monkeypatch):
+    client, math, news = two_communities(settings, server, bouncer, thread)
+    real = FakeAdapter.create_post
+    calls = []
+
+    def create_post(self, token, community_id, title, body=None, url=None):
+        calls.append(title)
+        if len(calls) == 1:
+            raise RemoteRejected("home.test refused: banned_from_community", "banned_from_community")
+        return real(self, token, community_id, title, body, url)
+    monkeypatch.setattr(FakeAdapter, "create_post", create_post)
+    r = client.post(f"/c/{math}/submit", data={"title": "Hi", "body": "text", "community_id": [str(news)]},
+                    follow_redirects=False)
+    [made] = [p for p in server.posts.values() if p.title == "Hi"]
+    assert made.body == "text"  # the first to succeed is the original: no crosspost line
+    page = client.get(r.headers["location"]).text
+    assert "Posted in 1 of 2 communities. Failed: !math@lemmy.test" in page
+
+
+def test_a_community_that_cant_be_found_posts_nothing(settings, server, bouncer, thread):
+    client, math, _news = two_communities(settings, server, bouncer, thread)
+    before = len(server.posts)
+    client.post(f"/c/{math}/submit", data={"title": "Hi", "community": "not a community"})
+    assert len(server.posts) == before
 
 
 def test_revoked_session_asks_to_log_in_again(server, bouncer, poster, thread):

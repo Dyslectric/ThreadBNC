@@ -2331,14 +2331,23 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             c = conn.execute("SELECT * FROM communities WHERE id=?", (cid,)).fetchone()
         if not c:
             raise HTTPException(404)
-        return render(request, "submit.html", c=c)
+        also = [] if is_bluesky(c["canonical_ap_id"]) else [
+            t for t in repost_targets(acting(request), poster.reddit_account()) if t["id"] != cid]
+        return render(request, "submit.html", c=c, targets=also)
 
     @app.post("/c/{cid}/submit")
-    def submit(request: Request, cid: int, title: str = Form(...), url: str = Form(""), body: str = Form("")):
+    def submit(request: Request, cid: int, title: str = Form(...), url: str = Form(""), body: str = Form(""),
+               community_id: list[str] = Form([]), community: str = Form("")):
+        """A new post here, and in any other communities ticked or typed
+        (not on Bluesky, where you post to your own account)."""
         def act(account: Account) -> RedirectResponse:
-            tid = poster.submit(account, cid, title, body, url)
-            return RedirectResponse(f"/t/{tid}", status_code=303)
-        return account_action(request, f"/c/{cid}/submit", act, "Posted. It's kept automatically.")
+            with db.connect() as conn:
+                c = conn.execute("SELECT canonical_ap_id FROM communities WHERE id=?", (cid,)).fetchone()
+            extra = (community_id, community) if c and not is_bluesky(c["canonical_ap_id"]) else ([], "")
+            cids = picked_communities(*extra, first=cid)
+            return post_to_many(request, account, cids, lambda to, text: poster.submit(
+                account, to, title, text, url), body, "Posted. It's kept automatically.", f"/c/{cid}/submit")
+        return account_action(request, f"/c/{cid}/submit", act)
 
     # ---- reposting -----------------------------------------------------------
     def repost_targets(account: Account | None, reddit_me: Account | None) -> list[dict[str, Any]]:
@@ -2370,20 +2379,61 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         out.sort(key=lambda c: (c["rank"], c["name"].lower(), c["host"]))
         return out
 
-    def picked_community(community_id: str, community: str) -> int:
-        """The community a post form chose: from its list, or typed as
-        !name@host (looked up, not followed), which wins."""
-        cid = int(community_id) if community_id.strip().isdigit() else None
-        if community.strip():
+    def picked_communities(community_ids: list[str], community: str, first: int | None = None) -> list[int]:
+        """The communities a post form chose: ticked in its list, and typed as
+        !name@host (several separated by commas or spaces; looked up, not
+        followed). `first` (the community a new post is for) goes first. All are
+        found before anything is posted, so a typo doesn't leave a partial post."""
+        cids = [first] if first else []
+        cids += [int(x) for x in community_ids if x.strip().isdigit()]
+        for name in re.split(r"[,\s]+", community.strip()) if community.strip() else []:
             try:
-                _ref, found = bouncer.resolve_community(community)
+                _ref, found = bouncer.resolve_community(name)
             except (RemoteError, ValueError) as exc:
-                raise AccountError(f"Couldn't find {community.strip()}: {exc}") from exc
+                raise AccountError(f"Couldn't find {name}: {exc}") from exc
             with db.transaction() as conn:
-                cid = store.upsert_community(conn, found, utcnow())
-        if not cid:
+                cids.append(store.upsert_community(conn, found, utcnow()))
+        if not cids:
             raise AccountError("Pick a community to post it in.")
-        return cid
+        return list(dict.fromkeys(cids))
+
+    def community_label(cid: int) -> str:
+        with db.connect() as conn:
+            c = conn.execute("SELECT name, canonical_ap_id FROM communities WHERE id=?", (cid,)).fetchone()
+        return str(chandle(c["name"], c["canonical_ap_id"], True)) if c else f"community {cid}"
+
+    def post_to_many(request: Request, account: Account, cids: list[int], make: Callable[[int, str], int],
+                     body: str, ok: str, fallback: str) -> RedirectResponse:
+        """Post in each community in turn: make(cid, body) posts one and returns
+        its thread. Copies after the first point back at it ("cross-posted
+        from:"). One that fails doesn't stop the rest; the message says which."""
+        made: list[int] = []
+        failed = []
+        for cid in cids:
+            try:
+                made.append(make(cid, poster.crosspost_body(made[0], body) if made else body))
+            except AccountError as exc:
+                if len(cids) == 1:
+                    raise
+                failed.append(f"{community_label(cid)}: {exc}")
+        request.session["repost_to"] = cids
+        if failed:
+            flash(request, f"Posted in {len(made)} of {len(cids)} communities. Failed: " + "; ".join(failed), "error")
+        elif len(made) > 1:
+            flash(request, f"Posted in {len(made)} communities. They're kept automatically.")
+        else:
+            flash(request, ok)
+        if not made:
+            return RedirectResponse(back(request, fallback), status_code=303)
+        return RedirectResponse(f"/t/{made[0]}", status_code=303)
+
+    def last_targets(request: Request, targets: list[dict[str, Any]]) -> set[int]:
+        """The communities to tick on a post form: where the last post went (if
+        still offered), else the first one offered."""
+        last = request.session.get("repost_to")
+        last = set(last) if isinstance(last, list) else {last}
+        chosen = {c["id"] for c in targets if c["id"] in last}
+        return chosen or ({targets[0]["id"]} if targets else set())
 
     @app.get("/t/{tid}/repost", response_class=HTMLResponse)
     def repost_form(request: Request, tid: int):
@@ -2396,25 +2446,21 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         except AccountError as exc:
             flash(request, str(exc), "error")
             return RedirectResponse(f"/t/{tid}", status_code=303)
-        me = acting(request)
-        targets = repost_targets(me, poster.reddit_account())
-        last = request.session.get("repost_to")
-        chosen = last if any(c["id"] == last for c in targets) else (targets[0]["id"] if targets else None)
-        return render(request, "repost.html", t=t, draft=draft, targets=targets, chosen=chosen,
-                      action=f"/t/{tid}/repost")
+        targets = repost_targets(acting(request), poster.reddit_account())
+        return render(request, "repost.html", t=t, draft=draft, targets=targets,
+                      chosen=last_targets(request, targets), action=f"/t/{tid}/repost")
 
     @app.post("/t/{tid}/repost")
     def repost(request: Request, tid: int, title: str = Form(...), url: str = Form(""), body: str = Form(""),
-               community_id: str = Form(""), community: str = Form("")):
-        """Post a copy in one of your communities: picked from the list, or
-        typed as !name@host (looked up, not followed)."""
+               community_id: list[str] = Form([]), community: str = Form("")):
+        """Post a copy in your communities: ticked in the list, or typed as
+        !name@host (looked up, not followed)."""
         def act(account: Account) -> RedirectResponse:
-            cid = picked_community(community_id, community)
-            new_tid = poster.repost(account, tid, cid, title, body, url)
-            request.session["repost_to"] = cid
-            return RedirectResponse(f"/t/{new_tid}", status_code=303)
-        return account_action(request, f"/t/{tid}/repost", act, "Reposted. It's kept automatically, and shown "
-                                                               "together with the original.")
+            cids = picked_communities(community_id, community)
+            return post_to_many(request, account, cids, lambda cid, text: poster.repost(
+                account, tid, cid, title, text, url), body, "Reposted. It's kept automatically, and shown "
+                                                            "together with the original.", f"/t/{tid}/repost")
+        return account_action(request, f"/t/{tid}/repost", act)
 
     # ---- YouTube -------------------------------------------------------------
     @app.get("/youtube", response_class=HTMLResponse)
@@ -2880,21 +2926,18 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         if a is None:
             raise HTTPException(404)
         targets = repost_targets(acting(request), poster.reddit_account())
-        last = request.session.get("repost_to")
-        chosen = last if any(c["id"] == last for c in targets) else (targets[0]["id"] if targets else None)
-        return render(request, "article_post.html", a=a, draft=article_draft(a), targets=targets, chosen=chosen,
-                      action=f"/a/{aid}/post")
+        return render(request, "article_post.html", a=a, draft=article_draft(a), targets=targets,
+                      chosen=last_targets(request, targets), action=f"/a/{aid}/post")
 
     @app.post("/a/{aid}/post")
     def article_post(request: Request, aid: int, title: str = Form(...), url: str = Form(""), body: str = Form(""),
-                     community_id: str = Form(""), community: str = Form("")):
-        """Share an article read here as a link post in one of your communities."""
+                     community_id: list[str] = Form([]), community: str = Form("")):
+        """Share an article read here as a link post in your communities."""
         def act(account: Account) -> RedirectResponse:
-            cid = picked_community(community_id, community)
-            tid = poster.submit(account, cid, title, body, url)
-            request.session["repost_to"] = cid
-            return RedirectResponse(f"/t/{tid}", status_code=303)
-        return account_action(request, f"/a/{aid}/post", act, "Posted. It's kept automatically.")
+            cids = picked_communities(community_id, community)
+            return post_to_many(request, account, cids, lambda cid, text: poster.submit(
+                account, cid, title, text, url), body, "Posted. It's kept automatically.", f"/a/{aid}/post")
+        return account_action(request, f"/a/{aid}/post", act)
 
     @app.post("/t/{tid}/article/retry")
     def article_retry(request: Request, tid: int):

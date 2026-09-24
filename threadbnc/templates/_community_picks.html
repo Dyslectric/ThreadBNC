@@ -1,0 +1,23 @@
+{# Checkboxes choosing the communities a post goes to, grouped as repost_targets
+   sorts them, and a box to type more. Takes targets, chosen (a set of ids).
+   "Other communities" (not yours, not followed) is folded away unless one is ticked. #}
+<div class="post-targets">
+  {% for rank, group in targets | groupby("rank") %}
+    {% set picks %}
+      <fieldset class="targets small">
+        {% if rank != 3 %}<legend>{{ group[0].group }}</legend>{% endif %}
+        {% for c in group %}
+          <label class="check"><input type="checkbox" name="community_id" value="{{ c.id }}" {{ 'checked' if c.id in chosen }}> {{ c.label }}</label>
+        {% endfor %}
+      </fieldset>
+    {% endset %}
+    {% if rank == 3 %}
+      <details {{ 'open' if group | selectattr("id", "in", chosen) | first }}>
+        <summary class="small">{{ group[0].group }} ({{ group | length }})</summary>
+        {{ picks }}
+      </details>
+    {% else %}{{ picks }}{% endif %}
+  {% endfor %}
+</div>
+<label>…and other communities <span class="muted small">(separate several with commas)</span>
+  <input name="community" placeholder="!name@your.server{{ '  or  r/name' if reddit_me }}"></label>

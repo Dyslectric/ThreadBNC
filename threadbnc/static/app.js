@@ -293,6 +293,21 @@ document.documentElement.classList.add("js");
     if (form && ev.target.matches("select, input[type=checkbox]")) form.requestSubmit();
   });
 
+  // Post forms that can go to several communities: the button says how many.
+  function countPosts(form) {
+    const button = $("button:not([type=button])", form);
+    if (!button) return;
+    button.dataset.label ??= button.textContent;
+    const typed = ($("input[name=community]", form)?.value || "").split(/[,\s]+/).filter(Boolean).length;
+    const n = $$("input[name=community_id]:checked", form).length + typed + (form.action.endsWith("/submit") ? 1 : 0);
+    button.textContent = n > 1 ? `${button.dataset.label} in ${n} communities` : button.dataset.label;
+  }
+  document.addEventListener("input", (ev) => {
+    const form = ev.target.closest("form[data-post-count]");
+    if (form) countPosts(form);
+  });
+  $$("form[data-post-count]").forEach(countPosts);
+
   function setTheme(value) {
     const root = document.documentElement;
     if (value === "light" || value === "dark") root.dataset.theme = value;

@@ -194,7 +194,7 @@ class Poster:
         votes or posts: share an article with ↗ Post instead."""
         if is_rss(ap_id):
             raise AccountError("Feed articles can't be commented on or voted on, and feeds can't be posted to. "
-                               "Use ↗ Post to share the article in one of your communities.")
+                               "Use ↗ Post to share the article in your communities.")
         if is_bluesky(ap_id):
             bluesky = self.bluesky_account()
             if bluesky is None:
@@ -502,9 +502,24 @@ class Poster:
             body += "\n\n" + "\n".join(f"> {line}" if line.strip() else ">" for line in text.splitlines())
         return {"title": title, "url": row["url"] or "", "body": body, "source": row["canonical_ap_id"]}
 
+    def crosspost_body(self, thread_id: int, body: str | None) -> str:
+        """The text for another copy of a post just made (thread_id), posted to
+        more communities at once: Lemmy's "cross-posted from:" line pointing at
+        that first copy, then the text. A repost's text already points at its
+        original, so it's left as it is."""
+        text = (body or "").strip()
+        if text.lower().startswith("cross-posted from:"):
+            return text
+        with self.db.connect() as conn:
+            row = conn.execute("SELECT o.canonical_ap_id FROM archived_threads t "
+                               "JOIN objects o ON o.id=t.root_object_id WHERE t.id=?", (thread_id,)).fetchone()
+        if row is None:
+            return text
+        return f"cross-posted from: {row['canonical_ap_id']}" + (f"\n\n{text}" if text else "")
+
     def repost(self, account: Account, thread_id: int, community_id: int, title: str, body: str | None = None,
                url: str | None = None) -> int:
-        """Post a copy of a thread's post in one of your communities. Returns
+        """Post a copy of a thread's post in your communities. Returns
         the new thread's id; the original gets a "reposted" event."""
         tid = self.submit(account, community_id, title, body, url)
         with self.db.transaction() as conn:

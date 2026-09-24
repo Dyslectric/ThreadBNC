@@ -284,8 +284,8 @@
       {{ keep_button(t.id, all_kept, grouped, refresh='thread-actions') }}
       {% if not all_kept %}{{ trash_button(t.id, grouped) }}{% endif %}
     {% endif %}
-    {% if accounts %}{% if is_rss(o.canonical_ap_id) %}<a class="act" href="/t/{{ t.id }}/repost" title="Post this article to one of your communities">{{ icon('share') }}<span>Post</span></a>
-    {% else %}<a class="act" href="/t/{{ t.id }}/repost" title="Post a copy in one of your communities">{{ icon('repost') }}<span>Repost</span></a>{% endif %}{% endif %}
+    {% if accounts %}{% if is_rss(o.canonical_ap_id) %}<a class="act" href="/t/{{ t.id }}/repost" title="Post this article to your communities">{{ icon('share') }}<span>Post</span></a>
+    {% else %}<a class="act" href="/t/{{ t.id }}/repost" title="Post a copy in your communities">{{ icon('repost') }}<span>Repost</span></a>{% endif %}{% endif %}
   </div>
 </article>
 
@@ -317,7 +317,7 @@
 <p class="small muted"><a href="/accounts">Add an account</a> to comment, vote or post from here.</p>
 {% elif not writable_copies and not t.trashed_at and is_rss(o.canonical_ap_id) %}
 <p class="small muted">This is an article from a feed, which has no comments.
-  <a href="/t/{{ t.id }}/repost">Post it</a> to one of your communities to discuss it there.</p>
+  <a href="/t/{{ t.id }}/repost">Post it</a> to your communities to discuss it there.</p>
 {% elif not writable_copies and not t.trashed_at %}
 <p class="small muted">This is on Reddit. <a href="/reddit">Log in with Reddit</a> to vote and comment here, or
   <a href="/t/{{ t.id }}/repost">repost it</a> to discuss it on your own server.</p>
