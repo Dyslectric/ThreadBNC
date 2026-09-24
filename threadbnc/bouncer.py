@@ -27,10 +27,13 @@ from typing import Any, Callable
 from . import articles, media, store, thumbs, youtube
 from . import feed as feed_mod
 from .adapters import (
+    CommentList,
     CommunityRef,
     HttpClient,
     RSS_DOMAIN,
     RSS_PREFIX,
+    NActor,
+    NComment,
     NCommunity,
     NPost,
     RemoteError,
@@ -520,7 +523,10 @@ class Bouncer:
                 continue
             if self.comments_stale(t):
                 try:
-                    self.sync_thread(tid, force=True)
+                    if video := self._youtube_video(t):
+                        self.fetch_youtube_comments(t, video)
+                    else:
+                        self.sync_thread(tid, force=True)
                 except RemoteError as exc:
                     first_error = first_error or exc
             self.fetch_article(t["root_object_id"])
@@ -528,14 +534,49 @@ class Bouncer:
         if first_error:
             raise first_error
 
-    @staticmethod
-    def comments_stale(t: Any) -> bool:
+    def comments_stale(self, t: Any) -> bool:
         """True when opening this thread should re-read its comments. Feed
-        articles have none."""
-        if t["source_domain"] == RSS_DOMAIN:
+        articles have none; YouTube videos do."""
+        if t["source_domain"] == RSS_DOMAIN and not self._youtube_video(t):
             return False
         last = parse_ts(t["last_full_fetch_at"])
         return last is None or parse_ts(utcnow()) - last >= OPEN_CACHE  # type: ignore[operator]
+
+    def _youtube_video(self, t: Any) -> str | None:
+        """The id of the video a post from a followed YouTube channel is, else None."""
+        if t["source_domain"] != RSS_DOMAIN or not t["root_object_id"]:
+            return None
+        with self.db.connect() as conn:
+            row = conn.execute(
+                "SELECT c.canonical_ap_id AS c_ap, r.url FROM archived_threads t "
+                "JOIN communities c ON c.id=t.community_id JOIN objects o ON o.id=t.root_object_id "
+                "JOIN revisions r ON r.object_id=o.id AND r.seq=o.revision_count WHERE t.id=?", (t["id"],)).fetchone()
+        return youtube.video_id(row["url"]) if row and is_youtube_feed(row["c_ap"]) else None
+
+    def fetch_youtube_comments(self, t: Any, video: str) -> None:
+        """A YouTube video's post, opened: its top comments and some of their
+        replies (FeedFetcher.youtube_discussion), and its description and likes
+        from the same page read. Comments not in what was read are only taken
+        as gone when that was all of them."""
+        watch, found, complete = self.rss_adapter.fetcher.youtube_discussion(video)
+        now = utcnow()
+        tree = CommentList(NComment(
+            ap_id=f"rss:yt:comment:{c.id}", local_id=c.id, parent_local_id=c.parent_id,
+            body=youtube.description_markdown(c.text) or "", created_at=fmt_ts(c.published) if c.published else None,
+            updated_at=None, deleted=False, removed=False,
+            author=NActor(f"https://www.youtube.com/channel/{c.channel_id}" if c.channel_id
+                          else f"https://www.youtube.com/{c.author}", c.author, "youtube.com"),
+            metadata={"edited": True} if c.edited else {}, score=c.likes, upvotes=c.likes) for c in found)
+        result = store.ApplyResult()
+        with self.db.transaction() as conn:
+            store.observe_text(conn, t["root_object_id"], watch.description, now)
+            if watch.likes is not None:
+                conn.execute("UPDATE objects SET score=?, upvotes=?, downvotes=NULL, last_seen_at=? WHERE id=?",
+                             (watch.likes, watch.likes, now, t["root_object_id"]))
+            store.apply_comments(conn, t["id"], t["root_object_id"], t["community_id"], tree, RSS_DOMAIN, now,
+                                 False, complete, result)
+            conn.execute("UPDATE archived_threads SET last_full_fetch_at=?, previewed_at=?, last_checked_at=? "
+                         "WHERE id=?", (now, now, now, t["id"]))
 
     def article_for(self, root_object_id: int) -> Any:
         with self.db.connect() as conn:

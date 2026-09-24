@@ -303,6 +303,120 @@ def description_markdown(text: str | None) -> str | None:
     return out or None
 
 
+# -- comments ---------------------------------------------------------------------
+# A video's comments aren't on its page: the page carries a token, and the
+# comments come from YouTube's own API (/youtubei/v1/next) a page (20) at a
+# time, as the site loads them while you scroll. Each thread's replies take
+# another request of their own.
+
+NEXT_API = "https://www.youtube.com/youtubei/v1/next?prettyPrint=false"
+
+
+@dataclass
+class Comment:
+    id: str
+    parent_id: str | None  # the comment a reply is under (its id is "<parent>.<own>")
+    text: str
+    author: str  # "@handle"
+    channel_id: str | None
+    published: datetime | None  # approximate: YouTube only says "5 years ago"
+    likes: int | None  # approximate over 1000: "14K"
+    edited: bool
+
+
+@dataclass
+class CommentPage:
+    comments: list[Comment]
+    next: str | None  # the token for the next page
+    replies: dict[str, str]  # comment id -> the token for its replies
+
+
+def api_context(html: str) -> dict[str, Any] | None:
+    """What the page's own requests to YouTube's API say about the client."""
+    m = re.search(r'"INNERTUBE_CONTEXT"\s*:\s*', html)
+    if not m:
+        return None
+    try:
+        ctx, _ = json.JSONDecoder().raw_decode(html, m.end())
+    except ValueError:
+        return None
+    client = (ctx or {}).get("client") or {}
+    if not client.get("clientName") or not client.get("clientVersion"):
+        return None
+    keep = ("clientName", "clientVersion", "hl", "gl", "visitorData")
+    return {"client": {k: client[k] for k in keep if k in client}}
+
+
+def _token(o: Any) -> str | None:
+    for _, cmd in _walk(o, {"continuationCommand"}):
+        if isinstance(cmd, dict) and cmd.get("token"):
+            return str(cmd["token"])
+    return None
+
+
+def comments_token(html: str) -> str | None:
+    """The token for a video's first page of comments. None when comments are
+    off (or the page has changed)."""
+    for _, section in _walk(_initial_data(html) or {}, {"itemSectionRenderer"}):
+        if isinstance(section, dict) and section.get("sectionIdentifier") == "comment-item-section":
+            if token := _token(section.get("contents")):
+                return token
+    return None
+
+
+_COUNT = re.compile(r"^([\d.,]+)\s*([KMB]?)$", re.I)
+
+
+def _count(text: Any) -> int | None:
+    """"14K" -> 14000; "" (no likes) -> 0."""
+    text = str(text or "").strip()
+    if not text:
+        return 0
+    m = _COUNT.match(text)
+    if not m:
+        return None
+    n = float(m.group(1).replace(",", ""))
+    return int(round(n * {"": 1, "K": 1e3, "M": 1e6, "B": 1e9}[m.group(2).upper()]))
+
+
+def parse_comments(data: dict[str, Any], now: datetime | None = None) -> CommentPage:
+    """A page of comments (or of one thread's replies) from YouTube's API."""
+    now = now or datetime.now(timezone.utc)
+    entities: dict[str, dict[str, Any]] = {}
+    for _, payload in _walk(data.get("frameworkUpdates") or {}, {"commentEntityPayload"}):
+        cid = ((payload or {}).get("properties") or {}).get("commentId")
+        if cid:
+            entities[cid] = payload
+    order: list[str] = []
+    replies: dict[str, str] = {}
+    following: str | None = None
+    for _, cmd in _walk(data.get("onResponseReceivedEndpoints") or [],
+                        {"reloadContinuationItemsCommand", "appendContinuationItemsAction"}):
+        for item in (cmd or {}).get("continuationItems") or []:
+            thread = item.get("commentThreadRenderer")
+            view = (thread or item).get("commentViewModel") or {}
+            view = view.get("commentViewModel", view)
+            if view.get("commentId"):
+                order.append(view["commentId"])
+                if thread and (token := _token((thread.get("replies") or {}).get("commentRepliesRenderer"))):
+                    replies[view["commentId"]] = token
+            elif "continuationItemRenderer" in item:
+                following = _token(item["continuationItemRenderer"]) or following
+    comments = []
+    for cid in order:
+        p = entities.get(cid)
+        if p is None:
+            continue
+        props, author, toolbar = p.get("properties") or {}, p.get("author") or {}, p.get("toolbar") or {}
+        when = str(props.get("publishedTime") or "")
+        comments.append(Comment(
+            id=cid, parent_id=cid.split(".")[0] if "." in cid else None,
+            text=_text(props.get("content")) if isinstance(props.get("content"), dict) else str(props.get("content") or ""),
+            author=author.get("displayName") or "(unknown)", channel_id=author.get("channelId"),
+            published=_ago(when, now), likes=_count(toolbar.get("likeCountNotliked")), edited="edited" in when))
+    return CommentPage(comments, following, replies)
+
+
 def watch_url(vid: str) -> str:
     return f"https://www.youtube.com/watch?v={vid}"
 

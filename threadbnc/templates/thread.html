@@ -300,7 +300,7 @@
   </div>
   {% if refresh_job %}<p class="small muted js-only" id="refreshing" data-job="{{ refresh_job }}"
      data-url="/t/{{ t.id }}?refreshed=1&amp;sort={{ comment_sort }}&amp;merge={{ merge }}" data-post="o{{ o.id }}"
-     {{ 'hidden' if is_rss(o.canonical_ap_id) }}>Checking for new comments…</p>{% endif %}
+     {{ 'hidden' if is_rss(o.canonical_ap_id) and not is_youtube(t.c_ap) }}>Checking for new comments…</p>{% endif %}
   {% if since %}<p class="small muted">Highlighting changes since your last visit {{ when(since) }}{% if new_count or changed_count %}: {{ new_count }} new, {{ changed_count }} changed{% endif %}.</p>{% endif %}
   {% if total_comments %}
   <div class="toolbar js-only">

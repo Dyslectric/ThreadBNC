@@ -450,19 +450,70 @@ class FeedFetcher:
         self._cache[url] = (time.monotonic(), None, None, parsed)
         return parsed
 
-    def youtube_video(self, vid: str) -> youtube.Watch:
-        """A video's description and likes, from its page (youtube.py), for its
-        post in the feed."""
+    def _watch_page(self, vid: str) -> tuple[str, youtube.Watch]:
         page = youtube.watch_url(vid)
         status, _, body, _ = self._get(page, {"Accept": "text/html", "Accept-Language": "en"})
         if status in (404, 410):
             raise RemoteNotFound(f"{page}: HTTP {status}")
         if status != 200:
             raise RemoteUnavailable(f"{page}: HTTP {status}")
-        watch = youtube.parse_watch(body.decode("utf-8", "replace"))
+        html = body.decode("utf-8", "replace")
+        watch = youtube.parse_watch(html)
         if watch is None:
             raise RemoteUnavailable(f"{page}: no video details on the page (YouTube may have changed it)")
-        return watch
+        return html, watch
+
+    def youtube_video(self, vid: str) -> youtube.Watch:
+        """A video's description and likes, from its page (youtube.py), for its
+        post in the feed."""
+        return self._watch_page(vid)[1]
+
+    def _youtube_api(self, context: dict[str, Any], token: str) -> youtube.CommentPage:
+        """One page from YouTube's comments API, asked as the video's page would."""
+        host = "www.youtube.com"
+        self.throttle.wait(host)
+        try:
+            resp = self.client.post(youtube.NEXT_API, json={"context": context, "continuation": token},
+                                    headers={"Accept": "application/json", "Accept-Language": "en",
+                                             "Cookie": youtube.CONSENT_COOKIE})
+        except httpx.HTTPError as exc:
+            raise RemoteUnavailable(f"{host}: {type(exc).__name__}: {exc}") from exc
+        self.throttle.note(host, resp.status_code, resp.headers)
+        if resp.status_code == 429:
+            raise RemotePaused(f"{host}: HTTP 429 (too many requests)", self.throttle.paused_for(host))
+        if resp.status_code != 200:
+            raise RemoteUnavailable(f"{host}: comments: HTTP {resp.status_code}")
+        try:
+            return youtube.parse_comments(resp.json())
+        except ValueError as exc:
+            raise RemoteUnavailable(f"{host}: comments weren't JSON") from exc
+
+    def youtube_discussion(self, vid: str, pages: int = 2,
+                           reply_threads: int = 3) -> tuple[youtube.Watch, list[youtube.Comment], bool]:
+        """A video's description and likes, and its top comments, when its post
+        is opened: the first `pages` pages (20 each) of top-level comments,
+        and the first page of replies to the first `reply_threads` threads
+        that have some. Returns (details, comments, whether that's all of them)."""
+        html, watch = self._watch_page(vid)
+        token, context = youtube.comments_token(html), youtube.api_context(html)
+        if not token or context is None:
+            return watch, [], token is None  # comments are off, or the page changed
+        comments: list[youtube.Comment] = []
+        replies: dict[str, str] = {}
+        complete = True
+        for _ in range(pages):
+            got = self._youtube_api(context, token)
+            comments += got.comments
+            replies.update(got.replies)
+            if not got.next:
+                break
+            token = got.next
+        else:
+            complete = False
+        complete = complete and not replies
+        for cid, reply_token in list(replies.items())[:reply_threads]:
+            comments += self._youtube_api(context, reply_token).comments
+        return watch, comments, complete
 
     def _youtube_channel_feed(self, page: str) -> str:
         """The feed of the channel an @handle or /c/ page is, read from the page

@@ -68,11 +68,51 @@ def watch_page(description, likes):
                 "toggleButtonViewModel": {"toggleButtonViewModel": {"defaultButtonViewModel": {"buttonViewModel": {
                     "title": "1.2K"}}}},
                 "likeCountEntity": {"likeCountIfIndifferentNumber": str(likes)}}}}}]}}}}]}}}}}
-    return (f"<html><body><script>var ytInitialPlayerResponse = {json.dumps(player)};</script>"
+    data["contents"]["twoColumnWatchNextResults"]["results"]["results"]["contents"].append(
+        {"itemSectionRenderer": {"sectionIdentifier": "comment-item-section", "contents": [
+            {"continuationItemRenderer": {"continuationEndpoint": {"continuationCommand": {"token": "TOP"}}}}]}})
+    cfg = {"INNERTUBE_API_KEY": "k", "INNERTUBE_CONTEXT": {"client": {
+        "clientName": "WEB", "clientVersion": "2.20260922", "hl": "en", "remoteHost": "1.2.3.4"}}}
+    return (f"<html><body><script>ytcfg.set({json.dumps(cfg)});</script>"
+            f"<script>var ytInitialPlayerResponse = {json.dumps(player)};</script>"
             f"<script>var ytInitialData = {json.dumps(data)};</script></body></html>")
 
 
 WATCH_PAGE = watch_page("Building a computer.\nParts: https://eater.net/6502_kit\n\n1. clock\n* not bold *", 1234)
+
+
+def comment_page(comments, next_token=None, replies=None, action="reloadContinuationItemsCommand"):
+    """A page from YouTube's comments API: (id, text, author, when, likes) each;
+    `replies`: comment id -> the token for its replies."""
+    replies = replies or {}
+    items = []
+    for cid, *_ in comments:
+        view = {"commentViewModel": {"commentViewModel": {"commentId": cid}}}
+        if "." in cid:
+            items.append(view)
+            continue
+        thread = dict(view)
+        if cid in replies:
+            thread["replies"] = {"commentRepliesRenderer": {"subThreads": [{"continuationItemRenderer": {
+                "continuationEndpoint": {"continuationCommand": {"token": replies[cid]}}}}]}}
+        items.append({"commentThreadRenderer": thread})
+    if next_token:
+        items.append({"continuationItemRenderer": {"continuationEndpoint": {"continuationCommand": {"token": next_token}}}})
+    mutations = [{"payload": {"commentEntityPayload": {
+        "properties": {"commentId": cid, "content": {"content": text}, "publishedTime": when},
+        "author": {"channelId": f"UC{author}", "displayName": f"@{author}"},
+        "toolbar": {"likeCountNotliked": likes}}}} for cid, text, author, when, likes in comments]
+    return {"onResponseReceivedEndpoints": [{action: {"continuationItems": items}}],
+            "frameworkUpdates": {"entityBatchUpdate": {"mutations": mutations}}}
+
+
+COMMENT_PAGES = {
+    "TOP": comment_page([("Ugw1", "First! see https://x.test/a_b", "ann", "2 days ago", "14K"),
+                         ("Ugw2", "*nice* video", "bob", "1 hour ago (edited)", "")],
+                        next_token="P2", replies={"Ugw1": "R1"}),
+    "P2": comment_page([("Ugw3", "third", "cat", "3 hours ago", "5")]),
+    "R1": comment_page([("Ugw1.r1", "a reply", "dan", "1 day ago", "2")], action="appendContinuationItemsAction"),
+}
 
 
 class FakeYouTube:
@@ -81,6 +121,10 @@ class FakeYouTube:
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
+        if request.method == "POST" and request.url.path == "/youtubei/v1/next":
+            ask = json.loads(request.content)
+            assert ask["context"] == {"client": {"clientName": "WEB", "clientVersion": "2.20260922", "hl": "en"}}
+            return httpx.Response(200, json=COMMENT_PAGES[ask["continuation"]])
         if request.url.path == "/watch" and request.url.params.get("v") == "dQw4w9WgXcQ":
             return httpx.Response(200, text=WATCH_PAGE, headers={"content-type": "text/html"})
         if request.url.path == "/feeds/videos.xml":  # YouTube's feeds, lately
@@ -428,3 +472,55 @@ def test_videos_scrolled_to_get_their_description_and_likes(settings, bouncer, y
     while bouncer.run_one_job():
         pass
     assert watches() == 1  # read moments ago
+
+
+def test_comments_are_read_when_a_video_is_opened(settings, bouncer, yt):
+    """Opening a video's post (its page, or its comments in the feed) reads its
+    top comments and some replies from YouTube's comments API, as the video's
+    page would; not again within a few minutes."""
+    cid = bouncer.follow_community(f"https://www.youtube.com/channel/{CHANNEL}", None, 30, backfill=True)
+    bouncer.poll_follow(cid)
+    tid = one(bouncer, "SELECT t.id FROM archived_threads t JOIN objects o ON o.id=t.root_object_id "
+                       "WHERE o.canonical_ap_id='rss:yt:video:dQw4w9WgXcQ'")[0]
+    client = logged_in(settings, bouncer)
+
+    def asks():
+        return [r.url.path for r in yt.requests if r.url.path in ("/watch", "/youtubei/v1/next")]
+
+    page = client.get(f"/t/{tid}?inline=1").text
+    assert 'id="refreshing"' in page and "Checking for new comments" in page and "hidden>" not in page
+    while bouncer.run_one_job():
+        pass
+    assert asks() == ["/watch"] + ["/youtubei/v1/next"] * 3  # two pages of comments, one thread's replies
+    with bouncer.db.connect() as conn:
+        rows = {r["canonical_ap_id"]: r for r in conn.execute(
+            "SELECT o.canonical_ap_id, o.parent_id, o.score, r.body, a.username FROM objects o "
+            "JOIN revisions r ON r.object_id=o.id JOIN actors a ON a.id=o.author_id WHERE o.object_type='comment'")}
+    assert set(rows) == {f"rss:yt:comment:{c}" for c in ("Ugw1", "Ugw2", "Ugw3", "Ugw1.r1")}
+    first, reply = rows["rss:yt:comment:Ugw1"], rows["rss:yt:comment:Ugw1.r1"]
+    assert first["score"] == 14000 and first["username"] == "@ann"
+    assert first["body"] == "First! see <https://x.test/a_b>"
+    assert rows["rss:yt:comment:Ugw2"]["body"] == "\*nice\* video"
+    assert reply["parent_id"] == one(bouncer, "SELECT id FROM objects WHERE canonical_ap_id='rss:yt:comment:Ugw1'")[0]
+    # The same page read refreshed the video's description and likes.
+    assert one(bouncer, "SELECT upvotes FROM objects WHERE canonical_ap_id='rss:yt:video:dQw4w9WgXcQ'")[0] == 1234
+
+    page = client.get(f"/t/{tid}").text
+    assert "4 comments" in page and "@ann" in page and "@ann@" not in page and "*nice* video" in page
+    assert 'href="https://x.test/a_b"' in page
+    assert 'id="refreshing"' not in page  # read moments ago
+    assert asks() == ["/watch"] + ["/youtubei/v1/next"] * 3
+    feed = client.get(f"/c/{cid}").text
+    assert "4 comments" in feed
+
+
+def test_the_comments_parser():
+    got = youtube.parse_comments(COMMENT_PAGES["TOP"], now=datetime(2026, 9, 23, tzinfo=timezone.utc))
+    assert [c.id for c in got.comments] == ["Ugw1", "Ugw2"] and got.next == "P2" and got.replies == {"Ugw1": "R1"}
+    assert got.comments[0].published == datetime(2026, 9, 21, tzinfo=timezone.utc)
+    assert (got.comments[1].likes, got.comments[1].edited) == (0, True)
+    [reply] = youtube.parse_comments(COMMENT_PAGES["R1"]).comments
+    assert reply.parent_id == "Ugw1"
+    assert youtube.comments_token("<html>no data</html>") is None
+    assert youtube.api_context(WATCH_PAGE) == {"client": {"clientName": "WEB", "clientVersion": "2.20260922",
+                                                          "hl": "en"}}
