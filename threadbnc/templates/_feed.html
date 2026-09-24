@@ -88,6 +88,15 @@
         <button class="menu-item {{ 'on' if scrolling }}" aria-pressed="{{ 'true' if scrolling else 'false' }}">
           <span class="tick">{% if scrolling %}{{ icon('check') }}{% endif %}</span><span class="grow">Mark posts read as I scroll past them</span></button>
       </form>
+      {% set langs = feed_languages() %}
+      <form method="post" action="/feed/languages" class="menu-section">
+        <label class="menu-label" for="feed-languages">Languages</label>
+        <p class="menu-note">{% if langs %}Only posts in {% for c in langs %}{{ language_name(c) }}{{ ', ' if not loop.last }}{% endfor %}, and ones that don't say.{% else %}Posts in every language.{% endif %}</p>
+        <div class="menu-field">
+          <input id="feed-languages" name="languages" value="{{ langs | join(', ') }}" placeholder="e.g. en, de" autocomplete="off">
+          <button class="act">Save</button>
+        </div>
+      </form>
     </div>
   </details>
 </div>

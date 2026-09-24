@@ -412,7 +412,9 @@ def apply_post(conn: Conn, thread_id: int, post: NPost, source_domain: str, now:
         updated_at=post.updated_at, score=post.score, reply_count=post.comment_count, now=now,
         initial=initial, result=result, upvotes=post.upvotes, downvotes=post.downvotes, keep_counts=keep_counts,
     )
-    conn.execute("UPDATE objects SET root_post_id=? WHERE id=?", (oid, oid))
+    # A server that doesn't say (a push read elsewhere, say) leaves what another said.
+    conn.execute("UPDATE objects SET root_post_id=?, language=COALESCE(?, language) WHERE id=?",
+                 (oid, post.language, oid))
     thumb = post.thumbnail_url if (post.thumbnail_url or "").startswith(("http://", "https://")) else None
     if thumb:
         conn.execute("UPDATE objects SET thumbnail_url=? WHERE id=?", (thumb, oid))

@@ -114,6 +114,7 @@ class Lemmy1Adapter(LemmyAdapter):
             comment_count=p.get("comments"),
             thumbnail_url=p.get("thumbnail_url"),
             newest_comment_at=_ts(p.get("newest_comment_time_at")),
+            language=self._language(p.get("language_id")),
             featured=bool(p.get("featured_community") or p.get("featured_local")),
             upvotes=p.get("upvotes"),
             downvotes=p.get("downvotes"),
