@@ -142,6 +142,9 @@ class FakeBluesky:
         assert str(u).startswith(PDS + "/xrpc/"), url
         name = u.path.removeprefix("/xrpc/")
         bearer = (headers or {}).get("Authorization", "").removeprefix("Bearer ")
+        if name in ("com.atproto.server.refreshSession", "com.atproto.server.deleteSession") and content:
+            return answer(400, {"error": "InvalidRequest",
+                                "message": "A request body was provided when none was expected"})
         if name == "com.atproto.server.createSession":
             if body["password"] != "abcd-efgh-ijkl-mnop":
                 return answer(401, {"error": "AuthenticationRequired", "message": "Invalid identifier or password"})
