@@ -276,8 +276,9 @@ class BlueskyAdapter(ThreadiverseAdapter):
             content, headers["Content-Type"] = raw
             body = {}  # a procedure, like any other POST
         elif body is not None:
+            # Bluesky refuses a null where it expects a value: leave unset fields out.
             headers["Content-Type"] = "application/json"
-            content = json.dumps(body).encode()
+            content = json.dumps({k: v for k, v in body.items() if v is not None}).encode()
         # Asked for while you wait (signing in, liking, replying), so not spaced out
         # like background reads; a server that asked us to wait is still left alone.
         resp = self.http.send("POST" if body is not None else "GET", url, headers=headers, content=content,

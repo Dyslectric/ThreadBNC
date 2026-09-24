@@ -227,6 +227,8 @@ class Poster:
                 raise AccountError("Bluesky emailed you a sign-in code: enter it too, or use an app password, "
                                    "which doesn't need one.") from exc
             raise AccountError(f"Bluesky didn't accept that: {exc}") from exc
+        except RemoteRejected as exc:
+            raise AccountError(f"Bluesky refused the sign-in: {exc}") from exc
         except RemoteError as exc:
             raise AccountError(f"Couldn't reach Bluesky: {exc}") from exc
         before = self.bluesky_account()
