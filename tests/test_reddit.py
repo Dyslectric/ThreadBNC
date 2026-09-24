@@ -418,7 +418,7 @@ def test_posts_scrolled_to_get_their_text_pictures_and_votes(settings, bouncer, 
     status = client.get("/feed/articles", params={"ids": tids}).json()
     assert status["waiting"] == [] and all(status["previewed"][str(t)] for t in tids)
     page = client.get(f"/c/{cid}").text
-    assert "data-preview" not in page and "Some text" in page and "99 pts" in page
+    assert "data-preview" not in page and "Some text" in page and 'aria-label="99 points">99</span>' in page
 
     before = len(reddit.requests)
     client.post("/feed/articles", data={"ids": tids})

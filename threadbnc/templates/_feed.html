@@ -1,4 +1,4 @@
-{% from "_macros.html" import when, state_badges, votes, copy_where, icon, keep_button, read_button, trash_button %}
+{% from "_macros.html" import when, state_badges, votes, vote_breakdown, copy_where, icon, keep_button, read_button, trash_button %}
 {% from "_macros.html" import pager as load_more %}
 
 {# base: URL prefix ending in "?" or "&" that keeps any fixed params (e.g. tab).
@@ -149,9 +149,11 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
 {% if i.article %}<a class="act read-article" href="/t/{{ i.id }}/article" title="Read the linked article here" aria-expanded="false">{{ icon('article') }}<span{% if short %} class="sr-only"{% endif %}>Read article</span></a>{% endif %}
 {%- endmacro %}
 
-{# The post's own Markdown, distinct from the linked article. #}
+{# The post's own Markdown, distinct from the linked article. A saved YouTube
+   video's player comes with its description. #}
 {% macro post_content_link(i, short=False) -%}
-{% if i.body_link %}<a class="act direct-link" href="{{ i.body_link }}" target="_blank" rel="noreferrer noopener nofollow" title="Open the link" aria-label="Open link">{{ icon('link') }}<span{% if short %} class="sr-only"{% endif %}>Open link</span></a>
+{% if i.video %}<a class="act read-post" href="/t/{{ i.id }}#post-text" title="Show the saved video{{ ' and its description' if i.body }} here" aria-expanded="false">{{ icon('play') }}<span{% if short %} class="sr-only"{% endif %}>Video</span></a>
+{% elif i.body_link %}<a class="act direct-link" href="{{ i.body_link }}" target="_blank" rel="noreferrer noopener nofollow" title="Open the link" aria-label="Open link">{{ icon('link') }}<span{% if short %} class="sr-only"{% endif %}>Open link</span></a>
 {% elif i.body %}<a class="act read-post" href="/t/{{ i.id }}#post-text" title="Show the post text here" aria-expanded="false">{{ icon('article') }}<span{% if short %} class="sr-only"{% endif %}>Post text</span></a>{% endif %}
 {%- endmacro %}
 
@@ -184,11 +186,12 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
 </div>
 {% endmacro %}
 
-{# Compact, actionable vote controls for tiles. Reddit exposes one score, so
+{# Compact, actionable vote controls for every view. Reddit exposes one score, so
    it sits between its arrow buttons; ActivityPub exposes both counts, which
    live inside their respective buttons. Feeds can't be voted on: a YouTube
-   video's likes (read when it's scrolled to) are just shown. #}
-{% macro tile_votes(i) -%}
+   video's likes (read when it's scrolled to) are just shown. `breakdown`: offer
+   the counts each copy's server reported, for a post posted more than once. #}
+{% macro tile_votes(i, breakdown=False) -%}
 {% if is_rss(i.canonical_ap_id) %}{{ votes(i.upvotes, i.downvotes, i.score) }}{% else %}
 {% set eligible = [] %}{% set handles = [] %}
 {% for c in i.copies %}
@@ -216,6 +219,7 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
     {% if reddit and direction == 1 %}<span class="reddit-score" aria-label="{{ i.score or 0 }} points">{{ i.score or 0 }}</span>{% endif %}
   {% endfor %}
 </div>
+{% if breakdown and i.group and i.breakdown | length > 1 %}<span class="votes has-breakdown vote-servers" tabindex="0" role="button" aria-expanded="false" aria-label="Show votes by server, across {{ i.breakdown | length }} copies">by server{{ vote_breakdown(i.breakdown, i.upvotes, i.downvotes, i.score) }}</span>{% endif %}
 {% endif %}
 {%- endmacro %}
 
@@ -293,7 +297,7 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
       <a class="act inline-comments" href="/t/{{ i.id }}#comments" aria-expanded="false">{{ icon('comment') }}<span>{{ i.n_comments }} comment{{ 's' if i.n_comments != 1 }}</span></a>
       {% if i.n_new %}<a href="/t/{{ i.id }}#comments" class="pill new inline-comments" aria-expanded="false">{{ i.n_new }} new</a>{% endif %}
       {{ article_link(i) }}
-      {{ votes(i.upvotes, i.downvotes, i.score, i.breakdown if i.group) }}
+      {{ tile_votes(i, breakdown=True) }}
       {{ read_button(i.id, i.unread, i.group, anchor='p' ~ i.id, refresh='p' ~ i.id) }}
       {{ keep_button(i.id, i.all_kept, i.group, anchor='p' ~ i.id, refresh='p' ~ i.id) }}
       {% if not i.all_kept %}
@@ -325,7 +329,7 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
     <a class="act inline-comments" href="/t/{{ i.id }}#comments" aria-expanded="false">{{ icon('comment') }}<span>{{ i.n_comments }} comment{{ 's' if i.n_comments != 1 }}</span></a>
     {% if i.n_new %}<a href="/t/{{ i.id }}#comments" class="pill new inline-comments" aria-expanded="false">{{ i.n_new }} new</a>{% endif %}
     {{ article_link(i) }}
-    {{ votes(i.upvotes, i.downvotes, i.score, i.breakdown if i.group) }}
+    {{ tile_votes(i, breakdown=True) }}
     {{ read_button(i.id, i.unread, i.group, anchor='p' ~ i.id, refresh='p' ~ i.id) }}
     {{ keep_button(i.id, i.all_kept, i.group, anchor='p' ~ i.id, refresh='p' ~ i.id) }}
     {% if not i.all_kept %}{{ trash_button(i.id, i.group, ('p' ~ next_id) if next_id else '', refresh='p' ~ i.id) }}{% endif %}
