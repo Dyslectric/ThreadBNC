@@ -200,6 +200,27 @@ def is_rss(ap_id: str | None) -> bool:
     return (ap_id or "").startswith(RSS_PREFIX)
 
 
+# Hashtags followed through a relay (tags.py) are communities on a pseudo
+# server too: "tag:selfhosted". Their posts are ordinary fediverse posts,
+# read from their own servers (adapters/activitypub.py).
+TAG_DOMAIN = "hashtag"
+TAG_PREFIX = "tag:"
+_HASHTAG = re.compile(r"^\w+$")
+
+
+def is_tag(ap_id: str | None) -> bool:
+    return (ap_id or "").startswith(TAG_PREFIX)
+
+
+def normalize_tag(text: str) -> str:
+    """#SelfHosted, #self-hosted -> selfhosted, as relays name them. Raises
+    ValueError for anything that isn't a hashtag."""
+    tag = re.sub(r"[\s-]+", "", text.strip().lstrip("#")).lower()
+    if not _HASHTAG.match(tag) or len(tag) > 100:
+        raise ValueError(f"Not a hashtag: {text}")
+    return tag
+
+
 def is_reddit_host(host: str | None) -> bool:
     host = (host or "").lower().split(":")[0]
     return host in ("reddit.com", "redd.it") or host.endswith(".reddit.com")
@@ -252,8 +273,11 @@ def parse_community_ref(text: str) -> CommunityRef:
     """Accepts !name@host, name@host, https://host/c/name, https://host/c/name@home,
     subreddits: r/name or https://www.reddit.com/r/name, and feeds: rss:<url>, a
     YouTube channel or playlist link, or any other web address (a feed, or a
-    page that links to one)."""
+    page that links to one), and hashtags: #name or tag:name."""
     text = text.strip()
+    if text.startswith("#") or text.lower().startswith(TAG_PREFIX):
+        tag = normalize_tag(text[len(TAG_PREFIX):] if text.lower().startswith(TAG_PREFIX) else text)
+        return CommunityRef(TAG_DOMAIN, tag, TAG_DOMAIN)
     if text.lower().startswith(RSS_PREFIX):
         return CommunityRef(RSS_DOMAIN, text[len(RSS_PREFIX):].strip(), RSS_DOMAIN)
     if text.startswith("!"):

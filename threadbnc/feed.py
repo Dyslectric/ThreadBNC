@@ -284,6 +284,8 @@ def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: lis
         i["audio"] = sounds.get(i["oid"])
         meta = json.loads(i.pop("rmeta") or "{}")
         i["nsfw"], i["spoiler"] = bool(meta.get("nsfw")), bool(meta.get("spoiler"))
+        if meta.get("untitled") and i["excerpt"]:  # a fediverse post has text, not a title: show the text once
+            i["title"], i["excerpt"] = i["excerpt"], ""
         attach_group(i, copies.get(i["dupe_key"]) or [])
     return FeedPage(items, page, len(rows) > per_page, as_of)
 

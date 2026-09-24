@@ -4,6 +4,8 @@ from .base import (
     REDDIT_DOMAIN,
     RSS_DOMAIN,
     RSS_PREFIX,
+    TAG_DOMAIN,
+    TAG_PREFIX,
     CommentList,
     CommunityRef,
     ModAction,
@@ -24,6 +26,8 @@ from .base import (
     host_of,
     is_reddit_host,
     is_rss,
+    is_tag,
+    normalize_tag,
     parse_community_ref,
     parse_thread_url,
 )
@@ -62,11 +66,11 @@ def detect_software(http: HttpClient, domain: str) -> tuple[str, str | None]:
 
 
 __all__ = [
-    "ADAPTERS", "REDDIT_DOMAIN", "RSS_DOMAIN", "RSS_PREFIX", "CommentList", "CommunityRef", "HttpClient", "JoinRequest", "Lemmy1Adapter",
+    "ADAPTERS", "REDDIT_DOMAIN", "RSS_DOMAIN", "RSS_PREFIX", "TAG_DOMAIN", "TAG_PREFIX", "CommentList", "CommunityRef", "HttpClient", "JoinRequest", "Lemmy1Adapter",
     "LemmyAdapter", "ModAction",
     "NActor", "NComment",
     "NCommunity", "NInboxItem", "NPost", "PieFedAdapter", "RemoteAuthError", "RemoteError", "RemoteNotFound",
     "RemotePaused", "RemoteRejected", "RemoteUnavailable",
     "ThreadRef", "ThreadiverseAdapter", "UnsupportedSoftware", "adapter_class", "detect_software", "host_of",
-    "is_reddit_host", "is_rss", "parse_community_ref", "parse_thread_url",
+    "is_reddit_host", "is_rss", "is_tag", "normalize_tag", "parse_community_ref", "parse_thread_url",
 ]

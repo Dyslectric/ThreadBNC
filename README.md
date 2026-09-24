@@ -1,9 +1,10 @@
 # ThreadBNC — Threadiverse bouncer + private archive
 
-A private, feed-first reader for Lemmy, PieFed, Reddit and RSS/Atom feeds that keeps a history of what it observes. When a post or comment is edited, removed or deleted after the bouncer has seen it, the change is recorded alongside the earlier version instead of replacing it.
+A private, feed-first reader for Lemmy, PieFed, Reddit, RSS/Atom feeds and fediverse hashtags that keeps a history of what it observes. When a post or comment is edited, removed or deleted after the bouncer has seen it, the change is recorded alongside the earlier version instead of replacing it.
 
 **Following and reading:**
 - Follow communities. Lemmy and PieFed posts arrive as they're made, pushed through your own Lemmy server (see [Pushes from your own server](#pushes-from-your-own-server)); feeds and subreddits are checked on a schedule.
+- Follow **#hashtags**: public posts with them, from Mastodon and the rest of the fediverse, arrive through a tag relay (see [Hashtags](#hashtags)).
 - Your **feed** is built from the saved copy. Posts you haven't opened stand out, opened posts show "N new comments", and you can sort by New, Active, Top or Most comments.
 - **Opening a post** reads its comments and saves the article it links to, like a browser would. The page shows the saved copy at once and swaps in the fresh one.
 - The feed keeps working when an instance is down, and shows edits, removals and deletions as history instead of losing them.
@@ -41,6 +42,7 @@ ThreadBNC behaves like one more subscribed server, or like your own browser, nev
 - **Pushed, not polled.** Lemmy and PieFed communities are subscribed to by your own server, and their home servers send each post, comment and edit once, as federation intends. Nothing is checked on a schedule unless you turn it on for a community that can't be pushed, and then it's one listing per check, never comments.
 - **Fetched when you open it.** A post's comments, its linked article and its full videos are fetched when you open or keep it, and reopening within 5 minutes uses the saved copy.
 - **Votes, cheaply.** Votes are updated every 5 minutes for a post's first half hour, then every 10, every 30 until 6 hours, hourly until a day, daily until a week, and then not at all (opening a post still updates them). A pushed community's come from your own server; a checked community's from one listing covering all its posts; only a post kept on its own is asked about by itself.
+- **Hashtags through a relay.** A followed hashtag is one Follow to its relay. Each post it passes on is read once from its own server, a signed request like any receiving server makes, and its votes aren't checked in the background at all; opening it reads it again with its replies.
 - **Reddit only while you're here,** spread out, one subreddit at a time (see [Checking, conservatively](#checking-conservatively)).
 - **Pictures at once, videos later.** Pictures and thumbnails are downloaded as posts arrive; full videos wait until you open or keep a post showing them.
 - **One request at a time,** at least a second apart per server (two for Reddit). A server that answers 429 Too Many Requests isn't contacted again until its `Retry-After` has passed, and that isn't counted as a failure.
@@ -243,6 +245,65 @@ link is read once, when you follow it, to find the channel's id.
 - **Videos are saved only for posts you keep.** Opening a post or scrolling past it downloads nothing. This covers any kept post that links to a YouTube video, a Lemmy or Reddit one included. [yt-dlp](https://github.com/yt-dlp/yt-dlp) does the downloading, with deno (installed by `requirements.txt`) solving YouTube's player challenges. With ffmpeg, video and sound are joined up to the chosen quality. Without it, YouTube often only has 360p as a single file.
 - **The YouTube page** (`/youtube`, linked from Accounts) sets the largest video downloaded (2000 MB by default) and the **resolution** videos are saved at (1080p). They're saved as YouTube encoded them and aren't otherwise transcoded: the **Videos** media settings are for other videos. Lowering the resolution scales videos already saved at more than it down to it, in the background, at a steady quality (H.264, CRF 23); raising it doesn't bring back what was scaled down. "720p" is the shorter side, so upright videos and Shorts count the same. A community that doesn't archive videos saves no YouTube videos.
 - **Session:** YouTube often asks servers to "confirm you're not a bot". On the YouTube page, paste your browser's youtube.com cookies (a `cookies.txt` export or a `Cookie` header) and, optionally, a PO token. They're encrypted like account tokens and used only for these downloads. Saving a session retries videos that failed. A spare Google account is safest: YouTube can suspend accounts it thinks are downloading.
+
+## Hashtags
+
+Follow a hashtag (`#selfhosted` in the Communities box) and public posts with it arrive in your feed from across
+the fediverse, Mastodon and other microblogging servers included, as they're made. ActivityPub has no way to follow
+a hashtag, so ThreadBNC gets them from a **tag relay**. [FediBuzz](https://relay.fedi.buzz) watches public posts on
+many servers and offers an actor for each hashtag, `https://relay.fedi.buzz/tag/<name>`, that passes on every
+post with it.
+
+- **ThreadBNC's own ActivityPub identity** follows the relay: an actor at
+  `https://$THREADBNC_ACTOR_DOMAIN/threadbnc/actor`, known as `threadbnc@` that domain. It never posts and
+  accepts no followers. It signs every request it makes and checks the signature on everything delivered to
+  it, and it only listens to the relays it follows.
+- **Following** sends a Follow to the relay's actor for that hashtag. The community's **Following** menu shows
+  **From the relay** once the relay accepts; until then it's asked again every hour.
+- **Each post the relay passes on** is read once from its own server, as any server receiving it would, and
+  kept in the hashtag's feed like other auto-captured posts. Followers-only posts are never kept. A post with
+  several followed hashtags goes under the first one it lists.
+- **Opening a post** reads it again, with its votes, and its replies from its own server, through the
+  Mastodon API that Mastodon, GoToSocial, Akkoma and Pleroma share. A server only knows the replies that
+  reached it, so a reply missing later isn't taken as deleted. Posts from other software show no replies.
+- **Edits and deletions** after a post arrives are seen when you open it. Relays only pass on new posts.
+- Posts have no title. The feed shows their text, the first link in it becomes the post's link (so
+  **Read article** works), and a content warning is used as the title and blurs the pictures.
+- Hashtag posts can't be voted on or replied to from here: your accounts are on Lemmy and PieFed.
+  **Repost** works.
+
+### Setting it up on a domain Lemmy already uses
+
+The actor can share a domain with your Lemmy server (`dyslectric.dev` here) because it only uses paths that
+Lemmy doesn't: `/threadbnc/actor`, `/threadbnc/inbox`, `/threadbnc/outbox`, and WebFinger lookups for
+`threadbnc@` itself. Set `THREADBNC_ACTOR_DOMAIN` and route those to ThreadBNC ahead of Lemmy, **without** the
+sign-in middleware, since other servers have to reach them:
+
+```yaml
+  app:
+    environment:
+      THREADBNC_ACTOR_DOMAIN: dyslectric.dev
+    labels:
+      traefik.http.routers.threadbnc-actor.rule: >-
+        Host(`dyslectric.dev`) && (Path(`/threadbnc/actor`) || Path(`/threadbnc/inbox`) || Path(`/threadbnc/outbox`)
+        || (Path(`/.well-known/webfinger`) && (Query(`resource`, `acct:threadbnc@dyslectric.dev`)
+        || Query(`resource`, `https://dyslectric.dev/threadbnc/actor`))))
+      traefik.http.routers.threadbnc-actor.priority: "130"
+      traefik.http.routers.threadbnc-actor.entrypoints: websecure
+      traefik.http.routers.threadbnc-actor.tls: "true"
+      traefik.http.routers.threadbnc-actor.tls.certresolver: letsencrypt
+      traefik.http.routers.threadbnc-actor.service: threadbnc
+```
+
+- The priority has to beat Lemmy's router, which takes any request asking for ActivityPub on the domain.
+- Every other WebFinger lookup still goes to Lemmy, so `dave@dyslectric.dev` is unaffected. Don't create a
+  Lemmy user called `threadbnc`.
+- The actor's key is made on first start and kept in the database, encrypted with
+  `THREADBNC_CREDENTIALS_KEY`. Keep that key: a new one means servers that cached the old key refuse the
+  actor's signatures until they fetch it again.
+- To check it's reachable: `curl -H 'Accept: application/activity+json' https://dyslectric.dev/threadbnc/actor`
+  should return the actor, not Lemmy's error.
+- `THREADBNC_TAG_RELAY` picks another relay that works the same way, `{tag}` standing for the hashtag.
 
 ## Accounts and posting
 
@@ -465,6 +526,8 @@ API (each call with `Authorization: Bearer $THREADBNC_API_TOKEN`):
 | `THREADBNC_MEDIA_TRANSCODE` | `0` | `1`: pictures and videos over the size limit are shrunk to fit it with ffmpeg instead of skipped, unless the Storage page or a community says otherwise |
 | `THREADBNC_MEDIA_TRANSCODE_SOURCE_MAX_MB` | `1000` | Largest original downloaded to transcode; bigger files are skipped |
 | `THREADBNC_RELAY_INBOXES` | *(none)* | Your own Lemmy servers whose inboxes are routed through ThreadBNC, as `domain=Lemmy's address`, comma-separated (see [Pushes from your own server](#pushes-from-your-own-server)) |
+| `THREADBNC_ACTOR_DOMAIN` | unset | The domain of ThreadBNC's own ActivityPub actor, for following hashtags (see [Hashtags](#hashtags)). Unset: hashtags can't be followed |
+| `THREADBNC_TAG_RELAY` | `https://relay.fedi.buzz/tag/{tag}` | The relay actor followed for each hashtag, `{tag}` standing for it |
 | `THREADBNC_ARTICLES` | `1` | Read the web pages posts link to and keep the article, for **Read article** (see [Linked articles](#linked-articles)); `0` turns it off |
 | `THREADBNC_PROXY_AUTH_HEADER` | unset | Header in which a signing-in reverse proxy passes the user's name, e.g. `X-authentik-username` |
 | `THREADBNC_PROXY_SECRET` | unset | Required with the above (16+ characters). The proxy must send it as `X-ThreadBNC-Proxy-Secret` |
@@ -669,5 +732,6 @@ When a post links to a web page, the page is read when you open or keep the post
 ## Known limits / next steps
 
 - PieFed moderation attribution is always `unknown` for now, because its modlog API varies between versions.
-- ThreadBNC has no ActivityPub identity of its own: pushes need your own Lemmy server. Without one, Lemmy and PieFed communities have to be checked on a schedule.
+- ThreadBNC's own ActivityPub actor only follows hashtag relays so far. Lemmy and PieFed pushes still need your own Lemmy server; without one, those communities have to be checked on a schedule.
+- Hashtag posts can't be voted on or replied to from ThreadBNC, and replies are only read from servers with the Mastodon API.
 - Post pin/feature state, actor profile history, search, tags and notes are not implemented.

@@ -32,6 +32,7 @@ from .adapters import (
     HttpClient,
     RSS_DOMAIN,
     RSS_PREFIX,
+    TAG_DOMAIN,
     NActor,
     NComment,
     NCommunity,
@@ -47,9 +48,12 @@ from .adapters import (
     host_of,
     is_reddit_host,
     is_rss,
+    is_tag,
     parse_community_ref,
     parse_thread_url,
 )
+from .actor import Actor
+from .adapters.activitypub import ActivityPubAdapter
 from .adapters.reddit import RedditAdapter
 from .adapters.rss import FeedFetcher, RssAdapter
 from .config import REDDIT_MIN_POLL_MINUTES, RSS_MIN_POLL_MINUTES, Settings
@@ -114,10 +118,15 @@ class Bouncer:
         self.youtube = YouTubeSession(db, vault)
         self.reddit_adapter = RedditAdapter(self.reddit)
         self.rss_adapter = RssAdapter(FeedFetcher(settings.user_agent, settings.http_timeout, self.http.throttle))
+        # ThreadBNC's own ActivityPub identity, and the posts hashtags bring (tags.py).
+        self.actor = Actor(settings.actor_domain, db, vault, self.http) if settings.actor_domain else None
+        self.tag_adapter = ActivityPubAdapter(self.actor)
         self._adapter_factory = adapter_factory
         self._adapters: dict[str, tuple[ThreadiverseAdapter, str]] = {}  # domain -> (adapter, chosen at)
         # Extra work for each pass that needs accounts (e.g. private community join requests).
         self.hooks: list[Callable[[], Any]] = []
+        # Other kinds of job, by kind: payload -> result (e.g. tags.py's "relayed").
+        self.job_handlers: dict[str, Callable[[dict[str, Any]], Any]] = {}
         # Called with the community id after following / unfollowing (federation.py subscribes).
         self.follow_hooks: list[Callable[[int], Any]] = []
         self.unfollow_hooks: list[Callable[[int], Any]] = []
@@ -146,6 +155,8 @@ class Bouncer:
             return self.reddit_adapter
         if domain == RSS_DOMAIN:
             return self.rss_adapter
+        if domain == TAG_DOMAIN:
+            return self.tag_adapter
         if self._adapter_factory:
             return self._adapter_factory(domain)
         now = utcnow()
@@ -412,10 +423,12 @@ class Bouncer:
 
     @staticmethod
     def _votes_elsewhere(conn: Any, community_id: int | None) -> bool:
-        """Feed articles have no votes, and a subreddit's come with its listing
-        while you're using ThreadBNC (poll_follow): neither gets vote checks."""
+        """Feed articles have no votes, a subreddit's come with its listing
+        while you're using ThreadBNC (poll_follow), and a hashtag's posts are
+        from anywhere, so their votes are read only when opened: none gets vote checks."""
         row = conn.execute("SELECT canonical_ap_id FROM communities WHERE id=?", (community_id,)).fetchone()
-        return bool(row) and (is_rss(row["canonical_ap_id"]) or is_reddit_host(host_of(row["canonical_ap_id"])))
+        return bool(row) and (is_rss(row["canonical_ap_id"]) or is_tag(row["canonical_ap_id"])
+                              or is_reddit_host(host_of(row["canonical_ap_id"])))
 
     def _next_vote_check(self, conn: Any, community_id: int | None, created_at: str | None,
                          now: str | None = None) -> str | None:
@@ -1108,7 +1121,7 @@ class Bouncer:
         alone: list[int] = []
         nowhere: list[Any] = []
         for r in due:
-            if r["source_domain"] == RSS_DOMAIN or is_reddit_host(r["source_domain"]):
+            if r["source_domain"] in (RSS_DOMAIN, TAG_DOMAIN) or is_reddit_host(r["source_domain"]):
                 nowhere.append(r)  # their votes come another way (_votes_elsewhere)
             elif r["followed"] is None:
                 alone.append(r["id"])
@@ -1261,6 +1274,8 @@ class Bouncer:
                                             (payload["community_id"],)).fetchone()
                 captured = self.poll_follow(payload["community_id"]) if followed else 0
                 self._finish_job(job["id"], "done", {"community_id": payload["community_id"], "captured": captured})
+            elif job["kind"] in self.job_handlers:
+                self._finish_job(job["id"], "done", self.job_handlers[job["kind"]](payload))
             else:
                 self._finish_job(job["id"], "failed", error=f"unknown job kind {job['kind']}")
         except RemotePaused as exc:
