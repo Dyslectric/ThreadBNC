@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from email.utils import formatdate
 from urllib.parse import urlparse
 
@@ -78,9 +79,10 @@ class Fediverse:
 
 
 def note(**changes) -> dict:
+    # Posted after the tests follow its hashtag: a relayed post older than the follow is skipped.
     obj = {"id": NOTE, "type": "Note", "attributedTo": "https://masto.test/users/alice",
            "url": "https://masto.test/@alice/111", "to": [PUBLIC], "cc": ["https://masto.test/users/alice/followers"],
-           "published": "2026-09-24T10:00:00Z",
+           "published": (datetime.now(timezone.utc) + timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
            "content": '<p>New homelab! Reading <a href="https://blog.test/rack?utm_source=x&amp;a=1">about racks</a> '
                       '<a href="https://masto.test/tags/selfhosted" class="mention hashtag" rel="tag">#<span>SelfHosted</span></a></p>',
            "tag": [{"type": "Hashtag", "name": "#SelfHosted", "href": "https://masto.test/tags/selfhosted"}],

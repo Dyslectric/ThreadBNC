@@ -456,7 +456,9 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
 
     # The SSO return page comes from the identity provider's site, so the
     # (SameSite=strict) session cookie isn't sent; it's authorised by its state.
-    PUBLIC = ("/login", "/static/", "/robots.txt", "/healthz", CALLBACK_PATH, REDDIT_CALLBACK_PATH)
+    MASTODON_CALLBACK_PATH = "/accounts/mastodon/callback"
+    PUBLIC = ("/login", "/static/", "/robots.txt", "/healthz", CALLBACK_PATH, REDDIT_CALLBACK_PATH,
+              MASTODON_CALLBACK_PATH)
 
     def proxy_user(request: Request) -> str | None:
         """Who the reverse proxy says this is, if it really came through the
@@ -555,18 +557,20 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
 
     def acting(request: Request) -> Account | None:
         """The account forms act as: the one picked in the header, else the
-        default. Never the Reddit or Bluesky account: Poster.account_for
-        switches to them by itself for anything there."""
+        default. Never the Reddit, Bluesky or Mastodon account: Poster.account_for
+        switches to them by itself for anything they're for."""
         chosen = poster.get(request.session.get("acting_account"))
         return chosen if chosen and not chosen.separate else poster.default()
 
     def render(request: Request, name: str, **ctx: Any) -> HTMLResponse:
         if request.session.get("auth"):
             me, reddit_me, bluesky_me = acting(request), poster.reddit_account(), poster.bluesky_account()
+            mastodon_me = poster.mastodon_account()
             ctx.setdefault("accounts", poster.list())
             ctx.setdefault("acting", me)
             ctx.setdefault("reddit_me", reddit_me)
             ctx.setdefault("bluesky_me", bluesky_me)
+            ctx.setdefault("mastodon_me", mastodon_me)
             # Feed tiles use the same real vote controls as thread pages. Add
             # the viewer's current vote once for the whole page so rendering
             # the controls never turns into one database query per post.
@@ -575,7 +579,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                 ap_ids = [c["canonical_ap_id"] for i in fp.items for c in i.get("copies", [])
                           if c.get("canonical_ap_id")]
                 mine = {**poster.my_votes(me, ap_ids), **poster.my_votes(reddit_me, ap_ids),
-                        **poster.my_votes(bluesky_me, ap_ids)}
+                        **poster.my_votes(bluesky_me, ap_ids), **poster.my_votes(mastodon_me, ap_ids)}
                 for item in fp.items:
                     item["my_vote"] = next((mine.get(c.get("canonical_ap_id"), 0)
                                             for c in item.get("copies", [])
@@ -583,7 +587,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         return templates.TemplateResponse(request, name, ctx)
 
     def require_acting(request: Request) -> Account:
-        account = acting(request) or poster.reddit_account() or poster.bluesky_account()
+        account = (acting(request) or poster.reddit_account() or poster.bluesky_account()
+                   or poster.mastodon_account())
         if account is None:
             raise AccountError("Add an account on the Accounts page first.")
         return account
@@ -1953,6 +1958,33 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                            "not your app password.")
         return RedirectResponse("/accounts#bluesky", status_code=303)
 
+    @app.post("/accounts/mastodon")
+    def add_mastodon_account(request: Request, server: str = Form(...)):
+        try:
+            poster.start_mastodon(server, str(request.base_url).rstrip("/") + MASTODON_CALLBACK_PATH)
+        except AccountError as exc:
+            flash(request, str(exc), "error")
+            return RedirectResponse("/accounts#mastodon", status_code=303)
+        # Via a page, not a redirect: form-action 'self' would block a form
+        # submission that ends up on the Mastodon server.
+        return RedirectResponse("/accounts/mastodon/go", status_code=303)
+
+    @app.get("/accounts/mastodon/go", response_class=HTMLResponse)
+    def mastodon_go(request: Request):
+        url = poster.mastodon_pending_url()
+        if not url:
+            return RedirectResponse("/accounts#mastodon", status_code=303)
+        return render(request, "sso_go.html", url=url, provider=host_of(url), heading="Sign in to Mastodon")
+
+    @app.get(MASTODON_CALLBACK_PATH, response_class=HTMLResponse)
+    def mastodon_callback(request: Request, state: str = "", code: str | None = None, error: str | None = None):
+        # Reached from the Mastodon server, so the (SameSite=strict) session
+        # cookie isn't sent: authorised by the single-use state instead.
+        account, message = poster.finish_mastodon(state, code, error)
+        return templates.TemplateResponse(request, "sso_return.html", {
+            "next": "/accounts#mastodon", "message": None if account else message, "heading": "Mastodon"},
+            status_code=200 if account else 400)
+
     @app.post("/accounts/{aid}/default")
     def default_account(request: Request, aid: int):
         poster.set_default(aid)
@@ -2827,7 +2859,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         me = acting(request)
         ap_ids = [o["canonical_ap_id"] for o in objs]
         my_votes = {**poster.my_votes(me, ap_ids), **poster.my_votes(poster.reddit_account(), ap_ids),
-                    **poster.my_votes(poster.bluesky_account(), ap_ids)}
+                    **poster.my_votes(poster.bluesky_account(), ap_ids),
+                    **poster.my_votes(poster.mastodon_account(), ap_ids)}
         my_reposts = poster.my_reposts(poster.bluesky_account(), ap_ids)
         powers = {th["cid"]: mod.powers(me, th["cid"]) for th in threads.values()}
         counts = {c["id"]: c["n_comments"] for c in copies}

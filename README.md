@@ -312,8 +312,19 @@ post with it.
 - **Edits and deletions** after a post arrives are seen when you open it. Relays only pass on new posts.
 - Posts have no title. The feed shows their text, the first link in it becomes the post's link (so
   **Read article** works), and a content warning is used as the title and blurs the pictures.
-- Hashtag posts can't be voted on or replied to from here: your accounts are on Lemmy and PieFed.
-  **Repost** works.
+- **Liking and replying** needs your Mastodon account (or a GoToSocial, Akkoma or Pleroma one). On the
+  Accounts page, enter your server under **Mastodon** and approve ThreadBNC on your server's own page; your
+  password never reaches ThreadBNC, which keeps the access your server gives it, encrypted. Like the Bluesky
+  account, it isn't in the header switcher: hashtag posts and their replies are done as it. You can then:
+  - like and unlike them (the up button; Mastodon has no downvotes);
+  - reply to them (plain text). A reply mentions who it answers and who they mentioned, keeps their content
+    warning, and is no more public than what it answers, as Mastodon's own app does;
+  - delete your own replies (Mastodon can't bring them back, or edit them from here).
+
+  Each is found on your server by its address first, which fetches it there if your server hasn't seen it.
+  Your server sends you back to `/accounts/mastodon/callback` on the address you opened ThreadBNC at, so
+  that address has to be reachable from your browser (it is, if you're using it). Replies and mentions of
+  your Mastodon account don't come to the Inbox yet. **Repost** works either way.
 
 ### Setting it up on a domain Lemmy already uses
 

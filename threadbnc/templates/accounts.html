@@ -32,6 +32,16 @@
           <button class="small danger">Remove {{ a.handle }}</button>
         </form>
       </details>
+      {% elif a.is_mastodon %}
+      <span class="small muted">Used automatically to like and reply to posts from hashtags</span>
+      <details class="reply-box">
+        <summary class="small">Remove…</summary>
+        <form method="post" action="/accounts/{{ a.id }}/remove">
+          <p class="small muted">Ends ThreadBNC's access to {{ a.handle }} on {{ a.domain }} and forgets it here. Followed hashtags,
+            everything saved, and what you posted stay.</p>
+          <button class="small danger">Remove {{ a.handle }}</button>
+        </form>
+      </details>
       {% elif a.is_reddit %}
       <span class="small muted">Used automatically for anything on Reddit · <a href="/reddit">Reddit settings</a></span>
       <details class="reply-box">
@@ -99,6 +109,26 @@
     rel="noreferrer noopener" target="_blank">Settings → Privacy and security → App passwords</a>. It can't change your
     password or account settings, and you can revoke it there at any time. It's used once to sign in and not stored: ThreadBNC
     keeps Bluesky's session, encrypted.</p>
+</section>
+
+<section class="card narrow-form" id="mastodon">
+  <h2>Mastodon</h2>
+  {% if mastodon_me %}
+    <p>Signed in as <strong>{{ mastodon_me.handle }}</strong>{% if mastodon_me.status != 'ok' %} <span class="pill bad">needs login</span>{% endif %}</p>
+    <p class="small muted">Likes and replies on posts from hashtags, and on their replies, are made as {{ mastodon_me.handle }}
+      automatically. A reply mentions who it answers, as Mastodon's app does, so they see it. Sign in again below to renew
+      access or switch accounts.</p>
+  {% else %}
+    <p class="muted">Posts from hashtags are read without an account. Sign in to your Mastodon account to like and reply to
+      them and to their replies. GoToSocial, Akkoma and Pleroma accounts work too.</p>
+  {% endif %}
+  <form method="post" action="/accounts/mastodon" class="stack">
+    <label>Your server <input name="server" required placeholder="mastodon.social"
+      value="{{ mastodon_me.domain if mastodon_me else '' }}"></label>
+    <button>{{ 'Sign in again' if mastodon_me else 'Sign in to Mastodon' }}</button>
+  </form>
+  <p class="small muted">You approve ThreadBNC on your server's own page, so your password never comes here. ThreadBNC keeps
+    the access your server gives it, encrypted, and you can revoke it there under Preferences → Account → Authorized apps.</p>
 </section>
 
 <section class="card">

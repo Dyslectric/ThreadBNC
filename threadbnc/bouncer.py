@@ -56,6 +56,7 @@ from .adapters import (
 from .actor import Actor
 from .adapters.activitypub import ActivityPubAdapter
 from .adapters.bluesky import BlueskyAdapter
+from .adapters.mastodon import MastodonAdapter
 from .adapters.reddit import RedditAdapter
 from .adapters.rss import FeedFetcher, RssAdapter
 from .config import BLUESKY_MIN_POLL_MINUTES, REDDIT_MIN_POLL_MINUTES, RSS_MIN_POLL_MINUTES, Settings
@@ -201,6 +202,11 @@ class Bouncer:
                 log.info("%s now runs %s %s; switching to %s", domain, software, version, cls.__name__)
         self._adapters[domain] = (adapter, now)
         return adapter
+
+    def mastodon_for(self, domain: str) -> MastodonAdapter:
+        """Your Mastodon account's server, acted on as you (accounts.py). Never
+        read from: posts from the fediverse come through tag_adapter."""
+        return MastodonAdapter(domain, self.http)
 
     def reader(self, domain: str, community_id: int | None) -> ThreadiverseAdapter:
         """The adapter to read a community's posts with: logged in as a member
