@@ -88,6 +88,8 @@ details.menu.dropdown .menu-panel { left: 0; right: auto; min-width: 170px; }
 .menu-item .tick .i { color: var(--accent); }
 .menu-item .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .menu-note { margin: 4px 8px; font-size: 0.8em; color: var(--muted); }
+.menu-field { display: flex; gap: 6px; margin: 4px 8px 6px; }
+.menu-field input { flex: 1; min-width: 0; }
 .menu-panel .seg { display: flex; margin: 4px 6px 4px; }
 .menu-panel .seg button { flex: 1; }
 .account-menu > summary { display: inline-flex; align-items: center; gap: 6px; padding: 5px 8px 5px 10px; border-radius: 999px;

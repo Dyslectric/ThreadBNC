@@ -145,7 +145,8 @@ CREATE TABLE IF NOT EXISTS objects (
     downvotes INTEGER,
     revision_count INTEGER NOT NULL DEFAULT 0,
     last_changed_at TEXT,
-    dupe_key TEXT        -- posts: same link / same text as other posts (see dupes.py)
+    dupe_key TEXT,       -- posts: same link / same text as other posts (see dupes.py)
+    language TEXT        -- posts: the ISO 639 code their server gave, if any (see languages.py)
 );
 CREATE INDEX IF NOT EXISTS objects_thread ON objects(thread_id);
 CREATE INDEX IF NOT EXISTS objects_parent ON objects(parent_id);
@@ -626,6 +627,7 @@ COLUMN_MIGRATIONS = [
     ("articles", "title_key", "TEXT"),
     ("article_links", "link_key", "TEXT"),
     ("discussions", "content", "TEXT"),
+    ("objects", "language", "TEXT"),
 ]
 
 # Tables with an integer `id` key: inserts into these get `RETURNING id` on

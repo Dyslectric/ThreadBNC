@@ -12,6 +12,7 @@ import time
 from typing import Any
 from urllib.parse import urlparse
 
+from .. import languages
 from ..db import fmt_ts, parse_ts
 from .base import (
     CommunityRef,
@@ -39,6 +40,10 @@ COMMUNITY_PATH = re.compile(r"^/c/([^/@]+)/?$")  # Lemmy and PieFed community ac
 # After looking an object up fails with a server error, wait before asking about
 # it again, doubling each time: some objects crash the server outright.
 RESOLVE_RETRY_FIRST, RESOLVE_RETRY_MAX = 600, 86400  # seconds
+# Each server's language ids and their codes, from its /site. They don't change,
+# so they're read once; a server that couldn't say is asked again after a while.
+_LANGUAGES: dict[str, tuple[float, dict[int, str]]] = {}  # domain -> (when read, id -> code)
+LANGUAGES_RETRY = 3600  # seconds
 
 
 def _ts(value: Any) -> str | None:
@@ -72,6 +77,22 @@ class LemmyAdapter(ThreadiverseAdapter):
         return reader
 
     # -- low level -------------------------------------------------------
+    def _language(self, language_id: Any) -> str | None:
+        """The code for a post's language_id, which is the server's own number
+        for it (0: undetermined)."""
+        if not isinstance(language_id, int) or not language_id:
+            return None
+        read_at, codes = _LANGUAGES.get(self.domain, (0.0, {}))
+        if not read_at or (not codes and time.monotonic() - read_at > LANGUAGES_RETRY):
+            try:
+                site = self._get("/site") or {}
+            except RemoteError:
+                site = {}
+            codes = {x["id"]: x["code"] for x in site.get("all_languages") or []
+                     if isinstance(x, dict) and isinstance(x.get("id"), int) and isinstance(x.get("code"), str)}
+            _LANGUAGES[self.domain] = (time.monotonic(), codes)
+        return languages.normalize(codes.get(language_id))
+
     def _get(self, path: str, **params: Any) -> Any:
         return self.http.get_json(self.domain, f"{self.api_base}{path}", params, token=self._read_token)
 
@@ -133,6 +154,7 @@ class LemmyAdapter(ThreadiverseAdapter):
             comment_count=counts.get("comments"),
             thumbnail_url=p.get("thumbnail_url") or p.get("small_thumbnail_url"),
             newest_comment_at=_ts(counts.get("newest_comment_time")),
+            language=self._language(p.get("language_id")),
             featured=bool(p.get("featured_community") or p.get("featured_local")  # Lemmy
                           or p.get("sticky") or p.get("instance_sticky")),  # PieFed
             upvotes=counts.get("upvotes"),

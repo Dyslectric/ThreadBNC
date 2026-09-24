@@ -29,7 +29,7 @@ from markupsafe import Markup
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.background import BackgroundTask
 
-from . import articles, dupes, integrity, livestream, opml, portable, store, youtube
+from . import articles, dupes, integrity, languages, livestream, opml, portable, store, youtube
 from . import search as search_mod
 from . import discussions as discussions_mod
 from . import feed as feed_mod
@@ -401,6 +401,10 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     def mark_on_scroll() -> bool:
         return db.get_setting("mark_read_on_scroll") == "1"
 
+    def feed_languages() -> list[str]:
+        with db.connect() as conn:
+            return languages.load(conn)
+
     def custom_feeds() -> list[dict[str, Any]]:
         with db.connect() as conn:
             return feed_mod.custom_feeds(conn)
@@ -443,7 +447,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     templates.env.globals.update(event_label=event_label, tone=lambda e: TONE.get(e["event_type"], ""),
                                  thumb=thumb, video_title=video_title,
                                  static_url=static_url, trash_count=trash_count, inbox_count=inbox.unread_count,
-                                 mark_on_scroll=mark_on_scroll, audio_rate=audio_rate, themes=THEMES, custom_feeds=custom_feeds,
+                                 mark_on_scroll=mark_on_scroll, feed_languages=feed_languages,
+                                 language_name=languages.name, audio_rate=audio_rate, themes=THEMES, custom_feeds=custom_feeds,
                                  following_collapsed=following_collapsed, feed_sorts=FEED_SORTS,
                                  feed_windows=FEED_WINDOWS, feed_shows=FEED_SHOWS,
                                  password_login=bool(settings.password),
@@ -916,6 +921,19 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                          "ON CONFLICT(key) DO UPDATE SET value=excluded.value", ("1" if on else "0",))
         flash(request, "Posts are marked read as you scroll past them." if on else
               "Posts stay unread until you open them.")
+        return RedirectResponse(back(request, "/"), status_code=303)
+
+    @app.post("/feed/languages")
+    def set_feed_languages(request: Request, languages_text: str = Form("", alias="languages")):
+        """The languages feeds show (languages.py); none: every language."""
+        codes, unknown = languages.parse(languages_text)
+        if unknown:
+            flash(request, f"Not a language: {', '.join(unknown)}. Use codes like en or de, or names like English.")
+            return RedirectResponse(back(request, "/"), status_code=303)
+        with db.transaction() as conn:
+            languages.save(conn, codes)
+        flash(request, f"Feeds show posts in {', '.join(languages.name(c) for c in codes)}, and ones that don't say "
+                       "what language they're in." if codes else "Feeds show posts in every language.")
         return RedirectResponse(back(request, "/"), status_code=303)
 
     @app.post("/theme")

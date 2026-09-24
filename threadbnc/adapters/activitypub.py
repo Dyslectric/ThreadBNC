@@ -16,6 +16,7 @@ import re
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
+from .. import languages
 from .base import (
     TAG_DOMAIN,
     TAG_PREFIX,
@@ -55,6 +56,18 @@ def _text(value: Any) -> str | None:
         return value
     if isinstance(value, dict):  # contentMap / nameMap: any language will do
         return next((v for v in value.values() if isinstance(v, str)), None)
+    return None
+
+
+def language_of(obj: dict[str, Any]) -> str | None:
+    """The language a post says it's in: Lemmy's and PieFed's "language", or
+    Mastodon's, which is the one key of its contentMap."""
+    lang = obj.get("language")
+    if isinstance(lang, dict):
+        return languages.normalize(lang.get("identifier"))
+    for key in ("contentMap", "nameMap"):
+        if isinstance(obj.get(key), dict) and len(obj[key]) == 1:
+            return languages.normalize(next(iter(obj[key])))
     return None
 
 
@@ -201,6 +214,7 @@ class ActivityPubAdapter(ThreadiverseAdapter):
             comment_count=_count(obj.get("replies")),
             thumbnail_url=pictures[0] if pictures else None,
             gallery=pictures if len(pictures) > 1 else [],
+            language=language_of(obj),
         )
 
     def fetch_post(self, local_id: str) -> NPost:

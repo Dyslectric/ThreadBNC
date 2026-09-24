@@ -104,6 +104,7 @@ class NPost:
     downvotes: int | None = None
     featured: bool = False  # pinned in the community or instance; sorts first regardless of age
     newest_comment_at: str | None = None  # from the server's counts; cheap change detector
+    language: str | None = None  # ISO 639 code, as the server says (languages.normalize)
 
 
 @dataclass

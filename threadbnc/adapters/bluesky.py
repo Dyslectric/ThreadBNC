@@ -34,6 +34,7 @@ import time
 from typing import Any, Callable
 from urllib.parse import quote, urlencode, urlparse
 
+from .. import languages
 from ..db import fmt_ts, parse_ts, utcnow
 from ..render import escape_markdown, plain_lines
 from .activitypub import title_from
@@ -516,6 +517,7 @@ class BlueskyAdapter(ThreadiverseAdapter):
             comment_count=view.get("replyCount") if isinstance(view.get("replyCount"), int) else None,
             thumbnail_url=content.pictures[0] if content.pictures else content.cover,
             gallery=content.pictures if len(content.pictures) > 1 else [],
+            language=languages.normalize(next(iter(record.get("langs") or []), None)),
         )
 
     def posts_linking(self, url: str, limit: int = 25) -> list[dict[str, Any]]:

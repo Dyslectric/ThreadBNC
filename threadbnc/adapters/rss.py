@@ -36,7 +36,7 @@ from urllib.parse import urlencode, urljoin, urlparse
 
 import httpx
 
-from .. import livestream, youtube
+from .. import languages, livestream, youtube
 from ..db import fmt_ts, parse_ts
 from ..render import looks_like_audio
 from .base import (
@@ -66,6 +66,7 @@ CONTENT = "{http://purl.org/rss/1.0/modules/content/}encoded"
 DC = "{http://purl.org/dc/elements/1.1/}"
 MEDIA = "{http://search.yahoo.com/mrss/}"
 ITUNES = "{http://www.itunes.com/dtds/podcast-1.0.dtd}"
+XML_LANG = "{http://www.w3.org/XML/1998/namespace}lang"
 
 
 # -- HTML -> Markdown -----------------------------------------------------------------
@@ -230,6 +231,7 @@ class Feed:
     description: str | None
     entries: list[Entry] = field(default_factory=list)
     image: str | None = None  # a podcast's cover, for episodes without their own
+    language: str | None = None  # the feed's own, for all its entries (languages.normalize)
 
 
 def _date(value: str | None) -> str | None:
@@ -364,17 +366,20 @@ def parse_feed(data: bytes, url: str) -> Feed | None:
         link = _t(ch, "link") or None
         return Feed(url, _plain(_t(ch, "title")), link, _plain(_t(ch, "description")) or None,
                     [_rss_item(i, link or url) for i in (ch.findall("item") if ch is not None else [])],
-                    image=_image(ch, link or url))
+                    image=_image(ch, link or url),
+                    language=languages.normalize(_t(ch, "language") or _t(ch, DC + "language")))
     if root.tag == ATOM + "feed":
         link = _atom_link(root, url)
         return Feed(url, _plain(_atom_text(root.find(ATOM + "title"))), link,
                     _plain(_atom_text(root.find(ATOM + "subtitle"))) or None,
-                    [_atom_entry(e, link or url) for e in root.findall(ATOM + "entry")])
+                    [_atom_entry(e, link or url) for e in root.findall(ATOM + "entry")],
+                    language=languages.normalize(root.get(XML_LANG)))
     if root.tag.endswith("RDF"):
         ch = root.find(RSS1 + "channel")
         link = _t(ch, RSS1 + "link") or None
         return Feed(url, _plain(_t(ch, RSS1 + "title")), link, _plain(_t(ch, RSS1 + "description")) or None,
-                    [_rss_item(i, link or url, RSS1) for i in root.findall(RSS1 + "item")])
+                    [_rss_item(i, link or url, RSS1) for i in root.findall(RSS1 + "item")],
+                    language=languages.normalize(_t(ch, DC + "language")))
     return None
 
 
@@ -657,6 +662,7 @@ class RssAdapter(ThreadiverseAdapter):
             author=NActor(f"{RSS_PREFIX}{feed.url}#author={who}", who, host),
             metadata=meta,
             thumbnail_url=e.thumb or (feed.image if e.episode else None),
+            language=feed.language,
         )
 
     def resolve_url(self, ref: ThreadRef) -> str:

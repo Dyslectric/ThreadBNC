@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from . import articles, dupes, youtube
+from . import articles, dupes, languages, youtube
 from .adapters.base import is_reddit_host
 from .db import Conn, fmt_ts, parse_ts, utcnow
 from .render import AUDIO_EXTENSIONS, VIDEO_EXTENSIONS, looks_like_audio, sole_link
@@ -165,9 +165,10 @@ def custom_feeds(conn: Conn) -> list[dict[str, Any]]:
     members: dict[int, list[int]] = {}
     for r in conn.execute("SELECT feed_id, community_id FROM custom_feed_communities"):
         members.setdefault(r[0], []).append(r[1])
+    shown, params = languages.thread_shown_sql(languages.load(conn), "root_object_id")
     unread = {r[0]: r[1] for r in conn.execute(
         "SELECT community_id, COUNT(*) FROM archived_threads WHERE trashed_at IS NULL AND last_viewed_at IS NULL "
-        "GROUP BY community_id")}
+        f"AND {shown} GROUP BY community_id", params)}
     for f in feeds:
         f["community_ids"] = sorted(members.get(f["id"], []))
         f["unread_count"] = sum(unread.get(c, 0) for c in f["community_ids"])
@@ -227,7 +228,9 @@ def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: lis
               per_page: int = 25, as_of: str | None = None) -> FeedPage:
     """A page of posts. `thread_ids`: just those (the caller orders them);
     kept_only with no communities given: kept posts from anywhere, followed or not.
-    `media`: only posts that are a video or audio (MEDIA_KINDS).
+    `media`: only posts that are a video or audio (MEDIA_KINDS). Posts in
+    languages other than the ones chosen are left out, except from kept posts
+    and `thread_ids` (languages.py).
 
     `as_of`: the list as it was then, for going back to a feed (and its later
     pages): posts that arrived since are left out, and ones read since stay,
@@ -247,6 +250,10 @@ def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: lis
         head.append(as_of)
     if kept_only:
         scope += " AND t.retention='manual'"
+    elif thread_ids is None:
+        sql, params = languages.shown_sql(languages.load(conn), "o.language")
+        scope += " AND " + sql
+        args += params
     if media in MEDIA_KINDS:
         sql, params = MEDIA_KINDS[media]
         scope += " AND " + sql
@@ -450,16 +457,19 @@ def preview_rows(conn: Conn, thread_ids: list[int]) -> list[dict[str, Any]]:
 
 
 def followed_communities(conn: Conn) -> list[dict[str, Any]]:
+    """Every followed community, with how many posts it shows (in the languages
+    chosen) and how many of those are unread."""
+    shown, params = languages.thread_shown_sql(languages.load(conn), "t.root_object_id")
     rows = conn.execute(
         """SELECT c.id, c.name, c.title, c.canonical_ap_id, f.poll_interval_minutes, f.retention_days,
                   f.last_polled_at, f.last_error, f.source_domain, f.push_state, f.push_error, f.last_push_at,
                   f.polling,
                   (SELECT COUNT(*) FROM archived_threads t WHERE t.community_id=c.id AND t.trashed_at IS NULL
-                       AND t.last_viewed_at IS NULL) AS unread,
-                  (SELECT COUNT(*) FROM archived_threads t WHERE t.community_id=c.id AND t.trashed_at IS NULL)
-                       AS total
+                       AND t.last_viewed_at IS NULL AND {shown}) AS unread,
+                  (SELECT COUNT(*) FROM archived_threads t WHERE t.community_id=c.id AND t.trashed_at IS NULL
+                       AND {shown}) AS total
            FROM community_follows f JOIN communities c ON c.id=f.community_id
-           WHERE f.active=1 ORDER BY c.name, c.canonical_ap_id""").fetchall()
+           WHERE f.active=1 ORDER BY c.name, c.canonical_ap_id""".format(shown=shown), params * 2).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -468,9 +478,10 @@ def mark_read(conn: Conn, now: str, community_id: int | None = None,
     """Mark a feed read; returns how many posts were unread. `now` becomes
     their last_viewed_at, which is what unmark_read(now) undoes."""
     scope = _scope(community_id, community_ids, "community_id")
+    shown, params = languages.thread_shown_sql(languages.load(conn), "root_object_id")
     unread = conn.execute(
         f"SELECT COUNT(*) FROM archived_threads WHERE trashed_at IS NULL AND last_viewed_at IS NULL "
-        f"AND {scope[0]}", scope[1]).fetchone()[0]
+        f"AND {scope[0]} AND {shown}", [*scope[1], *params]).fetchone()[0]
     conn.execute(
         f"UPDATE archived_threads SET prev_viewed_at=last_viewed_at, last_viewed_at=? "
         f"WHERE trashed_at IS NULL AND {scope[0]}", [now, *scope[1]])
