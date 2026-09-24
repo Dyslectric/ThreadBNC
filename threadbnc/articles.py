@@ -38,6 +38,7 @@ from .media import register as register_media
 from .render import ALLOWED_ATTRS, ALLOWED_TAGS, MediaLookup, _media_html, looks_like_media
 
 MAX_PAGE_BYTES = 5_000_000
+CARD_IMAGE_BYTES = 1_000_000  # Bluesky's limit for a link card's picture
 STANDALONE_DAYS = 30  # an article last opened from a link this long ago, not kept, no post linking to it, goes
 MIN_WORDS = 80  # less than this is a teaser, a paywall or not an article
 CHUNK = 64 * 1024
@@ -379,6 +380,51 @@ class ArticleFetcher:
                         raise ArticleRejected(f"page too large (> {MAX_PAGE_BYTES // 1_000_000} MB)")
                 return bytes(data), current
         raise ArticleRejected("too many redirects")
+
+    def link_card(self, url: str) -> dict[str, Any]:
+        """What a link card for `url` shows, as a Bluesky post's does: the
+        page's title, description and picture (bytes, type), each None when it
+        can't be read. Read once, when you post the link."""
+        card: dict[str, Any] = {"title": None, "description": None, "image": None}
+        try:
+            page, final = self._download(url)
+            meta = trafilatura.extract_metadata(page, default_url=final)
+        except (MediaRejected, RemotePaused, httpx.HTTPError, OSError, ValueError):
+            return card
+        if meta is None:
+            return card
+        card["title"], card["description"] = meta.title, meta.description
+        image = urljoin(final, meta.image) if meta.image else None
+        if image and urlparse(image).scheme in ("http", "https"):
+            try:
+                card["image"] = self._download_image(image)
+            except (MediaRejected, RemotePaused, httpx.HTTPError, OSError):
+                pass
+        return card
+
+    def _download_image(self, url: str) -> tuple[bytes, str] | None:
+        """A small picture (a link card's): its bytes and type, or None if it's too big or not a picture."""
+        current = url
+        for _ in range(MAX_REDIRECTS + 1):
+            if self.check_host:
+                _assert_public_host(current)
+            host = (urlparse(current).hostname or "").lower()
+            self.throttle.wait(host)
+            with self.client.stream("GET", current, headers={"Accept": "image/*"}) as resp:
+                self.throttle.note(host, resp.status_code, resp.headers)
+                if resp.status_code in (301, 302, 303, 307, 308) and "location" in resp.headers:
+                    current = urljoin(current, resp.headers["location"])
+                    continue
+                ctype = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
+                if resp.status_code != 200 or not ctype.startswith("image/"):
+                    return None
+                data = bytearray()
+                for chunk in resp.iter_bytes(CHUNK):
+                    data += chunk
+                    if len(data) > CARD_IMAGE_BYTES:
+                        return None
+                return bytes(data), ctype
+        return None
 
     def fetch_pending(self, limit: int = 20) -> int:
         if not self.enabled:

@@ -272,7 +272,14 @@ their own **Bluesky** group in the sidebar and in the feed editor. Everything is
 - **Checking** is every 30 minutes by default (`THREADBNC_BLUESKY_POLL_MINUTES`, at least 5): one request per account or feed, which also updates the likes on the posts it lists. A feed that's only shown to someone signed in is read as your account once you've signed in; until then the follow box says it can't be followed.
 - **Replies:** opening a post reads its replies, ten deep, as its comments, in one request. They aren't read again within five minutes.
 - **Signing in:** on the Accounts page, sign in with your handle and an [app password](https://bsky.app/settings/app-passwords) (Settings → Privacy and security → App passwords). The app password is used once and not stored; ThreadBNC keeps Bluesky's session, encrypted, and renews it before it runs out. Like the Reddit account, it isn't in the header switcher: anything on Bluesky is done as it.
-- **Signed in**, you can like and unlike posts and replies (the up button; Bluesky has no downvotes), reply to posts and replies (plain text, 300 characters; links, @mentions and #hashtags become links on Bluesky), delete your own posts and replies (they can't be edited or brought back), and write posts on your own account (Accounts → Write a post, or New post on your account's page), with an optional link card. Notifications aren't read into the Inbox yet.
+- **Signed in**, you can:
+  - like and unlike posts and replies (the up button; Bluesky has no downvotes);
+  - repost them to your followers, or quote them in a post of your own (Repost and Quote under each one);
+  - reply to posts and replies (plain text, 300 characters; links, @mentions and #hashtags become links on Bluesky);
+  - delete your own posts and replies (they can't be edited or brought back);
+  - write posts on your own account (Accounts → Write a post, or New post on your account's page). A link becomes a card with the page's title, description and picture, read from the page once, when you post;
+  - follow your **Following timeline** like a feed (Accounts → Follow your Following timeline): the posts of the accounts you follow, checked like any other feed, without reposts;
+  - see replies to you, mentions of you and quotes of your posts in the **Inbox**, checked with the other inboxes, and answer them there. Bluesky only keeps "seen up to" rather than a read mark per item, so marking one read is kept here, and Mark all read marks them all seen on Bluesky too.
 - Signed out, likes show as votes but nothing can be liked, replied to or posted. Reposting a Bluesky post to one of your Lemmy communities works either way.
 - **Keeping one post:** a `bsky.app/profile/…/post/…` link can be kept like any post link.
 

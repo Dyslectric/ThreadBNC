@@ -45,6 +45,7 @@ NO_BLUESKY_LOGIN = "To like, reply or post on Bluesky, log in to Bluesky on the 
 REDDIT_READ_ONLY_LOGIN = ("Connect Reddit again on the Reddit page to allow voting, commenting and posting; "
                           "this sign-in was made before ThreadBNC asked for that and can only read.")
 T = TypeVar("T")
+REPOSTED = "#repost"  # my_votes keeps your Bluesky reposts too, as <post's id>#repost
 
 
 class AccountError(Exception):
@@ -456,13 +457,16 @@ class Poster:
         if c is None:
             raise AccountError("Community not found.")
         account = self.account_for(account, c["canonical_ap_id"])
+        url = (url or "").strip() or None
+        # A Bluesky link card shows the page's title, description and picture: read them first.
+        card = {"card": self.bouncer.articles.link_card(url)} if account.is_bluesky and url else {}
 
         def act(adapter: ThreadiverseAdapter, token: str) -> Any:
             found = adapter.resolve_as(token, c["canonical_ap_id"])
             if "community" not in found:
                 raise AccountError(f"{account.domain} couldn't find that community.")
             return adapter, adapter.create_post(token, found["community"], title, (body or "").strip() or None,
-                                                (url or "").strip() or None)
+                                                url, **card)
 
         adapter, post = self._run(account, act)
         # A new Bluesky post may not have reached the AppView yet: store it as made, without reading it back.
@@ -600,6 +604,43 @@ class Poster:
             elif score != old:
                 conn.execute("UPDATE objects SET upvotes=upvotes+?, downvotes=downvotes+?, score=score+? WHERE id=?",
                              ((score == 1) - (old == 1), (score == -1) - (old == -1), score - old, object_id))
+
+    # -- Bluesky reposts and quotes ------------------------------------------------------
+    def _bluesky_target(self, object_id: int) -> tuple[Account, Any]:
+        obj = self._object(object_id)
+        if not is_bluesky(obj["canonical_ap_id"]):
+            raise AccountError("Only Bluesky posts can be reposted or quoted there.")
+        return self.account_for(self.bluesky_account() or self.default(), obj["canonical_ap_id"]), obj  # type: ignore[arg-type]
+
+    def bluesky_repost(self, object_id: int, on: bool = True) -> None:
+        """Repost a Bluesky post or reply to your followers there, or undo it."""
+        account, obj = self._bluesky_target(object_id)
+        kind = obj["object_type"]
+        self._run(account, lambda adapter, token: adapter.repost(  # type: ignore[attr-defined]
+            token, self._local_id(adapter, token, account.domain, object_id, kind), on))
+        key = obj["canonical_ap_id"] + REPOSTED
+        with self.db.transaction() as conn:
+            if on:
+                conn.execute("INSERT INTO my_votes(account_id, object_ap_id, score, voted_at) VALUES (?,?,1,?) "
+                             "ON CONFLICT(account_id, object_ap_id) DO UPDATE SET voted_at=excluded.voted_at",
+                             (account.id, key, utcnow()))
+            else:
+                conn.execute("DELETE FROM my_votes WHERE account_id=? AND object_ap_id=?", (account.id, key))
+
+    def bluesky_quote(self, object_id: int, text: str) -> int:
+        """Post on your Bluesky account quoting a post or reply. Returns the new post's thread id."""
+        if not text.strip():
+            raise AccountError("Write something first.")
+        account, obj = self._bluesky_target(object_id)
+        kind = obj["object_type"]
+        adapter, post = self._run(account, lambda adapter, token: (adapter, adapter.quote(  # type: ignore[attr-defined]
+            token, self._local_id(adapter, token, account.domain, object_id, kind), text)))
+        return self.bouncer._ingest_post(post, account.domain, post.local_id, adapter, source_url=post.ap_id,
+                                         retention="manual", capture=True)
+
+    def my_reposts(self, account: Account | None, ap_ids: list[str]) -> set[str]:
+        """Which of these Bluesky posts you've reposted from here."""
+        return {k[: -len(REPOSTED)] for k in self.my_votes(account, [a + REPOSTED for a in ap_ids])}
 
     def my_votes(self, account: Account | None, ap_ids: list[str]) -> dict[str, int]:
         if account is None or not ap_ids:

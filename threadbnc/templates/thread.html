@@ -81,6 +81,21 @@
         aria-label="{{ label }}{{ (', ' ~ n.agg.downvotes ~ ' so far') if n.agg.downvotes is not none }}"><span aria-hidden="true">▼ {{ n.agg.downvotes if n.agg.downvotes is not none else '' }}</span></button>
     </form>
     {% endif %}
+    {% if bsky %}
+      {% set reposted = o.canonical_ap_id in my_reposts %}
+      <form method="post" action="/o/{{ o.id }}/bluesky-repost" class="inline">
+        <input type="hidden" name="on" value="{{ '0' if reposted else '1' }}">
+        <button class="link {{ 'on' if reposted }}" aria-pressed="{{ 'true' if reposted else 'false' }}"
+          title="{{ 'Undo your repost' if reposted else 'Repost to your followers as ' ~ as_whom }}">{{ icon('repost') }} {{ 'Reposted' if reposted else 'Repost' }}</button>
+      </form>
+      <details class="reply-box">
+        <summary>Quote</summary>
+        <form method="post" action="/o/{{ o.id }}/bluesky-quote" class="stack">
+          <textarea name="body" rows="3" required maxlength="300" placeholder="Post on your account as {{ as_whom }}, quoting this (plain text, up to 300 characters)"></textarea>
+          <button class="small">Post quote as {{ as_whom }}</button>
+        </form>
+      </details>
+    {% endif %}
     {% if not is_post %}
       <details class="reply-box">
         <summary>Reply</summary>

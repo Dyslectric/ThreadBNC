@@ -225,9 +225,10 @@ def normalize_tag(text: str) -> str:
 # Everything from there is known by its bsky.app address: accounts
 # https://bsky.app/profile/<did>, feeds .../profile/<did>/feed/<name>, posts and
 # replies .../profile/<did>/post/<rkey>. A followed account's "community" name is
-# its DID, a feed's "<did>/feed/<name>".
+# its DID, a feed's "<did>/feed/<name>", and your own Following timeline's
+# "<did>/timeline" (.../profile/<did>/timeline, an address only ThreadBNC uses).
 BSKY_DOMAIN = "bsky.app"
-_BSKY_PROFILE = re.compile(r"^/profile/([^/?#]+)(?:/(feed|post)/([^/?#]+))?/?$")
+_BSKY_PROFILE = re.compile(r"^/profile/([^/?#]+)(?:/(feed|post)/([^/?#]+)|/(timeline))?/?$")
 _BSKY_HANDLE = re.compile(r"^@?([a-z0-9-]+(?:\.[a-z0-9-]+)+)$", re.I)
 _AT_FEED = re.compile(r"^at://([^/]+)/app\.bsky\.feed\.generator/([^/?#]+)$")
 
@@ -254,6 +255,8 @@ def _bluesky_ref(text: str) -> CommunityRef | None:
         raise ValueError("Not a Bluesky account or feed (expected https://bsky.app/profile/name "
                          "or https://bsky.app/profile/name/feed/feed-name)")
     actor = m.group(1) if m.group(1).startswith("did:") else m.group(1).lower()
+    if m.group(4):
+        return CommunityRef(BSKY_DOMAIN, f"{actor}/timeline", BSKY_DOMAIN)
     return CommunityRef(BSKY_DOMAIN, f"{actor}/feed/{m.group(3)}" if m.group(2) else actor, BSKY_DOMAIN)
 
 

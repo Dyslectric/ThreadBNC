@@ -6,8 +6,9 @@ what a custom feed lists; a post's replies when it's opened, as its comments;
 and its likes, as its votes, from each check of the account or feed.
 
 Signed in with your own account (an app password; see accounts.py), you can
-like, reply, post and delete your own posts, and feeds that are only shown to
-someone signed in are read as you. Writes go to your account's own server
+like, repost, quote, reply, post and delete your own posts; replies, mentions
+and quotes of you arrive in the Inbox; your Following timeline can be followed
+like a feed; and feeds that are only shown to someone signed in are read as you. Writes go to your account's own server
 (its PDS, found from its DID document when you log in), and signed-in reads
 go through it to Bluesky's AppView, as the app does. The session (both of its
 tokens, and the PDS) is kept encrypted like any account's, as JSON; its short-
@@ -43,6 +44,7 @@ from .base import (
     NActor,
     NComment,
     NCommunity,
+    NInboxItem,
     NPost,
     RemoteAuthError,
     RemoteNotFound,
@@ -57,6 +59,9 @@ APPVIEW = "did:web:api.bsky.app#bsky_appview"  # where a PDS sends signed-in rea
 ENTRYWAY = "https://bsky.social"  # signs in accounts hosted by Bluesky when only an email is given
 PLC = "https://plc.directory"
 LIKE = "app.bsky.feed.like"
+REPOST = "app.bsky.feed.repost"
+CARD_THUMB = "https://cdn.bsky.app/img/feed_thumbnail/plain/{did}/{cid}@jpeg"  # where an uploaded card picture shows
+TIMELINE = "/timeline"  # a followed name ending in this is your own Following timeline
 POST_CHARS = 300  # Bluesky's limit, in graphemes; counted here in characters
 REFRESH_BEFORE = 300  # seconds before the access token runs out that it's refreshed
 _AUTH_ERRORS = {"ExpiredToken", "InvalidToken", "AuthMissing", "AuthenticationRequired", "AuthFactorTokenRequired",
@@ -253,9 +258,11 @@ class BlueskyAdapter(ThreadiverseAdapter):
 
     # -- as your account ---------------------------------------------------------
     def _xrpc(self, base: str, method: str, *, bearer: str | None = None, params: dict[str, Any] | None = None,
-              body: dict[str, Any] | None = None, appview: bool = False) -> Any:
+              body: dict[str, Any] | None = None, appview: bool = False,
+              raw: tuple[bytes, str] | None = None) -> Any:
         """One call to a PDS (or the entryway): a query with `params`, or a
-        procedure (POST) with `body`. Bluesky's errors come as {error, message}."""
+        procedure (POST) with `body`, or with `raw` (bytes, their type) for an
+        upload. Bluesky's errors come as {error, message}."""
         url = f"{base.rstrip('/')}/xrpc/{method}"
         if params:
             url += "?" + urlencode({k: v for k, v in params.items() if v is not None}, doseq=True)
@@ -265,7 +272,10 @@ class BlueskyAdapter(ThreadiverseAdapter):
         if appview:
             headers["atproto-proxy"] = APPVIEW
         content = None
-        if body is not None:
+        if raw is not None:
+            content, headers["Content-Type"] = raw
+            body = {}  # a procedure, like any other POST
+        elif body is not None:
             headers["Content-Type"] = "application/json"
             content = json.dumps(body).encode()
         # Asked for while you wait (signing in, liking, replying), so not spaced out
@@ -373,10 +383,7 @@ class BlueskyAdapter(ThreadiverseAdapter):
 
     def _signed_in_feed(self, uri: str, limit: int, cursor: str | None) -> Any:
         """A feed only shown to someone signed in, read as you, if you are."""
-        token = self.reading_session() if self.reading_session else None
-        if not token:
-            raise RemoteAuthError(f"The Bluesky feed {web_url(uri)} is only shown to someone signed in: "
-                                  "log in to Bluesky on the Accounts page to follow it", "AuthMissing")
+        token = self._reading_token(f"The Bluesky feed {web_url(uri)}")
         return self._as_me(token, "app.bsky.feed.getFeed", appview=True, feed=uri, limit=limit, cursor=cursor)
 
     def _feed(self, uri: str, limit: int, cursor: str | None = None) -> Any:
@@ -400,6 +407,8 @@ class BlueskyAdapter(ThreadiverseAdapter):
         """The account or feed `ref` names (by handle or DID). Its local id is
         the name it's followed by from then on: the account's DID, or
         "<DID>/feed/<name>"."""
+        if ref.name.endswith(TIMELINE):
+            return self._timeline_community(ref.name)
         actor, _, rkey = ref.name.partition("/feed/")
         did = self._did(actor)
         if not rkey:
@@ -425,6 +434,25 @@ class BlueskyAdapter(ThreadiverseAdapter):
         self._communities[c.local_id or ref.name] = c
         return c
 
+    def _reading_token(self, what: str) -> str:
+        token = self.reading_session() if self.reading_session else None
+        if not token:
+            raise RemoteAuthError(f"{what} is only shown to someone signed in: log in to Bluesky on the "
+                                  "Accounts page", "AuthMissing")
+        return token
+
+    def _timeline_community(self, name: str) -> NCommunity:
+        """Your Following timeline, as a community. Only your own can be read."""
+        did = self._did(name[: -len(TIMELINE)])
+        me = self._session(self._reading_token("Your Following timeline"))
+        if me["did"] != did:
+            raise RemoteNotFound("Only your own Following timeline can be followed: sign in as that account")
+        c = NCommunity(ap_id=profile_url(did) + TIMELINE, name="Following", domain=BSKY_DOMAIN,
+                       title=f"@{me['handle']}'s timeline", local_id=f"{did}{TIMELINE}",
+                       description="Posts from the accounts you follow on Bluesky.")
+        self._communities[c.local_id] = c  # type: ignore[index]
+        return c
+
     def _community(self, name: str) -> NCommunity:
         return self._communities.get(name) or self.fetch_community(CommunityRef(BSKY_DOMAIN, name, BSKY_DOMAIN))
 
@@ -439,7 +467,10 @@ class BlueskyAdapter(ThreadiverseAdapter):
             return []
         community = self._community(name)
         actor, _, rkey = name.partition("/feed/")
-        if rkey:
+        if name.endswith(TIMELINE):
+            data = self._as_me(self._reading_token("Your Following timeline"), "app.bsky.feed.getTimeline",
+                               appview=True, limit=min(limit, 100), cursor=cursor)
+        elif rkey:
             data = self._feed(f"at://{actor}/{GENERATOR}/{rkey}", limit=min(limit, 100), cursor=cursor)
         else:
             data = self._get("app.bsky.feed.getAuthorFeed", actor=actor, filter="posts_no_replies",
@@ -450,7 +481,7 @@ class BlueskyAdapter(ThreadiverseAdapter):
         for item in data.get("feed") or []:
             if not isinstance(item, dict) or not isinstance(item.get("post"), dict):
                 continue
-            if not rkey and item.get("reason"):  # a repost, on an account's own page
+            if not rkey and item.get("reason"):  # a repost, on an account's page or your timeline
                 continue
             posts.append(self._post(item["post"], community, name))
         return posts
@@ -598,40 +629,77 @@ class BlueskyAdapter(ThreadiverseAdapter):
                         updated_at=None, deleted=False, removed=False,
                         author=NActor(profile_url(s["did"]), s["handle"], BSKY_DOMAIN), score=0, upvotes=0)
 
+    def _publish(self, token: str, record: dict[str, Any], view_embed: dict[str, Any] | None) -> NPost:
+        """Post a record on your account, and it as a post of your account's."""
+        s = self._session(token)
+        got = self._write(token, "com.atproto.repo.createRecord", {"collection": POST, "record": record})
+        view = {"uri": got["uri"], "cid": got.get("cid"), "record": record, "embed": view_embed,
+                "author": {"did": s["did"], "handle": s["handle"]}, "likeCount": 0, "replyCount": 0}
+        return self._post(view, self._community(s["did"]), s["did"])
+
+    def _upload(self, token: str, data: bytes, kind: str) -> dict[str, Any]:
+        s = self._session(token)
+        return self._xrpc(s["pds"], "com.atproto.repo.uploadBlob", bearer=s["access"], raw=(data, kind))["blob"]
+
     def create_post(self, token: str, community_local_id: str, title: str, body: str | None,
-                    url: str | None) -> NPost:
+                    url: str | None, card: dict[str, Any] | None = None) -> NPost:
         """A new post on your own account. Bluesky posts have no title: the
-        title and text go together, and a link becomes its card."""
+        title and text go together, and a link becomes its card: `card` has
+        the page's title, description and picture (bytes, type), when they
+        could be read (accounts.py), else the card is just the site's name."""
         s = self._session(token)
         if community_local_id != s["did"]:
             raise RemoteRejected("On Bluesky you can only post to your own account.", "NotYours")
         record = self._record("\n\n".join(x.strip() for x in (title, body or "") if x and x.strip()))
         view_embed = None
         if url:
-            card = {"uri": url, "title": urlparse(url).hostname or url, "description": ""}
-            record["embed"] = {"$type": "app.bsky.embed.external", "external": card}
-            view_embed = {"$type": "app.bsky.embed.external#view", "external": card}
-        got = self._write(token, "com.atproto.repo.createRecord", {"collection": POST, "record": record})
-        view = {"uri": got["uri"], "cid": got.get("cid"), "record": record, "embed": view_embed,
-                "author": {"did": s["did"], "handle": s["handle"]}, "likeCount": 0, "replyCount": 0}
-        return self._post(view, self._community(s["did"]), s["did"])
+            card = card or {}
+            external = {"uri": url, "title": (card.get("title") or urlparse(url).hostname or url)[:300],
+                        "description": (card.get("description") or "")[:1000]}
+            shown = dict(external)
+            if card.get("image"):
+                blob = self._upload(token, *card["image"])
+                external["thumb"] = blob
+                shown["thumb"] = CARD_THUMB.format(did=s["did"], cid=(blob.get("ref") or {}).get("$link", ""))
+            record["embed"] = {"$type": "app.bsky.embed.external", "external": external}
+            view_embed = {"$type": "app.bsky.embed.external#view", "external": shown}
+        return self._publish(token, record, view_embed)
 
-    def _like_of(self, token: str, uri: str) -> str | None:
-        """The like you gave this post, if you did (the AppView knows)."""
+    def quote(self, token: str, local_id: str, text: str) -> NPost:
+        """A new post on your account quoting a post or reply."""
+        ref = self._ref(local_id)
+        record = {**self._record(text), "embed": {"$type": "app.bsky.embed.record", "record": ref}}
+        posts = self._get("app.bsky.feed.getPosts", uris=[ref["uri"]]).get("posts") or []
+        q = next((p for p in posts if isinstance(p, dict) and p.get("uri") == ref["uri"]), None)
+        view_embed = {"$type": "app.bsky.embed.record#view", "record": {
+            "$type": "app.bsky.embed.record#viewRecord", "uri": q["uri"], "cid": q.get("cid"),
+            "author": q.get("author") or {}, "value": q.get("record") or {},
+            "embeds": [q["embed"]] if q.get("embed") else []}} if q else None
+        return self._publish(token, record, view_embed)
+
+    def _viewer(self, token: str, uri: str) -> dict[str, Any]:
+        """What you've done to this post: your like and repost of it, if any (the AppView knows)."""
         posts = self._as_me(token, "app.bsky.feed.getPosts", appview=True, uris=[uri]).get("posts") or []
         view = next((p for p in posts if isinstance(p, dict) and p.get("uri") == uri), None)
-        return ((view or {}).get("viewer") or {}).get("like")
+        return (view or {}).get("viewer") or {}
+
+    def _toggle(self, token: str, collection: str, ref: dict[str, str], mine: str | None, on: bool) -> None:
+        if on and not mine:
+            self._write(token, "com.atproto.repo.createRecord",
+                        {"collection": collection, "record": {"$type": collection, "subject": ref, "createdAt": utcnow()}})
+        elif not on and mine:
+            self._write(token, "com.atproto.repo.deleteRecord", {"collection": collection, "rkey": mine.rsplit("/", 1)[-1]})
+
+    def repost(self, token: str, local_id: str, on: bool = True) -> None:
+        """Repost a post or reply to your followers, or undo it."""
+        ref = self._ref(local_id)
+        self._toggle(token, REPOST, ref, self._viewer(token, ref["uri"]).get("repost"), on)
 
     def _vote(self, token: str, local_id: str, score: int) -> None:
         ref = self._ref(local_id)
         if score == -1:
             raise RemoteRejected("Bluesky has likes, not downvotes.", "NoDownvotes")
-        like = self._like_of(token, ref["uri"])
-        if score == 1 and not like:
-            self._write(token, "com.atproto.repo.createRecord",
-                        {"collection": LIKE, "record": {"$type": LIKE, "subject": ref, "createdAt": utcnow()}})
-        elif score == 0 and like:
-            self._write(token, "com.atproto.repo.deleteRecord", {"collection": LIKE, "rkey": like.rsplit("/", 1)[-1]})
+        self._toggle(token, LIKE, ref, self._viewer(token, ref["uri"]).get("like"), score == 1)
 
     def vote_post(self, token: str, local_id: str, score: int) -> None:
         self._vote(token, local_id, score)
@@ -655,3 +723,38 @@ class BlueskyAdapter(ThreadiverseAdapter):
         raise RemoteRejected("Bluesky posts can't be edited: delete it and post again.", "NoEdits")
 
     edit_comment = edit_post
+
+    # -- notifications: your Inbox ----------------------------------------------------
+    def inbox(self, token: str, me_ap_id: str) -> list[NInboxItem]:
+        """Replies to you, mentions of you and quotes of your posts, newest
+        first (likes, reposts and follows aren't Inbox things)."""
+        got = self._as_me(token, "app.bsky.notification.listNotifications", appview=True, limit=50)
+        out = []
+        for n in got.get("notifications") or []:
+            reason, record = n.get("reason"), n.get("record")
+            if reason not in ("reply", "mention", "quote") or not isinstance(record, dict) or not n.get("uri"):
+                continue
+            uri, cid = n["uri"], n.get("cid")
+            root = (record.get("reply") or {}).get("root") or {}
+            content = _Content(record, None)
+            author = n.get("author") or {}
+            out.append(NInboxItem(
+                kind="reply" if reason == "reply" else "mention", remote_id=uri, unread=not n.get("isRead"),
+                author=author_of(author), body=content.markdown(inline_media=False),
+                created_at=_when(record.get("createdAt")) or _when(n.get("indexedAt")),
+                object_type="comment" if root.get("uri") else "post",
+                object_ap_id=web_url(uri), object_local_id=f"{uri} {cid}", author_local_id=author.get("did"),
+                subject="Quoted your post" if reason == "quote" else None,
+                post_ap_id=web_url(root["uri"]) if root.get("uri") else web_url(uri),
+                post_local_id=f"{root['uri']} {root.get('cid')}" if root.get("uri") else f"{uri} {cid}",
+                post_title=None if root.get("uri") else title_from(content.text or "")))
+        return out
+
+    def mark_inbox_read(self, token: str, kind: str, remote_id: str, read: bool) -> None:
+        """Bluesky only knows when you last looked at all of them (mark_all_inbox_read):
+        one item is marked read here only."""
+
+    def mark_all_inbox_read(self, token: str, pairs: list[tuple[str, str]]) -> None:
+        s = self._session(token)
+        self._xrpc(s["pds"], "app.bsky.notification.updateSeen", bearer=s["access"], appview=True,
+                   body={"seenAt": utcnow()})

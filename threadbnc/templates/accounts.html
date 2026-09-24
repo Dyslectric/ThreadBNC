@@ -78,8 +78,10 @@
   {% if bluesky_me %}
     <p>Signed in as <strong>{{ bluesky_me.handle }}</strong>{% if bluesky_me.status != 'ok' %} <span class="pill bad">needs login</span>{% endif %}
       · <a href="/bluesky/post">Write a post →</a></p>
-    <p class="small muted">Likes, replies and posts on Bluesky are made as {{ bluesky_me.handle }} automatically, and feeds only
-      shown to someone signed in are read as you. Sign in again below to renew the session or switch accounts.</p>
+    <form method="post" action="/bluesky/timeline" class="inline"><button class="small secondary"
+      title="The posts of the accounts you follow on Bluesky, checked like any feed">Follow your Following timeline</button></form>
+    <p class="small muted">Likes, reposts, quotes, replies and posts on Bluesky are made as {{ bluesky_me.handle }} automatically,
+      replies, mentions and quotes of you arrive in the Inbox, and feeds only shown to someone signed in are read as you. Sign in again below to renew the session or switch accounts.</p>
   {% else %}
     <p class="muted">Follow Bluesky accounts and feeds without signing in. Sign in to like, reply and post, and to follow feeds
       that are only shown to someone signed in.</p>

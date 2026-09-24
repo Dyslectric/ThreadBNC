@@ -68,6 +68,10 @@ class FakeBluesky:
         self.sent: list[tuple] = []  # (method, url, query, headers, body) to your PDS
         self.records: dict[str, dict] = {}  # rkey -> createRecord's body, on your account
         self.access_token = self.refresh_token = None
+        self.timeline: list[dict] = []
+        self.notifications: list[dict] = []
+        self.uploads: list[tuple[str, bytes]] = []
+        self.seen_at = None
 
     def get_json(self, domain, path, params=None):
         assert domain == "public.api.bsky.app"
@@ -121,7 +125,7 @@ class FakeBluesky:
     # -- your own account's server (a PDS), and the PLC directory ----------------------
     def send(self, method, url, headers=None, content=None, throttle=True):
         u = httpx.URL(url)
-        body = json.loads(content) if content else None
+        body = json.loads(content) if content and headers.get("Content-Type") == "application/json" else None
         self.sent.append((method, str(u.copy_with(query=None)), dict(u.params), headers or {}, body))
 
         def answer(status, data):
@@ -152,9 +156,25 @@ class FakeBluesky:
         if name == "app.bsky.feed.getPosts":
             assert headers["atproto-proxy"] == "did:web:api.bsky.app#bsky_appview"
             uri = u.params["uris"]
-            like = next((f"at://{DAVE}/app.bsky.feed.like/{rkey}" for rkey, r in self.records.items()
-                         if r["collection"] == "app.bsky.feed.like" and r["record"]["subject"]["uri"] == uri), None)
-            return answer(200, {"posts": [{"uri": uri, "viewer": {"like": like} if like else {}}]})
+            viewer = {kind: f"at://{DAVE}/app.bsky.feed.{kind}/{rkey}" for rkey, r in self.records.items()
+                      for kind in ("like", "repost")
+                      if r["collection"] == f"app.bsky.feed.{kind}" and r["record"]["subject"]["uri"] == uri}
+            return answer(200, {"posts": [{"uri": uri, "viewer": viewer}]})
+        if name == "app.bsky.feed.getTimeline":
+            assert headers["atproto-proxy"] == "did:web:api.bsky.app#bsky_appview"
+            return answer(200, {"feed": self.timeline})
+        if name == "app.bsky.notification.listNotifications":
+            assert headers["atproto-proxy"] == "did:web:api.bsky.app#bsky_appview"
+            return answer(200, {"notifications": self.notifications})
+        if name == "app.bsky.notification.updateSeen":
+            self.seen_at = body["seenAt"]
+            for n in self.notifications:
+                n["isRead"] = True
+            return answer(200, {})
+        if name == "com.atproto.repo.uploadBlob":
+            self.uploads.append((headers["Content-Type"], content))
+            return answer(200, {"blob": {"$type": "blob", "ref": {"$link": "bafyblob"}, "mimeType": headers["Content-Type"],
+                                         "size": len(content)}})
         if name == "com.atproto.repo.createRecord":
             assert body["repo"] == DAVE
             rkey = f"r{len(self.records) + 1}"
@@ -433,3 +453,99 @@ def test_facets_for_what_you_write():
     b = text.encode()
     assert [(b[f["index"]["byteStart"]:f["index"]["byteEnd"]].decode(), f["features"][0]["$type"].rsplit("#")[1])
             for f in got] == [("https://example.com/@x", "link"), ("@bob.bsky.social", "mention"), ("#cats", "tag")]
+
+
+def notification(rkey, reason, text, reply_to=None, read=False):
+    record = {"$type": "app.bsky.feed.post", "text": text, "createdAt": "2026-09-24T09:00:00.000Z"}
+    if reply_to:
+        record["reply"] = {"root": {"uri": reply_to, "cid": "croot"}, "parent": {"uri": reply_to, "cid": "croot"}}
+    return {"uri": f"at://did:plc:bob/app.bsky.feed.post/{rkey}", "cid": "c" + rkey, "reason": reason,
+            "author": {"did": "did:plc:bob", "handle": "bob.bsky.social"}, "record": record, "isRead": read,
+            "indexedAt": "2026-09-24T09:00:01.000Z"}
+
+
+def test_notifications_arrive_in_the_inbox(settings, bouncer, bsky):
+    client = signed_in(settings, bouncer, bsky)
+    mine = f"at://{DAVE}/app.bsky.feed.post/mine"
+    bsky.notifications = [notification("n1", "reply", "Nice one", reply_to=mine),
+                          notification("n2", "mention", "Hey @dave.bsky.social"),
+                          notification("n3", "quote", "Look at this"),
+                          notification("n4", "like", ""), notification("n5", "follow", "")]
+    client.post("/inbox/check")
+    page = client.get("/inbox").text
+    assert "@bob.bsky.social" in page and "replied on" in page and "mentioned you on" in page
+    assert "quoted your post in" in page and "Nice one" in page and page.count('class="card inbox-item') == 3
+    rows = {r["remote_id"].rsplit("/", 1)[1]: r for r in _rows(bouncer, "SELECT * FROM inbox_items")}
+    assert rows["n1"]["post_local_id"] == f"{mine} croot" and rows["n1"]["object_type"] == "comment"
+    assert rows["n2"]["post_local_id"] == "at://did:plc:bob/app.bsky.feed.post/n2 cn2"
+
+    # Answering one replies under it; one marked read stays read though Bluesky still says unread.
+    client.post(f"/inbox/{rows['n1']['id']}/reply", data={"body": "Thanks!"})
+    reply = [r["record"] for r in bsky.records.values()][-1]
+    assert reply["reply"] == {"root": {"uri": mine, "cid": "croot"},
+                              "parent": {"uri": "at://did:plc:bob/app.bsky.feed.post/n1", "cid": "cn1"}}
+    client.post(f"/inbox/{rows['n2']['id']}/read", data={"read": "1"})
+    client.post("/inbox/check")
+    unread = {r["remote_id"].rsplit("/", 1)[1] for r in _rows(bouncer, "SELECT * FROM inbox_items WHERE unread=1")}
+    assert unread == {"n3"}
+    client.post("/inbox/read-all", data={"confirmed": "1"})
+    assert bsky.seen_at and all(n["isRead"] for n in bsky.notifications)
+
+
+def _rows(bouncer, sql):
+    with bouncer.db.connect() as conn:
+        return conn.execute(sql).fetchall()
+
+
+def test_reposting_and_quoting(settings, bouncer, bsky):
+    alice_followed(bouncer)
+    client = signed_in(settings, bouncer, bsky)
+    oid = post_oid(bouncer, "p2")
+    tid = one(bouncer, "SELECT thread_id FROM objects WHERE id=?", oid)[0]
+    assert "Repost</button>" in client.get(f"/t/{tid}").text
+    client.post(f"/o/{oid}/bluesky-repost", data={"on": "1"})
+    (repost,) = bsky.records.values()
+    assert repost["collection"] == "app.bsky.feed.repost"
+    assert repost["record"]["subject"] == {"uri": f"at://{ALICE}/app.bsky.feed.post/p2", "cid": "cp2"}
+    assert "Reposted</button>" in client.get(f"/t/{tid}").text
+    client.post(f"/o/{oid}/bluesky-repost", data={"on": "0"})
+    assert bsky.records == {} and "Repost</button>" in client.get(f"/t/{tid}").text
+
+    r = client.post(f"/o/{oid}/bluesky-quote", data={"body": "So good"})
+    (quote,) = bsky.records.values()
+    assert quote["record"]["text"] == "So good"
+    assert quote["record"]["embed"] == {"$type": "app.bsky.embed.record",
+                                        "record": {"uri": f"at://{ALICE}/app.bsky.feed.post/p2", "cid": "cp2"}}
+    assert "So good" in r.text and "quoted post" in r.text  # its thread, the quote shown under it
+
+
+def test_a_link_card_shows_the_page(settings, bouncer, bsky, monkeypatch):
+    client = signed_in(settings, bouncer, bsky)
+    monkeypatch.setattr(bouncer.articles, "link_card", lambda url: {
+        "title": "An article", "description": "What it says", "image": (b"\x89PNG...", "image/png")})
+    cid = int(str(client.get("/bluesky/post").url).split("/c/")[1].split("/")[0])
+    client.post(f"/c/{cid}/submit", data={"title": "Read this", "url": "https://example.com/a"})
+    (made,) = bsky.records.values()
+    external = made["record"]["embed"]["external"]
+    assert (external["title"], external["description"], external["thumb"]["ref"]["$link"]) == (
+        "An article", "What it says", "bafyblob")
+    assert bsky.uploads == [("image/png", b"\x89PNG...")]
+    assert one(bouncer, "SELECT thumbnail_url FROM objects WHERE canonical_ap_id LIKE '%/r1'")[0] == \
+        f"https://cdn.bsky.app/img/feed_thumbnail/plain/{DAVE}/bafyblob@jpeg"
+
+
+def test_following_your_timeline(settings, bouncer, bsky):
+    client = logged_in(settings, bouncer)
+    r = client.post("/bluesky/timeline")
+    assert "Log in to Bluesky first" in r.text
+    client = signed_in(settings, bouncer, bsky)
+    bsky.timeline = [{"post": post_view("t1", "From someone I follow", did="did:plc:bob", handle="bob.bsky.social")},
+                     {"post": post_view("t2", "Reposted", did="did:plc:bob", handle="bob.bsky.social"),
+                      "reason": {"$type": "app.bsky.feed.defs#reasonRepost"}}]
+    r = client.post("/bluesky/timeline")
+    c = one(bouncer, "SELECT * FROM communities WHERE canonical_ap_id=?", f"https://bsky.app/profile/{DAVE}/timeline")
+    assert c["name"] == "Following" and f"/c/{c['id']}" in str(r.url)
+    assert "Following · Bluesky timeline" in r.text.replace('<span class="muted"> · ', " · ").replace("</span>", "")
+    assert bouncer.poll_follow(c["id"]) == 1
+    with pytest.raises(RemoteNotFound, match="own"):
+        bouncer.follow_community("https://bsky.app/profile/did:plc:alice/timeline")

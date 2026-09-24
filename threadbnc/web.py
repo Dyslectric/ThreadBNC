@@ -269,8 +269,9 @@ def chandle(name: str, ap_id: str | None, plain: bool = False) -> Markup | str:
     if is_reddit(ap_id):
         return f"r/{name}"
     if is_bluesky(ap_id):
-        kind = "Bluesky feed" if "/feed/" in (ap_id or "") else "Bluesky"
-        name = name if "/feed/" in (ap_id or "") else f"@{name}"
+        path = urlparse(ap_id or "").path
+        kind = "Bluesky feed" if "/feed/" in path else "Bluesky timeline" if path.endswith("/timeline") else "Bluesky"
+        name = name if "/feed/" in path or path.endswith("/timeline") else f"@{name}"
         return f"{name} ({kind})" if plain else Markup('{}<span class="muted"> · {}</span>').format(name, kind)
     if is_tag(ap_id):
         return f"#{name}"
@@ -2227,6 +2228,35 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                               "Restored on the server." if undo else
                               "Deleted on the server. The archive keeps what it saw.", anchor=f"o{oid}")
 
+    @app.post("/o/{oid}/bluesky-repost")
+    def bluesky_repost(request: Request, oid: int, on: str = Form("1")):
+        """Repost a Bluesky post or reply to your followers there, or undo it."""
+        def act(_account: Account) -> None:
+            poster.bluesky_repost(oid, on == "1")
+        return account_action(request, object_page(oid), act, "Reposted on Bluesky." if on == "1" else
+                              "Repost undone.", anchor=f"o{oid}")
+
+    @app.post("/o/{oid}/bluesky-quote")
+    def bluesky_quote(request: Request, oid: int, body: str = Form(...)):
+        """Post on your Bluesky account quoting a post or reply."""
+        def act(_account: Account) -> RedirectResponse:
+            return RedirectResponse(f"/t/{poster.bluesky_quote(oid, body)}", status_code=303)
+        return account_action(request, object_page(oid), act, "Posted your quote on Bluesky.")
+
+    @app.post("/bluesky/timeline")
+    def bluesky_timeline(request: Request):
+        """Follow your own Following timeline, like a feed."""
+        me = poster.bluesky_account()
+        if me is None:
+            flash(request, "Log in to Bluesky first.", "error")
+            return RedirectResponse("/accounts#bluesky", status_code=303)
+        try:
+            cid = bouncer.follow_community(me.actor_ap_id + "/timeline", backfill=True, keep_existing=True)
+        except RemoteError as exc:
+            flash(request, f"Couldn't follow your timeline: {exc}", "error")
+            return RedirectResponse("/accounts#bluesky", status_code=303)
+        return RedirectResponse(f"/c/{cid}", status_code=303)
+
     @app.get("/bluesky/post")
     def bluesky_post(request: Request):
         """Write a post on your Bluesky account: its page's new-post form (it's
@@ -2624,12 +2654,14 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         ap_ids = [o["canonical_ap_id"] for o in objs]
         my_votes = {**poster.my_votes(me, ap_ids), **poster.my_votes(poster.reddit_account(), ap_ids),
                     **poster.my_votes(poster.bluesky_account(), ap_ids)}
+        my_reposts = poster.my_reposts(poster.bluesky_account(), ap_ids)
         powers = {th["cid"]: mod.powers(me, th["cid"]) for th in threads.values()}
         counts = {c["id"]: c["n_comments"] for c in copies}
         post_copies = [{"t": threads[i], "o": roots[i]["o"], "n_comments": counts.get(i, raw_comments),
                         "reddit": is_reddit(roots[i]["o"]["canonical_ap_id"])} for i in tids if i in roots]
         return render(request, "thread.html", t=t, root=root, total_comments=len(displayed),
                       raw_comments=raw_comments, md=md, media_for=media_for, preview=preview, my_votes=my_votes,
+                      my_reposts=my_reposts,
                       me=me, powers_by_community=powers, new_count=new_count, changed_count=changed_count,
                       comment_sort=sort, comment_sorts=COMMENT_SORTS, instance=instance, since=since,
                       grouped=len(tids) > 1, post_copies=post_copies, merge=merge, article=article,
