@@ -131,10 +131,53 @@ def _linkify(state: Any) -> None:
         block.children = out
 
 
+VIDEO_HREF = "/youtube/v/{}"  # the box a YouTube link opens (web.py, app.js)
+VIDEO_LINK_TITLE = "YouTube video: see how big it is, then save it here or watch it on YouTube"
+_YOUTUBE_ADDRESS = re.compile(r"^(?:https?://)?(?:[\w-]+\.)*(?:youtube\.com|youtu\.be)/", re.IGNORECASE)
+VideoTitles = Callable[[str], "str | None"]
+
+
+def video_link_text(text: str, href: str) -> bool:
+    """Whether a link's text is just its address (so the video's title can stand in)."""
+    text = text.strip()
+    return text == href or bool(_YOUTUBE_ADDRESS.match(text))
+
+
+def _video_links(state: Any) -> None:
+    """Core rule: links to YouTube videos open their box here (app.js) and,
+    where their text is just the address, show the video's title instead;
+    one not known yet is marked `untitled` for app.js to ask for. Only when
+    rendering (sole_link and extract_media_urls see the links as written)."""
+    if "titles" not in state.env:
+        return
+    from .youtube import video_id  # youtube.py imports this module
+
+    for block in state.tokens:
+        if block.type != "inline" or not block.children:
+            continue
+        kids = block.children
+        for i, tok in enumerate(kids):
+            vid = video_id(str(tok.attrGet("href") or "")) if tok.type == "link_open" else None
+            if not vid:
+                continue
+            href = str(tok.attrGet("href"))
+            tok.attrSet("href", VIDEO_HREF.format(vid))
+            tok.attrSet("class", "video-link")
+            tok.attrSet("title", VIDEO_LINK_TITLE)
+            text = kids[i + 1] if i + 2 < len(kids) and kids[i + 2].type == "link_close" else None
+            if text is not None and text.type == "text" and video_link_text(text.content, href):
+                title = state.env["titles"](vid)
+                if title:
+                    text.content = title
+                else:
+                    tok.attrSet("class", "video-link untitled")
+
+
 def _parser() -> MarkdownIt:
     md = MarkdownIt("commonmark", {"html": False, "breaks": False})
     md.enable(["table", "strikethrough"])
     md.core.ruler.push("threadbnc_linkify", _linkify)
+    md.core.ruler.push("threadbnc_video_links", _video_links)
     return md
 
 
@@ -225,18 +268,21 @@ def _media_html(url: str, alt: str, info: MediaInfo | None) -> str:
             f'[{kind}{": " + esc_alt if esc_alt else ""} · {host} · {state}]</a>')
 
 
-def render_markdown(text: str | None, lookup: MediaLookup | None = None) -> Markup:
+def render_markdown(text: str | None, lookup: MediaLookup | None = None,
+                    titles: VideoTitles | None = None) -> Markup:
+    """`titles`: YouTube videos' titles by id, for links to them (see _video_links)."""
     if not text:
         return Markup("")
     lookup = lookup or (lambda _u: None)
+    titles = titles or (lambda _v: None)
     parts: list[str] = []
     pos = 0
     for m in _SPOILER_RE.finditer(text):
-        parts.append(_render(text[pos:m.start()], lookup))
+        parts.append(_render(text[pos:m.start()], lookup, titles))
         title = html.escape(m.group(1).strip() or "Spoiler")
-        parts.append(f'<details class="spoiler"><summary>{title}</summary>{_render(m.group(2), lookup)}</details>')
+        parts.append(f'<details class="spoiler"><summary>{title}</summary>{_render(m.group(2), lookup, titles)}</details>')
         pos = m.end()
-    parts.append(_render(text[pos:], lookup))
+    parts.append(_render(text[pos:], lookup, titles))
     cleaned = nh3.clean(
         "".join(parts), tags=ALLOWED_TAGS, attributes=ALLOWED_ATTRS, url_schemes={"http", "https", "mailto"},
         link_rel="noopener noreferrer nofollow", strip_comments=True,
@@ -255,7 +301,8 @@ def _rule_image(self: Any, tokens: list[Token], idx: int, options: Any, env: dic
 def _rule_link_open(self: Any, tokens: list[Token], idx: int, options: Any, env: dict[str, Any]) -> str:
     tok = tokens[idx]
     env["link_stack"].append(str(tok.attrGet("href") or ""))
-    tok.attrSet("target", "_blank")
+    if not str(tok.attrGet("class") or "").startswith("video-link"):  # a video's box opens here
+        tok.attrSet("target", "_blank")
     return self.renderToken(tokens, idx, options, env)
 
 
@@ -275,7 +322,7 @@ _MD.add_render_rule("link_open", _rule_link_open)
 _MD.add_render_rule("link_close", _rule_link_close)
 
 
-def _render(text: str, lookup: MediaLookup) -> str:
+def _render(text: str, lookup: MediaLookup, titles: VideoTitles) -> str:
     if not text.strip():
         return ""
-    return _MD.render(text, {"lookup": lookup, "link_stack": []})
+    return _MD.render(text, {"lookup": lookup, "link_stack": [], "titles": titles})

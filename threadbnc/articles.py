@@ -35,7 +35,9 @@ from .db import Conn, Database, fmt_ts, parse_ts, utcnow
 from .media import MAX_ATTEMPTS, MAX_REDIRECTS, MediaRejected, _after, _assert_public_host
 from .media import media_id
 from .media import register as register_media
-from .render import ALLOWED_ATTRS, ALLOWED_TAGS, MediaLookup, _media_html, looks_like_media
+from .render import (ALLOWED_ATTRS, ALLOWED_TAGS, VIDEO_HREF, VIDEO_LINK_TITLE, MediaLookup, VideoTitles, _media_html,
+                     looks_like_media, video_link_text)
+from .youtube import video_id
 
 MAX_PAGE_BYTES = 5_000_000
 CARD_IMAGE_BYTES = 1_000_000  # Bluesky's limit for a link card's picture
@@ -230,10 +232,12 @@ def waiting(conn: Conn, links: list[tuple[int, str | None]]) -> set[int]:
 
 
 def render(content_html: str | None, lookup: MediaLookup, page_url: str | None = None,
-           read_link: Callable[[str], str] | None = None) -> Markup:
+           read_link: Callable[[str], str] | None = None, titles: VideoTitles | None = None) -> Markup:
     """Stored article HTML with its pictures swapped for the archived copies.
     With `read_link`, links to other articles go to reading them here (marked
-    with the article-link class); other links open the site in a new tab."""
+    with the article-link class); other links open the site in a new tab.
+    Links to YouTube videos open their box here, titled by `titles` where
+    their text is just the address (as in posts, see render._video_links)."""
     if not content_html:
         return Markup("")
     root = lxml.html.fragment_fromstring(content_html, create_parent="div")
@@ -245,7 +249,21 @@ def render(content_html: str | None, lookup: MediaLookup, page_url: str | None =
     here = urldefrag(page_url or "")[0]
     for a in root.iter("a"):
         href = a.get("href") or ""
-        if read_link and urldefrag(href)[0] != here and looks_like_article(href) and not a.get("class"):
+        vid = video_id(href)
+        if vid and not a.get("class"):
+            a.set("href", VIDEO_HREF.format(vid))
+            a.set("class", "video-link")
+            a.set("title", VIDEO_LINK_TITLE)
+            a.attrib.pop("target", None)
+            if video_link_text(a.text_content(), href):
+                title = titles(vid) if titles else None
+                if title:
+                    for child in list(a):
+                        a.remove(child)
+                    a.text = title
+                else:
+                    a.set("class", "video-link untitled")
+        elif read_link and urldefrag(href)[0] != here and looks_like_article(href) and not a.get("class"):
             a.set("href", read_link(href))
             a.set("class", "article-link")
             a.set("title", f"Read here · {host_of(href)}")

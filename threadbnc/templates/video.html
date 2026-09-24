@@ -1,0 +1,5 @@
+{% extends "base.html" %}
+{% block title %}{{ title or 'YouTube video' }}{% endblock %}
+{% block content %}
+<div class="video-page">{% include "_video.html" %}</div>
+{% endblock %}

@@ -832,7 +832,18 @@ fieldset.feed-picks input[type=checkbox] { flex: none; width: 16px; margin: 0; }
 }
 
 /* ---- linked articles opened beside the one you're reading (wide), or inside it (narrow): app.js ---- */
-a.article-link.dived, a[data-dive].dived { background: var(--hover); border-radius: 4px; }
+a.article-link.dived, a[data-dive].dived, a.video-link.dived { background: var(--hover); border-radius: 4px; }
+
+/* ---- YouTube links: the video's title, marked as a video; they open its box (app.js) ---- */
+.video-link::before { content: ""; display: inline-block; width: 1em; height: 1em; margin-right: 0.25em;
+  vertical-align: -0.15em; background-color: currentColor;
+  -webkit-mask: url(video-link.svg) center / contain no-repeat; mask: url(video-link.svg) center / contain no-repeat; }
+.video-box { max-width: 42rem; }
+.video-page .video-box { margin: 0 auto; }
+.video-box h2 { font-size: 1.2rem; margin: 2px 0 10px; }
+.video-box .media, .video-box-thumb { display: block; max-width: 100%; max-height: 60vh; border-radius: 8px; margin: 0 0 8px; }
+.video-box-size .i { vertical-align: -0.15em; }
+.video-box .row { margin-top: 8px; }
 .dive-loading { margin: 12px 0; }
 @media (min-width: 1100px) {
   main:has(> .reader-deck.diving) { max-width: none; padding-bottom: 16px; }

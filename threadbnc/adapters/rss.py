@@ -23,6 +23,7 @@ per-host spacing as everything else, a size cap, and no private addresses.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import time
 import xml.etree.ElementTree as ET
@@ -31,7 +32,7 @@ from email.utils import parsedate_to_datetime
 from html import escape, unescape
 from html.parser import HTMLParser
 from typing import Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlencode, urljoin, urlparse
 
 import httpx
 
@@ -525,6 +526,23 @@ class FeedFetcher:
         """A video's description and likes, from its page (youtube.py), for its
         post in the feed."""
         return self._watch_page(vid)[1]
+
+    def youtube_title(self, vid: str) -> tuple[str, str | None] | None:
+        """A video's title and channel, from YouTube's oEmbed endpoint (small,
+        and no watch page), for links to it. None if YouTube has no such
+        video, or won't say (private)."""
+        url = youtube.OEMBED + "?" + urlencode({"url": youtube.watch_url(vid), "format": "json"})
+        status, _, body, _ = self._get(url, {"Accept": "application/json"})
+        if status in (400, 401, 403, 404):
+            return None
+        if status != 200:
+            raise RemoteUnavailable(f"{url}: HTTP {status}")
+        try:
+            data = json.loads(body)
+        except ValueError as exc:
+            raise RemoteUnavailable(f"{url}: not JSON") from exc
+        title = str(data.get("title") or "").strip()
+        return (title, str(data.get("author_name") or "").strip() or None) if title else None
 
     def _youtube_api(self, context: dict[str, Any], token: str) -> youtube.CommentPage:
         """One page from YouTube's comments API, asked as the video's page would."""

@@ -1,0 +1,45 @@
+{# The box a YouTube link opens (web.py youtube_video_box): how big the video is, to save it here or
+   watch it on YouTube; the saved copy, once it is. `pane`: opened under the link, or beside the
+   article it's in (app.js), so it closes rather than going back. #}
+{% from "_macros.html" import when, icon %}
+<article class="video-box" id="video-{{ vid }}" data-src="/youtube/v/{{ vid }}?pane=1"{% if saving %} data-video-saving{% endif %}>
+  <p class="small reader-nav">
+    {% if pane %}<button type="button" class="link" data-dive-close>{{ icon('x') }} Close</button>
+      · <a href="/youtube/v/{{ vid }}">Open on its own</a>
+    {% else %}<a href="/" data-back>← Back</a>{% endif %}
+  </p>
+  <header>
+    <div class="small muted">YouTube{% if v and v.channel %} · {{ v.channel }}{% endif %}
+      {%- if v and v.duration %} · {{ v.duration | running_time }}{% endif %}</div>
+    <h2>{{ title or 'A YouTube video' }}</h2>
+  </header>
+  {% if saved %}
+    <video class="media" src="/media/{{ m.id }}"{% if thumb %} poster="/media/{{ thumb }}"{% endif %} controls playsinline preload="metadata"></video>
+    <p class="small muted">Saved here · {{ m.size_bytes | size }} · {{ when(m.fetched_at) }}</p>
+    <div class="row">
+      <a class="button secondary" href="{{ watch }}" rel="noreferrer noopener nofollow" target="_blank">{{ icon('external') }} Watch on YouTube</a>
+    </div>
+  {% else %}
+    {% if thumb %}<img class="video-box-thumb" src="/media/{{ thumb }}" alt="">{% endif %}
+    <p class="video-box-size">
+      {% if v and v.size_bytes %}{{ icon('video') }} The video is {{ 'about ' if v.size_approx }}<strong>{{ v.size_bytes | size }}</strong>
+        {%- if v.height %}, at {{ v.height }}p{% endif %}.
+      {% elif v and v.probe_error %}<span class="bad-text">{{ icon('alert') }} Couldn't find out how big the video is: {{ v.probe_error }}</span>
+      {% else %}{{ icon('video') }} YouTube didn't say how big the video is.{% endif %}
+    </p>
+    {% if too_big %}<p class="small bad-text">That's more than the {{ yt.max_mb }} MB limit for YouTube videos, so it can't be saved.
+      <a href="/youtube">YouTube settings</a></p>{% endif %}
+    {% if not yt.downloader %}<p class="small bad-text">yt-dlp isn't installed, so videos can't be saved here.
+      <a href="/youtube">YouTube settings</a></p>{% endif %}
+    {% if saving %}<p class="small muted" role="status">Downloading… It plays here once it's saved.</p>
+    {% elif m and m.wanted_at and m.status == 'failed' %}<p class="small bad-text">Couldn't save it: {{ m.error }}
+      <a href="/youtube">YouTube settings</a></p>
+    {% else %}<p>Download the video and archive it here, or go and watch it on YouTube?</p>{% endif %}
+    <div class="row">
+      {% if not saving %}<form method="post" action="/youtube/v/{{ vid }}/save" class="inline" data-video-save>
+        <button{% if too_big or not yt.downloader %} disabled{% endif %}>{{ icon('arrow-down') }}
+          {{- ' Try again' if m and m.wanted_at and m.status == 'failed' else ' Download and archive' }}</button></form>{% endif %}
+      <a class="button secondary" href="{{ watch }}" rel="noreferrer noopener nofollow" target="_blank">{{ icon('external') }} Watch on YouTube</a>
+    </div>
+  {% endif %}
+</article>

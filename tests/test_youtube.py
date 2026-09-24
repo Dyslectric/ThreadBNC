@@ -135,6 +135,8 @@ class FakeYouTube:
             return httpx.Response(200, text=PLAYLIST_PAGE, headers={"content-type": "text/html"})
         if request.url.path == "/@BenEater":
             return httpx.Response(200, text=PAGE, headers={"content-type": "text/html"})
+        if request.url.path == "/oembed" and request.url.params.get("url") == VIDEO:
+            return httpx.Response(200, json={"title": "Never Gonna Give You Up", "author_name": "Rick Astley"})
         return httpx.Response(404)
 
 
@@ -537,3 +539,95 @@ def test_the_comments_parser():
     assert youtube.comments_token("<html>no data</html>") is None
     assert youtube.api_context(WATCH_PAGE) == {"client": {"clientName": "WEB", "clientVersion": "2.20260922",
                                                           "hl": "en"}}
+
+
+# -- YouTube links in text: the video's title, and the box they open ---------------------------
+
+def test_youtube_links_show_the_title_and_open_the_box():
+    from threadbnc.render import render_markdown
+    titles = {"dQw4w9WgXcQ": "Never Gonna Give You Up"}.get
+    out = render_markdown(f"watch {VIDEO} and [my pick](https://youtu.be/dQw4w9WgXcQ) or https://youtu.be/gnmrKDpTM7o",
+                          titles=titles)
+    assert ('<a href="/youtube/v/dQw4w9WgXcQ" class="video-link" title="YouTube video: see how big it is, '
+            'then save it here or watch it on YouTube" rel="noopener noreferrer nofollow">'
+            'Never Gonna Give You Up</a>') in out
+    assert '>my pick</a>' in out  # written text stays
+    assert 'class="video-link untitled"' in out and ">https://youtu.be/gnmrKDpTM7o</a>" in out  # app.js asks
+    assert 'target="_blank"' not in out
+    assert "https://example.com" in render_markdown("https://example.com")  # other links as before
+
+
+def test_youtube_links_in_articles_open_the_box_too():
+    from threadbnc import articles
+    html = f'<p>See <a href="{VIDEO}">{VIDEO}</a> and <a href="https://blog.example/2026/05/post">this</a>.</p>'
+    out = articles.render(html, lambda _u: None, "https://blog.example/a", lambda u: "/read?url=x",
+                          {"dQw4w9WgXcQ": "Never Gonna Give You Up"}.get)
+    assert '<a href="/youtube/v/dQw4w9WgXcQ" class="video-link"' in out and ">Never Gonna Give You Up</a>" in out
+
+
+def test_titles_are_asked_of_youtube_once(settings, bouncer, yt):
+    client = logged_in(settings, bouncer)
+    got = client.get("/youtube/titles", params=[("ids", "dQw4w9WgXcQ"), ("ids", "gnmrKDpTM7o"),
+                                                ("ids", "not an id")]).json()
+    assert got == {"dQw4w9WgXcQ": "Never Gonna Give You Up"}
+    asked = [r for r in yt.requests if r.url.path == "/oembed"]
+    assert len(asked) == 2
+    client.get("/youtube/titles", params=[("ids", "dQw4w9WgXcQ"), ("ids", "gnmrKDpTM7o")])
+    assert len([r for r in yt.requests if r.url.path == "/oembed"]) == 2  # known, or asked lately
+
+
+def test_the_box_says_how_big_the_video_is_and_saves_it(settings, bouncer, yt, downloads, monkeypatch):
+    probes = []
+
+    def fake_probe(url, session):
+        probes.append(url)
+        return youtube.Probe("Never Gonna Give You Up", "Rick Astley", 213, 123_400_000, False, 1080)
+
+    monkeypatch.setattr(youtube, "probe", fake_probe)
+    client = logged_in(settings, bouncer)
+    box = client.get("/youtube/v/dQw4w9WgXcQ?pane=1").text
+    assert '<article class="video-box" id="video-dQw4w9WgXcQ"' in box and "<html" not in box
+    assert "Never Gonna Give You Up" in box and "Rick Astley" in box
+    assert "The video is <strong>123 MB</strong>, at 1080p." in box
+    assert "Download the video and archive it here, or go and watch it on YouTube?" in box
+    assert 'action="/youtube/v/dQw4w9WgXcQ/save"' in box and f'href="{VIDEO}"' in box
+    client.get("/youtube/v/dQw4w9WgXcQ")
+    assert probes == [VIDEO]  # found once, then remembered
+    assert client.get("/youtube/v/nope").status_code == 404
+
+    client.post("/youtube/v/dQw4w9WgXcQ/save")
+    m = video_media(bouncer)
+    assert m["kept_only"] == 1 and m["wanted_at"] and m["status"] == "pending"
+    assert "Downloading…" in client.get("/youtube/v/dQw4w9WgXcQ?pane=1").text
+    bouncer.media.fetch_pending()
+    assert [u for u, _, _ in downloads] == [VIDEO]
+    m = video_media(bouncer)
+    box = client.get("/youtube/v/dQw4w9WgXcQ?pane=1").text
+    assert f'<video class="media" src="/media/{m["id"]}"' in box and "Download and archive" not in box
+    # No post links to it, but it was asked for: it stays.
+    with bouncer.db.transaction() as conn:
+        media.collect_orphans(conn, bouncer.media_dir)
+    assert video_media(bouncer)["status"] == "ok"
+
+
+def test_a_failed_probe_still_offers_both(settings, bouncer, yt, monkeypatch):
+    def fake_probe(url, session):
+        raise youtube.NeedsSession("YouTube wants a signed-in session for this video.")
+
+    monkeypatch.setattr(youtube, "probe", fake_probe)
+    box = logged_in(settings, bouncer).get("/youtube/v/dQw4w9WgXcQ?pane=1").text
+    assert "Couldn't find out how big the video is: YouTube wants a signed-in session" in box
+    assert "<h2>Never Gonna Give You Up</h2>" in box  # its title asked of YouTube instead
+    assert "Download and archive" in box and "Watch on YouTube" in box
+
+
+def test_a_post_linking_to_a_video_links_to_its_box(settings, server, bouncer, yt):
+    from .conftest import DOMAIN
+    server.add_post("1", "neat video", "also https://youtu.be/gnmrKDpTM7o")
+    server.edit_post("1", url="https://youtu.be/dQw4w9WgXcQ")
+    tid = bouncer.ingest_url(f"https://{DOMAIN}/post/1")
+    with bouncer.db.transaction() as conn:
+        youtube.save_title(conn, "dQw4w9WgXcQ", "Never Gonna Give You Up", None, utcnow())
+    page = logged_in(settings, bouncer).get(f"/t/{tid}").text
+    assert '<a class="video-link" href="/youtube/v/dQw4w9WgXcQ"' in page and ">Never Gonna Give You Up</a>" in page
+    assert '<a href="/youtube/v/gnmrKDpTM7o" class="video-link untitled"' in page

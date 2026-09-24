@@ -412,8 +412,25 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         width = thumb_widths().get(view)
         return f"/media/{media_id}?w={width}" if width else f"/media/{media_id}"
 
+    def video_titles() -> Callable[[str], str | None]:
+        """YouTube videos' titles by id, as known here, for links to them
+        (render.py): looked up as they're met, each once."""
+        seen: dict[str, str | None] = {}
+
+        def title(vid: str) -> str | None:
+            if vid not in seen:
+                with db.connect() as conn:
+                    seen[vid] = youtube.titles(conn, [vid]).get(vid)
+            return seen[vid]
+        return title
+
+    def video_title(url: str | None) -> str | None:
+        """A YouTube link's video's title, if known here."""
+        vid = youtube.video_id(url)
+        return video_titles()(vid) if vid else None
+
     templates.env.globals.update(event_label=event_label, tone=lambda e: TONE.get(e["event_type"], ""),
-                                 thumb=thumb,
+                                 thumb=thumb, video_title=video_title,
                                  static_url=static_url, trash_count=trash_count, inbox_count=inbox.unread_count,
                                  mark_on_scroll=mark_on_scroll, audio_rate=audio_rate, themes=THEMES, custom_feeds=custom_feeds,
                                  following_collapsed=following_collapsed, feed_sorts=FEED_SORTS,
@@ -1552,8 +1569,10 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         with db.connect() as conn:
             table = media_mod.lookup_for_objects(conn, object_ids)
 
+        titles = video_titles()
+
         def md(text: str | None) -> Markup:
-            return render_markdown(text, table.get)
+            return render_markdown(text, table.get, titles)
 
         def media_for(url: str | None) -> MediaInfo | None:
             return table.get(url) if url else None
@@ -2416,6 +2435,54 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                        "scaled down to it in the background; the Storage page shows how that's going.")
         return RedirectResponse("/youtube", status_code=303)
 
+    # ---- YouTube links: the box one opens (app.js) ---------------------------------
+    def video_id_or_404(vid: str) -> str:
+        if not youtube.is_video_id(vid):
+            raise HTTPException(404)
+        return vid
+
+    @app.get("/youtube/v/{vid}", response_class=HTMLResponse)
+    def youtube_video_box(request: Request, vid: str, pane: bool = False):
+        """A YouTube link, opened: how big the video is (found with yt-dlp the
+        first time, which takes a few seconds), to save it here or watch it on
+        YouTube; or the saved copy, once it is. `pane`: just the box, for
+        app.js to open under the link (or beside the article it's in)."""
+        video_id_or_404(vid)
+        with db.connect() as conn:
+            m = media_mod.youtube_media(conn, vid)
+        saved = m is not None and m["status"] == "ok"
+        v = None if saved else bouncer.probe_youtube(vid)
+        with db.connect() as conn:
+            if v is None:
+                v = conn.execute("SELECT * FROM youtube_videos WHERE video_id=?", (vid,)).fetchone()
+            title = youtube.titles(conn, [vid]).get(vid)
+            thumb = conn.execute("SELECT id FROM media WHERE url=? AND status='ok' AND content_type LIKE 'image/%'",
+                                 (youtube.thumbnail_url(vid),)).fetchone()
+        title = title or bouncer.youtube_titles([vid]).get(vid)  # yt-dlp couldn't say
+        yt = bouncer.youtube.status()
+        saving = m is not None and m["status"] == "pending" and bool(m["wanted_at"] or not m["held"])
+        return render(request, "video_pane.html" if pane else "video.html", vid=vid, v=v, m=m, title=title,
+                      saved=saved, saving=saving, thumb=thumb["id"] if thumb else None, yt=yt,
+                      watch=youtube.watch_url(vid), pane=pane,
+                      too_big=bool(v and v["size_bytes"] and v["size_bytes"] > yt["max_mb"] * 1_000_000))
+
+    @app.post("/youtube/v/{vid}/save")
+    def youtube_video_save(request: Request, vid: str):
+        """Save the video: downloaded in the background at the YouTube page's
+        resolution, and kept whether or not a post links to it."""
+        video_id_or_404(vid)
+        with db.transaction() as conn:
+            media_mod.want_youtube(conn, vid, utcnow())
+        bouncer.wake.set()
+        return RedirectResponse(f"/youtube/v/{vid}", status_code=303)
+
+    @app.get("/youtube/titles")
+    def youtube_link_titles(ids: list[str] = Query([])):
+        """Titles for the YouTube links on a page that aren't known yet (app.js
+        asks once it's shown), asked of YouTube now."""
+        vids = [v for v in dict.fromkeys(ids) if youtube.is_video_id(v)][:50]
+        return JSONResponse(bouncer.youtube_titles(vids))
+
     # ---- Reddit --------------------------------------------------------------
     @app.get("/reddit", response_class=HTMLResponse)
     def reddit_page(request: Request, subs: int = 0):
@@ -2691,7 +2758,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         lead = table.get(a["lead_image_url"] or "")
         shown = lead and lead.status == "ok" and (lead.content_type or "").startswith("image/") \
             and lead.content_type != "image/svg+xml"
-        content = articles.render(a["content_html"], table.get, a["fetched_from"] or a["url"], read_href) \
+        content = articles.render(a["content_html"], table.get, a["fetched_from"] or a["url"], read_href,
+                                  video_titles()) \
             if a["status"] == "ok" else None
         return render(request, "article_pane.html" if pane else "article.html", t=t, o=o, a=a, content=content,
                       lead=lead if shown else None, discussed=discussed, kept=kept, mentions=mentions, pane=pane)
@@ -2929,7 +2997,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         def page_url(n: int) -> str:
             return "/inbox?" + urlencode({**{k: v for k, v in params.items() if v}, "page": n})
         return render(request, "inbox.html", items=items, more=more, show=show, kind=kind, account_id=aid,
-                      page=page, page_url=page_url, status=inbox.status(), kinds=INBOX_KINDS, md=render_markdown,
+                      page=page, page_url=page_url, status=inbox.status(), kinds=INBOX_KINDS,
+                      md=lambda text, titles=video_titles(): render_markdown(text, None, titles),
                       can_reply_reddit=poster.reddit_account() is not None)
 
     @app.post("/inbox/check")

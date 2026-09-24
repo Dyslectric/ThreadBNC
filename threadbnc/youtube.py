@@ -585,35 +585,23 @@ _SESSION = ("sign in to confirm", "not a bot", "sign in to view", "age-restricte
             "po token", "login required", "use --cookies")
 
 
-def download(url: str, workdir: Path, session: YouTubeSession, max_bytes: int) -> tuple[Path, int]:
-    """Download one video into `workdir`. Returns the file and the height it
-    was saved at. Raises VideoGone, NeedsSession or VideoRetry."""
-    try:
-        import yt_dlp
-        from yt_dlp.utils import DownloadError
-    except ImportError as exc:
-        raise VideoGone("yt-dlp isn't installed, so YouTube videos can't be saved") from exc
-    cfg = session.status()
-    height = cfg["max_height"]
+def _options(session: YouTubeSession) -> dict[str, Any]:
+    """yt-dlp's options for a video at the YouTube page's resolution, with
+    the saved session: the same for finding its size as for downloading it."""
+    height = session.status()["max_height"]
     cookies, po_token = session.secrets()
-    stem = ".yt-" + hashlib.sha1(url.encode()).hexdigest()[:16]
-    workdir.mkdir(parents=True, exist_ok=True)
-    tmp = Path(tempfile.mkdtemp(prefix=stem, dir=workdir))
     merges = bool(shutil.which("ffmpeg"))
     opts: dict[str, Any] = {
-        "outtmpl": str(tmp / "video.%(ext)s"),
         # Separate video and audio streams need ffmpeg to join; without it,
         # the best single file (often only 360p on YouTube now).
         "format": f"bv*[height<={height}]+ba/b[height<={height}]/b" if merges else f"b[height<={height}]/b",
         "format_sort": [f"res:{height}", "ext:mp4:m4a"],
         "merge_output_format": "mp4",
-        "max_filesize": max_bytes,
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
         "noprogress": True,
         "retries": 3,
-        "overwrites": True,
         "js_runtimes": js_runtimes() or {"deno": {}},
         "remote_components": set(),  # the challenge solver comes from the yt-dlp-ejs package, never fetched
     }
@@ -621,20 +609,89 @@ def download(url: str, workdir: Path, session: YouTubeSession, max_bytes: int) -
         opts["cookiefile"] = io.StringIO(cookies)  # a stream: the session never touches the disk
     if po_token:
         opts["extractor_args"] = {"youtube": {"po_token": [po_token if "+" in po_token else f"web.gvs+{po_token}"]}}
+    return opts
+
+
+def _failure(exc: Exception, signed_in: bool) -> Exception:
+    """What a yt-dlp DownloadError means: NeedsSession, VideoGone or VideoRetry."""
+    msg = re.sub(r"^ERROR:\s*(\[[^\]]+\]\s*[\w-]+:\s*)?", "", str(exc)).strip()
+    low = msg.lower()
+    if any(s in low for s in _SESSION):
+        hint = " Your saved session may have expired: refresh it on the YouTube page." if signed_in else \
+            " Add or refresh your session on the YouTube page."
+        return NeedsSession(f"YouTube wants a signed-in session for this video.{hint}")
+    if any(s in low for s in _GONE):
+        return VideoGone(msg[:300])
+    return VideoRetry(msg[:300])
+
+
+def _yt_dlp() -> Any:
+    try:
+        import yt_dlp
+    except ImportError as exc:
+        raise VideoGone("yt-dlp isn't installed, so YouTube videos can't be saved") from exc
+    return yt_dlp
+
+
+@dataclass
+class Probe:
+    """What saving a video would come to (probe)."""
+    title: str | None
+    channel: str | None
+    duration: int | None  # seconds
+    size_bytes: int | None
+    approx: bool  # YouTube only estimated the size
+    height: int | None
+
+
+def _size(info: dict[str, Any]) -> tuple[int | None, bool]:
+    """The chosen formats' size, added up (video and audio, when they're joined)."""
+    total, approx = 0, False
+    for f in info.get("requested_formats") or [info]:
+        if f.get("filesize"):
+            total += int(f["filesize"])
+        elif f.get("filesize_approx"):
+            total += int(f["filesize_approx"])
+            approx = True
+        else:
+            return None, False
+    return total or None, approx
+
+
+def probe(url: str, session: YouTubeSession) -> Probe:
+    """A video's title and how big it would be, saved at the YouTube page's
+    resolution, without downloading it. Raises VideoGone, NeedsSession or
+    VideoRetry, like download."""
+    yt_dlp = _yt_dlp()
+    from yt_dlp.utils import DownloadError
+    try:
+        with yt_dlp.YoutubeDL({**_options(session), "skip_download": True}) as ydl:
+            info = ydl.extract_info(url, download=False) or {}
+    except DownloadError as exc:
+        raise _failure(exc, bool(session.secrets()[0])) from None
+    size, approx = _size(info)
+    duration = info.get("duration")
+    return Probe(title=info.get("title"), channel=info.get("channel") or info.get("uploader"),
+                 duration=int(duration) if duration else None, size_bytes=size, approx=approx,
+                 height=int(info["height"]) if info.get("height") else None)
+
+
+def download(url: str, workdir: Path, session: YouTubeSession, max_bytes: int) -> tuple[Path, int]:
+    """Download one video into `workdir`. Returns the file and the height it
+    was saved at. Raises VideoGone, NeedsSession or VideoRetry."""
+    yt_dlp = _yt_dlp()
+    from yt_dlp.utils import DownloadError
+    stem = ".yt-" + hashlib.sha1(url.encode()).hexdigest()[:16]
+    workdir.mkdir(parents=True, exist_ok=True)
+    tmp = Path(tempfile.mkdtemp(prefix=stem, dir=workdir))
+    opts = {**_options(session), "outtmpl": str(tmp / "video.%(ext)s"), "max_filesize": max_bytes,
+            "overwrites": True}
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
     except DownloadError as exc:
         shutil.rmtree(tmp, ignore_errors=True)
-        msg = re.sub(r"^ERROR:\s*(\[[^\]]+\]\s*[\w-]+:\s*)?", "", str(exc)).strip()
-        low = msg.lower()
-        if any(s in low for s in _SESSION):
-            hint = " Add or refresh your session on the YouTube page." if not cookies else \
-                " Your saved session may have expired: refresh it on the YouTube page."
-            raise NeedsSession(f"YouTube wants a signed-in session for this video.{hint}") from None
-        if any(s in low for s in _GONE):
-            raise VideoGone(msg[:300]) from None
-        raise VideoRetry(msg[:300]) from None
+        raise _failure(exc, bool(session.secrets()[0])) from None
     except Exception:
         shutil.rmtree(tmp, ignore_errors=True)
         raise
@@ -646,3 +703,92 @@ def download(url: str, workdir: Path, session: YouTubeSession, max_bytes: int) -
     files[0].replace(out)
     shutil.rmtree(tmp, ignore_errors=True)
     return out, int((info or {}).get("height") or 0)
+
+
+# -- videos linked in text: their titles and sizes (the youtube_videos table) ------------
+# A YouTube link in a post, comment or article shows the video's title and
+# opens a box saying how big the video is, to save it here or watch it on
+# YouTube. Titles come from YouTube's oEmbed endpoint when a page showing the
+# link is opened; sizes from yt-dlp when the box is.
+
+TITLE_RETRY = timedelta(days=1)  # a title YouTube wouldn't give, asked again after this
+SIZE_FRESH = timedelta(hours=6)  # formats (and so sizes) change as YouTube re-encodes
+PROBE_RETRY = timedelta(minutes=10)  # a size yt-dlp couldn't find, tried again after this
+OEMBED = "https://www.youtube.com/oembed"
+
+
+def is_video_id(vid: str | None) -> bool:
+    return bool(re.fullmatch(_ID, vid or ""))
+
+
+def _ts(value: str) -> datetime:
+    return datetime.strptime(value[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+
+
+def titles(conn: Any, vids: list[str]) -> dict[str, str]:
+    """The titles known here for these videos: asked of YouTube before, or
+    from a followed channel's post (whose title is the video's)."""
+    vids = [v for v in dict.fromkeys(vids) if is_video_id(v)]
+    if not vids:
+        return {}
+    out = {r["video_id"]: r["title"] for r in conn.execute(
+        f"SELECT video_id, title FROM youtube_videos WHERE video_id IN ({','.join('?' * len(vids))}) "
+        f"AND title IS NOT NULL", vids)}
+    missing = {watch_url(v): v for v in vids if v not in out}
+    if missing:
+        for r in conn.execute(
+                f"SELECT r.url, r.title FROM revisions r JOIN objects o ON o.id=r.object_id AND r.seq=o.revision_count "
+                f"JOIN archived_threads t ON t.id=o.thread_id JOIN communities c ON c.id=t.community_id "
+                f"WHERE r.url IN ({','.join('?' * len(missing))}) AND r.title IS NOT NULL "
+                f"AND c.canonical_ap_id LIKE ?", [*missing, FEED_PREFIX + "%"]):
+            out.setdefault(missing[r["url"]], r["title"])
+    return out
+
+
+def titles_to_ask(conn: Any, vids: list[str], now: str) -> list[str]:
+    """Of these, the videos whose title isn't known and YouTube wasn't asked lately."""
+    known = titles(conn, vids)
+    ask = [v for v in dict.fromkeys(vids) if is_video_id(v) and v not in known]
+    if not ask:
+        return []
+    cutoff = (_ts(now) - TITLE_RETRY).strftime("%Y-%m-%dT%H:%M:%S")
+    recent = {r[0] for r in conn.execute(
+        f"SELECT video_id FROM youtube_videos WHERE video_id IN ({','.join('?' * len(ask))}) "
+        f"AND title_checked_at >= ?", [*ask, cutoff])}
+    return [v for v in ask if v not in recent]
+
+
+def save_title(conn: Any, vid: str, title: str | None, channel: str | None, now: str) -> None:
+    conn.execute("INSERT INTO youtube_videos(video_id, title, channel, title_checked_at) VALUES (?,?,?,?) "
+                 "ON CONFLICT(video_id) DO UPDATE SET title=COALESCE(excluded.title, youtube_videos.title), "
+                 "channel=COALESCE(excluded.channel, youtube_videos.channel), "
+                 "title_checked_at=excluded.title_checked_at", (vid, title, channel, now))
+
+
+def save_probe(conn: Any, vid: str, found: Probe | None, error: str | None, now: str) -> None:
+    """A probe's outcome: what it found, or why it couldn't."""
+    if found is None:
+        conn.execute("INSERT INTO youtube_videos(video_id, probed_at, probe_error) VALUES (?,?,?) "
+                     "ON CONFLICT(video_id) DO UPDATE SET probed_at=excluded.probed_at, "
+                     "probe_error=excluded.probe_error", (vid, now, error))
+        return
+    conn.execute(
+        "INSERT INTO youtube_videos(video_id, title, channel, title_checked_at, duration, size_bytes, size_approx, "
+        "height, probed_at, probe_error) VALUES (?,?,?,?,?,?,?,?,?,NULL) ON CONFLICT(video_id) DO UPDATE SET "
+        "title=COALESCE(excluded.title, youtube_videos.title), "
+        "channel=COALESCE(excluded.channel, youtube_videos.channel), title_checked_at=excluded.title_checked_at, "
+        "duration=excluded.duration, size_bytes=excluded.size_bytes, size_approx=excluded.size_approx, "
+        "height=excluded.height, probed_at=excluded.probed_at, probe_error=NULL",
+        (vid, found.title, found.channel, now, found.duration, found.size_bytes, int(found.approx), found.height, now))
+
+
+def probe_due(row: Any, now: str, max_height: int) -> bool:
+    """Whether a video's size (its youtube_videos row) needs finding again:
+    never found, found a while ago, or at more than the YouTube page's
+    resolution (changed since)."""
+    if row is None or not row["probed_at"]:
+        return True
+    age = _ts(now) - _ts(row["probed_at"])
+    if row["probe_error"]:
+        return age > PROBE_RETRY
+    return age > SIZE_FRESH or bool(row["height"] and row["height"] > max_height)

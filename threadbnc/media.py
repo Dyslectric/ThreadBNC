@@ -16,7 +16,8 @@ Pictures (and video thumbnails, which are pictures) are downloaded as soon as
 they're seen. Full videos wait until a post showing them is opened or kept
 (`held`): most scroll past unwatched, and they're by far the biggest files.
 YouTube videos (`kept_only`) wait longer still: they're downloaded with yt-dlp
-only once a post linking to one is kept (see youtube.py), and have settings of
+only once a post linking to one is kept (see youtube.py), or you ask for one
+from the box a YouTube link opens (`wanted_at`), and have settings of
 their own on the YouTube page (the resolution they're saved at) rather than
 the Videos ones. Audio files are held
 too, but a post linking to one fetches it as soon as the post is scrolled into
@@ -517,6 +518,25 @@ def register_youtube_links(conn: Conn) -> None:
                          "WHERE url=? AND kept_only=0 AND status IN ('pending', 'skipped')", (r["url"],))
 
 
+def youtube_media(conn: Conn, vid: str) -> Any:
+    """The media row for a YouTube video, however it was linked (watch?v=,
+    youtu.be/, ...): a saved one first. None if it was never registered."""
+    rows = [r for r in conn.execute("SELECT * FROM media WHERE kept_only=1 AND url LIKE ? ORDER BY id",
+                                    (f"%{vid}%",)).fetchall() if youtube.video_id(r["url"]) == vid]
+    return next((r for r in rows if r["status"] == "ok"), rows[0] if rows else None)
+
+
+def want_youtube(conn: Conn, vid: str, now: str) -> int:
+    """Save a YouTube video, asked for from a link's box: kept whether or not
+    a post links to it (collect_orphans leaves it), and tried again if it failed."""
+    row = youtube_media(conn, vid)
+    mid = row["id"] if row else media_id(conn, youtube.watch_url(vid), now)
+    conn.execute("UPDATE media SET wanted_at=COALESCE(wanted_at, ?), held=0 WHERE id=?", (now, mid))
+    conn.execute("UPDATE media SET status='pending', attempts=0, error=NULL, next_attempt_at=NULL "
+                 "WHERE id=? AND status IN ('failed', 'skipped')", (mid,))
+    return mid
+
+
 def retry_youtube(conn: Conn) -> int:
     """YouTube downloads that failed, perhaps for want of a session: try them
     again (one was just saved)."""
@@ -838,7 +858,7 @@ class MediaFetcher:
             rows = conn.execute(
                 "SELECT * FROM media WHERE status='pending' AND (next_attempt_at IS NULL OR next_attempt_at<=?) "
                 f"AND (held=0 OR (kept_only=0 AND episode=0 AND {WANTED_SQL}) "
-                f"OR ((kept_only=1 OR episode=1) AND {KEPT_SQL}) OR (episode=1 AND wanted_at IS NOT NULL)) "
+                f"OR ((kept_only=1 OR episode=1) AND {KEPT_SQL}) OR wanted_at IS NOT NULL) "
                 "ORDER BY id LIMIT ?", (now, limit)).fetchall()
         for row in rows:
             self.fetch_one(row)
@@ -850,8 +870,10 @@ class MediaFetcher:
         now = utcnow()
         with self.db.connect() as conn:
             policy = policy_for(conn, row["id"], self.env_policy.override(load_defaults(conn)))
-            if row["kept_only"]:  # a YouTube video: only for kept posts, whoever asks
-                wanted = bool(conn.execute(f"SELECT {KEPT_SQL} FROM media WHERE id=?", (row["id"],)).fetchone()[0])
+            asked = bool(row["kept_only"] and row["wanted_at"])  # saved from a link's box (want_youtube)
+            if row["kept_only"]:  # a YouTube video: only for kept posts or when asked for, whoever else asks
+                wanted = asked or bool(
+                    conn.execute(f"SELECT {KEPT_SQL} FROM media WHERE id=?", (row["id"],)).fetchone()[0])
             elif row["episode"]:  # a podcast episode: when played, or its post is kept (not just opened)
                 wanted = bool(row["wanted_at"]) or bool(
                     conn.execute(f"SELECT {KEPT_SQL} FROM media WHERE id=?", (row["id"],)).fetchone()[0])
@@ -861,10 +883,10 @@ class MediaFetcher:
                 wanted = wanted or bool(conn.execute(f"SELECT {WANTED_SQL} FROM media WHERE id=?",
                                                      (row["id"],)).fetchone()[0])
         try:
-            if not policy.saves_any:
+            if not policy.saves_any and not asked:
                 raise MediaSkipped(f"archiving is off {POLICY_SUFFIX}")
             if row["kept_only"]:
-                if not policy.video.save:
+                if not policy.video.save and not asked:
                     raise MediaSkipped(f"videos aren't archived {POLICY_SUFFIX}")
                 if not wanted:
                     raise MediaHeld()
@@ -932,7 +954,8 @@ def collect_orphans(conn: Conn, media_dir: Path) -> list[Path]:
     The caller unlinks those files after the transaction commits."""
     orphans = conn.execute(
         "SELECT id, storage_path FROM media m WHERE NOT EXISTS (SELECT 1 FROM media_refs r WHERE r.media_id=m.id) "
-        "AND NOT EXISTS (SELECT 1 FROM article_media a WHERE a.media_id=m.id)"
+        "AND NOT EXISTS (SELECT 1 FROM article_media a WHERE a.media_id=m.id) "
+        "AND NOT (m.kept_only=1 AND m.wanted_at IS NOT NULL)"  # a YouTube video saved from a link (want_youtube)
     ).fetchall()
     files: list[Path] = []
     for o in orphans:
