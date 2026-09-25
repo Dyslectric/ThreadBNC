@@ -399,6 +399,51 @@ def test_youtube_links_in_other_posts_are_saved_when_kept(server, bouncer, downl
     assert (m["kept_only"], m["status"]) == (1, "ok") and downloads
 
 
+def test_live_stream_links_are_not_saved(server, bouncer, downloads):
+    from .conftest import DOMAIN
+    live = "https://www.youtube.com/live/dQw4w9WgXcQ?si=x"
+    assert youtube.saved_video_id(live) is None and youtube.saved_video_id(VIDEO) == "dQw4w9WgXcQ"
+    server.add_post("1", "streaming now", "")
+    server.edit_post("1", url=live)
+    bouncer.ingest_url(f"https://{DOMAIN}/post/1")  # kept by link
+    bouncer.media.fetch_pending()
+    assert downloads == [] and one(bouncer, "SELECT 1 FROM media WHERE url=?", live) is None
+
+    # One an older version registered isn't saved either.
+    with bouncer.db.transaction() as conn:
+        mid = media.media_id(conn, live, utcnow())
+        media.register_youtube_links(conn)
+    assert one(bouncer, "SELECT status FROM media WHERE id=?", mid)[0] == "skipped"
+
+
+def test_a_video_that_is_live_now_is_not_recorded(bouncer, monkeypatch, tmp_path):
+    fetched = []
+
+    class FakeYDL:
+        def __init__(self, opts):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def extract_info(self, url, download=True, process=True):
+            return {"id": "dQw4w9WgXcQ", "live_status": "is_live", "is_live": True}
+
+        def process_ie_result(self, info, download=True):
+            fetched.append(info)
+            return info
+
+    import yt_dlp
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", FakeYDL)
+    with pytest.raises(youtube.StillLive):
+        youtube.download(VIDEO, tmp_path / "media", bouncer.youtube, 10_000_000)
+    assert fetched == [] and not list((tmp_path / "media").iterdir())  # tried again once it's over (a VideoRetry)
+    assert issubclass(youtube.StillLive, youtube.VideoRetry)
+
+
 def test_a_playlist_is_read_from_its_page(bouncer, yt):
     cid = bouncer.follow_community("https://www.youtube.com/playlist?list=PLabc", None, 30, backfill=True)
     assert one(bouncer, "SELECT name FROM communities WHERE id=?", cid)[0] == "Build a 65c02-based computer"

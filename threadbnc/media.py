@@ -462,8 +462,9 @@ def media_candidates(title: str | None, body: str | None, url: str | None) -> li
     # never load third-party pages just to find out what they are.
     if url and looks_like_media(url) and url not in urls:
         urls.append(url)
-    # A YouTube link is registered to be saved with yt-dlp if the post is kept.
-    if url and youtube.video_id(url) and url not in urls:
+    # A YouTube link is registered to be saved with yt-dlp if the post is kept
+    # (not a live stream's: youtube.saved_video_id).
+    if url and youtube.saved_video_id(url) and url not in urls:
         urls.append(url)
     return urls
 
@@ -515,10 +516,16 @@ def register(conn: Conn, object_id: int, urls: Iterable[str], now: str, from_art
 
 def register_youtube_links(conn: Conn) -> None:
     """YouTube links in posts from before videos were saved with yt-dlp,
-    including ones an older version skipped as not being pictures."""
+    including ones an older version skipped as not being pictures. Live
+    streams' links an older version registered aren't saved after all."""
     now = utcnow()
+    for r in conn.execute("SELECT id, url FROM media WHERE kept_only=1 AND status='pending' "
+                          "AND wanted_at IS NULL AND url LIKE '%/live/%'").fetchall():
+        if youtube.video_id(r["url"]) and not youtube.saved_video_id(r["url"]):
+            conn.execute("UPDATE media SET status='skipped', error='a live stream; not saved' WHERE id=?",
+                         (r["id"],))
     for r in conn.execute("SELECT DISTINCT object_id, url FROM revisions WHERE url LIKE '%youtu%'").fetchall():
-        if youtube.video_id(r["url"]):
+        if youtube.saved_video_id(r["url"]):
             register(conn, r["object_id"], [r["url"]], now)
             conn.execute("UPDATE media SET kept_only=1, held=1, status='pending', error=NULL, attempts=0 "
                          "WHERE url=? AND kept_only=0 AND status IN ('pending', 'skipped')", (r["url"],))
