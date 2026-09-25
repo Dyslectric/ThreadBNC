@@ -485,9 +485,23 @@ class BlueskyAdapter(ThreadiverseAdapter):
         for item in data.get("feed") or []:
             if not isinstance(item, dict) or not isinstance(item.get("post"), dict):
                 continue
-            if not rkey and item.get("reason"):  # a repost, on an account's page or your timeline
+            view = item["post"]
+            record = view.get("record") if isinstance(view.get("record"), dict) else {}
+            # A custom feed can choose replies even though the author-feed API
+            # has a posts_no_replies filter. Replies belong under their root
+            # post, not beside it as another thread in ThreadBNC's feed.
+            if isinstance(record.get("reply"), dict):
                 continue
-            posts.append(self._post(item["post"], community, name))
+            reason = item.get("reason") if isinstance(item.get("reason"), dict) else {}
+            repost = str(reason.get("$type") or "").endswith("#reasonRepost")
+            if not rkey and item.get("reason"):  # account pages and Following deliberately omit reposts
+                continue
+            post = self._post(view, community, name)
+            by = reason.get("by") if repost and isinstance(reason.get("by"), dict) else None
+            if by:
+                actor = author_of(by)
+                post.metadata["reposted_by"] = {"handle": actor.username, "url": actor.ap_id}
+            posts.append(post)
         return posts
 
     # -- posts -----------------------------------------------------------------

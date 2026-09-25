@@ -294,6 +294,7 @@ def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: lis
         i["video"] = i["oid"] in videos
         meta = json.loads(i.pop("rmeta") or "{}")
         i["nsfw"], i["spoiler"] = bool(meta.get("nsfw")), bool(meta.get("spoiler"))
+        i["reposted_by"] = meta.get("reposted_by")
         i["episode"] = meta.get("episode")  # a podcast episode: its page and running time
         if meta.get("untitled") and i["excerpt"]:  # a fediverse post has text, not a title: show the text once
             i["title"], i["excerpt"] = i["excerpt"], ""

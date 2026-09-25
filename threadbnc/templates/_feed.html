@@ -171,6 +171,12 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
 {% elif is_rss(i.c_ap) %}<a class="act" href="/t/{{ i.id }}/repost" title="Post this article to your communities">{{ icon('share') }}<span class="{{ 'sr-only' if short }}">Post</span></a>{% endif %}
 {%- endmacro %}
 
+{# A Bluesky custom feed may contain reposts. Its post view describes the
+   original author, while reason.by says who put it into the feed. #}
+{% macro reposted_by(i) -%}
+{% if i.reposted_by %}<span class="repost-source">{{ icon('repost') }} Reposted by <a href="{{ i.reposted_by.url | safe_url }}" target="_blank" rel="noreferrer noopener">@{{ i.reposted_by.handle }}</a></span> ·{% endif %}
+{%- endmacro %}
+
 {# A post's pictures, swiped or stepped through with the arrows when there are several.
    view: "tile" or "picture", for the size of copy asked for (thumbs.py). #}
 {% macro gallery(i, veiled, view) %}
@@ -252,6 +258,7 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
     <h3 class="tile-title"><a href="/t/{{ i.id }}">{{ i.title }}</a></h3>
     {{ audio_bar(i) }}
     <div class="tile-meta small">
+      {{ reposted_by(i) }}
       {% if show_community %}<a class="pc-community" href="/c/{{ i.community_id }}">{{ chandle(i.cname, i.c_ap) }}</a> · {% endif %}{{ when(i.created_at) }}
       {% if i.nsfw %}<span class="pill bad">NSFW</span>{% endif %}
     </div>
@@ -286,6 +293,7 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
   {% endif %}
   <div class="pc-main">
     <div class="pc-meta small">
+      {{ reposted_by(i) }}
       {% if show_community %}<a class="pc-community" href="/c/{{ i.community_id }}">{{ chandle(i.cname, i.c_ap) }}</a> ·{% endif %}
       <span>{{ byname(i.username, i.a_instance, i.c_ap) }}</span> · {{ when(i.created_at) }}
       {{ state_badges(i) }}
@@ -328,6 +336,7 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
 {% set veiled = (i.nsfw or i.spoiler) and i.thumb %}
 <article class="picture-card {{ 'unread' if i.unread }} {{ 'kept' if i.all_kept }} {{ 'veiled' if veiled }}" {{ entry_attrs(i) }}>
   <div class="pc-meta small">
+    {{ reposted_by(i) }}
     {% if show_community %}<a class="pc-community" href="/c/{{ i.community_id }}">{{ chandle(i.cname, i.c_ap) }}</a> ·{% endif %}
     <span>{{ byname(i.username, i.a_instance, i.c_ap) }}</span> · {{ when(i.created_at) }}
     {{ state_badges(i) }}

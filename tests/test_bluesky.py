@@ -30,8 +30,11 @@ def jwt_exp(token):
 
 
 def post_view(rkey, text, did=ALICE, handle="alice.bsky.social", likes=3, replies=0, embed=None, facets=None,
-              created="2026-09-23T10:00:00.000Z", labels=()):
+              created="2026-09-23T10:00:00.000Z", labels=(), reply_to=None):
     record = {"$type": "app.bsky.feed.post", "text": text, "createdAt": created}
+    if reply_to:
+        record["reply"] = {"root": {"uri": reply_to, "cid": "croot"},
+                           "parent": {"uri": reply_to, "cid": "croot"}}
     if facets:
         record["facets"] = facets
     view = {"uri": f"at://{did}/app.bsky.feed.post/{rkey}", "cid": "c" + rkey,
@@ -320,6 +323,31 @@ def test_following_a_feed(settings, bouncer, bsky):
     assert bouncer.poll_follow(cid) == 1
     assert one(bouncer, "SELECT community_id FROM objects WHERE canonical_ap_id LIKE '%/f1'")[0] == cid
     assert "Cat Pics" in logged_in(settings, bouncer).get("/").text
+
+
+def test_a_feed_omits_replies_and_names_who_reposted(settings, bouncer, bsky):
+    root = f"at://{ALICE}/app.bsky.feed.post/root"
+    bsky.feed_posts = [
+        {"post": post_view("f1", "An original post", did="did:plc:bob", handle="bob.bsky.social"),
+         "reason": {"$type": "app.bsky.feed.defs#reasonRepost",
+                    "by": {"did": "did:plc:carol", "handle": "carol.bsky.social"}}},
+        {"post": post_view("reply", "This belongs in the thread", did="did:plc:bob",
+                           handle="bob.bsky.social", reply_to=root)},
+    ]
+    cid = bouncer.follow_community("https://bsky.app/profile/feeder.bsky.social/feed/cats", backfill=True)
+    assert bouncer.poll_follow(cid) == 1
+    with bouncer.db.connect() as conn:
+        saved = conn.execute("SELECT r.metadata_json FROM revisions r JOIN objects o ON o.id=r.object_id "
+                             "WHERE o.object_type='post'").fetchone()
+    assert json.loads(saved["metadata_json"])["reposted_by"] == {
+        "handle": "carol.bsky.social", "url": "https://bsky.app/profile/did:plc:carol"}
+
+    client = logged_in(settings, bouncer)
+    for view in ("list", "pictures", "tiles"):
+        page = client.get(f"/?view={view}").text
+        assert "This belongs in the thread" not in page
+        assert "Reposted by" in page and "@carol.bsky.social" in page
+        assert "@bob.bsky.social" in page or view == "tiles"
 
 
 def test_a_feed_only_shown_signed_in_says_so(bouncer, bsky):
