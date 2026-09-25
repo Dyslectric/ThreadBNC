@@ -17,7 +17,8 @@ they're seen. Full videos wait until a post showing them is opened or kept
 (`held`): most scroll past unwatched, and they're by far the biggest files.
 YouTube videos (`kept_only`) wait longer still: they're downloaded with yt-dlp
 only once a post linking to one is kept (see youtube.py), or you ask for one
-from the box a YouTube link opens (`wanted_at`), and have settings of
+from the box a YouTube link opens (`wanted_at`; it's kept as a post too, as
+a followed channel's video is: Bouncer.keep_youtube), and have settings of
 their own on the YouTube page (the resolution they're saved at) rather than
 the Videos ones. Audio files are held
 too, but a post linking to one fetches it as soon as the post is scrolled into
@@ -520,21 +521,37 @@ def register_youtube_links(conn: Conn) -> None:
 
 def youtube_media(conn: Conn, vid: str) -> Any:
     """The media row for a YouTube video, however it was linked (watch?v=,
-    youtu.be/, ...): a saved one first. None if it was never registered."""
+    youtu.be/, ...): a saved one first, then one asked for. None if it was
+    never registered."""
     rows = [r for r in conn.execute("SELECT * FROM media WHERE kept_only=1 AND url LIKE ? ORDER BY id",
                                     (f"%{vid}%",)).fetchall() if youtube.video_id(r["url"]) == vid]
-    return next((r for r in rows if r["status"] == "ok"), rows[0] if rows else None)
+    return next((r for r in rows if r["status"] == "ok"),
+                next((r for r in rows if r["wanted_at"]), rows[0] if rows else None))
 
 
 def want_youtube(conn: Conn, vid: str, now: str) -> int:
     """Save a YouTube video, asked for from a link's box: kept whether or not
-    a post links to it (collect_orphans leaves it), and tried again if it failed."""
+    a post links to it (collect_orphans leaves it), and tried again if it
+    failed. Its watch?v= link's row unless it's saved already: the one the
+    post it's kept as links to (Bouncer.keep_youtube)."""
     row = youtube_media(conn, vid)
-    mid = row["id"] if row else media_id(conn, youtube.watch_url(vid), now)
+    mid = row["id"] if row and row["status"] == "ok" else media_id(conn, youtube.watch_url(vid), now)
     conn.execute("UPDATE media SET wanted_at=COALESCE(wanted_at, ?), held=0 WHERE id=?", (now, mid))
     conn.execute("UPDATE media SET status='pending', attempts=0, error=NULL, next_attempt_at=NULL "
                  "WHERE id=? AND status IN ('failed', 'skipped')", (mid,))
     return mid
+
+
+def kept_as_post(conn: Conn, vid: str) -> None:
+    """A YouTube video asked for from a link's box is kept as a post now
+    (Bouncer.keep_youtube), which links to its watch?v= row: rows for its
+    other links (youtu.be/, ...) aren't asked for any more, so they're not
+    listed besides the post (saved_from_links) nor downloaded again."""
+    watch = youtube.watch_url(vid)
+    for r in conn.execute("SELECT id, url FROM media WHERE kept_only=1 AND wanted_at IS NOT NULL AND url LIKE ? "
+                          "AND url != ?", (f"%{vid}%", watch)).fetchall():
+        if youtube.video_id(r["url"]) == vid:
+            conn.execute("UPDATE media SET wanted_at=NULL WHERE id=?", (r["id"],))
 
 
 def saved_from_links(conn: Conn) -> list[Any]:
@@ -898,6 +915,8 @@ class MediaFetcher:
                     raise MediaSkipped(f"videos aren't archived {POLICY_SUFFIX}")
                 if not wanted:
                     raise MediaHeld()
+                if self._saved_already(row):
+                    return
                 # The YouTube page's settings, not the Videos ones: saved at
                 # the resolution it says, as YouTube encoded it.
                 dl = self._download_youtube(row["url"])
@@ -945,6 +964,22 @@ class MediaFetcher:
             )
         if thumbs.eligible(dl.content_type):
             self.make_thumbs(rel, dl.sha256)
+
+    def _saved_already(self, row: Any) -> bool:
+        """A YouTube video saved already under another of its links (youtu.be/
+        and watch?v=, say): that file is this one's too, not downloaded again."""
+        with self.db.transaction() as conn:
+            saved = youtube_media(conn, youtube.video_id(row["url"]) or "")
+            if saved is None or saved["id"] == row["id"] or saved["status"] != "ok":
+                return False
+            conn.execute(
+                "UPDATE media SET status='ok', content_type=?, size_bytes=?, sha256=?, storage_path=?, "
+                "fetched_from=?, fetched_at=?, attempts=attempts+1, error=NULL, original_bytes=?, original_type=?, "
+                "transcoded_at=?, transcode_error=NULL WHERE id=?",
+                (saved["content_type"], saved["size_bytes"], saved["sha256"], saved["storage_path"],
+                 saved["fetched_from"], utcnow(), saved["original_bytes"], saved["original_type"],
+                 saved["transcoded_at"], row["id"]))
+        return True
 
     def make_thumbs(self, storage_path: str, sha: str) -> None:
         """Smaller copies of a picture just stored, for browsing (thumbs.py)."""

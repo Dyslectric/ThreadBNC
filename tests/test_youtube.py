@@ -61,7 +61,9 @@ PAGE = f"""<html><head><link rel="canonical" href="https://www.youtube.com/chann
 
 
 def watch_page(description, likes):
-    player = {"videoDetails": {"videoId": "dQw4w9WgXcQ", "shortDescription": description}}
+    player = {"videoDetails": {"videoId": "dQw4w9WgXcQ", "shortDescription": description,
+                               "title": "Hello, world from a 6502", "author": "Ben Eater", "channelId": CHANNEL},
+              "microformat": {"playerMicroformatRenderer": {"publishDate": "2026-09-01T07:00:00-07:00"}}}
     data = {"contents": {"twoColumnWatchNextResults": {"results": {"results": {"contents": [
         {"videoPrimaryInfoRenderer": {"videoActions": {"menuRenderer": {"topLevelButtons": [
             {"segmentedLikeDislikeButtonViewModel": {"likeButtonViewModel": {"likeButtonViewModel": {
@@ -444,6 +446,8 @@ def test_the_watch_page_parser():
     assert watch.likes == 1234
     assert watch.description == ("Building a computer.\\\nParts: <https://eater.net/6502_kit>\n\n"
                                  "1\\. clock\\\n\\* not bold \\*")
+    assert (watch.title, watch.channel, watch.channel_id, watch.published) == (
+        "Hello, world from a 6502", "Ben Eater", CHANNEL, "2026-09-01T07:00:00-07:00")
     labelled = '<script>var ytInitialPlayerResponse = {"videoDetails": {}};</script>' \
                '"accessibilityText":"like this video along with 5,678 other people"'
     assert youtube.parse_watch(labelled) == youtube.Watch(None, 5678)
@@ -589,7 +593,7 @@ def test_the_box_says_how_big_the_video_is_and_saves_it(settings, bouncer, yt, d
     assert '<article class="video-box" id="video-dQw4w9WgXcQ"' in box and "<html" not in box
     assert "Never Gonna Give You Up" in box and "Rick Astley" in box
     assert "The video is <strong>123 MB</strong>, at 1080p." in box
-    assert "Download the video and archive it here, or go and watch it on YouTube?" in box
+    assert "Download the video and keep it here, as a post with its description and comments" in box
     assert 'action="/youtube/v/dQw4w9WgXcQ/save"' in box and f'href="{VIDEO}"' in box
     client.get("/youtube/v/dQw4w9WgXcQ")
     assert probes == [VIDEO]  # found once, then remembered
@@ -657,3 +661,77 @@ def test_videos_saved_from_links_are_under_kept_videos(settings, server, bouncer
     page = client.get("/kept?tab=videos").text
     assert "Saved from links" not in page and "neat video" in page
     assert '<span class="count muted" aria-label="1 kept">1</span>' in page
+
+
+def video_post(bouncer):
+    return one(bouncer, "SELECT t.*, c.canonical_ap_id AS c_ap, c.name AS c_name FROM archived_threads t "
+                        "JOIN objects o ON o.id=t.root_object_id JOIN communities c ON c.id=t.community_id "
+                        "WHERE o.canonical_ap_id='rss:yt:video:dQw4w9WgXcQ'")
+
+
+def test_a_video_saved_from_a_link_is_kept_as_its_channels_post(settings, bouncer, yt, downloads, monkeypatch):
+    """Saving a video from a link's box keeps it the way keeping a followed
+    channel's video does: a post in its channel, with its description, likes
+    and comments, whose video is the one downloaded."""
+    monkeypatch.setattr(youtube, "probe", lambda url, session: youtube.Probe(
+        "Never Gonna Give You Up", "Rick Astley", 213, 123_400_000, False, 1080))
+    client = logged_in(settings, bouncer)
+    client.post("/youtube/v/dQw4w9WgXcQ/save")
+    while bouncer.run_one_job():
+        pass
+    t = video_post(bouncer)
+    assert t["retention"] == "manual" and t["expires_at"] is None
+    assert (t["c_ap"], t["c_name"]) == (f"rss:{FEED}", "Ben Eater")
+    root = one(bouncer, "SELECT o.upvotes, r.title, r.url, r.body, o.created_at FROM objects o "
+                        "JOIN revisions r ON r.object_id=o.id AND r.seq=o.revision_count WHERE o.id=?",
+               t["root_object_id"])
+    assert (root["title"], root["url"], root["upvotes"]) == ("Hello, world from a 6502", VIDEO, 1234)
+    assert root["body"].startswith("Building a computer.") and root["created_at"].startswith("2026-09-01T14:00")
+    assert one(bouncer, "SELECT COUNT(*) FROM objects WHERE thread_id=? AND object_type='comment'", t["id"])[0] == 4
+
+    bouncer.media.fetch_pending()
+    assert [u for u, _, _ in downloads] == [VIDEO]  # once: the post's video is the one asked for
+    page = client.get("/kept?tab=videos").text
+    assert "Saved from links" not in page and "Hello, world from a 6502" in page
+    assert '<span class="count muted" aria-label="1 kept">1</span>' in page
+    assert f'href="/t/{t["id"]}"' in client.get("/youtube/v/dQw4w9WgXcQ?pane=1").text
+
+    # Following its channel later finds the same post, not another.
+    cid = bouncer.follow_community(f"https://www.youtube.com/channel/{CHANNEL}", None, 30, backfill=True)
+    bouncer.poll_follow(cid)
+    assert one(bouncer, "SELECT COUNT(*) FROM objects WHERE canonical_ap_id='rss:yt:video:dQw4w9WgXcQ'")[0] == 1
+    assert video_post(bouncer)["community_id"] == cid
+
+
+def test_a_followed_channels_video_saved_from_a_link_keeps_its_post(settings, bouncer, yt, downloads):
+    cid = bouncer.follow_community(f"https://www.youtube.com/channel/{CHANNEL}", None, 30, backfill=True)
+    bouncer.poll_follow(cid)
+    assert video_post(bouncer)["retention"] == "auto"
+    logged_in(settings, bouncer).post("/youtube/v/dQw4w9WgXcQ/save")
+    while bouncer.run_one_job():
+        pass
+    assert video_post(bouncer)["retention"] == "manual"
+    assert one(bouncer, "SELECT COUNT(*) FROM archived_threads")[0] == 2  # the channel's two videos, no more
+
+
+def test_videos_saved_from_links_before_are_kept_as_posts(settings, bouncer, yt, downloads):
+    """Saved from a youtu.be link before this kept a post: the post is made
+    once, and its video is the file already saved, not downloaded again."""
+    with bouncer.db.transaction() as conn:
+        mid = media.media_id(conn, "https://youtu.be/dQw4w9WgXcQ", utcnow())
+        conn.execute("UPDATE media SET wanted_at=?, held=0 WHERE id=?", (utcnow(), mid))
+    bouncer.media.fetch_pending()
+    assert len(downloads) == 1
+    bouncer._keep_saved_links()
+    bouncer._keep_saved_links()  # asked once
+    assert one(bouncer, "SELECT COUNT(*) FROM jobs WHERE kind='keep_youtube'")[0] == 1
+    while bouncer.run_one_job():
+        pass
+    assert video_post(bouncer)["retention"] == "manual"
+    bouncer.media.fetch_pending()
+    assert len(downloads) == 1
+    old, new = one(bouncer, "SELECT * FROM media WHERE id=?", mid), video_media(bouncer)
+    assert new["status"] == "ok" and new["storage_path"] == old["storage_path"]
+    with bouncer.db.connect() as conn:
+        assert media.saved_from_links(conn) == []  # listed as the post, not besides it too
+    assert "Saved from links" not in logged_in(settings, bouncer).get("/kept?tab=videos").text

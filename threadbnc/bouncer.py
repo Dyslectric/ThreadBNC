@@ -278,10 +278,8 @@ class Bouncer:
         post) it's read from the best server along with its comments."""
         existing = self._existing_thread(post.ap_id)
         if existing:
-            if retention == "manual" and existing["trashed_at"]:
-                self.restore_from_trash(existing["id"], keep=True)
-            elif retention == "manual" and existing["retention"] == "auto":
-                self.promote(existing["id"])
+            if retention == "manual":
+                self._keep_existing(existing)
             return existing["id"]
 
         if capture:
@@ -327,6 +325,43 @@ class Bouncer:
         self._enrich_moderation(src_adapter, result, post.community)
         log.info("ingested %s (%d objects) as thread %d", post.ap_id, len(result.object_ids), tid)
         return tid
+
+    def _keep_existing(self, t: Any) -> None:
+        """Keep a thread already stored: out of the trash, or no longer expiring."""
+        if t["trashed_at"]:
+            self.restore_from_trash(t["id"], keep=True)
+        elif t["retention"] == "auto":
+            self.promote(t["id"])
+
+    def keep_youtube(self, vid: str) -> int:
+        """A YouTube video saved from a link's box, kept as a post the way a
+        followed channel's video is (RssAdapter.youtube_post): in its
+        channel, with its description, likes and comments, and its video
+        downloaded as any kept post's is (media.py). If it's a post here
+        already (its channel is followed), that one is kept."""
+        existing = self._existing_thread(f"{RSS_PREFIX}yt:video:{vid}")
+        if existing:
+            self._keep_existing(existing)
+            tid = existing["id"]
+        else:
+            post = self.rss_adapter.youtube_post(vid)
+            tid = self._ingest_post(post, RSS_DOMAIN, post.local_id, self.rss_adapter,
+                                    source_url=youtube.watch_url(vid), retention="manual", capture=True)
+        with self.db.transaction() as conn:
+            media.kept_as_post(conn, vid)
+        self.open_threads([tid])  # its description, likes and comments
+        return tid
+
+    def _keep_saved_links(self) -> None:
+        """YouTube videos saved from a link's box before those were kept as
+        posts (keep_youtube), made posts now; once each, however that went."""
+        with self.db.connect() as conn:
+            saved = [youtube.video_id(r["url"]) for r in media.saved_from_links(conn)]
+            asked = {json.loads(r[0]).get("vid") for r in conn.execute(
+                "SELECT payload_json FROM jobs WHERE kind='keep_youtube'")}
+        for vid in dict.fromkeys(saved):
+            if vid and vid not in asked:
+                self.enqueue("keep_youtube", {"vid": vid})
 
     def promote(self, thread_id: int) -> None:
         now = utcnow()
@@ -1345,6 +1380,8 @@ class Bouncer:
                 if payload.get("retention", "manual") == "manual":
                     self.open_threads([tid])  # kept: its article too
                 self._finish_job(job["id"], "done", {"thread_id": tid})
+            elif job["kind"] == "keep_youtube":
+                self._finish_job(job["id"], "done", {"thread_id": self.keep_youtube(payload["vid"])})
             elif job["kind"] == "open":
                 self.open_threads(payload["thread_ids"])
                 self._finish_job(job["id"], "done", {"thread_ids": payload["thread_ids"]})
@@ -1432,6 +1469,7 @@ class Bouncer:
                 media.register_youtube_links(conn)
                 thumbs.request_pass_if_needed(conn)
                 articles.register_all_existing(conn)
+            self._keep_saved_links()
             self._media_backfilled = True
         # Linked articles aren't fetched in the background either: opening or
         # keeping a post saves its article (open_threads), and so does

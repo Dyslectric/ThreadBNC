@@ -665,6 +665,20 @@ class RssAdapter(ThreadiverseAdapter):
             language=feed.language,
         )
 
+    def youtube_post(self, vid: str) -> NPost:
+        """A YouTube video on its own (saved from a link to it): its post as
+        its channel's feed has it (FeedFetcher._youtube_page), from the
+        video's page, so it's the same post if the channel is followed."""
+        watch = self.fetcher.youtube_video(vid)
+        if not watch.channel_id:
+            raise RemoteUnavailable(f"{youtube.watch_url(vid)}: no channel on the page (YouTube may have changed it)")
+        feed = Feed(f"{youtube.FEED}?channel_id={watch.channel_id}", watch.channel or watch.channel_id,
+                    f"https://www.youtube.com/channel/{watch.channel_id}", None)
+        return self._post(feed, Entry(key=f"yt:video:{vid}", link=youtube.watch_url(vid),
+                                      title=watch.title or youtube.watch_url(vid), html="",
+                                      published=_date(watch.published), updated=None, author=None,
+                                      thumb=youtube.thumbnail_url(vid)))
+
     def resolve_url(self, ref: ThreadRef) -> str:
         raise RemoteNotFound("RSS articles are kept by following their feed")
 
