@@ -62,7 +62,7 @@ ThreadBNC behaves like one more subscribed server, or like your own browser, nev
 - **Discussions elsewhere, when you open it.** Opening a post with a linked article, or the article, asks your own Lemmy server, Reddit (when connected) and Bluesky (when you're signed in) for other posts of it, and a blog that federates or takes webmentions for its replies: once, then not again for an hour (see [Discussions](#discussions)).
 - **Votes, cheaply.** Votes are updated every 5 minutes for a post's first half hour, then every 10, every 30 until 6 hours, hourly until a day, daily until a week, and then not at all (opening a post still updates them). A pushed community's come from your own server; a checked community's from one listing covering all its posts; only a post kept on its own is asked about by itself.
 - **Hashtags through a relay.** A followed hashtag is one Follow to its relay. Each post it passes on is read once from its own server, a signed request like any receiving server makes, and its votes aren't checked in the background at all; opening it reads it again with its replies.
-- **Hashtags on Bluesky, from its public stream.** Bluesky offers nothing to subscribe to for a hashtag, only one stream of everything posted there. While any hashtag is followed, ThreadBNC listens to it (Jetstream, new posts only: about 30 a second, some 2 GB a day), keeps the posts with a followed hashtag, and asks Bluesky for those alone, up to 25 in one request.
+- **Hashtags on Bluesky, from its public stream.** Bluesky offers nothing to subscribe to for a hashtag, only one stream of everything posted there. While any hashtag is followed, ThreadBNC listens to it (Jetstream, new posts only, compressed: about 30 a second, about 1 GB a day), keeps the posts with a followed hashtag, and asks Bluesky for those alone, up to 25 in one request.
 - **Reddit only while you're here,** spread out, one subreddit at a time (see [Checking, conservatively](#checking-conservatively)).
 - **Pictures at once, videos later.** Pictures and thumbnails are downloaded as posts arrive; full videos wait until you open or keep a post showing them.
 - **Video players are the sites' own.** A post that is a video's link, or a video link's box, loads the site's player in your browser (YouTube's from youtube-nocookie.com), or plays a video file from where it is. Nothing is downloaded for that. A video from a site is only downloaded when you press **Download and archive**, or keep a post that links to a YouTube video.
@@ -366,7 +366,13 @@ WebSocket, and ThreadBNC asks it for new posts only (no likes, follows or repost
 ActivityPub actor: without `THREADBNC_ACTOR_DOMAIN`, hashtags come from Bluesky alone.
 
 - **While any hashtag is followed**, one connection stays open and every post made on Bluesky passes through it:
-  about 30 a second, some 25 KB/s or 2 GB a day (measured September 2026). With none followed, it's closed.
+  about 30 a second. Compressed, that's about 11 KB/s or 1 GB a day, half what it is uncompressed (measured
+  September 2026). With none followed, it's closed.
+- **Compression** is zstd, each event on its own, with a dictionary Jetstream publishes. ThreadBNC keeps a copy
+  (`threadbnc/jetstream_zstd_dictionary`, from Bluesky's
+  [jetstream-legacy](https://github.com/bluesky-social/jetstream-legacy) repository, MIT licensed; its licence is
+  beside it). If that's missing, the Python has no zstd, or events stop decompressing with it because Jetstream
+  changed its dictionary, the stream carries on uncompressed.
 - **A post with a followed hashtag**, in its text or among the tags added beside it, is noted with the first
   such hashtag; replies are left out, as they belong under their post. Every few seconds the posts noted are read
   from Bluesky, up to 25 in one request, and kept in the hashtag's feed beside the fediverse's, expiring like
@@ -855,5 +861,4 @@ Under a post with a linked article (and in the reader) is where else the article
 - PieFed moderation attribution is always `unknown` for now, because its modlog API varies between versions.
 - ThreadBNC's own ActivityPub actor only follows hashtag relays so far. Lemmy and PieFed pushes still need your own Lemmy server; without one, those communities have to be checked on a schedule.
 - Replies to hashtag posts from the fediverse are only read from servers with the Mastodon API.
-- Jetstream is read uncompressed. Its zstd compression (with the dictionary it publishes) would roughly halve the 2 GB a day.
 - Post pin/feature state, actor profile history, search, tags and notes are not implemented.
