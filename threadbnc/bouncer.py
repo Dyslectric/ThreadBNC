@@ -46,10 +46,10 @@ from .adapters import (
     UnsupportedSoftware,
     adapter_class,
     detect_software,
+    from_fediverse,
     host_of,
     is_reddit_host,
     is_rss,
-    is_tag,
     parse_community_ref,
     parse_thread_url,
 )
@@ -128,7 +128,7 @@ class Bouncer:
         self.rss_adapter = RssAdapter(FeedFetcher(settings.user_agent, settings.http_timeout, self.http.throttle))
         # ThreadBNC's own ActivityPub identity, and the posts hashtags bring (tags.py).
         self.actor = Actor(settings.actor_domain, db, vault, self.http) if settings.actor_domain else None
-        self.tag_adapter = ActivityPubAdapter(self.actor)
+        self.tag_adapter = ActivityPubAdapter(self.actor, self.http, bluesky=bool(settings.jetstream_url))
         self.bluesky_adapter = BlueskyAdapter(self.http)
         self._adapter_factory = adapter_factory
         self._adapters: dict[str, tuple[ThreadiverseAdapter, str]] = {}  # domain -> (adapter, chosen at)
@@ -480,7 +480,7 @@ class Bouncer:
         feed's likes do with every check of it, and a hashtag's posts are
         from anywhere, so their votes are read only when opened: none gets vote checks."""
         row = conn.execute("SELECT canonical_ap_id FROM communities WHERE id=?", (community_id,)).fetchone()
-        return bool(row) and (is_rss(row["canonical_ap_id"]) or is_tag(row["canonical_ap_id"])
+        return bool(row) and (is_rss(row["canonical_ap_id"]) or from_fediverse(row["canonical_ap_id"])
                               or host_of(row["canonical_ap_id"]) == BSKY_DOMAIN
                               or is_reddit_host(host_of(row["canonical_ap_id"])))
 
@@ -1335,12 +1335,13 @@ class Bouncer:
         return len(rows)
 
     # -- jobs --------------------------------------------------------------
-    def enqueue(self, kind: str, payload: dict[str, Any]) -> int:
+    def enqueue(self, kind: str, payload: dict[str, Any], delay: timedelta | None = None) -> int:
         now = utcnow()
+        run_after = fmt_ts(parse_ts(now) + delay) if delay else now  # type: ignore[operator]
         with self.db.transaction() as conn:
             cur = conn.execute(
                 "INSERT INTO jobs(kind, payload_json, created_at, updated_at, run_after) VALUES (?,?,?,?,?)",
-                (kind, json.dumps(payload), now, now, now),
+                (kind, json.dumps(payload), now, now, run_after),
             )
         self.wake.set()
         return cur.lastrowid

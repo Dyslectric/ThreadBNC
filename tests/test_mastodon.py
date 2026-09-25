@@ -38,6 +38,7 @@ class FakeHome:
         self.favourites: list[str] = []
         self.posted: list[dict] = []
         self.deleted: list[str] = []
+        self.context: list[dict] = []  # the replies to any post, for anyone asking
         self.statuses = {
             "9001": status("9001", NOTE, "alice@masto.test", "New homelab!", favourites_count=7),
             "9002": status("9002", BOB_REPLY, "bob@other.test", "Nice rack", spoiler_text="racks",
@@ -61,6 +62,11 @@ class FakeHome:
         if path == "/oauth/revoke" and method == "POST":
             self.revoked.append(body["token"])
             return httpx.Response(200, json={})
+        public = re.fullmatch(r"/api/v1/statuses/(\w+)(/context)?", path)
+        if public and method == "GET" and "authorization" not in request.headers:  # anyone can read a public post
+            if public.group(2):
+                return httpx.Response(200, json={"ancestors": [], "descendants": self.context})
+            return httpx.Response(200, json=self.statuses[public.group(1)])
         if request.headers.get("authorization") != f"Bearer {TOKEN}":
             return httpx.Response(401, json={"error": "The access token is invalid"})
         if path == "/api/v1/accounts/verify_credentials":
@@ -241,3 +247,41 @@ def test_without_a_mastodon_account_it_says_how(web, tagged, fedi):
 def test_a_server_without_mastodons_api_is_refused(web, tagged, fedi):
     r = web.post("/accounts/mastodon", data={"server": "lemmy.test"})
     assert "doesn&#39;t look like a Mastodon server" in r.text or "doesn't look like a Mastodon server" in r.text
+
+
+def test_the_composer_posts_on_your_mastodon_account(web, tagged, fedi):
+    b, _ = tagged
+    web.get("/accounts/mastodon/callback", params={"state": sign_in(web, fedi), "code": "good"})
+    web.post("/login", data={"password": "pw"})
+    me = one(b, "SELECT id FROM accounts WHERE software='mastodon'")["id"]
+    follow(b, web.app.state.tags)
+    tag = one(b, "SELECT id FROM communities WHERE canonical_ap_id='tag:selfhosted'")["id"]
+    form = web.get("/post").text
+    assert f'name="account_id" value="{me}" data-kind="Mastodon" checked' in form and "@dave@home.test" in form
+    assert f'name="community_id" value="{tag}"' not in form  # hashtags aren't places to post any more
+    r = web.post("/post", data={"title": "Racks", "body": "Mine is full.", "url": "https://blog.test/rack",
+                                "account_id": str(me)}, follow_redirects=False)
+    assert fedi.home.posted == [{"status": "Racks\n\nMine is full.\n\nhttps://blog.test/rack"}]
+    uri = f"https://{HOME}/users/dave/statuses/9101"
+    t = one(b, "SELECT t.id, t.retention, t.source_domain, c.canonical_ap_id, c.name FROM archived_threads t "
+               "JOIN objects o ON o.id=t.root_object_id JOIN communities c ON c.id=t.community_id "
+               "WHERE o.canonical_ap_id=?", uri)
+    assert (t["retention"], t["source_domain"], t["canonical_ap_id"], t["name"]) == ("manual", "hashtag", ME["uri"], "dave")
+    assert r.headers["location"] == f"/t/{t['id']}"
+    page = web.get(f"/t/{t['id']}").text
+    assert "Comment as @dave@home.test" in page and '>@dave@home.test (Mastodon)</a>' in page
+    # Opening it reads it back from your server, as anyone could, with its replies.
+    fedi.home.statuses["9101"]["favourites_count"] = 4
+    fedi.home.context = [{"id": "301", "uri": "https://other.test/users/bob/statuses/301", "in_reply_to_id": "9101",
+                          "content": "<p>Full indeed</p>", "created_at": "2026-09-25T10:00:00Z", "favourites_count": 0,
+                          "replies_count": 0, "spoiler_text": "", "media_attachments": [],
+                          "account": {"username": "bob", "uri": "https://other.test/users/bob"}}]
+    b.sync_thread(t["id"], force=True)
+    assert one(b, "SELECT upvotes FROM objects WHERE canonical_ap_id=?", uri)["upvotes"] == 4
+    assert one(b, "SELECT COUNT(*) AS n FROM objects WHERE thread_id=?", t["id"])["n"] == 2
+    assert one(b, "SELECT community_id FROM archived_threads WHERE id=?", t["id"])["community_id"] == \
+        one(b, "SELECT id FROM communities WHERE canonical_ap_id=?", ME["uri"])["id"]
+    # Your account's posts are a page of their own, but not one to follow or post in.
+    cpage = web.get(f"/c/{one(b, 'SELECT community_id FROM archived_threads WHERE id=?', t['id'])['community_id']}").text
+    assert "Racks" in cpage and f'name="community" value="{ME["uri"]}"' not in cpage and "Live on server" not in cpage
+

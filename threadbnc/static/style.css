@@ -535,6 +535,7 @@ a.sso-button:hover { background: var(--accent-hover); }
 fieldset.targets { border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px 8px; margin: 0;
   display: flex; flex-wrap: wrap; gap: 4px 16px; }
 fieldset.targets legend { color: var(--muted); padding: 0 4px; }
+fieldset.targets .post-on-note { flex-basis: 100%; margin: 0; }
 /* The communities a post goes to: a group per kind, scrolling when there are many. */
 .post-targets { display: flex; flex-direction: column; gap: 8px; max-height: 18rem; overflow-y: auto; }
 .post-targets > details > fieldset { margin-top: 6px; }

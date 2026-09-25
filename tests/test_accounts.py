@@ -11,6 +11,7 @@ from threadbnc.vault import TokenVault
 from threadbnc.web import create_app
 
 from .conftest import COMMUNITY, DOMAIN, FakeAdapter
+from .test_bluesky import bsky  # noqa: F401
 
 HOME = "home.test"
 
@@ -349,3 +350,54 @@ def test_start_community_web_flow(settings, server, bouncer):
     assert r.status_code == 303 and r.headers["location"].startswith("/c/")
     page = client.get(r.headers["location"]).text
     assert "!retrohacks" in page and "New post" in page and "Following" in page
+
+
+def with_bluesky(client, bouncer):
+    client.post("/accounts/bluesky", data={"identifier": "@dave.bsky.social", "app_password": "abcd-efgh-ijkl-mnop"})
+    return one(bouncer, "SELECT id FROM accounts WHERE domain='bsky.app'")[0]
+
+
+def test_the_composer_posts_on_your_bluesky_account_too(settings, server, bouncer, bsky, thread):  # noqa: F811
+    client, math, news = two_communities(settings, server, bouncer, thread)
+    me = with_bluesky(client, bouncer)
+    tag = bouncer.follow_community("#cats", None, 30, False)
+    form = client.get("/post").text
+    assert f'name="account_id" value="{me}" data-kind="Bluesky" >' in form  # offered, not ticked at first
+    assert f'value="{news}" checked' in form  # the first community offered is, as before
+    assert f'name="community_id" value="{tag}"' not in form  # a hashtag isn't somewhere to post
+    r = client.post("/post", data={"title": "Hello", "body": "both places", "community_id": str(math),
+                                   "account_id": str(me)}, follow_redirects=False)
+    (made,) = bsky.records.values()
+    assert made["record"]["text"] == "Hello\n\nboth places"  # as written: no "cross-posted from" line
+    assert "Posted in 2 places" in client.get(r.headers["location"]).text
+    mine = one(bouncer, "SELECT t.retention, c.canonical_ap_id FROM archived_threads t JOIN objects o "
+                        "ON o.id=t.root_object_id JOIN communities c ON c.id=t.community_id "
+                        "WHERE o.canonical_ap_id LIKE '%/post/r1'")
+    assert (mine["retention"], mine["canonical_ap_id"]) == ("manual", "https://bsky.app/profile/did:plc:dave")
+    # Too long for Bluesky: the community still gets it, and the message says what didn't.
+    r = client.post("/post", data={"title": "x" * 150, "body": "y" * 200, "community_id": str(math),
+                                   "account_id": str(me)})
+    assert "Posted in 1 of 2 places. Failed: @dave.bsky.social: Bluesky posts are at most 300 characters" in r.text
+    # Only on Bluesky: next time that's what's ticked.
+    client.post("/post", data={"title": "Just here", "account_id": str(me)})
+    form = client.get("/post").text
+    assert f'value="{me}" data-kind="Bluesky" checked' in form and 'checked' not in form.split('name="community_id"', 1)[1]
+    # Reposting and posting an article offer it too.
+    assert f'name="account_id" value="{me}"' in client.get(f"/t/{thread}/repost").text
+    # Nothing ticked: nothing posted.
+    r = client.post("/post", data={"title": "Nowhere"})
+    assert "Pick a community to post it in, or an account to post it on" in r.text
+
+
+def test_with_only_a_bluesky_account_the_composer_posts_there(settings, bouncer, bsky):  # noqa: F811
+    settings.credentials_key = "test-key"
+    client = TestClient(create_app(settings, bouncer))
+    client.post("/login", data={"password": "pw"})
+    me = with_bluesky(client, bouncer)
+    form = client.get("/post").text
+    assert f'value="{me}" data-kind="Bluesky" checked' in form and "Add an account" not in form
+    assert "other communities" not in form and "<button >Post</button>" in form
+    r = client.post("/post", data={"title": "Hi from the composer", "account_id": str(me)}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"].startswith("/t/")
+    assert [x["record"]["text"] for x in bsky.records.values()] == ["Hi from the composer"]
+

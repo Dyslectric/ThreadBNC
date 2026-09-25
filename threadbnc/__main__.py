@@ -84,6 +84,10 @@ def main() -> None:
         attach(bouncer, settings)
         attach_inbox(bouncer, settings)
     if args.cmd == "bouncer":
+        if settings.jetstream_url:  # hashtags on Bluesky
+            from .jetstream import BlueskyTags
+
+            BlueskyTags(bouncer, settings.jetstream_url, settings.user_agent).start_thread()
         bouncer.run_forever()
     elif args.cmd == "archive":
         print(f"thread {bouncer.ingest_url(args.url)}")

@@ -15,7 +15,7 @@
       </div>
       <div class="row">
       {% if bluesky_me and c.canonical_ap_id == bluesky_me.actor_ap_id %}<a class="button secondary small" href="/c/{{ c.id }}/submit">{{ icon('pencil') }} New post</a>{% endif %}
-      {% if not is_rss(c.canonical_ap_id) and not is_tag(c.canonical_ap_id) and not is_bluesky(c.canonical_ap_id) and (reddit_me if is_reddit(c.canonical_ap_id) else acting) %}<a class="button secondary small" href="/c/{{ c.id }}/submit">{{ icon('pencil') }} New post</a>{% endif %}
+      {% if not is_rss(c.canonical_ap_id) and not from_fediverse(c.canonical_ap_id) and not is_bluesky(c.canonical_ap_id) and (reddit_me if is_reddit(c.canonical_ap_id) else acting) %}<a class="button secondary small" href="/c/{{ c.id }}/submit">{{ icon('pencil') }} New post</a>{% endif %}
       {% if following and follow.polling %}
         <form method="post" action="/c/{{ c.id }}/refresh" class="inline" title="Check for new posts now{{ ', last checked ' ~ (follow.last_polled_at | ago) if follow.last_polled_at }}">
           <button class="secondary small">{{ icon('refresh') }} Refresh</button></form>
@@ -24,7 +24,7 @@
         <details class="settings">
           {% set federated = not is_rss(c.canonical_ap_id) and not is_reddit(c.canonical_ap_id) and not is_tag(c.canonical_ap_id)
                              and not is_bluesky(c.canonical_ap_id) %}
-          <summary class="button secondary small" title="{{ 'From the relay' if is_tag(c.canonical_ap_id) and follow.push_state == 'subscribed' else 'Pushed' if follow.push_state == 'subscribed' else ('Checked every ' ~ follow.poll_interval_minutes ~ ' min' if follow.polling else 'Not arriving') }} · unkept posts kept {{ (follow.retention_days ~ ' days') if follow.retention_days is not none else 'forever' }}">{{ icon('check') }} Following{{ icon('chevron-down', 'chev') }}</summary>
+          <summary class="button secondary small" title="{{ ('From the relay and Bluesky' if follow.push_state == 'subscribed' else 'From Bluesky') if is_tag(c.canonical_ap_id) and jetstream else 'From the relay' if is_tag(c.canonical_ap_id) and follow.push_state == 'subscribed' else 'Pushed' if follow.push_state == 'subscribed' else ('Checked every ' ~ follow.poll_interval_minutes ~ ' min' if follow.polling else 'Not arriving') }} · unkept posts kept {{ (follow.retention_days ~ ' days') if follow.retention_days is not none else 'forever' }}">{{ icon('check') }} Following{{ icon('chevron-down', 'chev') }}</summary>
           <div class="card settings-card">
             <form method="post" action="/c/{{ c.id }}/follow-settings" class="stack">
               {% if is_tag(c.canonical_ap_id) %}<input type="hidden" name="poll_interval_minutes" value="{{ follow.poll_interval_minutes }}">
@@ -71,7 +71,8 @@
             </div>
             {% elif is_tag(c.canonical_ap_id) %}
             <div class="push-status small">
-              {% if follow.push_state == 'subscribed' %}
+              {% if not actor_handle %}
+              {% elif follow.push_state == 'subscribed' %}
                 <p><span class="pill good">{{ icon('refresh') }} From the relay</span> {{ actor_handle }} follows
                   <a href="{{ follow.push_actor | safe_url }}" rel="noreferrer noopener nofollow" target="_blank">the relay's #{{ c.name }}</a>:
                   public posts with this hashtag arrive as they're made{% if follow.last_push_at %}, last {{ when(follow.last_push_at) }}{% endif %}.
@@ -83,6 +84,16 @@
                 <p><span class="pill bad">Not arriving</span> The relay couldn't be asked for posts yet{% if follow.push_error %}:
                   <span class="bad-text">{{ follow.push_error }}</span>{% endif %}. It's asked again every half hour.</p>
               {% endif %}
+              {% if jetstream and jetstream.connected_since %}
+                <p><span class="pill good">{{ icon('refresh') }} From Bluesky</span> Everything posted on Bluesky is read as
+                  it's made, through its Jetstream, and posts tagged #{{ c.name }} are kept{% if bluesky_last %}, last
+                  {{ when(bluesky_last) }}{% endif %}.</p>
+              {% elif jetstream and jetstream.last_error %}
+                <p><span class="pill bad">Bluesky</span> Its Jetstream can't be reached:
+                  <span class="bad-text">{{ jetstream.last_error }}</span>. It's tried again in a few minutes at most.</p>
+              {% elif jetstream %}
+                <p><span class="pill warn">Connecting</span> to Bluesky's Jetstream, for posts tagged #{{ c.name }} there.</p>
+              {% endif %}
             </div>
             {% else %}
             <p class="small muted">Checked every {{ follow.poll_interval_minutes }} minutes, last
@@ -92,7 +103,7 @@
             <form method="post" action="/c/{{ c.id }}/unfollow"><button class="small secondary">Unfollow</button></form>
           </div>
         </details>
-      {% else %}
+      {% elif not is_fedi_account(c.canonical_ap_id) %}{# your Mastodon account's posts: made here, never followed #}
         <form method="post" action="/follow" class="inline">
           <input type="hidden" name="community" value="{{ c.canonical_ap_id }}">
           <input type="hidden" name="backfill" value="1">
@@ -113,7 +124,7 @@
     <nav class="tabs">
       <a href="/c/{{ c.id }}" class="{{ 'on' if tab == 'feed' }}">Feed</a>
       <a href="/c/{{ c.id }}?tab=kept" class="{{ 'on' if tab == 'kept' }}">{{ icon('star') }} Kept ({{ counts.get('manual', 0) }})</a>
-      {% if not is_rss(c.canonical_ap_id) and not is_tag(c.canonical_ap_id) %}<a href="/c/{{ c.id }}?tab=live" class="{{ 'on' if tab == 'live' }}">Live on server</a>{% endif %}
+      {% if not is_rss(c.canonical_ap_id) and not from_fediverse(c.canonical_ap_id) %}<a href="/c/{{ c.id }}?tab=live" class="{{ 'on' if tab == 'live' }}">Live on server</a>{% endif %}
       <a href="/c/{{ c.id }}?tab=media" class="{{ 'on' if tab == 'media' }}">Media</a>
       <a href="/c/{{ c.id }}?tab=log" class="{{ 'on' if tab == 'log' }}">Log</a>
       {% if powers.any %}<a href="/c/{{ c.id }}?tab=mod" class="{{ 'on' if tab == 'mod' }}">{{ icon('shield') }} Moderation</a>{% endif %}
