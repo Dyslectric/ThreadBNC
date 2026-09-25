@@ -385,6 +385,7 @@ On the **Accounts** page, add any Lemmy or PieFed account: the server, username,
 |---|---|
 | Thread page | Comment, reply to any comment, and upvote or downvote the post and each comment |
 | Your own posts and comments | Edit, and delete or restore |
+| Top navigation | **New post** to choose one or more communities and write a link and/or text post |
 | Community page | **✎ New post** for a link and/or text post, there and in any other communities you tick under **Also post in other communities** |
 | Communities page | **＋ Start a community** on a server where one of your accounts is an admin |
 

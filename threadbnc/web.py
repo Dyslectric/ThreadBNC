@@ -2416,6 +2416,22 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             t for t in repost_targets(acting(request), poster.reddit_account()) if t["id"] != cid]
         return render(request, "submit.html", c=c, targets=also)
 
+    @app.get("/post", response_class=HTMLResponse)
+    def new_post_form(request: Request):
+        targets = repost_targets(acting(request), poster.reddit_account())
+        return render(request, "post.html", draft={"title": "", "url": "", "body": ""}, targets=targets,
+                      chosen=last_targets(request, targets), action="/post")
+
+    @app.post("/post")
+    def new_post(request: Request, title: str = Form(...), url: str = Form(""), body: str = Form(""),
+                 community_id: list[str] = Form([]), community: str = Form("")):
+        """A new post in the communities picked in the global composer."""
+        def act(account: Account) -> RedirectResponse:
+            cids = picked_communities(community_id, community)
+            return post_to_many(request, account, cids, lambda cid, text: poster.submit(
+                account, cid, title, text, url), body, "Posted. It's kept automatically.", "/post")
+        return account_action(request, "/post", act)
+
     @app.post("/c/{cid}/submit")
     def submit(request: Request, cid: int, title: str = Form(...), url: str = Form(""), body: str = Form(""),
                community_id: list[str] = Form([]), community: str = Form("")):

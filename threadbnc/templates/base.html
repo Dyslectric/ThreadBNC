@@ -22,6 +22,7 @@
     <nav class="primary" aria-label="Main" id="site-nav" data-live>
       {% for href, name, ico, on in [('/', 'Feed', 'feed', path == '/'),
                                      ('/communities', 'Communities', 'communities', path.startswith('/communities') or path.startswith('/c/')),
+                                     ('/post', 'New post', 'pencil', path == '/post'),
                                      ('/kept', 'Kept', 'star', path.startswith('/kept')),
                                      ('/inbox', 'Inbox', 'inbox', path.startswith('/inbox'))] %}
         <a href="{{ href }}" class="{{ 'on' if on }}"{% if on %} aria-current="page"{% endif %} title="{{ name }}">{{ icon(ico) }}<span class="label">{{ name }}</span>

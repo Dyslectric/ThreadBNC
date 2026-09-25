@@ -185,6 +185,23 @@ def test_submit_to_several_communities(settings, server, bouncer, thread):
     assert "Posted in 2 communities" in client.get(r.headers["location"]).text
 
 
+def test_new_post_in_top_nav_uses_global_composer(settings, server, bouncer, thread):
+    client, math, news = two_communities(settings, server, bouncer, thread)
+    page = client.get("/").text
+    assert 'href="/post"' in page and "New post" in page
+
+    form = client.get("/post").text
+    assert '<h1>New post</h1>' in form
+    assert f'name="community_id" value="{math}"' in form
+    assert f'name="community_id" value="{news}"' in form
+
+    r = client.post("/post", data={"title": "From the nav", "body": "hello", "community_id": str(math)},
+                    follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"].startswith("/t/")
+    [made] = [p for p in server.posts.values() if p.title == "From the nav"]
+    assert made.body == "hello"
+
+
 def test_repost_to_several_keeps_the_original_crosspost_line(settings, server, bouncer, thread):
     client, math, news = two_communities(settings, server, bouncer, thread)
     body = f"cross-posted from: https://{DOMAIN}/post/1\n\n> body"
