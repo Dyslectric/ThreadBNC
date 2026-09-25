@@ -55,7 +55,12 @@ from .render import VIDEO_EXTENSIONS, MediaInfo, extract_media_urls, looks_like_
 log = logging.getLogger(__name__)
 
 MAX_ATTEMPTS = 5
-MAX_REDIRECTS = 5
+# Podcast enclosure URLs can legitimately pass through several independent
+# attribution services before reaching the host's CDN. ART19 feeds in
+# particular can need seven hops. Each destination is still checked by
+# _assert_public_host below, so allow the same bounded maximum that HTTPX uses
+# for ordinary redirect following rather than rejecting these files early.
+MAX_REDIRECTS = 20
 CHUNK = 64 * 1024
 
 _MAGIC = [

@@ -19,6 +19,12 @@ PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 50
 
 def fake_remote(request: httpx.Request) -> httpx.Response:
     path = request.url.path
+    redirected = re.fullmatch(r"/redirect/(\d+)/cat\.gif", path)
+    if redirected:
+        remaining = int(redirected.group(1))
+        if remaining:
+            return httpx.Response(302, headers={"location": f"/redirect/{remaining - 1}/cat.gif"})
+        return httpx.Response(200, content=GIF, headers={"content-type": "image/gif"})
     if path == "/cat.gif":
         return httpx.Response(200, content=GIF, headers={"content-type": "image/gif"})
     if path == "/octet":
@@ -97,6 +103,14 @@ def test_non_media_and_oversized(server, mbouncer):
     rows = media_rows(mbouncer)
     assert "https://img.test/article" not in rows  # article links are never fetched
     assert rows["https://img.test/huge.png"]["status"] == "failed"
+
+
+def test_media_can_follow_long_podcast_redirect_chains(server, mbouncer):
+    """Podcast enclosures can cross several attribution services before the CDN."""
+    server.add_post("1", "tracked audio", "![tracked](https://img.test/redirect/7/cat.gif)")
+    mbouncer.ingest_url(f"https://{DOMAIN}/post/1")
+    mbouncer.media.fetch_pending()
+    assert media_rows(mbouncer)["https://img.test/redirect/7/cat.gif"]["status"] == "ok"
 
 
 def test_private_addresses_refused():
