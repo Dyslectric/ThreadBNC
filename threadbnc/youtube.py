@@ -436,6 +436,16 @@ def video_id(url: str | None) -> str | None:
     return m.group(1) if m else None
 
 
+def saved_video_id(url: str | None) -> str | None:
+    """The video a link is to, if keeping a post linking to it saves the
+    video: not a /live/ link, which is shared to watch a stream (it opens
+    the stream's player, livestream.py), not to keep a recording of it."""
+    vid = video_id(url)
+    if vid and re.match(r"^/live/", urlparse(url or "").path):
+        return None
+    return vid
+
+
 # -- the session ------------------------------------------------------------------
 
 class YouTubeError(Exception):
@@ -552,6 +562,11 @@ class VideoRetry(OSError):
 
 class NeedsSession(VideoGone):
     """YouTube wants a signed-in session (or a PO token) for this video."""
+
+
+class StillLive(VideoRetry):
+    """Live now, or not started yet: yt-dlp would record the stream for as
+    long as it runs. Tried again later, once it's over and a video."""
 
 
 def downloader_available() -> bool:
@@ -688,7 +703,10 @@ def download(url: str, workdir: Path, session: YouTubeSession, max_bytes: int) -
             "overwrites": True}
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=True)
+            info = ydl.extract_info(url, download=False, process=False) or {}
+            if info.get("is_live") or info.get("live_status") in ("is_live", "is_upcoming"):
+                raise StillLive("a live stream that hasn't ended yet")
+            info = ydl.process_ie_result(info, download=True)
     except DownloadError as exc:
         shutil.rmtree(tmp, ignore_errors=True)
         raise _failure(exc, bool(session.secrets()[0])) from None
