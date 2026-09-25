@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 460" width="880" height="460" role="img" aria-labelledby="t d">
 <title id="t">Videos and live streams</title>
-<desc id="d">A video link opens a box under it to watch the video or save it here. A live stream link opens the stream's own player in the same place.</desc>
+<desc id="d">A video plays in its own site's player where it's linked, with a button under it to download and archive it. A live stream link opens the stream's own player in the same place.</desc>
 <style>
 :root{--bg:#f6f5f2;--card:#fff;--text:#1d1d1f;--muted:#66666b;--line:#e3e1dc;--accent:#2f5fb3;--on-accent:#fff;--inset:#f6f5f2;--screen:#23232a;--screen-2:#34343d;--live:#d93025}
 @media (prefers-color-scheme:dark){:root{--bg:#151517;--card:#1e1e21;--text:#e8e8ea;--muted:#9d9da5;--line:#2f2f34;--accent:#8fb1ff;--on-accent:#0e1422;--inset:#18181b;--screen:#0c0c0f;--screen-2:#1d1d23;--live:#ff6b5e}}
@@ -32,10 +32,10 @@ text{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;fill:var(--text)}
 <path class="screen" d="M218 260 v24 l20 -12z"/>
 <rect x="344" y="332" width="40" height="17" rx="4" fill="rgba(0,0,0,.7)"/>
 <text x="350" y="345" class="xs w">18:42</text>
-<rect class="btn" x="62" y="370" width="126" height="32" rx="8"/>
-<text x="78" y="391" class="s b oa">↓ Save it here</text>
-<rect class="btn2" x="196.5" y="370.5" width="152" height="31" rx="8"/>
-<text x="212" y="391" class="s">Watch on its site</text>
+<rect class="btn" x="62" y="370" width="172" height="32" rx="8"/>
+<text x="78" y="391" class="s b oa">↓ Download and archive</text>
+<rect class="btn2" x="242.5" y="370.5" width="140" height="31" rx="8"/>
+<text x="258" y="391" class="s">Watch on its site</text>
 
 <!-- a live stream link -->
 <rect class="card" x="452.5" y="24.5" width="404" height="411" rx="12"/>

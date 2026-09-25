@@ -29,7 +29,7 @@ from markupsafe import Markup
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.background import BackgroundTask
 
-from . import articles, dupes, integrity, languages, livestream, opml, portable, store, youtube
+from . import articles, dupes, integrity, languages, livestream, opml, portable, store, videos, youtube
 from . import search as search_mod
 from . import discussions as discussions_mod
 from . import feed as feed_mod
@@ -529,10 +529,11 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         resp.headers["X-Frame-Options"] = "DENY"
         resp.headers["X-Content-Type-Options"] = "nosniff"
         resp.headers["Content-Security-Policy"] = (
-            "default-src 'self'; img-src 'self'; media-src 'self'; style-src 'self'; script-src 'self'; "
+            # media-src https: a video file a link's box plays from where it is, until it's saved (videos.py).
+            "default-src 'self'; img-src 'self'; media-src 'self' https:; style-src 'self'; script-src 'self'; "
             "form-action 'self'; "
-            # Livestream players, only once a link's box is opened (livestream.py): Twitch's,
-            # YouTube's, or any Owncast server's.
+            # Video and livestream players, in a link's box (videos.py, livestream.py) or a post
+            # that is a video's link: YouTube's, Vimeo's, Twitch's, any Owncast or PeerTube server's.
             "frame-src https:; "
             "frame-ancestors 'none'"
         )
@@ -1021,10 +1022,11 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         return render(request, "kept.html", **out)
 
     def linked_videos(conn: Any, rows: list[Any]) -> list[dict[str, Any]]:
-        """YouTube videos saved from a link's box (media.saved_from_links), for
-        the Videos tab: each with its title, channel and length, and its
-        thumbnail when one was saved for a post."""
-        vids = [youtube.video_id(r["url"]) or "" for r in rows]
+        """Videos saved from a link's box (media.saved_from_links), for the
+        Videos tab: each with where it's from and its box. A YouTube video's
+        with its title, channel and length, and its thumbnail when one was
+        saved for a post."""
+        vids = [v for v in (youtube.video_id(r["url"]) for r in rows) if v]
         titles = youtube.titles(conn, vids)
         about = {r["video_id"]: r for r in conn.execute(
             f"SELECT * FROM youtube_videos WHERE video_id IN ({','.join('?' * len(vids))})", vids)} if vids else {}
@@ -1032,10 +1034,17 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             f"SELECT id, url FROM media WHERE url IN ({','.join('?' * len(vids))}) AND status='ok' "
             f"AND content_type LIKE 'image/%'", [youtube.thumbnail_url(v) for v in vids])} if vids else {}
         out = []
-        for r, vid in zip(rows, vids):
-            v = about.get(vid)
-            out.append({"vid": vid, "media": r, "title": titles.get(vid), "channel": v["channel"] if v else None,
-                        "duration": v["duration"] if v else None, "thumb": thumbs.get(youtube.thumbnail_url(vid))})
+        for r in rows:
+            vid = youtube.video_id(r["url"])
+            if vid:
+                v = about.get(vid)
+                out.append({"media": r, "href": f"/youtube/v/{vid}", "site": "YouTube", "page": youtube.watch_url(vid),
+                            "title": titles.get(vid) or f"youtube.com/watch?v={vid}",
+                            "channel": v["channel"] if v else None, "duration": v["duration"] if v else None,
+                            "thumb": thumbs.get(youtube.thumbnail_url(vid))})
+            elif video := videos.video_of(r["url"]):
+                out.append({"media": r, "href": video.href, "site": video.site, "page": video.url,
+                            "title": video.label, "channel": None, "duration": None, "thumb": None})
         return out
 
     # Articles on the Kept page: those kept while reading, and those kept posts link to.
@@ -2610,20 +2619,24 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             raise HTTPException(404)
         return vid
 
-    @app.get("/youtube/v/{vid}", response_class=HTMLResponse)
-    def youtube_video_box(request: Request, vid: str, pane: bool = False):
-        """A YouTube link, opened: how big the video is (found with yt-dlp the
-        first time, which takes a few seconds), to save it here or watch it on
-        YouTube; or the saved copy, once it is. `pane`: just the box, for
-        app.js to open under the link (or beside the article it's in)."""
-        video_id_or_404(vid)
+    def youtube_box(vid: str, probe: bool, ask_title: bool = True, later: bool = True) -> dict[str, Any]:
+        """What a YouTube video's box shows (_video.html): YouTube's player, or
+        the saved copy's once it's saved; below it, how big saving it would
+        be, and the button to. `probe`: find out how big it is now, if that's
+        due (yt-dlp, which takes a few seconds); otherwise, with `later`, the
+        box asks once it's shown (app.js), so the player needn't wait (a
+        post's doesn't: opening a post asks YouTube nothing more). `ask_title`:
+        ask YouTube for its title if it isn't known here."""
         with db.connect() as conn:
             m = media_mod.youtube_media(conn, vid)
+            saving = media_mod.youtube_saving(conn, vid)
         saved = m is not None and m["status"] == "ok"
-        v = None if saved else bouncer.probe_youtube(vid)
+        yt = bouncer.youtube.status()
+        probed = bouncer.probe_youtube(vid) if probe and not saved else None
+        if ask_title and not (probed and probed["title"]):  # (unless it's known, or was asked lately)
+            bouncer.youtube_titles([vid])
         with db.connect() as conn:
-            if v is None:
-                v = conn.execute("SELECT * FROM youtube_videos WHERE video_id=?", (vid,)).fetchone()
+            v = conn.execute("SELECT * FROM youtube_videos WHERE video_id=?", (vid,)).fetchone()
             title = youtube.titles(conn, [vid]).get(vid)
             thumb = conn.execute("SELECT id FROM media WHERE url=? AND status='ok' AND content_type LIKE 'image/%'",
                                  (youtube.thumbnail_url(vid),)).fetchone()
@@ -2631,14 +2644,25 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                 "SELECT t.id FROM archived_threads t JOIN objects o ON o.id=t.root_object_id "
                 "WHERE o.canonical_ap_id=? AND t.retention='manual' AND t.trashed_at IS NULL",
                 (f"{RSS_PREFIX}yt:video:{vid}",)).fetchone()
-        title = title or bouncer.youtube_titles([vid]).get(vid)  # yt-dlp couldn't say
-        yt = bouncer.youtube.status()
-        saving = m is not None and m["status"] == "pending" and bool(m["wanted_at"] or not m["held"])
-        return render(request, "video_pane.html" if pane else "video.html", vid=vid, v=v, m=m, title=title,
-                      saved=saved, saving=saving, thumb=thumb["id"] if thumb else None, yt=yt,
-                      post=post["id"] if post else None,
-                      watch=youtube.watch_url(vid), pane=pane,
-                      too_big=bool(v and v["size_bytes"] and v["size_bytes"] > yt["max_mb"] * 1_000_000))
+        return {"vid": vid, "v": v, "m": m, "title": title, "saved": saved, "yt": yt, "saving": saving and not saved,
+                "probing": later and not saved and youtube.probe_due(v, utcnow(), yt["max_height"]),
+                "thumb": thumb["id"] if thumb else None, "post": post["id"] if post else None,
+                "watch": youtube.watch_url(vid), "embed": f"https://www.youtube-nocookie.com/embed/{vid}",
+                "too_big": bool(v and v["size_bytes"] and v["size_bytes"] > yt["max_mb"] * 1_000_000)}
+
+    @app.get("/youtube/v/{vid}", response_class=HTMLResponse)
+    def youtube_video_box(request: Request, vid: str, pane: bool = False, bare: bool = False, probe: bool = False):
+        """A YouTube link, opened: the video's player (YouTube's), with how big
+        it is below and a button to download and archive it; the saved copy,
+        once it is. `pane`: just the box, for app.js to open under the link
+        (or beside the article it's in), which then asks how big it is
+        (`probe`, found with yt-dlp the first time, which takes a few
+        seconds). `bare`: just the player and what's below it, as a post
+        linking to the video shows them."""
+        video_id_or_404(vid)
+        box = youtube_box(vid, probe=probe or not (pane or bare), ask_title=not bare, later=not bare)
+        return render(request, "video_pane.html" if pane or bare else "video.html", kind="youtube", b=box,
+                      pane=pane, bare=bare)
 
     @app.post("/youtube/v/{vid}/save")
     def youtube_video_save(request: Request, vid: str):
@@ -2657,6 +2681,56 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         asks once it's shown), asked of YouTube now."""
         vids = [v for v in dict.fromkeys(ids) if youtube.is_video_id(v)][:50]
         return JSONResponse(bouncer.youtube_titles(vids))
+
+    # ---- Other video links: the box one opens (videos.py, app.js) ------------------
+    def video_or_404(url: str) -> videos.Video:
+        video = videos.video_of(url)
+        if video is None:
+            raise HTTPException(404)
+        return video
+
+    def linked_box(video: videos.Video) -> dict[str, Any]:
+        """What a video link's box shows (_video.html): the site's player, or
+        the browser's for a file; the saved copy once it's saved; below it,
+        the button to download and archive it."""
+        with db.connect() as conn:
+            m = media_mod.linked_video(conn, video)
+        saved = m is not None and m["status"] == "ok" and (m["content_type"] or "").startswith("video/")
+        return {"video": video, "m": m, "saved": saved, "yt": bouncer.youtube.status(),
+                "saving": m is not None and m["status"] == "pending" and bool(m["wanted_at"] or not m["held"]),
+                "archived": m is not None and bool(m["wanted_at"])}
+
+    def post_video_box(url: str | None) -> dict[str, Any] | None:
+        """The box a post that is a video's link shows it in (thread.html),
+        without its header: YouTube's (not a live stream's, whose link opens
+        its player instead), or another site's or a file's."""
+        url = safe_url(url)
+        if not url or livestream.stream_of(url):
+            return None
+        vid = youtube.saved_video_id(url)
+        if vid:
+            return {"kind": "youtube", "b": youtube_box(vid, probe=False, ask_title=False, later=False)}
+        video = videos.video_of(url)
+        return {"kind": "linked", "b": linked_box(video)} if video else None
+
+    @app.get("/video", response_class=HTMLResponse)
+    def linked_video_box(request: Request, url: str = "", pane: bool = False, bare: bool = False):
+        """A link to a video (videos.py), opened: its player, and a button to
+        download and archive it; the saved copy, once it is. `pane` and
+        `bare` as for YouTube's (youtube_video_box)."""
+        box = linked_box(video_or_404(url))
+        return render(request, "video_pane.html" if pane or bare else "video.html", kind="linked", b=box,
+                      pane=pane, bare=bare)
+
+    @app.post("/video/save")
+    def linked_video_save(request: Request, url: str = Form("")):
+        """Save the video, in the background: with yt-dlp from its site, or a
+        file as it is (media.want_video). It's kept until you delete it."""
+        video = video_or_404(url)
+        with db.transaction() as conn:
+            media_mod.want_video(conn, video, utcnow())
+        bouncer.wake.set()
+        return RedirectResponse(video.href, status_code=303)
 
     # ---- Livestreams: the player a link opens (livestream.py, app.js) ---------------
     @app.get("/live/owncast")
@@ -2935,7 +3009,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                 pc["shown"] = sum(1 + n["descendants"] for n in pc["comments"])
         return render(request, "thread.html", t=t, root=root, total_comments=len(displayed),
                       raw_comments=raw_comments, md=md, media_for=media_for, preview=preview, my_votes=my_votes,
-                      my_reposts=my_reposts,
+                      my_reposts=my_reposts, post_video=None if sound else post_video_box(post["url"] if post else None),
                       me=me, powers_by_community=powers, new_count=new_count, changed_count=changed_count,
                       comment_sort=sort, comment_sorts=COMMENT_SORTS, instance=instance, since=since,
                       grouped=len(tids) > 1, post_copies=post_copies, merge=merge, article=article,

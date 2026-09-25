@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from . import articles, dupes, languages, youtube
+from . import articles, dupes, languages, videos, youtube
 from .adapters.base import is_reddit_host
 from .db import Conn, fmt_ts, parse_ts, utcnow
 from .render import AUDIO_EXTENSIONS, VIDEO_EXTENSIONS, looks_like_audio, sole_link
@@ -278,7 +278,6 @@ def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: lis
     readable = articles.readable(conn, [i["oid"] for i in items])
     waiting = articles.waiting(conn, [(i["oid"], i["url"]) for i in items])
     sounds = audio(conn, [(i["oid"], i["url"]) for i in items])
-    videos = saved_videos(conn, [(i["oid"], i["url"]) for i in items])
     now = utcnow()
     for i in items:
         # When this post's text, pictures and votes are to be read once it's on
@@ -291,7 +290,7 @@ def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: lis
         i["body_link"] = sole_link(i["body"]) if not i["article"] else None
         i["article_waiting"] = i["oid"] in waiting
         i["audio"] = sounds.get(i["oid"])
-        i["video"] = i["oid"] in videos
+        i["video"] = plays_here(i["url"])
         meta = json.loads(i.pop("rmeta") or "{}")
         i["nsfw"], i["spoiler"] = bool(meta.get("nsfw")), bool(meta.get("spoiler"))
         i["reposted_by"] = meta.get("reposted_by")
@@ -399,18 +398,11 @@ def audio(conn: Conn, links: list[tuple[int, str | None]]) -> dict[int, dict[str
             or (r["status"] != "ok" and (r["episode"] or looks_like_audio(r["url"])))}
 
 
-def saved_videos(conn: Conn, links: list[tuple[int, str | None]]) -> set[int]:
-    """Which of these (object id, current link) posts link to a YouTube video
-    that's been saved, so the post's text button can show its player too."""
-    links = [(oid, url) for oid, url in links if url and youtube.video_id(url)]
-    if not links:
-        return set()
-    pairs = " OR ".join("(r.object_id=? AND m.url=?)" for _ in links)
-    rows = conn.execute(
-        f"SELECT r.object_id FROM media_refs r JOIN media m ON m.id=r.media_id "
-        f"WHERE ({pairs}) AND m.status='ok' AND m.content_type LIKE 'video/%'",
-        [v for pair in links for v in pair]).fetchall()
-    return {r["object_id"] for r in rows}
+def plays_here(url: str | None) -> bool:
+    """Whether a post's link is a video that its page plays (thread.html): a
+    YouTube video (not a live stream), another site's, or a file. Its post's
+    text button shows the player too, saved or not."""
+    return bool(url and (youtube.saved_video_id(url) or videos.video_of(url)))
 
 
 def listened(conn: Conn, media_id: int, position: int, duration: int | None, finished: bool, now: str) -> None:

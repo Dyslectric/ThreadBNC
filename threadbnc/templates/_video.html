@@ -1,47 +1,108 @@
-{# The box a YouTube link opens (web.py youtube_video_box): how big the video is, to save it here or
-   watch it on YouTube; the saved copy, once it is. `pane`: opened under the link, or beside the
-   article it's in (app.js), so it closes rather than going back. #}
+{# The box a video link opens (web.py youtube_video_box, linked_video_box): the video's player, and
+   below it the button to download and archive it, with how big it is; the saved copy, once it is.
+   `pane`: opened under the link, or beside the article it's in (app.js), so it closes rather than
+   going back. `bare`: just the player and what's below it, in a post that is the video's link (whose
+   own post, `here`, isn't linked to). The site's player is put in by app.js once the box is shown. #}
 {% from "_macros.html" import when, icon %}
-<article class="video-box" id="video-{{ vid }}" data-src="/youtube/v/{{ vid }}?pane=1"{% if saving %} data-video-saving{% endif %}>
+
+{% macro nav(href, pane) %}
   <p class="small reader-nav">
     {% if pane %}<button type="button" class="link" data-dive-close>{{ icon('x') }} Close</button>
-      · <a href="/youtube/v/{{ vid }}">Open on its own</a>
+      · <a href="{{ href }}">Open on its own</a>
     {% else %}<a href="/" data-back>← Back</a>{% endif %}
   </p>
+{% endmacro %}
+
+{% macro saved_line(m) -%}
+<p class="small muted">{{ icon('check') }} Saved here · {{ m.size_bytes | size }}
+  {%- if m.original_bytes %} (transcoded from {{ m.original_bytes | size }}){% endif %} · {{ when(m.fetched_at) }}</p>
+{%- endmacro %}
+
+{% macro youtube_box(b, pane=False, bare=False, here=none) %}
+<article class="video-box{{ ' bare' if bare }}" id="video-{{ b.vid }}" data-src="/youtube/v/{{ b.vid }}?{{ 'bare=1' if bare else 'pane=1' }}"
+  {%- if b.saving %} data-video-saving{% endif %}>
+  {% if not bare %}
+  {{ nav('/youtube/v/' ~ b.vid, pane) }}
   <header>
-    <div class="small muted">YouTube{% if v and v.channel %} · {{ v.channel }}{% endif %}
-      {%- if v and v.duration %} · {{ v.duration | running_time }}{% endif %}</div>
-    <h2>{{ title or 'A YouTube video' }}</h2>
+    <div class="small muted">YouTube{% if b.v and b.v.channel %} · {{ b.v.channel }}{% endif %}
+      {%- if b.v and b.v.duration %} · {{ b.v.duration | running_time }}{% endif %}</div>
+    <h2>{{ b.title or 'A YouTube video' }}</h2>
   </header>
-  {% if saved %}
-    <video class="media" src="/media/{{ m.id }}"{% if thumb %} poster="/media/{{ thumb }}"{% endif %} controls playsinline preload="metadata"></video>
-    <p class="small muted">Saved here · {{ m.size_bytes | size }} · {{ when(m.fetched_at) }}</p>
-    <div class="row">
-      {% if post %}<a class="button secondary" href="/t/{{ post }}">{{ icon('star-fill') }} Kept post</a>{% endif %}
-      <a class="button secondary" href="{{ watch }}" rel="noreferrer noopener nofollow" target="_blank">{{ icon('external') }} Watch on YouTube</a>
-    </div>
+  {% endif %}
+  {% if b.saved %}
+    <video class="media" src="/media/{{ b.m.id }}"{% if b.thumb %} poster="/media/{{ b.thumb }}"{% endif %} controls playsinline preload="metadata"></video>
   {% else %}
-    {% if thumb %}<img class="video-box-thumb" src="/media/{{ thumb }}" alt="">{% endif %}
-    <p class="video-box-size">
-      {% if v and v.size_bytes %}{{ icon('video') }} The video is {{ 'about ' if v.size_approx }}<strong>{{ v.size_bytes | size }}</strong>
-        {%- if v.height %}, at {{ v.height }}p{% endif %}.
-      {% elif v and v.probe_error %}<span class="bad-text">{{ icon('alert') }} Couldn't find out how big the video is: {{ v.probe_error }}</span>
+    <div class="video-player" data-embed="{{ b.embed }}" data-label="YouTube player">
+      {% if b.thumb %}<img src="/media/{{ b.thumb }}" alt="">{% endif %}
+      <p class="small">The player needs JavaScript.</p></div>
+  {% endif %}
+  <div class="video-save"{% if b.probing %} data-video-probe{% endif %}>
+    {% if b.saved %}{{ saved_line(b.m) }}
+    {% else %}
+    {% if b.probing or (b.v and b.v.probed_at) %}{# (a post's only says when it's known) #}
+    <p class="small video-box-size">
+      {% if b.probing %}<span class="muted">{{ icon('video') }} Finding out how big the video is…</span>
+      {% elif b.v.size_bytes %}{{ icon('video') }} The video is {{ 'about ' if b.v.size_approx }}<strong>{{ b.v.size_bytes | size }}</strong>
+        {%- if b.v.height %}, at {{ b.v.height }}p{% endif %}.
+      {% elif b.v.probe_error %}<span class="bad-text">{{ icon('alert') }} Couldn't find out how big the video is: {{ b.v.probe_error }}</span>
       {% else %}{{ icon('video') }} YouTube didn't say how big the video is.{% endif %}
     </p>
-    {% if too_big %}<p class="small bad-text">That's more than the {{ yt.max_mb }} MB limit for YouTube videos, so it can't be saved.
+    {% endif %}
+    {% if b.too_big %}<p class="small bad-text">That's more than the {{ b.yt.max_mb }} MB limit for YouTube videos, so it can't be saved.
       <a href="/youtube">YouTube settings</a></p>{% endif %}
-    {% if not yt.downloader %}<p class="small bad-text">yt-dlp isn't installed, so videos can't be saved here.
+    {% if not b.yt.downloader %}<p class="small bad-text">yt-dlp isn't installed, so videos can't be saved here.
       <a href="/youtube">YouTube settings</a></p>{% endif %}
-    {% if saving %}<p class="small muted" role="status">Downloading… It plays here once it's saved.</p>
-    {% elif m and m.wanted_at and m.status == 'failed' %}<p class="small bad-text">Couldn't save it: {{ m.error }}
-      <a href="/youtube">YouTube settings</a></p>
-    {% else %}<p>Download the video and keep it here, as a post with its description and comments, or go and watch it on YouTube?</p>{% endif %}
+    {% if b.saving %}<p class="small muted" role="status">Downloading… Once it's saved, it plays from here.</p>
+    {% elif b.m and b.m.status == 'failed' %}<p class="small bad-text">Couldn't save it: {{ b.m.error }}
+      <a href="/youtube">YouTube settings</a></p>{% endif %}
+    {% endif %}
     <div class="row">
-      {% if not saving %}<form method="post" action="/youtube/v/{{ vid }}/save" class="inline" data-video-save>
-        <button{% if too_big or not yt.downloader %} disabled{% endif %}>{{ icon('arrow-down') }}
-          {{- ' Try again' if m and m.wanted_at and m.status == 'failed' else ' Download and archive' }}</button></form>{% endif %}
-      {% if post %}<a class="button secondary" href="/t/{{ post }}">{{ icon('star-fill') }} Kept post</a>{% endif %}
-      <a class="button secondary" href="{{ watch }}" rel="noreferrer noopener nofollow" target="_blank">{{ icon('external') }} Watch on YouTube</a>
+      {% if not b.saved and not b.saving %}<form method="post" action="/youtube/v/{{ b.vid }}/save" class="inline" data-video-save>
+        <button{% if b.too_big or not b.yt.downloader %} disabled{% endif %} title="Keep it as a post in its channel, with its description and comments">{{ icon('arrow-down') }}
+          {{- ' Try again' if b.m and b.m.status == 'failed' else ' Download and archive' }}</button></form>{% endif %}
+      {% if b.post and b.post != here %}<a class="button secondary" href="/t/{{ b.post }}">{{ icon('star-fill') }} Kept post</a>{% endif %}
+      <a class="button secondary" href="{{ b.watch }}" rel="noreferrer noopener nofollow" target="_blank">{{ icon('external') }} Watch on YouTube</a>
     </div>
-  {% endif %}
+  </div>
 </article>
+{% endmacro %}
+
+{% macro linked_box(b, pane=False, bare=False, here=none) %}{% set v = b.video %}
+<article class="video-box{{ ' bare' if bare }}" id="{{ v.box_id }}" data-src="{{ v.href }}&amp;{{ 'bare=1' if bare else 'pane=1' }}"
+  {%- if b.saving %} data-video-saving{% endif %}>
+  {% if not bare %}
+  {{ nav(v.href, pane) }}
+  <header>
+    <div class="small muted">{{ v.site }} · {{ 'video file' if v.is_file else 'video' }}</div>
+    <h2>{{ v.label }}</h2>
+  </header>
+  {% endif %}
+  {% if b.saved %}
+    <video class="media" src="/media/{{ b.m.id }}" controls playsinline preload="metadata"{% if v.is_file %} loop muted{% endif %}></video>
+  {% elif v.embed %}
+    <div class="video-player" data-embed="{{ v.embed }}" data-label="{{ v.site }} player">
+      <p class="small">The player needs JavaScript.</p></div>
+  {% elif v.plays_from %}
+    <video class="media" src="{{ v.plays_from }}" controls playsinline preload="none"></video>
+  {% else %}
+    <p class="small muted">{{ icon('video') }} This one plays here once it's saved.</p>
+  {% endif %}
+  <div class="video-save">
+    {% set failed = b.m and b.m.status in ('failed', 'skipped') and (b.archived or b.m.status == 'failed') %}
+    {% if b.saved %}{{ saved_line(b.m) }}
+      {% if not b.archived %}<p class="small muted">It goes when the post it's in does, unless you archive it.</p>{% endif %}
+    {% elif b.saving %}<p class="small muted" role="status">Downloading… Once it's saved, it plays from here.</p>
+    {% elif failed %}<p class="small bad-text">Couldn't save it: {{ b.m.error }}</p>{% endif %}
+    {% if not v.is_file and not b.yt.downloader %}<p class="small bad-text">yt-dlp isn't installed, so videos can't be saved here.
+      <a href="/youtube">YouTube settings</a></p>{% endif %}
+    <div class="row">
+      {% if not b.saving and not (b.saved and b.archived) %}<form method="post" action="/video/save" class="inline" data-video-save>
+        <input type="hidden" name="url" value="{{ v.url }}">
+        <button{% if not v.is_file and not b.yt.downloader %} disabled{% endif %} title="Keep a copy here until you delete it">{{ icon('arrow-down') }}
+          {{- ' Archive' if b.saved else ' Try again' if failed else ' Download and archive' }}</button></form>{% endif %}
+      <a class="button secondary" href="{{ v.url }}" rel="noreferrer noopener nofollow" target="_blank">{{ icon('external') }}
+        {{- ' Open the file' if v.is_file else ' Watch on ' ~ v.site }}</a>
+    </div>
+  </div>
+</article>
+{% endmacro %}

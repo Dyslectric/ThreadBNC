@@ -1,2 +1,4 @@
-{# A YouTube link's box on its own, for app.js to open under the link (or beside the article it's in). #}
-{% include "_video.html" %}
+{# A video link's box on its own, for app.js to open under the link (or beside the article it's in),
+   or to swap in (`bare`: a post's, when it changes). #}
+{% from "_video.html" import youtube_box, linked_box %}
+{% if kind == 'youtube' %}{{ youtube_box(b, pane, bare) }}{% else %}{{ linked_box(b, pane, bare) }}{% endif %}

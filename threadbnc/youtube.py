@@ -616,16 +616,27 @@ _SESSION = ("sign in to confirm", "not a bot", "sign in to view", "age-restricte
             "po token", "login required", "use --cookies")
 
 
-def _options(session: YouTubeSession) -> dict[str, Any]:
+def is_youtube_url(url: str) -> bool:
+    return is_youtube_host(urlparse(url).hostname)
+
+
+def _options(session: YouTubeSession, url: str) -> dict[str, Any]:
     """yt-dlp's options for a video at the YouTube page's resolution, with
-    the saved session: the same for finding its size as for downloading it."""
+    the saved session: the same for finding its size as for downloading it.
+    Another site's video (videos.py) is saved at the same resolution, but
+    YouTube's session isn't sent there."""
     height = session.status()["max_height"]
-    cookies, po_token = session.secrets()
+    cookies, po_token = session.secrets() if is_youtube_url(url) else (None, None)
     merges = bool(shutil.which("ffmpeg"))
+    # Without ffmpeg, only a file that's whole as it's served: a stream of
+    # pieces (HLS, which Dailymotion and Vimeo use) comes out as MPEG-TS,
+    # which browsers can't play, and ffmpeg is what makes it an MP4.
+    whole = "[protocol^=http][protocol!*=dash]"
     opts: dict[str, Any] = {
         # Separate video and audio streams need ffmpeg to join; without it,
         # the best single file (often only 360p on YouTube now).
-        "format": f"bv*[height<={height}]+ba/b[height<={height}]/b" if merges else f"b[height<={height}]/b",
+        "format": f"bv*[height<={height}]+ba/b[height<={height}]/b" if merges else
+        f"b[height<={height}]{whole}/b{whole}",
         "format_sort": [f"res:{height}", "ext:mp4:m4a"],
         "merge_output_format": "mp4",
         "noplaylist": True,
@@ -643,10 +654,16 @@ def _options(session: YouTubeSession) -> dict[str, Any]:
     return opts
 
 
-def _failure(exc: Exception, signed_in: bool) -> Exception:
-    """What a yt-dlp DownloadError means: NeedsSession, VideoGone or VideoRetry."""
+def _failure(exc: Exception, signed_in: bool, url: str) -> Exception:
+    """What a yt-dlp DownloadError means: NeedsSession, VideoGone or VideoRetry.
+    Only YouTube's own videos can be helped by a session."""
     msg = re.sub(r"^ERROR:\s*(\[[^\]]+\]\s*[\w-]+:\s*)?", "", str(exc)).strip()
     low = msg.lower()
+    if "requested format is not available" in low and not shutil.which("ffmpeg"):
+        return VideoGone("it only comes in pieces (a stream, or sound and picture apart), and putting them "
+                         "together needs ffmpeg, which isn't installed")
+    if any(s in low for s in _SESSION) and not is_youtube_url(url):
+        return VideoGone(msg[:300])
     if any(s in low for s in _SESSION):
         hint = " Your saved session may have expired: refresh it on the YouTube page." if signed_in else \
             " Add or refresh your session on the YouTube page."
@@ -660,7 +677,7 @@ def _yt_dlp() -> Any:
     try:
         import yt_dlp
     except ImportError as exc:
-        raise VideoGone("yt-dlp isn't installed, so YouTube videos can't be saved") from exc
+        raise VideoGone("yt-dlp isn't installed, so videos from YouTube and other sites can't be saved") from exc
     return yt_dlp
 
 
@@ -696,10 +713,10 @@ def probe(url: str, session: YouTubeSession) -> Probe:
     yt_dlp = _yt_dlp()
     from yt_dlp.utils import DownloadError
     try:
-        with yt_dlp.YoutubeDL({**_options(session), "skip_download": True}) as ydl:
+        with yt_dlp.YoutubeDL({**_options(session, url), "skip_download": True}) as ydl:
             info = ydl.extract_info(url, download=False) or {}
     except DownloadError as exc:
-        raise _failure(exc, bool(session.secrets()[0])) from None
+        raise _failure(exc, bool(session.secrets()[0]), url) from None
     size, approx = _size(info)
     duration = info.get("duration")
     return Probe(title=info.get("title"), channel=info.get("channel") or info.get("uploader"),
@@ -708,14 +725,15 @@ def probe(url: str, session: YouTubeSession) -> Probe:
 
 
 def download(url: str, workdir: Path, session: YouTubeSession, max_bytes: int) -> tuple[Path, int]:
-    """Download one video into `workdir`. Returns the file and the height it
-    was saved at. Raises VideoGone, NeedsSession or VideoRetry."""
+    """Download one video into `workdir`: YouTube's, or another site's that
+    yt-dlp knows (videos.py). Returns the file and the height it was saved
+    at. Raises VideoGone, NeedsSession or VideoRetry."""
     yt_dlp = _yt_dlp()
     from yt_dlp.utils import DownloadError
     stem = ".yt-" + hashlib.sha1(url.encode()).hexdigest()[:16]
     workdir.mkdir(parents=True, exist_ok=True)
     tmp = Path(tempfile.mkdtemp(prefix=stem, dir=workdir))
-    opts = {**_options(session), "outtmpl": str(tmp / "video.%(ext)s"), "max_filesize": max_bytes,
+    opts = {**_options(session, url), "outtmpl": str(tmp / "video.%(ext)s"), "max_filesize": max_bytes,
             "overwrites": True}
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -725,14 +743,15 @@ def download(url: str, workdir: Path, session: YouTubeSession, max_bytes: int) -
             info = ydl.process_ie_result(info, download=True)
     except DownloadError as exc:
         shutil.rmtree(tmp, ignore_errors=True)
-        raise _failure(exc, bool(session.secrets()[0])) from None
+        raise _failure(exc, bool(session.secrets()[0]), url) from None
     except Exception:
         shutil.rmtree(tmp, ignore_errors=True)
         raise
     files = [p for p in tmp.iterdir() if p.is_file() and not p.name.endswith((".part", ".ytdl"))]
     if not files:
         shutil.rmtree(tmp, ignore_errors=True)
-        raise VideoGone(f"larger than the {max_bytes // 1_000_000} MB limit for YouTube videos")
+        raise VideoGone(f"larger than the {max_bytes // 1_000_000} MB limit for YouTube videos" if is_youtube_url(url)
+                        else f"larger than the {max_bytes // 1_000_000} MB limit set on the YouTube page")
     out = workdir / (stem + files[0].suffix)
     files[0].replace(out)
     shutil.rmtree(tmp, ignore_errors=True)
