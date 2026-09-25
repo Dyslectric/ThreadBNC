@@ -446,6 +446,18 @@ def test_replying(settings, bouncer, bsky):
     assert "r1" not in bsky.records
 
 
+def test_a_post_without_replies_can_be_replied_to_from_the_feed(settings, bouncer, bsky):
+    alice_followed(bouncer)
+    tid = one(bouncer, "SELECT thread_id FROM objects WHERE id=?", post_oid(bouncer, "p2"))[0]
+    comments = lambda page: page[page.index('<section class="comments"'):]  # what the feed opens
+    part = comments(logged_in(settings, bouncer).get(f"/t/{tid}?inline=1").text)
+    assert "0 comments" in part and 'href="/accounts#bluesky">Log in to Bluesky' in part
+    client = signed_in(settings, bouncer, bsky)
+    part = comments(client.get(f"/t/{tid}?inline=1").text)
+    assert f'action="/t/{tid}/reply"' in part and "Comment as @dave.bsky.social" in part
+    assert 'maxlength="300"' in part
+
+
 def test_the_session_is_renewed_before_it_runs_out(settings, bouncer, bsky, monkeypatch):
     alice_followed(bouncer)
     client = signed_in(settings, bouncer, bsky)

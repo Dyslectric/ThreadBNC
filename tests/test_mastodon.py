@@ -209,6 +209,25 @@ def test_liking_and_replying_to_posts_from_hashtags(web, tagged, fedi):
     assert fedi.home.deleted == ["9102"]
 
 
+def comments_of(page):
+    """What the feed opens under a post: the page's comments section."""
+    return page[page.index('<section class="comments"'):]
+
+
+def test_comments_opened_in_the_feed_can_be_added_to(web, tagged, fedi):
+    b, _ = tagged
+    tid = captured(b, web, fedi)
+    part = comments_of(web.get(f"/t/{tid}?inline=1").text)
+    assert 'href="/accounts#mastodon">Sign in to Mastodon' in part
+    web.get("/accounts/mastodon/callback", params={"state": sign_in(web, fedi), "code": "good"})
+    part = comments_of(web.get(f"/t/{tid}?inline=1").text)
+    assert f'action="/t/{tid}/reply"' in part and "Comment as @dave@home.test" in part
+    # Sent from there by app.js, it answers where it went instead of leaving the feed.
+    r = web.post(f"/t/{tid}/reply", data={"body": "From the feed"}, headers={"X-ThreadBNC-Fetch": "1"})
+    assert r.json()["ok"] and "#o" in r.json()["redirect"]
+    assert fedi.home.posted[-1]["status"] == "@alice@masto.test From the feed"
+
+
 def test_without_a_mastodon_account_it_says_how(web, tagged, fedi):
     b, _ = tagged
     tid = captured(b, web, fedi)
