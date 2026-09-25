@@ -535,6 +535,22 @@ CREATE TABLE IF NOT EXISTS ap_inbox (
 );
 CREATE INDEX IF NOT EXISTS ap_inbox_pending ON ap_inbox(status, id);
 
+-- What ThreadBNC asked of other sites, and what streams sent it, by the hour
+-- (traffic.py). Kept 30 days.
+CREATE TABLE IF NOT EXISTS traffic (
+    hour TEXT NOT NULL,                        -- UTC: 2026-09-25T14
+    direction TEXT NOT NULL,                   -- out: requests it made | in: pushed to it (Jetstream, relays)
+    host TEXT NOT NULL,
+    community_id INTEGER NOT NULL DEFAULT 0,   -- what it was for (0: no community in particular)
+    purpose TEXT NOT NULL DEFAULT '',          -- why (traffic.PURPOSES)
+    requests BIGINT NOT NULL DEFAULT 0,        -- in: messages or deliveries
+    bytes_in BIGINT NOT NULL DEFAULT 0,
+    bytes_out BIGINT NOT NULL DEFAULT 0,
+    errors BIGINT NOT NULL DEFAULT 0,          -- answered with an error, or not at all
+    slowed BIGINT NOT NULL DEFAULT 0,          -- answered 429 Too Many Requests
+    PRIMARY KEY (hour, direction, host, community_id, purpose)
+);
+
 CREATE TABLE IF NOT EXISTS jobs (
     id INTEGER PRIMARY KEY,
     kind TEXT NOT NULL,

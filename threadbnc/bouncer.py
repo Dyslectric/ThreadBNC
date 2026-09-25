@@ -24,7 +24,7 @@ import traceback
 from datetime import timedelta
 from typing import Any, Callable
 
-from . import articles, livestream, media, store, thumbs, youtube
+from . import articles, livestream, media, store, thumbs, traffic, youtube
 from . import feed as feed_mod
 from .adapters import (
     BSKY_DOMAIN,
@@ -102,6 +102,12 @@ def _plus(ts: str, **delta: float) -> str:
     return fmt_ts(parse_ts(ts) + timedelta(**delta))  # type: ignore[operator]
 
 
+# Why each kind of job asks what it does, for the Traffic page (traffic.PURPOSES).
+JOB_PURPOSES = {"ingest": "saving", "keep_youtube": "saving", "open": "opening", "sync": "opening",
+                "articles": "articles", "audio": "media", "previews": "previews", "poll": "polling",
+                "relayed": "hashtags", "bluesky_tagged": "hashtags", "discussions": "discussions"}
+
+
 def vote_minutes(created_at: str | None, now: str) -> int | None:
     """Minutes until the votes on a post this old are next updated (see
     VOTE_SCHEDULE), or None when it's too old for them to be."""
@@ -118,6 +124,7 @@ class Bouncer:
                  reddit: RedditConnection | None = None):
         self.db = db
         self.settings = settings
+        traffic.METER.attach(db)
         self.http = http or HttpClient(settings.user_agent, settings.http_timeout,
                                        settings.min_request_interval)
         vault = TokenVault(settings.credentials_key, settings.data_dir)
@@ -588,15 +595,16 @@ class Bouncer:
                 t = conn.execute("SELECT * FROM archived_threads WHERE id=?", (tid,)).fetchone()
             if t is None or t["trashed_at"] or not t["root_object_id"]:
                 continue
-            if self.comments_stale(t):
-                try:
-                    if video := self._youtube_video(t):
-                        self.fetch_youtube_comments(t, video)
-                    else:
-                        self.sync_thread(tid, force=True)
-                except RemoteError as exc:
-                    first_error = first_error or exc
-            self.fetch_article(t["root_object_id"])
+            with traffic.tagged(community=t["community_id"]):
+                if self.comments_stale(t):
+                    try:
+                        if video := self._youtube_video(t):
+                            self.fetch_youtube_comments(t, video)
+                        else:
+                            self.sync_thread(tid, force=True)
+                    except RemoteError as exc:
+                        first_error = first_error or exc
+                self.fetch_article(t["root_object_id"])
         self.wake.set()
         if first_error:
             raise first_error
@@ -1115,6 +1123,10 @@ class Bouncer:
         return bool(self._existing_thread(post.ap_id)) or bool(since and created and created < since)
 
     def poll_follow(self, community_id: int) -> int:
+        with traffic.tagged("polling", community_id):
+            return self._poll_follow(community_id)
+
+    def _poll_follow(self, community_id: int) -> int:
         with self.db.connect() as conn:
             f = conn.execute("SELECT * FROM community_follows WHERE community_id=?", (community_id,)).fetchone()
         ref = self.community_ref(community_id)
@@ -1245,13 +1257,13 @@ class Bouncer:
                 "WHERE t.active=1 AND t.trashed_at IS NULL AND t.next_check_at IS NOT NULL AND t.next_check_at<=? "
                 "ORDER BY t.next_check_at LIMIT ?", (now, limit)).fetchall()
         by_community: dict[int, list[Any]] = {}
-        alone: list[int] = []
+        alone: list[Any] = []
         nowhere: list[Any] = []
         for r in due:
             if r["source_domain"] in (RSS_DOMAIN, TAG_DOMAIN, BSKY_DOMAIN) or is_reddit_host(r["source_domain"]):
                 nowhere.append(r)  # their votes come another way (_votes_elsewhere)
             elif r["followed"] is None:
-                alone.append(r["id"])
+                alone.append(r)
             elif r["push_state"] == "subscribed" and r["push_domain"] or r["polling"]:
                 by_community.setdefault(r["community_id"], []).append(r)
             else:
@@ -1263,16 +1275,18 @@ class Bouncer:
         for cid, rows in by_community.items():
             if self._stop.is_set():
                 break
-            self._votes_from_listing(cid, rows)
-        for tid in alone:
+            with traffic.tagged(community=cid):
+                self._votes_from_listing(cid, rows)
+        for r in alone:
             if self._stop.is_set():
                 break
             while self.run_one_job():  # opening a post jumps the queue
                 pass
             try:
-                self.sync_thread(tid, comments=False)
+                with traffic.tagged(community=r["community_id"]):
+                    self.sync_thread(r["id"], comments=False)
             except RemoteError as exc:
-                log.warning("vote check of thread %s failed: %s", tid, exc)
+                log.warning("vote check of thread %s failed: %s", r["id"], exc)
         return len(due)
 
     def _votes_from_listing(self, community_id: int, due: list[Any]) -> None:
@@ -1375,6 +1389,11 @@ class Bouncer:
         if not job:
             return False
         payload = json.loads(job["payload_json"])
+        with traffic.tagged(JOB_PURPOSES.get(job["kind"], ""), payload.get("community_id")):
+            self._run_job(job, payload)
+        return True
+
+    def _run_job(self, job: Any, payload: dict[str, Any]) -> None:
         try:
             if job["kind"] == "ingest":
                 tid = self.ingest_url(payload["url"], payload.get("retention", "manual"))
@@ -1422,7 +1441,6 @@ class Bouncer:
         except Exception as exc:  # keep the worker alive
             log.error("job %s crashed: %s", job["id"], traceback.format_exc())
             self._finish_job(job["id"], "failed", error=f"{type(exc).__name__}: {exc}")
-        return True
 
     # -- main loop -----------------------------------------------------------
     def tick(self) -> None:
@@ -1430,7 +1448,8 @@ class Bouncer:
             pass
         for hook in self.hooks:
             try:
-                hook()
+                with traffic.tagged("upkeep"):
+                    hook()
             except Exception:  # keep the worker alive
                 log.error("bouncer hook %s crashed: %s", getattr(hook, "__qualname__", hook), traceback.format_exc())
         now = utcnow()
@@ -1462,7 +1481,8 @@ class Bouncer:
         # post is opened (open_threads, a job), like a browser would. Votes are
         # updated for a week, less often as posts age.
         if not self._stop.is_set():
-            self.check_votes()
+            with traffic.tagged("votes"):
+                self.check_votes()
         if not self._media_backfilled:
             with self.db.transaction() as conn:
                 media.register_all_existing(conn)
@@ -1475,7 +1495,10 @@ class Bouncer:
         # Linked articles aren't fetched in the background either: opening or
         # keeping a post saves its article (open_threads), and so does
         # scrolling to it in a feed (fetch_articles).
-        while not self._stop.is_set() and self.media.fetch_pending(limit=10):
+        while not self._stop.is_set():
+            with traffic.tagged("media"):
+                if not self.media.fetch_pending(limit=10):
+                    break
             while self.run_one_job():
                 pass
         # Archived files over limits just lowered, transcoded down one at a time.

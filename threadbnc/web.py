@@ -36,6 +36,7 @@ from . import feed as feed_mod
 from . import media as media_mod
 from . import storage as storage_mod
 from . import thumbs as thumbs_mod
+from . import traffic as traffic_mod
 from .actor import ActorEndpoints
 from .adapters import (BSKY_DOMAIN, RSS_PREFIX, CommunityRef, RemoteError, from_fediverse, host_of, is_bluesky,
                        is_fedi_account, is_reddit_host, is_rss, is_tag)
@@ -326,6 +327,7 @@ def word_diff(old: str | None, new: str | None) -> Markup:
 
 # The speeds the speed button goes through, in order (app.js has the same list).
 AUDIO_RATES = ("1", "1.25", "1.5", "1.75", "2", "0.75")
+TRAFFIC_PERIODS = {1: "Last 24 hours", 7: "Last 7 days", 30: "Last 30 days"}
 
 
 def running_time(seconds: float | None) -> str:
@@ -384,6 +386,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             federation.stop()
         if bluesky_tags:
             bluesky_tags.stop()
+        traffic_mod.METER.flush()
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     templates = Jinja2Templates(directory=str(HERE / "templates"))
@@ -525,7 +528,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                 resp = RedirectResponse(f"/login?{urlencode({'next': target})}" if wanted else "/login",
                                         status_code=303)
         else:
-            resp = await call_next(request)
+            with traffic_mod.tagged("browsing"):  # what's asked of others while pages are served (traffic.py)
+                resp = await call_next(request)
             if is_fetch(request) and resp.status_code in (302, 303):
                 # A form sent by app.js: answer with where it would have gone and
                 # its messages, so the page can update in place instead of reloading.
@@ -1850,6 +1854,13 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                       by_rate=media_mod.BY_RATE, can_transcode=bouncer.media.can_transcode(),
                       transcoding=transcoding, thumbs=dict(shrunk, usage=thumbs_mod.usage(bouncer.media_dir)),
                       thumb_views=thumbs_mod.VIEWS)
+
+    @app.get("/traffic", response_class=HTMLResponse)
+    def traffic_page(request: Request, days: int = 1):
+        days = days if days in TRAFFIC_PERIODS else 1
+        traffic_mod.METER.flush()  # this process's latest; a bouncer running on its own adds its own each minute
+        return render(request, "traffic.html", r=traffic_mod.report(db, days), periods=TRAFFIC_PERIODS,
+                      jetstream=bluesky_tags, jetstream_host=urlparse(settings.jetstream_url or "").hostname)
 
     @app.get("/storage/integrity", response_class=HTMLResponse)
     def integrity_page(request: Request, deep: int = 0):

@@ -61,6 +61,7 @@
           <a class="menu-item {{ 'on' if path.startswith('/accounts') }}" href="/accounts">{{ icon('user') }}<span class="grow">Accounts</span></a>
           {% if accounts and accounts | selectattr('is_admin') | list %}<a class="menu-item {{ 'on' if path.startswith('/admin') }}" href="/admin">{{ icon('shield') }}<span class="grow">Admin</span></a>{% endif %}
           <a class="menu-item {{ 'on' if path.startswith('/storage') }}" href="/storage">{{ icon('storage') }}<span class="grow">Storage</span></a>
+          <a class="menu-item {{ 'on' if path.startswith('/traffic') }}" href="/traffic">{{ icon('activity') }}<span class="grow">Traffic</span></a>
           <a class="menu-item {{ 'on' if path.startswith('/trash') }}" href="/trash">{{ icon('trash') }}<span class="grow">Trash</span>{% if tc %}<span class="count muted" aria-label="{{ tc }} in the trash">{{ tc }}</span>{% endif %}</a>
         </div>
         <form method="post" action="/theme" class="menu-section" data-theme-form>

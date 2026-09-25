@@ -55,6 +55,7 @@ from .adapters.base import RemotePaused
 from .adapters.http import HostThrottle
 from .db import Conn, Database, fmt_ts, parse_ts, utcnow
 from .render import VIDEO_EXTENSIONS, MediaInfo, extract_media_urls, looks_like_audio, looks_like_media
+from .traffic import metered
 
 log = logging.getLogger(__name__)
 
@@ -661,7 +662,7 @@ class MediaFetcher:
         self.working: dict[str, Any] | None = None  # the file being transcoded now (_transcoding)
         self.check_host = check_host
         self.client = client or httpx.Client(timeout=timeout, headers={"User-Agent": user_agent},
-                                             follow_redirects=False)
+                                             follow_redirects=False, transport=metered())
 
     @property
     def default_policy(self) -> MediaPolicy:

@@ -53,6 +53,7 @@ from .base import (
     ThreadiverseAdapter,
     ThreadRef,
 )
+from ..traffic import metered
 from .http import HostThrottle
 
 MAX_FEED_BYTES = 20_000_000  # podcasts list every episode ever made: 10 MB isn't unusual
@@ -412,7 +413,7 @@ def discover(page: bytes, base: str) -> str | None:
 class FeedFetcher:
     def __init__(self, user_agent: str, timeout: float = 20.0, throttle: HostThrottle | None = None,
                  check_host: bool = True, transport: httpx.BaseTransport | None = None):
-        self.client = httpx.Client(timeout=timeout, transport=transport, follow_redirects=False,
+        self.client = httpx.Client(timeout=timeout, transport=metered(transport), follow_redirects=False,
                                    headers={"User-Agent": user_agent, "Accept": ACCEPT})
         self.throttle = throttle or HostThrottle(1.0)
         self.check_host = check_host
