@@ -96,11 +96,16 @@
   }
 
   // `withComments` false: only the post (its votes and article may be new even
-  // when reading the comments failed).
+  // when reading the comments failed). What you're reading is held still
+  // (app.js: steady).
   async function swapFresh(withComments) {
     const r = await fetch(status.dataset.url, { credentials: "same-origin" });
     if (!r.ok) throw new Error("HTTP " + r.status);
     const doc = new DOMParser().parseFromString(await r.text(), "text/html");
+    threadbnc.steady(() => swapIn(doc, withComments));
+  }
+
+  function swapIn(doc, withComments) {
     const post = document.getElementById(status.dataset.post);
     const freshPost = doc.getElementById(status.dataset.post);
     if (post && freshPost) post.replaceWith(document.adoptNode(freshPost));

@@ -87,18 +87,90 @@ document.documentElement.classList.add("js");
     }
   }
 
+  // The live parts (header counts, sidebar) are updated in place, not swapped:
+  // see morph.
   function swapLive(doc) {
     for (const el of $$("[data-live][id]")) {
       const fresh = doc.getElementById(el.id);
-      if (!fresh) continue;
-      if (el.tagName === "DETAILS" && el.open) fresh.open = true;
-      el.replaceWith(document.adoptNode(fresh));
+      if (fresh) morph(el, fresh);
     }
+  }
+
+  // Bring an element up to date with its fresh copy in place: what's still
+  // there stays the same element, so a list you're scrolling (the sidebar) keeps
+  // its place, even mid-fling, a panel you opened or closed stays that way, and
+  // what you're typing, and focus, stay put.
+  function morph(now, fresh) {
+    if (now.nodeType !== Node.ELEMENT_NODE) {
+      if (now.nodeValue !== fresh.nodeValue) now.nodeValue = fresh.nodeValue;
+      return;
+    }
+    const yours = (name) => name === "open" && now.tagName === "DETAILS";
+    for (const { name } of [...now.attributes]) {
+      if (!fresh.hasAttribute(name) && !yours(name)) now.removeAttribute(name);
+    }
+    for (const { name, value } of fresh.attributes) {
+      if (!yours(name) && now.getAttribute(name) !== value) now.setAttribute(name, value);
+    }
+    const olds = [...now.childNodes], news = [...fresh.childNodes];
+    news.forEach((node, i) => {
+      const old = olds[i];
+      if (!old) now.append(document.adoptNode(node));
+      else if (old.nodeName === node.nodeName && (old.id || "") === (node.id || "")) morph(old, node);
+      else old.replaceWith(document.adoptNode(node));
+    });
+    for (const old of olds.slice(news.length)) old.remove();
+  }
+
+  // ---- keeping what you're reading where it is ------------------------------------
+  // Things that arrive while you read (pictures, previews, comments,
+  // discussions) are swapped in as fresh copies. One that grows or shrinks
+  // above what you're reading would push it about, and the browser's own scroll
+  // anchoring doesn't help when the element it was holding still is the one
+  // swapped out. So those swaps go through steady(): it notes where the first
+  // thing with an id at the top of the view is, makes the change, and scrolls
+  // by however far that moved (fresh copies have the same ids). Only the swap
+  // goes in `change`, not the fetch before it, or scrolling while it loaded
+  // would be undone.
+  function steady(change) {
+    const was = topInView();
+    change();
+    const el = was && document.getElementById(was.id);
+    if (!el) return;
+    const moved = el.getBoundingClientRect().top - was.top;
+    if (moved) scrollerOf(el).scrollBy(0, moved);
+  }
+  window.threadbnc = { steady };  // for thread.js, whose fresh comments arrive the same way
+
+  // The first element with an id whose top is in view (below the sticky
+  // header), or failing that the innermost one running off the top.
+  function topInView() {
+    const covered = parseFloat(getComputedStyle(document.documentElement).scrollPaddingTop) || 0;
+    let across = null;
+    for (const el of $$("main [id]")) {
+      const box = el.getBoundingClientRect();
+      if (!box.height || box.bottom <= covered) continue;
+      if (box.top >= innerHeight) break;
+      if (el.closest("[data-live]") || getComputedStyle(el).position === "sticky") continue;
+      if (box.top >= covered) return { id: el.id, top: box.top };
+      across = { id: el.id, top: box.top };
+    }
+    return across;
+  }
+
+  // What scrolls it: a reader column, or the page.
+  function scrollerOf(el) {
+    for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
+      if (/auto|scroll/.test(getComputedStyle(p).overflowY) && p.scrollHeight > p.clientHeight) return p;
+    }
+    return window;
   }
 
   // Refresh these ids (grouped by the page each came from) and the live parts
   // (header counts, sidebar). Ids missing from the fresh page get a placeholder.
-  async function refresh(ids, gone, undo) {
+  // `arrived`: they came in the background, not from something you did, so
+  // what you're reading is held still.
+  async function refresh(ids, gone, undo, arrived = false) {
     const bySrc = new Map();
     for (const id of ids) {
       const src = sourceOf(currentOf(id));
@@ -108,10 +180,13 @@ document.documentElement.classList.add("js");
     if (!bySrc.has(location.href)) bySrc.set(location.href, []);
     for (const [src, list] of bySrc) {
       const doc = await fetchDoc(src);
-      for (const id of list) {
-        if (!swapIn(doc, id) && gone) placeholder(id, gone, undo);
-      }
-      if (src === location.href) swapLive(doc);
+      const swap = () => {
+        for (const id of list) {
+          if (!swapIn(doc, id) && gone) placeholder(id, gone, undo);
+        }
+        if (src === location.href) swapLive(doc);
+      };
+      if (arrived) steady(swap); else swap();
     }
   }
 
@@ -466,7 +541,7 @@ document.documentElement.classList.add("js");
     try {
       await post("/feed/seen", seenBody());
       const doc = await fetchDoc(location.href);
-      swapLive(doc);
+      steady(() => swapLive(doc));
     } catch (e) { /* offline: they stay unread */ }
   }
 
@@ -587,7 +662,7 @@ document.documentElement.classList.add("js");
       const track = $(`#${CSS.escape(id)} .gallery-track`);
       if (track) at.set(id, track.scrollLeft);
     }
-    try { await refresh(ids); } catch (e) { return; }
+    try { await refresh(ids, null, null, true); } catch (e) { return; }
     for (const [id, left] of at) {
       const track = $(`#${CSS.escape(id)} .gallery-track`);
       if (track && left) track.scrollTo({ left, behavior: "instant" });
@@ -1014,7 +1089,7 @@ document.documentElement.classList.add("js");
           const fresh = $(".comments", doc);
           if (fresh && now && now.isConnected) {
             keepOpen(now, fresh);
-            now.replaceWith(document.adoptNode(fresh));
+            steady(() => now.replaceWith(document.adoptNode(fresh)));
           }
         } catch (e) { setCommentsStatus(panel, "New comments arrived; reload to show them."); }
         return;
@@ -1355,11 +1430,11 @@ document.documentElement.classList.add("js");
     if (savedNow && !("played" in box.dataset)) {
       const nav = $(".reader-nav", box);
       if (nav && !box.closest(".dive-col, .dive-inline")) $(".reader-nav", fresh).replaceWith(nav); // the page of its own: no Close there
-      box.replaceWith(document.adoptNode(fresh));
+      steady(() => box.replaceWith(document.adoptNode(fresh)));
       return;
     }
     box.toggleAttribute("data-video-saving", fresh.hasAttribute("data-video-saving"));
-    $(".video-save", box).replaceWith(document.adoptNode($(".video-save", fresh)));
+    steady(() => $(".video-save", box).replaceWith(document.adoptNode($(".video-save", fresh))));
   }
 
   function watchSaving() {
@@ -1699,7 +1774,7 @@ document.documentElement.classList.add("js");
     if (!box.isConnected) return;
     try {
       const fresh = $("[data-discussions]", await fetchDoc(box.dataset.discussions));
-      if (fresh) box.replaceWith(document.adoptNode(fresh));
+      if (fresh && box.isConnected) steady(() => box.replaceWith(document.adoptNode(fresh)));
     } catch (e) { /* the saved list stays; reloading shows the rest */ }
   }
 
