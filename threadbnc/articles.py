@@ -45,6 +45,7 @@ from .render import (ALLOWED_ATTRS, ALLOWED_TAGS, VIDEO_HREF, VIDEO_LINK_TITLE, 
                      looks_like_media, video_link_text)
 from .livestream import stream_of
 from .videos import video_of
+from .traffic import metered
 from .youtube import video_id
 
 MAX_PAGE_BYTES = 5_000_000
@@ -583,7 +584,7 @@ class ArticleFetcher:
         self.check_host = check_host
         self.throttle = throttle or HostThrottle(1.0)
         self.client = client or httpx.Client(
-            timeout=timeout, follow_redirects=False,
+            timeout=timeout, follow_redirects=False, transport=metered(),
             headers={"User-Agent": user_agent, "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.5"})
 
     def _download(self, url: str) -> tuple[bytes, str]:

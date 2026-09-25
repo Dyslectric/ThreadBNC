@@ -11,6 +11,7 @@ from typing import Any, Mapping
 
 import httpx
 
+from ..traffic import metered
 from .base import RemoteAuthError, RemoteNotFound, RemotePaused, RemoteRejected, RemoteUnavailable
 
 log = logging.getLogger("threadbnc.http")
@@ -114,6 +115,7 @@ class HttpClient:
             timeout=timeout,
             headers={"User-Agent": user_agent, "Accept": "application/json"},
             follow_redirects=True,
+            transport=metered(),
         )
         self.throttle = HostThrottle(min_interval)
 

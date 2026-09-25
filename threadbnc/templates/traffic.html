@@ -1,0 +1,217 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon, meter, when %}
+{% block title %}Traffic{% endblock %}
+{% macro n(x) %}{{ '{:,}'.format(x) }}{% endmacro %}
+{% macro community(g) -%}
+  {%- if g.community %}<a href="/c/{{ g.community.id }}">{{ chandle(g.community.name, g.community.canonical_ap_id) }}</a>
+  {%- elif g.label == 'gone' %}<span class="muted">A community no longer here</span>
+  {%- else %}<span class="muted">No community in particular</span>{% endif %}
+{%- endmacro %}
+{% macro stream_name(g) -%}
+  {%- set host = g.label %}
+  {%- if jetstream_host and host == jetstream_host %}<strong>Bluesky Jetstream</strong>
+    <div class="small muted">{{ host }}: every new post on Bluesky, sifted for followed hashtags</div>
+  {%- elif g.community and g.community.canonical_ap_id.startswith('tag:') %}<strong>Relay for {{ community(g) }}</strong>
+    <div class="small muted">{{ host }}</div>
+  {%- elif g.community %}<strong>Deliveries for {{ community(g) }}</strong>
+    <div class="small muted">from {{ host }}, to your own server</div>
+  {%- else %}<strong>{{ host if host != '?' else 'Unknown sender' }}</strong>
+    <div class="small muted">deliveries not tied to a followed community</div>{% endif %}
+{%- endmacro %}
+{% block content %}
+{% set out = r.out.tally %}
+{% set pushed = r.streams.tally %}
+<h1>Traffic</h1>
+<p class="muted">What ThreadBNC asks of other sites, and what the streams it listens to send it. Sizes are as the
+  data crossed the wire (compressed where the server compressed it), headers included.</p>
+
+<nav class="tabs small" aria-label="Period">
+  {% for d, label in periods.items() %}<a href="/traffic?days={{ d }}" class="{{ 'on' if r.days == d }}"{% if r.days == d %} aria-current="page"{% endif %}>{{ label }}</a>{% endfor %}
+</nav>
+
+<div class="stat-row">
+  <section class="card stat">
+    <div class="stat-label">Requests to others</div>
+    <div class="stat-value">{{ n(out.requests) }}</div>
+    <div class="small muted">to {{ r.services.parts | length }} site{{ 's' if r.services.parts | length != 1 }}
+      · {{ n((out.requests / (24 * r.days)) | round | int) }} an hour</div>
+  </section>
+  <section class="card stat">
+    <div class="stat-label">Downloaded from them</div>
+    <div class="stat-value">{{ out.bytes_in | size }}</div>
+    <div class="small muted">and {{ out.bytes_out | size }} sent</div>
+  </section>
+  <section class="card stat">
+    <div class="stat-label">Told to slow down</div>
+    <div class="stat-value {{ 'bad-text' if out.slowed }}">{{ n(out.slowed) }}</div>
+    <div class="small muted">429 answers · {{ n(out.errors) }} error{{ 's' if out.errors != 1 }} in all</div>
+  </section>
+  <section class="card stat">
+    <div class="stat-label">Pushed to ThreadBNC</div>
+    <div class="stat-value">{{ pushed.bytes_in | size }}</div>
+    <div class="small muted">{{ n(pushed.requests) }} message{{ 's' if pushed.requests != 1 }} from relays and streams</div>
+  </section>
+</div>
+
+<section class="card">
+  <h2>Requests {{ 'by the hour' if r.days == 1 else 'by the day' }}</h2>
+  {% set top = r.timeline | map(attribute='1.requests') | max %}
+  {% if top %}
+  <div class="traffic-chart" role="img" aria-label="Requests to others {{ 'each hour' if r.days == 1 else 'each day' }}; the busiest had {{ n(top) }}">
+    <div class="traffic-top small muted" aria-hidden="true">{{ n(top) }}</div>
+    <svg class="traffic-bars" viewBox="0 0 {{ 10 * r.timeline | length }} 100" preserveAspectRatio="none" aria-hidden="true">
+      <line class="baseline" x1="0" y1="99.5" x2="{{ 10 * r.timeline | length }}" y2="99.5"/>
+    {% for key, o, i in r.timeline %}
+      {% set label = (key[11:13] ~ ':00 UTC, ' ~ key[:10]) if r.days == 1 else key %}
+      {% set h = [100 * o.requests / top, 2] | max if o.requests else 0 %}
+      <g><title>{{ label }}: {{ n(o.requests) }} request{{ 's' if o.requests != 1 }}, {{ o.bytes_in | size }} downloaded{% if o.slowed %}, {{ n(o.slowed) }} told to slow down{% endif %}{% if i.bytes_in %} · {{ i.bytes_in | size }} pushed{% endif %}</title>
+        <rect class="hit" x="{{ 10 * loop.index0 }}" y="0" width="10" height="100"/>
+        {% if h %}<rect class="bar" x="{{ 10 * loop.index0 + 1 }}" y="{{ '%.2f' % (100 - h) }}" width="8" height="{{ '%.2f' % h }}"/>{% endif %}</g>
+    {% endfor %}
+    </svg>
+    <div class="traffic-axis small muted" aria-hidden="true">
+      {% set first, last = r.timeline[0][0], r.timeline[-1][0] %}
+      <span>{{ (first[11:13] ~ ':00') if r.days == 1 else first[5:] }}</span>
+      <span>{{ 'now (UTC)' if r.days == 1 else last[5:] }}</span>
+    </div>
+  </div>
+  {% else %}
+  <p class="muted">Nothing asked of anyone {{ periods[r.days] | lower }}.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Streams and relays</h2>
+  <p class="small muted">What arrives without ThreadBNC asking each time: Bluesky's Jetstream while a hashtag is
+    followed, a relay's deliveries of posts with a followed hashtag, and deliveries to your own servers passed on
+    through ThreadBNC.</p>
+  {% if jetstream %}
+  <p class="small">
+    {% if jetstream.connected_since %}<span class="pill good">connected</span> Jetstream since {{ when(jetstream.connected_since) }}{{ ', compressed' if jetstream.dictionary is not none }}.
+    {% else %}<span class="pill muted">not connected</span> Jetstream: {{ 'it connects while a hashtag is followed.' if not jetstream.last_error else '' }}{% endif %}
+    {% if jetstream.last_error %}<span class="bad-text">Last trouble {{ when(jetstream.last_error_at) }}: {{ jetstream.last_error }}</span>{% endif %}
+  </p>
+  {% endif %}
+  {% set streams = r.streams.sorted('bytes_in') %}
+  {% set top = streams[0].tally.bytes_in if streams else 0 %}
+  <div class="table-scroll">
+  <table class="storage">
+    <thead><tr><th scope="col">Stream</th><th scope="col" class="n">Messages</th><th scope="col" class="n">Data</th>
+      {% if r.days > 1 %}<th scope="col" class="n hide-narrow">A day</th>{% endif %}<th scope="col" class="bar-col"><span class="sr-only">Data bar</span></th></tr></thead>
+    <tbody>
+    {% for g in streams %}
+      <tr>
+        <th scope="row">{{ stream_name(g) }}</th>
+        <td class="n">{{ n(g.tally.requests) }}</td>
+        <td class="n">{{ g.tally.bytes_in | size }}</td>
+        {% if r.days > 1 %}<td class="n hide-narrow">{{ (g.tally.bytes_in // r.days) | size }}</td>{% endif %}
+        <td class="bar-col">{{ meter(g.tally.bytes_in, top, g.label ~ ': ' ~ (g.tally.bytes_in | size)) }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="5" class="muted">Nothing pushed {{ periods[r.days] | lower }}.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Load on others, by site</h2>
+  {% set services = r.services.sorted() %}
+  {% set top = services[0].tally.requests if services else 0 %}
+  <div class="table-scroll">
+  <table class="storage">
+    <thead><tr><th scope="col">Site</th><th scope="col" class="n">Requests</th><th scope="col" class="n">Downloaded</th>
+      <th scope="col" class="n hide-narrow">Sent</th><th scope="col" class="n hide-narrow">Errors</th><th scope="col" class="n">429s</th>
+      <th scope="col" class="bar-col"><span class="sr-only">Requests bar</span></th></tr></thead>
+    <tbody>
+    {% for s in services %}
+      {% set t = s.tally %}
+      <tr>
+        <th scope="row">{{ s.label }}</th>
+        <td class="n">{{ n(t.requests) }}</td>
+        <td class="n">{{ t.bytes_in | size }}</td>
+        <td class="n hide-narrow">{{ t.bytes_out | size }}</td>
+        <td class="n hide-narrow {{ 'muted' if not t.errors }}">{{ n(t.errors) }}</td>
+        <td class="n {{ 'bad-text' if t.slowed else 'muted' }}">{{ n(t.slowed) }}</td>
+        <td class="bar-col">{{ meter(t.requests, top, s.label ~ ': ' ~ n(t.requests) ~ ' requests') }}</td>
+      </tr>
+      {% set hosts = s.sorted() %}
+      {% if hosts | length > 1 or hosts[0].label != s.label %}
+      {% for h in hosts %}{% set t = h.tally %}
+      <tr class="traffic-host small">
+        <th scope="row" class="muted">{{ h.label }}</th>
+        <td class="n muted">{{ n(t.requests) }}</td>
+        <td class="n muted">{{ t.bytes_in | size }}</td>
+        <td class="n muted hide-narrow">{{ t.bytes_out | size }}</td>
+        <td class="n muted hide-narrow">{{ n(t.errors) }}</td>
+        <td class="n {{ 'bad-text' if t.slowed else 'muted' }}">{{ n(t.slowed) }}</td>
+        <td class="bar-col"></td>
+      </tr>
+      {% endfor %}
+      {% endif %}
+    {% else %}
+      <tr><td colspan="7" class="muted">Nothing asked of anyone {{ periods[r.days] | lower }}.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <p class="small muted">Sites are grouped by who runs them (Reddit's API, pictures and videos under Reddit), and
+    other hosts by their domain. A 429 is a site saying ThreadBNC asked too much too quickly; it then waits as long
+    as the site says before asking again.</p>
+</section>
+
+<section class="card">
+  <h2>By community</h2>
+  {% set rows = r.communities.sorted() %}
+  {% set top = rows[0].tally.requests if rows else 0 %}
+  <div class="table-scroll">
+  <table class="storage">
+    <thead><tr><th scope="col">Community</th><th scope="col" class="n">Requests</th><th scope="col" class="n">Downloaded</th>
+      <th scope="col" class="n">429s</th><th scope="col" class="bar-col"><span class="sr-only">Requests bar</span></th></tr></thead>
+    <tbody>
+    {% for g in rows %}{% set t = g.tally %}
+      <tr>
+        <th scope="row">{{ community(g) }}</th>
+        <td class="n">{{ n(t.requests) }}</td>
+        <td class="n">{{ t.bytes_in | size }}</td>
+        <td class="n {{ 'bad-text' if t.slowed else 'muted' }}">{{ n(t.slowed) }}</td>
+        <td class="bar-col">{{ meter(t.requests, top, n(t.requests) ~ ' requests') }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="5" class="muted">Nothing asked of anyone {{ periods[r.days] | lower }}.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <p class="small muted">A request counts for a community when it was made checking it, or opening, saving or
+    updating the votes on one of its posts. Pictures and videos are saved for many posts at once, so they count
+    under no community in particular.</p>
+</section>
+
+<section class="card">
+  <h2>Why</h2>
+  {% set rows = r.purposes.sorted() %}
+  {% set top = rows[0].tally.requests if rows else 0 %}
+  <div class="table-scroll">
+  <table class="storage">
+    <thead><tr><th scope="col">What for</th><th scope="col" class="n">Requests</th><th scope="col" class="n">Downloaded</th>
+      <th scope="col" class="bar-col"><span class="sr-only">Requests bar</span></th></tr></thead>
+    <tbody>
+    {% for g in rows %}{% set t = g.tally %}
+      <tr>
+        <th scope="row">{{ g.label }}</th>
+        <td class="n">{{ n(t.requests) }}</td>
+        <td class="n">{{ t.bytes_in | size }}</td>
+        <td class="bar-col">{{ meter(t.requests, top, g.label ~ ': ' ~ n(t.requests) ~ ' requests') }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="4" class="muted">Nothing asked of anyone {{ periods[r.days] | lower }}.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <p class="small muted">Counted from when this page was added; a bouncer running on its own adds its counts about
+    once a minute. Kept for 30 days.</p>
+</section>
+{% endblock %}

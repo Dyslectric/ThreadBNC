@@ -36,6 +36,7 @@ from starlette.concurrency import run_in_threadpool
 from .adapters import RemoteAuthError, RemoteError, RemoteNotFound, RemotePaused, RemoteRejected, RemoteUnavailable
 from .adapters.http import HttpClient
 from .db import Database
+from .traffic import delivered
 from .vault import TokenVault
 
 log = logging.getLogger(__name__)
@@ -340,6 +341,7 @@ class ActorEndpoints:
             return await _respond(send, 400, b"Not JSON")
         if not isinstance(activity, dict):
             return await _respond(send, 400, b"Not an activity")
+        delivered(activity, len(body) + sum(len(k) + len(v) + 4 for k, v in scope["headers"]))
         if not self.expects(activity):
             return await _respond(send, 202, b"")  # not from anything followed: nothing to do, nothing fetched
         headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope["headers"]}

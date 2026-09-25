@@ -43,6 +43,7 @@ from . import __version__
 from .adapters.base import RemoteNotFound, RemotePaused, RemoteRejected, RemoteUnavailable
 from .adapters.http import MAX_PAUSE, HostThrottle, retry_after
 from .db import Database, parse_ts, utcnow
+from .traffic import metered
 from .vault import TokenVault, VaultError
 
 log = logging.getLogger("threadbnc.reddit")
@@ -73,7 +74,7 @@ class RedditConnection:
                  transport: httpx.BaseTransport | None = None):
         self.db = db
         self.vault = vault
-        self._http = httpx.Client(timeout=timeout, transport=transport)
+        self._http = httpx.Client(timeout=timeout, transport=metered(transport))
         self.throttle = HostThrottle(min_interval)
         self._lock = threading.Lock()
         self._token: tuple[str, float] | None = None  # access token, monotonic expiry

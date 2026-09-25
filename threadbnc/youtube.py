@@ -35,6 +35,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .db import Database, utcnow
 from .render import escape_markdown, plain_lines
+from .traffic import meter_ydl
 from .vault import TokenVault, VaultError
 
 FEED = "https://www.youtube.com/feeds/videos.xml"
@@ -713,7 +714,7 @@ def probe(url: str, session: YouTubeSession) -> Probe:
     yt_dlp = _yt_dlp()
     from yt_dlp.utils import DownloadError
     try:
-        with yt_dlp.YoutubeDL({**_options(session, url), "skip_download": True}) as ydl:
+        with meter_ydl(yt_dlp.YoutubeDL({**_options(session, url), "skip_download": True})) as ydl:
             info = ydl.extract_info(url, download=False) or {}
     except DownloadError as exc:
         raise _failure(exc, bool(session.secrets()[0]), url) from None
@@ -736,7 +737,7 @@ def download(url: str, workdir: Path, session: YouTubeSession, max_bytes: int) -
     opts = {**_options(session, url), "outtmpl": str(tmp / "video.%(ext)s"), "max_filesize": max_bytes,
             "overwrites": True}
     try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
+        with meter_ydl(yt_dlp.YoutubeDL(opts)) as ydl:
             info = ydl.extract_info(url, download=False, process=False) or {}
             if info.get("is_live") or info.get("live_status") in ("is_live", "is_upcoming"):
                 raise StillLive("a live stream that hasn't ended yet")

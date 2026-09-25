@@ -46,6 +46,7 @@ from .accounts import Account, AccountError, Poster
 from .adapters import (NComment, NPost, RemoteError, RemoteNotFound, RemotePaused, ThreadiverseAdapter, host_of,
                        is_reddit_host, is_rss, is_tag)
 from .db import fmt_ts, parse_ts, utcnow
+from .traffic import delivered
 
 log = logging.getLogger(__name__)
 
@@ -94,6 +95,11 @@ class InboxRelay:
             more = message.get("more_body", False)
             if len(body) > MAX_ACTIVITY_BYTES:
                 return await _respond(send, 413, b"Activity too large", "text/plain")
+        try:
+            activity = json.loads(bytes(body))
+        except ValueError:
+            activity = None
+        delivered(activity, len(body) + sum(len(k) + len(v) + 4 for k, v in headers))
         query = scope.get("query_string", b"").decode("latin-1")
         path = (scope.get("raw_path") or scope["path"].encode()).decode("latin-1")  # exactly as it came
         url = upstream + path + (f"?{query}" if query else "")

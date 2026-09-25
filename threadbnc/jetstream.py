@@ -45,7 +45,7 @@ import traceback
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 from websockets.exceptions import WebSocketException
 from websockets.sync.client import connect
@@ -54,6 +54,7 @@ from .adapters import BSKY_DOMAIN
 from .adapters.bluesky import GET_POSTS, POST, record_tags, web_url
 from .bouncer import Bouncer
 from .db import parse_ts, utcnow
+from .traffic import record
 
 try:
     from compression import zstd
@@ -176,12 +177,15 @@ class BlueskyTags:
             self.connected_since, self.last_error, self._bad = utcnow(), None, 0
             log.info("Jetstream: listening for %d hashtags%s", len(tags), ", compressed" if compressed else "")
             flushed = saved = refreshed = time.monotonic()
+            host, messages, received = urlparse(self.url).hostname, 0, 0  # counted (traffic.py) at each flush
             try:
                 while not self._stop.is_set():
                     try:
                         raw = ws.recv(timeout=1.0)
                     except TimeoutError:
                         raw = None
+                    if raw is not None:
+                        messages, received = messages + 1, received + len(raw)
                     text = self._decode(raw) if raw is not None else None
                     if compressed and self.dictionary is None:
                         return  # the dictionary stopped fitting: connect again, uncompressed
@@ -193,7 +197,8 @@ class BlueskyTags:
                     now = time.monotonic()
                     if now - flushed >= FLUSH_EVERY:
                         self._flush()
-                        flushed = now
+                        record("in", host, requests=messages, bytes_in=received)
+                        flushed, messages, received = now, 0, 0
                     if last is not None and now - saved >= SAVE_EVERY:
                         self._save(last)
                         saved = now
@@ -205,6 +210,7 @@ class BlueskyTags:
             finally:
                 self.connected_since = None
                 self._flush()
+                record("in", host, requests=messages, bytes_in=received)
                 if last is not None:
                     self._save(last)
 
