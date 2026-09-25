@@ -20,7 +20,10 @@ only once a post linking to one is kept (see youtube.py), or you ask for one
 from the box a YouTube link opens (`wanted_at`; it's kept as a post too, as
 a followed channel's video is: Bouncer.keep_youtube), and have settings of
 their own on the YouTube page (the resolution they're saved at) rather than
-the Videos ones. Audio files are held
+the Videos ones. So do other sites' videos (videos.py), which are only
+downloaded when you ask for one from the box its link opens (want_video), as
+is a video file linked to that way whatever the community would save. Audio
+files are held
 too, but a post linking to one fetches it as soon as the post is scrolled into
 view in a feed (Bouncer.fetch_audio), so it's ready to play from the post's
 player bar. Podcast episodes (`episode`, from a feed's enclosures) aren't:
@@ -47,7 +50,7 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 
-from . import thumbs, transcode, youtube
+from . import thumbs, transcode, videos, youtube
 from .adapters.base import RemotePaused
 from .adapters.http import HostThrottle
 from .db import Conn, Database, fmt_ts, parse_ts, utcnow
@@ -541,6 +544,14 @@ def youtube_media(conn: Conn, vid: str) -> Any:
                 next((r for r in rows if r["wanted_at"]), rows[0] if rows else None))
 
 
+def youtube_saving(conn: Conn, vid: str) -> bool:
+    """Whether a YouTube video is being downloaded (under any of its links):
+    asked for from a link's box, or a post linking to it kept."""
+    rows = conn.execute(f"SELECT url, held, wanted_at, {KEPT_SQL} AS kept FROM media "
+                        "WHERE kept_only=1 AND status='pending' AND url LIKE ?", (f"%{vid}%",)).fetchall()
+    return any(youtube.video_id(r["url"]) == vid and (r["wanted_at"] or not r["held"] or r["kept"]) for r in rows)
+
+
 def want_youtube(conn: Conn, vid: str, now: str) -> int:
     """Save a YouTube video, asked for from a link's box: kept whether or not
     a post links to it (collect_orphans leaves it), and tried again if it
@@ -549,6 +560,24 @@ def want_youtube(conn: Conn, vid: str, now: str) -> int:
     row = youtube_media(conn, vid)
     mid = row["id"] if row and row["status"] == "ok" else media_id(conn, youtube.watch_url(vid), now)
     conn.execute("UPDATE media SET wanted_at=COALESCE(wanted_at, ?), held=0 WHERE id=?", (now, mid))
+    conn.execute("UPDATE media SET status='pending', attempts=0, error=NULL, next_attempt_at=NULL "
+                 "WHERE id=? AND status IN ('failed', 'skipped')", (mid,))
+    return mid
+
+
+def linked_video(conn: Conn, video: videos.Video) -> Any:
+    """The media row for a video linked to (videos.py), if it has one."""
+    return conn.execute("SELECT * FROM media WHERE url=?", (video.url,)).fetchone()
+
+
+def want_video(conn: Conn, video: videos.Video, now: str) -> int:
+    """Save a video asked for from a link's box (videos.py), as want_youtube
+    does a YouTube video: kept whether or not a post links to it, whatever
+    the community would save, and tried again if it failed. A site's video
+    is downloaded with yt-dlp, as YouTube's are (`kept_only`)."""
+    mid = media_id(conn, video.url, now)
+    conn.execute("UPDATE media SET wanted_at=COALESCE(wanted_at, ?), held=0, kept_only=? WHERE id=?",
+                 (now, int(not video.is_file), mid))
     conn.execute("UPDATE media SET status='pending', attempts=0, error=NULL, next_attempt_at=NULL "
                  "WHERE id=? AND status IN ('failed', 'skipped')", (mid,))
     return mid
@@ -567,10 +596,11 @@ def kept_as_post(conn: Conn, vid: str) -> None:
 
 
 def saved_from_links(conn: Conn) -> list[Any]:
-    """YouTube videos saved (or being saved) from a link's box that no kept
-    post links to, the latest asked for first: the Kept page's Videos tab
-    lists them besides the kept posts that are videos."""
-    return conn.execute(f"SELECT * FROM media WHERE kept_only=1 AND wanted_at IS NOT NULL AND NOT {KEPT_SQL} "
+    """Videos saved (or being saved) from a link's box, YouTube's or others
+    (want_video), that no kept post links to, the latest asked for first:
+    the Kept page's Videos tab lists them besides the kept posts that are
+    videos."""
+    return conn.execute(f"SELECT * FROM media WHERE wanted_at IS NOT NULL AND episode=0 AND NOT {KEPT_SQL} "
                         "ORDER BY wanted_at DESC, id DESC").fetchall()
 
 
@@ -716,20 +746,25 @@ class MediaFetcher:
         raise MediaRejected("too many redirects")
 
     def _download_youtube(self, url: str) -> Downloaded:
-        """A YouTube video, with yt-dlp (youtube.py). Its size limit and quality
-        come from the YouTube page rather than the community: saving the video
-        is what keeping a YouTube post is for."""
+        """A YouTube video, or another site's (videos.py), with yt-dlp
+        (youtube.py). Its size limit and quality come from the YouTube page
+        rather than the community: saving the video is what keeping a
+        YouTube post, or asking for one from its link's box, is for."""
         if self.youtube is None:
             raise MediaRejected("YouTube videos aren't saved here")
         cfg = self.youtube.status()
-        self.throttle.wait("www.youtube.com")
+        on_youtube = youtube.is_youtube_url(url)
+        site = None if on_youtube else videos.video_of(url)
+        self.throttle.wait("www.youtube.com" if on_youtube else (urlparse(url).hostname or "").lower())
         try:
-            path, _ = youtube.download(url, self.media_dir, self.youtube, cfg["max_mb"] * 1_000_000)
+            path, _ = youtube.download(site.fetch_url if site else url, self.media_dir, self.youtube,
+                                       cfg["max_mb"] * 1_000_000)
         except youtube.VideoGone as exc:
             if isinstance(exc, youtube.NeedsSession):
                 self.youtube.note(str(exc))
             raise MediaRejected(str(exc)) from None
-        self.youtube.note(None)
+        if on_youtube:  # (how YouTube's session is doing, for the YouTube page)
+            self.youtube.note(None)
         h = hashlib.sha256()
         with path.open("rb") as f:
             head = f.read(32)
@@ -905,10 +940,12 @@ class MediaFetcher:
         """`wanted`: fetch it even if it's a video or audio file nobody has
         opened yet (a post's audio, scrolled to in a feed)."""
         now = utcnow()
+        # Saved from a link's box (want_youtube, want_video); an episode's is play pressed.
+        asked = bool(row["wanted_at"]) and not row["episode"]
+        asked_limit = self._asked_limit() if asked and not row["kept_only"] else 0
         with self.db.connect() as conn:
             policy = policy_for(conn, row["id"], self.env_policy.override(load_defaults(conn)))
-            asked = bool(row["kept_only"] and row["wanted_at"])  # saved from a link's box (want_youtube)
-            if row["kept_only"]:  # a YouTube video: only for kept posts or when asked for, whoever else asks
+            if row["kept_only"]:  # a YouTube (or other site's) video: only for kept posts or when asked for
                 wanted = asked or bool(
                     conn.execute(f"SELECT {KEPT_SQL} FROM media WHERE id=?", (row["id"],)).fetchone()[0])
             elif row["episode"]:  # a podcast episode: when played, or its post is kept (not just opened)
@@ -916,6 +953,10 @@ class MediaFetcher:
                     conn.execute(f"SELECT {KEPT_SQL} FROM media WHERE id=?", (row["id"],)).fetchone()[0])
                 policy = replace(policy, audio=replace(
                     policy.audio, keep_bytes=max(policy.audio.keep_bytes, self.episode_max_bytes)))
+            elif asked:  # a video file: whatever the community saves, up to the YouTube page's limit too
+                policy = replace(policy, video=replace(
+                    policy.video, save=True, keep_bytes=max(policy.video.keep_bytes, asked_limit)))
+                wanted = True
             else:
                 wanted = wanted or bool(conn.execute(f"SELECT {WANTED_SQL} FROM media WHERE id=?",
                                                      (row["id"],)).fetchone()[0])
@@ -977,6 +1018,11 @@ class MediaFetcher:
         if thumbs.eligible(dl.content_type):
             self.make_thumbs(rel, dl.sha256)
 
+    def _asked_limit(self) -> int:
+        """The largest video file saved from a link's box (want_video), besides
+        the Videos limit: the YouTube page's, as for other sites' videos."""
+        return self.youtube.status()["max_mb"] * 1_000_000 if self.youtube else 0
+
     def _saved_already(self, row: Any) -> bool:
         """A YouTube video saved already under another of its links (youtu.be/
         and watch?v=, say): that file is this one's too, not downloaded again."""
@@ -1010,7 +1056,7 @@ def collect_orphans(conn: Conn, media_dir: Path) -> list[Path]:
     orphans = conn.execute(
         "SELECT id, storage_path FROM media m WHERE NOT EXISTS (SELECT 1 FROM media_refs r WHERE r.media_id=m.id) "
         "AND NOT EXISTS (SELECT 1 FROM article_media a WHERE a.media_id=m.id) "
-        "AND NOT (m.kept_only=1 AND m.wanted_at IS NOT NULL)"  # a YouTube video saved from a link (want_youtube)
+        "AND NOT (m.wanted_at IS NOT NULL AND m.episode=0)"  # a video saved from a link (want_youtube, want_video)
     ).fetchall()
     files: list[Path] = []
     for o in orphans:

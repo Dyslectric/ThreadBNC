@@ -44,6 +44,7 @@ from .media import register as register_media
 from .render import (ALLOWED_ATTRS, ALLOWED_TAGS, VIDEO_HREF, VIDEO_LINK_TITLE, MediaLookup, VideoTitles, _media_html,
                      looks_like_media, video_link_text)
 from .livestream import stream_of
+from .videos import video_of
 from .youtube import video_id
 
 MAX_PAGE_BYTES = 5_000_000
@@ -70,7 +71,7 @@ class ArticleSkipped(ArticleRejected):
 
 def candidate(url: str | None) -> str | None:
     """The link, if it might be an article worth reading here."""
-    if not url or looks_like_media(url):
+    if not url or looks_like_media(url) or video_of(url):  # (a video's page shows its player instead)
         return None
     parsed = urlparse(url)
     host = (parsed.hostname or "").lower()
@@ -333,7 +334,8 @@ def render(content_html: str | None, lookup: MediaLookup, page_url: str | None =
     with the article-link class); other links open the site in a new tab.
     Links to livestreams open their player here (livestream.py), and links
     to YouTube videos open their box here, titled by `titles` where
-    their text is just the address (as in posts, see render._video_links)."""
+    their text is just the address (as in posts, see render._video_links);
+    so do links to other videos (videos.py)."""
     if not content_html:
         return Markup("")
     root = lxml.html.fragment_fromstring(content_html, create_parent="div")
@@ -347,6 +349,7 @@ def render(content_html: str | None, lookup: MediaLookup, page_url: str | None =
         href = a.get("href") or ""
         stream = stream_of(href)
         vid = video_id(href)
+        video = None if vid else video_of(href)
         if stream and not a.get("class"):
             a.set("href", stream.href)
             a.set("class", "live-link")
@@ -365,6 +368,11 @@ def render(content_html: str | None, lookup: MediaLookup, page_url: str | None =
                     a.text = title
                 else:
                     a.set("class", "video-link untitled")
+        elif video and not a.get("class"):
+            a.set("href", video.href)
+            a.set("class", "video-link")
+            a.set("title", video.link_title)
+            a.attrib.pop("target", None)
         elif read_link and urldefrag(href)[0] != here and looks_like_article(href) and not a.get("class"):
             a.set("href", read_link(href))
             a.set("class", "article-link")

@@ -1,5 +1,6 @@
 {% extends "base.html" %}
-{% block title %}{{ title or 'YouTube video' }}{% endblock %}
+{% from "_video.html" import youtube_box, linked_box %}
+{% block title %}{% if kind == 'youtube' %}{{ b.title or 'YouTube video' }}{% else %}{{ b.video.label }}{% endif %}{% endblock %}
 {% block content %}
-<div class="video-page">{% include "_video.html" %}</div>
+<div class="video-page">{% if kind == 'youtube' %}{{ youtube_box(b) }}{% else %}{{ linked_box(b) }}{% endif %}</div>
 {% endblock %}

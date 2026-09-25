@@ -132,7 +132,7 @@ def _linkify(state: Any) -> None:
 
 
 VIDEO_HREF = "/youtube/v/{}"  # the box a YouTube link opens (web.py, app.js)
-VIDEO_LINK_TITLE = "YouTube video: see how big it is, then save it here or watch it on YouTube"
+VIDEO_LINK_TITLE = "YouTube video: watch it here, or download and archive it"
 _YOUTUBE_ADDRESS = re.compile(r"^(?:https?://)?(?:[\w-]+\.)*(?:youtube\.com|youtu\.be)/", re.IGNORECASE)
 VideoTitles = Callable[[str], "str | None"]
 
@@ -146,11 +146,13 @@ def video_link_text(text: str, href: str) -> bool:
 def _video_links(state: Any) -> None:
     """Core rule: links to YouTube videos open their box here (app.js) and,
     where their text is just the address, show the video's title instead;
-    one not known yet is marked `untitled` for app.js to ask for. Only when
-    rendering (sole_link and extract_media_urls see the links as written)."""
+    one not known yet is marked `untitled` for app.js to ask for. Links to
+    other videos (videos.py) open theirs. Only when rendering (sole_link and
+    extract_media_urls see the links as written)."""
     if "titles" not in state.env:
         return
     from .livestream import stream_of
+    from .videos import video_of
     from .youtube import video_id  # youtube.py imports this module
 
     for block in state.tokens:
@@ -165,6 +167,12 @@ def _video_links(state: Any) -> None:
                 tok.attrSet("title", stream.link_title)
                 continue
             vid = video_id(str(tok.attrGet("href") or "")) if tok.type == "link_open" else None
+            video = video_of(str(tok.attrGet("href") or "")) if tok.type == "link_open" and not vid else None
+            if video:  # another site's video, or a video file
+                tok.attrSet("href", video.href)
+                tok.attrSet("class", "video-link")
+                tok.attrSet("title", video.link_title)
+                continue
             if not vid:
                 continue
             href = str(tok.attrGet("href"))
@@ -265,6 +273,13 @@ def _media_html(url: str, alt: str, info: MediaInfo | None) -> str:
         if info.content_type == "image/svg+xml":  # never inline SVG
             return f'<a class="media-note" href="{src}" target="_blank">[SVG image: {esc_alt or host}]</a>'
         return f'<a href="{src}" target="_blank"><img class="media" src="{src}" alt="{esc_alt}" loading="lazy"></a>'
+    from .videos import video_of  # (videos.py imports this module)
+    video = video_of(url)
+    if video:  # a video not saved (yet): its link opens its box, to play it from its site or save it
+        label = (esc_alt or html.escape(url)) if info and info.status == "skipped" else \
+            f"[video{': ' + esc_alt if esc_alt else ''} · {host}]"
+        return (f'<a class="video-link" href="{html.escape(video.href)}" '
+                f'title="{html.escape(video.link_title)}">{label}</a>')
     if info and info.status == "skipped":
         return f'<a href="{html.escape(url)}" target="_blank">{esc_alt or html.escape(url)}</a>'
     state = "not archived: " + html.escape(info.error or "failed") if info and info.status == "failed" \

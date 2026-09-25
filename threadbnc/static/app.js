@@ -815,6 +815,7 @@ document.documentElement.classList.add("js");
 
   function setInlineExpanded(panel, on) {
     panel.hidden = !on;
+    if (!on) stopVideos(panel);
     for (const link of $$(inlineSelector(panel.dataset.kind))) {
       if (inlineKey(panel.dataset.kind, link) === panel.dataset.key) link.setAttribute("aria-expanded", on ? "true" : "false");
     }
@@ -903,10 +904,10 @@ document.documentElement.classList.add("js");
     panel.removeAttribute("aria-busy");
   }
 
-  // What a post's page shows of the post itself: a saved YouTube video's
-  // player, then its text (or description).
+  // What a post's page shows of the post itself: its video's player (with
+  // the button to download and archive it), then its text (or description).
   function postParts(doc) {
-    const video = $("article.post > .post-media video", doc);
+    const video = $("article.post > .post-media .video-box, article.post > .post-media video", doc);
     const player = video && video.closest(".post-media");
     const content = $("article.post > .md", doc);
     if (content) content.classList.add("expanded-post-content");
@@ -1302,10 +1303,13 @@ document.documentElement.classList.add("js");
     }
   });
 
-  // ---- YouTube links' titles, and their boxes ------------------------------------------
-  // A link whose video's title isn't known here yet shows its address until
-  // the title is asked of YouTube, once the link is on the page. A box saving
-  // its video checks back until it's saved, then shows the player.
+  // ---- video links' titles, and their boxes ----------------------------------------------
+  // A link whose YouTube video's title isn't known here yet shows its address
+  // until the title is asked of YouTube, once the link is on the page. A box
+  // (a link's, or a post's that is a video's link) plays the video in its
+  // site's player, which goes in once it's shown; one saving its video checks
+  // back until it's saved, then plays the saved copy. A YouTube box asks how
+  // big the video is once it's shown, so the player needn't wait for that.
   const askedTitles = new Set();
   let titleTimer = null;
 
@@ -1327,16 +1331,26 @@ document.documentElement.classList.add("js");
       .catch(() => {});
   }
 
-  async function reloadVideoBox(box) {
-    const r = await fetch(box.dataset.src, { credentials: "same-origin" });
+  // The box again: what's below the player is swapped in, and the player
+  // stays, so a video playing carries on; unless the saved copy has come and
+  // the site's player wasn't started, when the whole box is. `probe`: find
+  // out how big the video is (YouTube's, which takes a few seconds).
+  async function reloadVideoBox(box, probe = false) {
+    const url = new URL(box.dataset.src, location.href);
+    if (probe) url.searchParams.set("probe", "1");
+    const r = await fetch(url, { credentials: "same-origin" });
     if (!r.ok) throw new Error("HTTP " + r.status);
     const fresh = $("article.video-box", new DOMParser().parseFromString(await r.text(), "text/html"));
     if (!fresh || !box.isConnected) return;
-    if (!box.closest(".dive-col, .dive-inline")) { // the page of its own: no Close there
+    const savedNow = $("video.media[src^='/media/']", fresh) && !$("video.media[src^='/media/']", box);
+    if (savedNow && !("played" in box.dataset)) {
       const nav = $(".reader-nav", box);
-      if (nav) $(".reader-nav", fresh).replaceWith(nav);
+      if (nav && !box.closest(".dive-col, .dive-inline")) $(".reader-nav", fresh).replaceWith(nav); // the page of its own: no Close there
+      box.replaceWith(document.adoptNode(fresh));
+      return;
     }
-    box.replaceWith(document.adoptNode(fresh));
+    box.toggleAttribute("data-video-saving", fresh.hasAttribute("data-video-saving"));
+    $(".video-save", box).replaceWith(document.adoptNode($(".video-save", fresh)));
   }
 
   function watchSaving() {
@@ -1344,9 +1358,48 @@ document.documentElement.classList.add("js");
       box.dataset.watched = "1";
       const check = () => {
         if (!box.isConnected) return;
-        reloadVideoBox(box).catch(() => setTimeout(check, 15000));
+        reloadVideoBox(box)
+          .then(() => {
+            if (box.isConnected && box.hasAttribute("data-video-saving")) setTimeout(check, 5000);
+            else delete box.dataset.watched;
+          })
+          .catch(() => setTimeout(check, 15000));
       };
       setTimeout(check, 5000);
+    }
+  }
+
+  function askSizes() {
+    for (const save of $$("article.video-box .video-save[data-video-probe]:not([data-asked])")) {
+      save.dataset.asked = "1";
+      const box = save.closest("article.video-box");
+      reloadVideoBox(box, true).catch(() => {
+        const size = $(".video-box-size", box);
+        if (size) size.textContent = "Couldn't find out how big the video is.";
+      });
+    }
+  }
+
+  // Whether a box's player was started: the site's (in its frame) takes the
+  // focus from the page when it's clicked; a file's plays.
+  addEventListener("blur", () => setTimeout(() => {
+    const frame = document.activeElement;
+    const box = frame && frame.tagName === "IFRAME" && frame.closest("article.video-box");
+    if (box) box.dataset.played = "1";
+  }));
+  document.addEventListener("play", (ev) => {
+    const box = ev.target.closest && ev.target.closest("article.video-box");
+    if (box) box.dataset.played = "1";
+  }, true);
+
+  // A hidden panel's videos stop: the saved copy's pauses, and a site's player
+  // is put in again, from the start.
+  function stopVideos(root) {
+    for (const v of $$("article.video-box video, .post-media video", root)) v.pause();
+    for (const frame of $$(".video-player[data-started] iframe", root)) {
+      const slot = frame.parentElement;
+      delete slot.dataset.started;
+      slot.replaceChildren();
     }
   }
 
@@ -1357,7 +1410,7 @@ document.documentElement.classList.add("js");
     const box = form.closest("article.video-box");
     const button = $("button", form);
     if (button) button.disabled = true;
-    post(form.action, {})
+    post(form.action, new URLSearchParams(new FormData(form)))
       .then(() => reloadVideoBox(box))
       .catch((e) => {
         if (button) button.disabled = false;
@@ -1367,21 +1420,22 @@ document.documentElement.classList.add("js");
 
   // ---- livestreams: their players, and which sites are Owncast servers ---------------
   // A livestream's box gets its player once it's on the page (so closing the
-  // box stops it). Twitch's player wants the name this site is reached by.
-  // Links to sites' front pages might be Owncast servers: they're asked about
-  // once shown (the server remembers), and the ones that are open theirs too.
+  // box stops it), as a video's box does. Twitch's player wants the name this
+  // site is reached by. Links to sites' front pages might be Owncast servers:
+  // they're asked about once shown (the server remembers), and the ones that
+  // are open theirs too.
   function startPlayers() {
-    for (const box of $$("article.live-box:not([data-started])")) {
-      box.dataset.started = "1";
+    for (const el of $$("article.live-box:not([data-started]), .video-player[data-embed]:not([data-started])")) {
+      el.dataset.started = "1";
       const frame = document.createElement("iframe");
-      let src = box.dataset.embed;
-      if ("parent" in box.dataset) src += "&parent=" + encodeURIComponent(location.hostname);
+      let src = el.dataset.embed;
+      if ("parent" in el.dataset) src += "&parent=" + encodeURIComponent(location.hostname);
       frame.src = src;
-      frame.title = box.dataset.label || "Player";
+      frame.title = el.dataset.label || "Player";
       frame.allow = "autoplay; fullscreen; picture-in-picture; encrypted-media";
       frame.allowFullscreen = true;
       frame.referrerPolicy = "strict-origin-when-cross-origin"; // YouTube's player won't play without it
-      $(".live-player", box).replaceChildren(frame);
+      (el.matches(".live-box") ? $(".live-player", el) : el).replaceChildren(frame);
     }
   }
 
@@ -1424,6 +1478,7 @@ document.documentElement.classList.add("js");
     if (!titleTimer) titleTimer = setTimeout(askTitles, 200);
     if (!hostTimer) hostTimer = setTimeout(askOwncast, 200);
     watchSaving();
+    askSizes();
     startPlayers();
   }).observe(document.documentElement, { childList: true, subtree: true });
 

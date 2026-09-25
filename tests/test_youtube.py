@@ -260,11 +260,16 @@ def test_videos_are_saved_only_when_kept(settings, bouncer, yt, downloads):
     bouncer.media.fetch_pending()
     assert downloads == [] and video_media(bouncer)["status"] == "pending"
     client = logged_in(settings, bouncer)
-    assert "Keep this post to save the video." in client.get(f"/t/{tid}").text
-    assert "Show the saved video" not in client.get(f"/c/{cid}").text
+    page = client.get(f"/t/{tid}").text  # YouTube's player, and below it the button to save it
+    assert '<div class="video-player" data-embed="https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ"' in page
+    assert page.index("video-player") < page.index('action="/youtube/v/dQw4w9WgXcQ/save"')
+    assert "Download and archive" in page and "Kept post" not in page  # (the post is its own)
+    assert f'class="act read-post" href="/t/{tid}#post-text" title="Show the video' in client.get(f"/c/{cid}").text
 
     with bouncer.db.transaction() as conn:
         conn.execute("UPDATE archived_threads SET retention='manual' WHERE id=?", (tid,))
+    page = client.get(f"/t/{tid}").text  # kept: it's on its way
+    assert "Downloading…" in page and "Download and archive" not in page and "data-video-saving" in page
     bouncer.media.fetch_pending()
     assert [(u, n) for u, n, _ in downloads] == [(VIDEO, youtube.DEFAULT_MAX_MB * 1_000_000)]
     m = video_media(bouncer)
@@ -275,7 +280,8 @@ def test_videos_are_saved_only_when_kept(settings, bouncer, yt, downloads):
     assert "controls playsinline preload" in page  # with sound, no loop
     for view in ("list", "pictures", "tiles"):  # its text button shows the player too (app.js)
         feed = client.get(f"/c/{cid}?view={view}").text
-        assert f'class="act read-post" href="/t/{tid}#post-text" title="Show the saved video' in feed, view
+        assert f'class="act read-post" href="/t/{tid}#post-text" title="Show the video' in feed, view
+    assert "data-embed" not in page and "Download and archive" not in page
 
     # With the thumbnail saved too, it stays the picture: in the feed, and as the player's cover.
     thumb = one(bouncer, "SELECT id FROM media WHERE url='https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg'")[0]
@@ -597,8 +603,8 @@ def test_youtube_links_show_the_title_and_open_the_box():
     titles = {"dQw4w9WgXcQ": "Never Gonna Give You Up"}.get
     out = render_markdown(f"watch {VIDEO} and [my pick](https://youtu.be/dQw4w9WgXcQ) or https://youtu.be/gnmrKDpTM7o",
                           titles=titles)
-    assert ('<a href="/youtube/v/dQw4w9WgXcQ" class="video-link" title="YouTube video: see how big it is, '
-            'then save it here or watch it on YouTube" rel="noopener noreferrer nofollow">'
+    assert ('<a href="/youtube/v/dQw4w9WgXcQ" class="video-link" title="YouTube video: watch it here, '
+            'or download and archive it" rel="noopener noreferrer nofollow">'
             'Never Gonna Give You Up</a>') in out
     assert '>my pick</a>' in out  # written text stays
     assert 'class="video-link untitled"' in out and ">https://youtu.be/gnmrKDpTM7o</a>" in out  # app.js asks
@@ -634,13 +640,17 @@ def test_the_box_says_how_big_the_video_is_and_saves_it(settings, bouncer, yt, d
 
     monkeypatch.setattr(youtube, "probe", fake_probe)
     client = logged_in(settings, bouncer)
-    box = client.get("/youtube/v/dQw4w9WgXcQ?pane=1").text
+    box = client.get("/youtube/v/dQw4w9WgXcQ?pane=1").text  # at once: YouTube's player, then how big it is
     assert '<article class="video-box" id="video-dQw4w9WgXcQ"' in box and "<html" not in box
-    assert "Never Gonna Give You Up" in box and "Rick Astley" in box
-    assert "The video is <strong>123 MB</strong>, at 1080p." in box
-    assert "Download the video and keep it here, as a post with its description and comments" in box
-    assert 'action="/youtube/v/dQw4w9WgXcQ/save"' in box and f'href="{VIDEO}"' in box
+    assert '<div class="video-player" data-embed="https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ"' in box
+    assert "Never Gonna Give You Up" in box and "Rick Astley" in box  # (its title asked of YouTube)
+    assert "data-video-probe" in box and "Finding out how big the video is…" in box and probes == []
+    box = client.get("/youtube/v/dQw4w9WgXcQ?pane=1&probe=1").text  # app.js asks
+    assert "The video is <strong>123 MB</strong>, at 1080p." in box and "data-video-probe" not in box
+    assert box.index("video-player") < box.index("The video is") < box.index('action="/youtube/v/dQw4w9WgXcQ/save"')
+    assert "Download and archive" in box and f'href="{VIDEO}"' in box
     client.get("/youtube/v/dQw4w9WgXcQ")
+    client.get("/youtube/v/dQw4w9WgXcQ?pane=1&probe=1")
     assert probes == [VIDEO]  # found once, then remembered
     assert client.get("/youtube/v/nope").status_code == 404
 
@@ -664,13 +674,13 @@ def test_a_failed_probe_still_offers_both(settings, bouncer, yt, monkeypatch):
         raise youtube.NeedsSession("YouTube wants a signed-in session for this video.")
 
     monkeypatch.setattr(youtube, "probe", fake_probe)
-    box = logged_in(settings, bouncer).get("/youtube/v/dQw4w9WgXcQ?pane=1").text
+    box = logged_in(settings, bouncer).get("/youtube/v/dQw4w9WgXcQ?pane=1&probe=1").text
     assert "Couldn't find out how big the video is: YouTube wants a signed-in session" in box
     assert "<h2>Never Gonna Give You Up</h2>" in box  # its title asked of YouTube instead
     assert "Download and archive" in box and "Watch on YouTube" in box
 
 
-def test_a_post_linking_to_a_video_links_to_its_box(settings, server, bouncer, yt):
+def test_a_post_linking_to_a_video_shows_its_player(settings, server, bouncer, yt):
     from .conftest import DOMAIN
     server.add_post("1", "neat video", "also https://youtu.be/gnmrKDpTM7o")
     server.edit_post("1", url="https://youtu.be/dQw4w9WgXcQ")
@@ -678,8 +688,12 @@ def test_a_post_linking_to_a_video_links_to_its_box(settings, server, bouncer, y
     with bouncer.db.transaction() as conn:
         youtube.save_title(conn, "dQw4w9WgXcQ", "Never Gonna Give You Up", None, utcnow())
     page = logged_in(settings, bouncer).get(f"/t/{tid}").text
-    assert '<a class="video-link" href="/youtube/v/dQw4w9WgXcQ"' in page and ">Never Gonna Give You Up</a>" in page
-    assert '<a href="/youtube/v/gnmrKDpTM7o" class="video-link untitled"' in page
+    assert ('<a href="https://youtu.be/dQw4w9WgXcQ" rel="noreferrer noopener nofollow" target="_blank">'
+            'Never Gonna Give You Up</a>') in page  # its player is in the post
+    assert '<div class="video-player" data-embed="https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ"' in page
+    assert "data-video-probe" not in page  # (YouTube isn't asked how big it is)
+    assert "Downloading…" in page and 'action="/youtube/v/dQw4w9WgXcQ/save"' not in page  # kept, so it's on its way
+    assert '<a href="/youtube/v/gnmrKDpTM7o" class="video-link untitled"' in page  # one in its text opens its box
 
 
 def test_videos_saved_from_links_are_under_kept_videos(settings, server, bouncer, yt, downloads, monkeypatch):
