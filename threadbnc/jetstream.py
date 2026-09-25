@@ -8,8 +8,8 @@ likes, follows or reposts).
 
 So while at least one hashtag is followed, ThreadBNC keeps one connection
 open to Jetstream and reads every post made on Bluesky as it's made (about 30
-a second in September 2026, some 2 GB a day), keeping only those with a
-followed hashtag:
+a second in September 2026: about 1 GB a day compressed), keeping only those
+with a followed hashtag:
 
 1. A new post (not a reply: replies belong under their post) with a followed
    hashtag, in its text or beside it, is noted with the first such hashtag.
@@ -24,6 +24,13 @@ followed hashtag:
    again, carries on from there if that's under an hour ago, so a short
    outage misses nothing.
 
+The events are asked for compressed (zstd, each one on its own, with a
+dictionary Jetstream publishes, which roughly halves the traffic). ThreadBNC
+keeps a copy of that dictionary (jetstream_zstd_dictionary, from Bluesky's
+jetstream-legacy repository, MIT licensed: jetstream_zstd_dictionary.LICENSE).
+Without it, or without zstd in this Python, or when events stop decompressing
+with it (Jetstream changed its dictionary), they're read uncompressed.
+
 Nothing is sent to Jetstream but the request to listen. With no hashtag
 followed, the connection is closed."""
 
@@ -36,6 +43,7 @@ import threading
 import time
 import traceback
 from datetime import timedelta
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
@@ -46,6 +54,11 @@ from .adapters import BSKY_DOMAIN
 from .adapters.bluesky import GET_POSTS, POST, record_tags, web_url
 from .bouncer import Bouncer
 from .db import parse_ts, utcnow
+
+try:
+    from compression import zstd
+except ImportError:  # a Python built without zstd: events are read uncompressed
+    zstd = None  # type: ignore[assignment]
 
 log = logging.getLogger(__name__)
 
@@ -58,9 +71,25 @@ FLUSH_EVERY = 5.0  # seconds between batches of posts noted
 SAVE_EVERY = 30.0  # seconds between saves of where the stream got to
 TAGS_EVERY = 60.0  # the followed hashtags are read again at least this often
 MAX_BACKOFF = 300.0
+DICTIONARY = Path(__file__).with_name("jetstream_zstd_dictionary")
+MAX_EVENT = 2 ** 20  # bytes: the most one event may decompress to
+BAD_FRAMES = 20  # this many in a row that won't decompress: the dictionary no longer fits
 _TIME_US = re.compile(r'"time_us"\s*:\s*(\d+)')
 FOLLOWED_SQL = ("SELECT c.name, f.capture_since FROM community_follows f JOIN communities c ON c.id=f.community_id "
                 "WHERE f.active=1 AND c.canonical_ap_id LIKE 'tag:%'")
+
+
+def load_dictionary() -> Any:
+    """Jetstream's zstd dictionary, ready to decompress events with, or None
+    when this Python has no zstd or ThreadBNC's copy is missing or broken."""
+    if zstd is None:
+        log.warning("Jetstream: this Python has no zstd, so events are read uncompressed")
+        return None
+    try:
+        return zstd.ZstdDict(DICTIONARY.read_bytes()).as_digested_dict
+    except (OSError, zstd.ZstdError) as exc:
+        log.warning("Jetstream: its dictionary can't be read (%s), so events are read uncompressed", exc)
+        return None
 
 
 def match(raw: str | bytes, tags: set[str]) -> tuple[str, str] | None:
@@ -94,6 +123,8 @@ class BlueskyTags:
         self.connected_since: str | None = None
         self.last_error: str | None = None
         self.last_error_at: str | None = None
+        self.dictionary: Any = load_dictionary()  # None: events are read uncompressed
+        self._bad = 0  # events in a row that wouldn't decompress
         bouncer.follow_hooks.append(self._changed)
         bouncer.unfollow_hooks.append(self._changed)
         bouncer.job_handlers[JOB] = self.capture
@@ -133,14 +164,17 @@ class BlueskyTags:
     def _listen(self, tags: set[str]) -> None:
         """Read the stream until no hashtag is followed any more, or ThreadBNC stops."""
         params = [("wantedCollections", POST)]
+        compressed = self.dictionary is not None
+        if compressed:
+            params.append(("compress", "true"))
         cursor = self._resume_from()
         if cursor:
             params.append(("cursor", str(cursor)))
         last = None
         with connect(f"{self.url}?{urlencode(params)}", user_agent_header=self.user_agent, open_timeout=20,
                      max_size=2 ** 20) as ws:
-            self.connected_since, self.last_error = utcnow(), None
-            log.info("Jetstream: listening for %d hashtags", len(tags))
+            self.connected_since, self.last_error, self._bad = utcnow(), None, 0
+            log.info("Jetstream: listening for %d hashtags%s", len(tags), ", compressed" if compressed else "")
             flushed = saved = refreshed = time.monotonic()
             try:
                 while not self._stop.is_set():
@@ -148,9 +182,12 @@ class BlueskyTags:
                         raw = ws.recv(timeout=1.0)
                     except TimeoutError:
                         raw = None
-                    if raw is not None:
-                        last = raw
-                        hit = match(raw, tags)
+                    text = self._decode(raw) if raw is not None else None
+                    if compressed and self.dictionary is None:
+                        return  # the dictionary stopped fitting: connect again, uncompressed
+                    if text is not None:
+                        last = text
+                        hit = match(text, tags)
                         if hit:
                             self._noted[hit[0]] = hit[1]
                     now = time.monotonic()
@@ -170,6 +207,29 @@ class BlueskyTags:
                 self._flush()
                 if last is not None:
                     self._save(last)
+
+    def _decode(self, raw: str | bytes) -> str | None:
+        """An event's JSON: sent as text uncompressed, or as a zstd frame
+        compressed. None for one that won't decompress; after BAD_FRAMES in
+        a row, the dictionary is given up on."""
+        if isinstance(raw, str):
+            return raw
+        if self.dictionary is None:
+            return raw.decode("utf-8", "replace")
+        try:
+            decompressor = zstd.ZstdDecompressor(zstd_dict=self.dictionary)
+            data = decompressor.decompress(raw, max_length=MAX_EVENT)
+            if not decompressor.eof:
+                raise zstd.ZstdError(f"an event over {MAX_EVENT} bytes")
+        except zstd.ZstdError as exc:
+            self._bad += 1
+            if self._bad >= BAD_FRAMES:
+                log.warning("Jetstream: its events no longer decompress with ThreadBNC's copy of its dictionary "
+                            "(%s), so they're read uncompressed from now on", exc)
+                self.dictionary = None
+            return None
+        self._bad = 0
+        return data.decode("utf-8", "replace")
 
     def _resume_from(self) -> int | None:
         saved = self.db.get_setting(CURSOR)

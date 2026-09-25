@@ -8,10 +8,11 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from compression import zstd
 from fastapi.testclient import TestClient
 
 from threadbnc import jetstream
-from threadbnc.jetstream import CURSOR, JOB, BlueskyTags, match
+from threadbnc.jetstream import BAD_FRAMES, CURSOR, JOB, BlueskyTags, match
 from threadbnc.web import create_app
 
 from .test_bluesky import ALICE, bsky, one, post_view, signed_in, thread  # noqa: F401
@@ -46,7 +47,20 @@ def event(rkey, text, tags=(), beside=None, reply=False, op="create", time_us=No
 
 @pytest.fixture
 def listening(bouncer, bsky):  # noqa: F811
-    return BlueskyTags(bouncer, "wss://jetstream.test/subscribe", "test")
+    listener = BlueskyTags(bouncer, "wss://jetstream.test/subscribe", "test")
+    listener.dictionary = None  # uncompressed, unless a test gives it a dictionary
+    return listener
+
+
+def a_dictionary():
+    """A small zstd dictionary for the tests (Jetstream's own is a trained one)."""
+    d = zstd.ZstdDict(event("sample", "#cats sample", ["cats"]).encode() * 4, is_raw=True)
+    return d, d.as_digested_dict
+
+
+def packed(text: str, d) -> bytes:
+    """An event as Jetstream sends it compressed: one zstd frame, made with its dictionary."""
+    return zstd.compress(text.encode(), zstd_dict=d)
 
 
 def run_due_now(b):
@@ -165,6 +179,55 @@ def test_listening_stops_when_no_hashtag_is_followed(bouncer, bsky, listening, m
                         lambda url, **kw: FakeStream(events, listening, each=lambda: bouncer.unfollow(cid)))
     listening._listen({"cats"})  # unfollowed while reading the first: returns, rather than reading on
     assert len(events) == 1 and jobs(bouncer) == [{"posts": {at("x1"): "cats"}}]
+
+
+def test_events_are_asked_for_compressed_and_decompressed(bouncer, bsky, listening, monkeypatch):  # noqa: F811
+    bouncer.follow_community("#cats", None, 30, False)
+    d, listening.dictionary = a_dictionary()
+    seen_at = int(time.time() * 1_000_000)
+    events = [packed(event("z1", "#cats!", ["cats"]), d), b"\x28\xb5\x2f\xfd garbled",
+              packed(event("z2", "plain", time_us=seen_at), d)]
+    urls = []
+
+    def connect(url, **kw):
+        urls.append(url)
+        return FakeStream(events, listening)
+
+    monkeypatch.setattr(jetstream, "connect", connect)
+    listening.run_forever()
+    assert urls == ["wss://jetstream.test/subscribe?wantedCollections=app.bsky.feed.post&compress=true"]
+    assert jobs(bouncer) == [{"posts": {at("z1"): "cats"}}]  # the garbled one is skipped
+    assert bouncer.db.get_setting(CURSOR) == str(seen_at) and listening.dictionary is not None
+
+
+def test_events_that_stop_decompressing_are_read_uncompressed(bouncer, bsky, listening, monkeypatch):  # noqa: F811
+    """Jetstream changed its dictionary: after BAD_FRAMES in a row, connect again without compression."""
+    bouncer.follow_community("#cats", None, 30, False)
+    _, listening.dictionary = a_dictionary()
+    events = [b"\x28\xb5\x2f\xfd made with another dictionary"] * BAD_FRAMES
+    events.append(event("u1", "#cats", ["cats"]))  # what the uncompressed connection sends
+    urls = []
+
+    def connect(url, **kw):
+        urls.append(url)
+        return FakeStream(events, listening)
+
+    monkeypatch.setattr(jetstream, "connect", connect)
+    listening.run_forever()
+    assert [u.endswith("&compress=true") for u in urls] == [True, False]
+    assert listening.dictionary is None and jobs(bouncer) == [{"posts": {at("u1"): "cats"}}]
+
+
+def test_the_dictionary_kept_here_is_a_zstd_one():
+    assert jetstream.DICTIONARY.read_bytes()[:4] == bytes.fromhex("37a430ec")  # a structured dictionary's magic
+    assert jetstream.load_dictionary() is not None
+
+
+def test_without_a_dictionary_events_are_read_uncompressed(bouncer, bsky, monkeypatch, tmp_path):  # noqa: F811
+    monkeypatch.setattr(jetstream, "DICTIONARY", tmp_path / "missing")
+    assert BlueskyTags(bouncer, "wss://jetstream.test/subscribe", "test").dictionary is None
+    monkeypatch.setattr(jetstream, "zstd", None)
+    assert jetstream.load_dictionary() is None
 
 
 def test_a_stream_that_cant_be_reached_is_tried_again(bouncer, bsky, listening, monkeypatch):  # noqa: F811
