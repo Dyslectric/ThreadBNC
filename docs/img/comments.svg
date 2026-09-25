@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 460" width="880" height="460" role="img" aria-labelledby="t d">
+<title id="t">Comments, received and kept</title>
+<desc id="d">Comments are pushed through your own server as they happen, or read when you open a post. Edits keep the earlier version, and deleted comments keep their text.</desc>
+<style>
+:root{--bg:#f6f5f2;--card:#fff;--text:#1d1d1f;--muted:#66666b;--line:#e3e1dc;--accent:#2f5fb3;--good:#1f7a45;--good-bg:#e3f3e8;--warn:#8f5a00;--warn-bg:#fbf0da;--bad:#b3261e;--bad-bg:#fbe4e2;--new-bg:#e5edfb;--av1:#c9d8f5;--av2:#e8d3b0;--av3:#cfe6d6;--av4:#e7cde0}
+@media (prefers-color-scheme:dark){:root{--bg:#151517;--card:#1e1e21;--text:#e8e8ea;--muted:#9d9da5;--line:#2f2f34;--accent:#8fb1ff;--good:#7fd49c;--good-bg:#1c3326;--warn:#f0c26b;--warn-bg:#3a2f17;--bad:#ff8a80;--bad-bg:#3d1f1d;--new-bg:#1f2a44;--av1:#2d3d5c;--av2:#4a3b24;--av3:#264232;--av4:#46283f}}
+text{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;fill:var(--text)}
+.bg{fill:var(--bg)}.card{fill:var(--card);stroke:var(--line)}.ln{stroke:var(--line)}
+.m{fill:var(--muted)}.a{fill:var(--accent)}.g{fill:var(--good)}.wn{fill:var(--warn)}.bd{fill:var(--bad)}
+.xs{font-size:11px}.s{font-size:12.5px}.b{font-weight:650}.t{font-size:16px;font-weight:700}.i{font-style:italic}
+.p-new{fill:var(--new-bg)}.p-good{fill:var(--good-bg)}.p-warn{fill:var(--warn-bg)}.p-bad{fill:var(--bad-bg)}
+.strike{text-decoration:line-through}
+.av1{fill:var(--av1)}.av2{fill:var(--av2)}.av3{fill:var(--av3)}.av4{fill:var(--av4)}
+.box{fill:var(--card);stroke:var(--line)}.box-a{fill:var(--new-bg);stroke:var(--accent);stroke-opacity:.5}
+.flow{fill:none;stroke:var(--accent);stroke-width:2}.ah{fill:var(--accent)}
+.dash{fill:none;stroke:var(--muted);stroke-width:1.5;stroke-dasharray:4 4}.ahm{fill:var(--muted)}
+</style>
+<rect class="bg" width="880" height="460" rx="16"/>
+
+<!-- the thread -->
+<rect class="card" x="24.5" y="24.5" width="560" height="411" rx="12"/>
+<text x="46" y="54" class="t">What's your backup plan for a home server?</text>
+<text x="46" y="76" class="xs m">c/selfhosted · 42 comments</text>
+<rect class="p-new" x="192" y="64" width="54" height="17" rx="8.5"/>
+<text x="201" y="76" class="xs b a">5 new</text>
+<line class="ln" x1="46" y1="92.5" x2="562" y2="92.5"/>
+
+<!-- pushed just now -->
+<circle class="av1" cx="58" cy="118" r="11"/>
+<text x="76" y="122" class="s b">nightjar <tspan class="xs m" font-weight="400">· 4s ago</tspan></text>
+<rect class="p-good" x="190" y="109" width="84" height="17" rx="8.5"/>
+<text x="199" y="121" class="xs b g">pushed live</text>
+<text x="76" y="144" class="s">Nightly snapshots to a friend's server, plus a monthly offline disk.</text>
+
+<!-- edited: both versions -->
+<line class="ln" x1="58" y1="156" x2="58" y2="236"/>
+<circle class="av2" cx="90" cy="176" r="11"/>
+<text x="108" y="180" class="s b">ferrous <tspan class="xs m" font-weight="400">· 1h</tspan></text>
+<rect class="p-warn" x="198" y="167" width="108" height="17" rx="8.5"/>
+<text x="207" y="179" class="xs b wn">edited · 2 versions</text>
+<text x="108" y="202" class="s m strike">I just mirror my drives, that's basically a backup.</text>
+<text x="108" y="222" class="s">Mirrored drives aren't a backup. I learned that the hard way.</text>
+
+<!-- deleted: text kept -->
+<circle class="av3" cx="58" cy="262" r="11"/>
+<text x="76" y="266" class="s b">quietmoth <tspan class="xs m" font-weight="400">· 50m</tspan></text>
+<rect class="p-bad" x="200" y="253" width="108" height="17" rx="8.5"/>
+<text x="209" y="265" class="xs b bd">deleted by author</text>
+<text x="76" y="288" class="s m i">"Encrypted copies to cloud storage, pruned weekly."</text>
+<text x="76" y="306" class="xs m">The text as it was before the deletion.</text>
+
+<!-- removed: text kept -->
+<circle class="av4" cx="58" cy="340" r="11"/>
+<text x="76" y="344" class="s b">driftwood <tspan class="xs m" font-weight="400">· 30m</tspan></text>
+<rect class="p-bad" x="192" y="331" width="104" height="17" rx="8.5"/>
+<text x="201" y="343" class="xs b bd">removed by mod</text>
+<text x="76" y="366" class="s m i">"Honestly just email the files to yourself lol"</text>
+<text x="76" y="384" class="xs m">Kept from the push that delivered it.</text>
+<line class="ln" x1="46" y1="402.5" x2="562" y2="402.5"/>
+<text x="46" y="422" class="xs m">History › every version and change, oldest first</text>
+
+<!-- how comments arrive -->
+<text x="610" y="54" class="s b">How comments arrive</text>
+<rect class="box" x="610.5" y="70.5" width="246" height="42" rx="9"/>
+<text x="626" y="89" class="s b">The community's server</text>
+<text x="626" y="104" class="xs m">where the community lives</text>
+<path class="flow" d="M733 113 V 140"/><path class="ah" d="M727 138 h12 l-6 9z"/>
+<text x="745" y="134" class="xs m">every change</text>
+<rect class="box" x="610.5" y="150.5" width="246" height="42" rx="9"/>
+<text x="626" y="169" class="s b">Your own server</text>
+<text x="626" y="184" class="xs m">subscribed like any other server</text>
+<path class="flow" d="M733 193 V 220"/><path class="ah" d="M727 218 h12 l-6 9z"/>
+<text x="745" y="214" class="xs m">pushed as it happens</text>
+<rect class="box-a" x="610.5" y="230.5" width="246" height="42" rx="9"/>
+<text x="626" y="249" class="s b">ThreadBNC</text>
+<text x="626" y="264" class="xs m">saves every version</text>
+
+<rect class="box" x="610.5" y="318.5" width="246" height="42" rx="9"/>
+<text x="626" y="337" class="s b">Other sites, feeds, posts kept by link</text>
+<text x="626" y="352" class="xs m">read when you open the post</text>
+<path class="dash" d="M733 318 V 282"/><path class="ahm" d="M727 284 h12 l-6 -9z"/>
+<text x="610" y="390" class="xs m">Either way, an edit adds a version and a</text>
+<text x="610" y="406" class="xs m">deletion adds a history entry. Nothing that</text>
+<text x="610" y="422" class="xs m">was seen is overwritten.</text>
+</svg>

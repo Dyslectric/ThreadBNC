@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 460" width="880" height="460" role="img" aria-labelledby="t d">
+<title id="t">Videos and live streams</title>
+<desc id="d">A video link opens a box under it to watch the video or save it here. A live stream link opens the stream's own player in the same place.</desc>
+<style>
+:root{--bg:#f6f5f2;--card:#fff;--text:#1d1d1f;--muted:#66666b;--line:#e3e1dc;--accent:#2f5fb3;--on-accent:#fff;--inset:#f6f5f2;--screen:#23232a;--screen-2:#34343d;--live:#d93025}
+@media (prefers-color-scheme:dark){:root{--bg:#151517;--card:#1e1e21;--text:#e8e8ea;--muted:#9d9da5;--line:#2f2f34;--accent:#8fb1ff;--on-accent:#0e1422;--inset:#18181b;--screen:#0c0c0f;--screen-2:#1d1d23;--live:#ff6b5e}}
+text{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;fill:var(--text)}
+.bg{fill:var(--bg)}.card{fill:var(--card);stroke:var(--line)}.inset{fill:var(--inset);stroke:var(--line)}
+.m{fill:var(--muted)}.a{fill:var(--accent)}.w{fill:#fff}.oa{fill:var(--on-accent)}
+.xs{font-size:11px}.s{font-size:12.5px}.b{font-weight:650}.t{font-size:15px;font-weight:680}
+.screen{fill:var(--screen)}.screen2{fill:var(--screen-2)}.live{fill:var(--live)}
+.btn{fill:var(--accent)}.btn2{fill:none;stroke:var(--line)}.chip{fill:none;stroke:var(--accent);stroke-opacity:.45}
+.ico{fill:none;stroke:var(--accent);stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.play{fill:rgba(255,255,255,.92)}
+</style>
+<rect class="bg" width="880" height="460" rx="16"/>
+
+<!-- a video link -->
+<rect class="card" x="24.5" y="24.5" width="404" height="411" rx="12"/>
+<text x="46" y="52" class="xs m">c/trains · 3h · 58 comments</text>
+<text x="46" y="76" class="t">The tiny layout that took eleven years</text>
+<rect class="chip" x="46.5" y="90.5" width="222" height="27" rx="13.5"/>
+<g class="ico" transform="translate(56 95) scale(.72)"><rect x="3" y="6" width="13" height="12" rx="2"/><path d="m16 10 5-3v10l-5-3"/></g>
+<text x="80" y="109" class="s a">video.example/watch/…  ▾</text>
+
+<rect class="inset" x="46.5" y="130.5" width="360" height="290" rx="10"/>
+<text x="62" y="154" class="xs m">Video · Pocket Rails · 18:42</text>
+<text x="62" y="176" class="s b">Building a 1:450 layout in a drawer</text>
+<rect class="screen" x="62" y="188" width="329" height="168" rx="8"/>
+<path class="screen2" d="M62 320 l70 -44 l50 30 l60 -52 l149 86 v8 a8 8 0 0 1 -8 8 h-313 a8 8 0 0 1 -8 -8z"/>
+<circle class="play" cx="226" cy="272" r="24"/>
+<path class="screen" d="M218 260 v24 l20 -12z"/>
+<rect x="344" y="332" width="40" height="17" rx="4" fill="rgba(0,0,0,.7)"/>
+<text x="350" y="345" class="xs w">18:42</text>
+<rect class="btn" x="62" y="370" width="126" height="32" rx="8"/>
+<text x="78" y="391" class="s b oa">↓ Save it here</text>
+<rect class="btn2" x="196.5" y="370.5" width="152" height="31" rx="8"/>
+<text x="212" y="391" class="s">Watch on its site</text>
+
+<!-- a live stream link -->
+<rect class="card" x="452.5" y="24.5" width="404" height="411" rx="12"/>
+<text x="474" y="52" class="xs m">c/speedrunning · 20m · 214 comments</text>
+<text x="474" y="76" class="t">The charity marathon is live right now</text>
+<rect class="chip" x="474.5" y="90.5" width="210" height="27" rx="13.5"/>
+<g class="ico" transform="translate(484 95) scale(.72)"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49M7.76 16.24a6 6 0 0 1 0-8.49M19.07 4.93a10 10 0 0 1 0 14.14M4.93 19.07a10 10 0 0 1 0-14.14"/></g>
+<text x="508" y="109" class="s a">stream.example/marathon  ▾</text>
+
+<rect class="inset" x="474.5" y="130.5" width="360" height="290" rx="10"/>
+<text x="490" y="154" class="xs m">Live stream</text>
+<text x="490" y="176" class="s b">Any% relay, hour 31</text>
+<rect class="screen" x="490" y="188" width="329" height="168" rx="8"/>
+<path class="screen2" d="M490 300 l58 -36 l54 28 l68 -58 l149 80 v34 a8 8 0 0 1 -8 8 h-313 a8 8 0 0 1 -8 -8z"/>
+<rect class="live" x="502" y="200" width="50" height="19" rx="4"/>
+<text x="511" y="214" class="xs b w" textLength="32" lengthAdjust="spacingAndGlyphs">● LIVE</text>
+<rect x="558" y="200" width="92" height="19" rx="4" fill="rgba(0,0,0,.6)"/>
+<text x="567" y="214" class="xs w" textLength="74" lengthAdjust="spacingAndGlyphs">4,812 watching</text>
+<rect class="btn2" x="490.5" y="370.5" width="146" height="31" rx="8"/>
+<text x="506" y="391" class="s">Watch on its site</text>
+<text x="650" y="384" class="xs m">Players open in place,</text>
+<text x="650" y="399" class="xs m">nothing plays till you ask</text>
+</svg>

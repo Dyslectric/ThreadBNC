@@ -13,6 +13,24 @@ A private, feed-first reader for Lemmy, PieFed, Reddit, RSS/Atom feeds, podcasts
 - **☆ Keep** a post to hold on to it with no expiry date, until you unkeep or delete it. Posts you haven't kept expire after the community's retention period.
 - You can also keep a single post by pasting its link on the **Kept** page, without following its community.
 
+### A quick look
+
+**Dive into articles.** A linked article opens in a clean reading view, saved from the site. Links in it to other articles open beside it, and each article lists the ones that mention it.
+
+![A saved article in the reading view, with a linked article opened beside it](docs/img/article-diving.svg)
+
+**Videos and live streams.** A video link opens a box under it to watch the video or save it here. A live stream link opens the stream's own player in the same place.
+
+![A video and a live stream opened under their links](docs/img/videos-and-streams.svg)
+
+**Comments, received and kept.** Comments in a community pushed through your own server arrive as they're written. Elsewhere they're read when you open the post. Either way, edits keep the earlier version and deleted comments keep their text.
+
+![A thread showing a comment that just arrived, an edited comment with both versions, and deleted and removed comments with their text kept](docs/img/comments.svg)
+
+**Star what you want to keep.** Posts expire after their community's retention period unless you keep them. Kept posts, videos and articles all stay, and they're gathered on the Kept page.
+
+![A feed with one post expiring and one kept, next to the Kept page](docs/img/keeping.svg)
+
 ### What it does and doesn't capture
 
 Stored observations aren't overwritten: edits add a new version, and removals and deletions become history entries. The archive can only keep what the bouncer actually saw, though, and it deletes some things on purpose.
