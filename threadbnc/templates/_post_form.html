@@ -1,16 +1,35 @@
-{# The form that posts a copy or a link in your communities: repost.html
-   and article_post.html. Takes action, draft, targets, chosen (a set of ids). #}
+{# The form that posts a copy or a link in your communities, and on your
+   Mastodon and Bluesky accounts: post.html, repost.html and article_post.html.
+   Takes action, draft, targets, chosen (a set of ids), post_on (those
+   accounts) and chosen_on (a set of their ids). #}
 <section class="card">
-  {% if not acting and not reddit_me %}<p class="bad-text"><a href="/accounts">Add an account</a> first.</p>{% endif %}
+  {% set ready = post_on | selectattr("status", "equalto", "ok") | list %}
+  {% if not acting and not reddit_me and not ready %}<p class="bad-text"><a href="/accounts">Add an account</a> first.</p>{% endif %}
   <form method="post" action="{{ action }}" class="stack" data-post-count>
-    <div>Post in <span class="muted small">(tick several to post it in each; the copies say where it was first posted)</span></div>
-    {% include "_community_picks.html" %}
+    <div>Post to <span class="muted small">(tick several to post it on each; copies in communities say where it was first posted)</span></div>
+    {% if post_on %}
+    <fieldset class="targets small">
+      <legend>Your accounts</legend>
+      {% for a in post_on %}
+        {% set kind = 'Mastodon' if a.is_mastodon else 'Bluesky' %}
+        {% if a.status == 'ok' %}
+        <label class="check"><input type="checkbox" name="account_id" value="{{ a.id }}" data-kind="{{ kind }}" {{ 'checked' if a.id in chosen_on }}>
+          {{ kind }} <span class="muted">{{ a.handle }}</span></label>
+        {% else %}
+        <label class="check muted"><input type="checkbox" disabled> {{ kind }} {{ a.handle }}:
+          <a href="/accounts#{{ kind | lower }}">sign in again</a></label>
+        {% endif %}
+      {% endfor %}
+      <p class="muted post-on-note">The title, text and link make one post there{% if post_on | selectattr("is_bluesky") | first %}: up to 300 characters on Bluesky, where the link becomes a card{% endif %}.</p>
+    </fieldset>
+    {% endif %}
+    {% if targets or acting or reddit_me %}{% include "_community_picks.html" %}{% endif %}
     <label>Title <input name="title" required maxlength="200" value="{{ draft.title }}"></label>
     <label>Link <span class="muted small">(optional)</span> <input type="url" name="url" placeholder="https://" value="{{ draft.url }}"></label>
     <label>Text <span class="muted small">(Markdown)</span> <textarea name="body" rows="10">{{ draft.body }}</textarea></label>
     <div class="row">
-      <button {{ 'disabled' if not (acting or reddit_me) }}>Post</button>
-      <span class="small muted">{% if acting %}Posted as {{ acting.handle }} (switch in the header){% endif %}{% if acting and reddit_me %}, or {% endif %}{% if reddit_me %}as {{ reddit_me.handle }} in a subreddit{% endif %}.
+      <button {{ 'disabled' if not (acting or reddit_me or ready) }}>Post</button>
+      <span class="small muted">{% if acting %}Posted as {{ acting.handle }} (switch in the header){% endif %}{% if acting and reddit_me %}, or {% endif %}{% if reddit_me %}as {{ reddit_me.handle }} in a subreddit{% endif %}{% if acting or reddit_me %}.{% endif %}
         Each new post is kept{{ ", and shown together with the original" if t is defined and t }}.</span>
     </div>
   </form>

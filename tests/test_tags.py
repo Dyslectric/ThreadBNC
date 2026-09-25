@@ -375,9 +375,13 @@ def test_a_deleted_post_is_marked_missing_when_opened(client, tagged, fedi):
                NOTE)["body"]  # the text stays
 
 
-def test_without_an_actor_hashtags_cant_be_followed(bouncer):
+def test_without_an_actor_hashtags_come_from_bluesky_alone(settings, server, bouncer):
+    cid = bouncer.follow_community("#selfhosted", None, 30, False)  # the relay isn't asked: there's no actor
+    assert one(bouncer, "SELECT push_state FROM community_follows WHERE community_id=?", cid)["push_state"] is None
+    off = replace(settings, jetstream_url=None)
+    b = Bouncer(open_database(off), off, adapter_factory=lambda d: FakeAdapter(d, server))
     with pytest.raises(Exception, match="THREADBNC_ACTOR_DOMAIN"):
-        bouncer.follow_community("#selfhosted", None, 30, False)
+        b.follow_community("#rust", None, 30, False)
     assert urlparse(RELAY).hostname == "relay.test"
 
 

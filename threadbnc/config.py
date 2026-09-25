@@ -9,6 +9,8 @@ from pathlib import Path
 REDDIT_MIN_POLL_MINUTES = 10  # the fastest a subreddit may be checked, whatever is asked for
 RSS_MIN_POLL_MINUTES = 5  # likewise for a feed
 BLUESKY_MIN_POLL_MINUTES = 5  # and for a Bluesky account or feed
+# Bluesky's own Jetstream, asked for posts only (jetstream.py).
+JETSTREAM = "wss://jetstream2.us-east.bsky.network/subscribe"
 
 
 def _env_int(name: str, default: int) -> int:
@@ -86,6 +88,19 @@ class Settings:
     actor_domain: str | None = None
     # The relay that passes on public posts with a hashtag, {tag} standing for it.
     tag_relay: str = "https://relay.fedi.buzz/tag/{tag}"
+    # Bluesky's stream of everything posted there, which hashtags are picked out of (jetstream.py).
+    # None: hashtags come from the fediverse only.
+    jetstream_url: str | None = JETSTREAM
+
+
+def _jetstream(raw: str) -> str | None:
+    """THREADBNC_JETSTREAM: a Jetstream instance's address, or "off"."""
+    raw = raw.strip()
+    if raw.lower() in ("off", "no", "false", "0", "none"):
+        return None
+    if raw and not raw.startswith(("wss://", "ws://")):
+        raise SystemExit(f"THREADBNC_JETSTREAM should be a wss:// address or \"off\", not {raw!r}")
+    return raw or JETSTREAM
 
 
 def _load_secret(data_dir: Path) -> str:
@@ -145,4 +160,5 @@ def load_settings() -> Settings:
         relay_inboxes=_relays(os.environ.get("THREADBNC_RELAY_INBOXES", "")),
         actor_domain=os.environ.get("THREADBNC_ACTOR_DOMAIN", "").strip().lower() or None,
         tag_relay=os.environ.get("THREADBNC_TAG_RELAY", "").strip() or "https://relay.fedi.buzz/tag/{tag}",
+        jetstream_url=_jetstream(os.environ.get("THREADBNC_JETSTREAM", "")),
     )

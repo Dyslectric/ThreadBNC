@@ -1,10 +1,10 @@
-"""Acting as your Mastodon account: liking and replying to fediverse posts.
+"""Acting as your Mastodon account: posting, and liking and replying to fediverse posts.
 
 Posts from hashtags (adapters/activitypub.py) are read with ThreadBNC's own
 actor, which can't like or reply as you. Signed in to a Mastodon account (or
 GoToSocial, Akkoma, Pleroma: anything with Mastodon's client API), you can
-like, unlike and reply to them and to their replies, and delete your own
-replies, all through your account's own server.
+like, unlike and reply to them and to their replies, delete your own
+replies, and post on your account, all through your account's own server.
 
 Signing in is OAuth, as any Mastodon app does it: ThreadBNC registers itself
 as an app on your server (once per server and return address), you approve it
@@ -26,8 +26,9 @@ import re
 from typing import Any
 from urllib.parse import urlencode
 
-from .base import (NActor, NComment, RemoteNotFound, RemoteRejected, ThreadiverseAdapter, UnsupportedSoftware,
-                   host_of)
+from .activitypub import status_post
+from .base import (NActor, NComment, NPost, RemoteNotFound, RemoteRejected, ThreadiverseAdapter,
+                   UnsupportedSoftware, host_of)
 from .rss import html_to_markdown
 
 SCOPES = "read write"
@@ -143,6 +144,17 @@ class MastodonAdapter(ThreadiverseAdapter):
         s = self._call("POST", "/api/v1/statuses", token, status=text, in_reply_to_id=to, visibility=visibility,
                        spoiler_text=parent.get("spoiler_text") or None, sensitive=bool(parent.get("sensitive")) or None)
         return self._comment(s, parent_local_id)
+
+    def create_post(self, token: str, community_local_id: str, title: str, body: str | None,
+                    url: str | None) -> NPost:
+        """A new post on your account, as public as your account posts by
+        default. Mastodon posts have no title: the title, the text and the link
+        go together, and the server makes the link a card."""
+        text = "\n\n".join(x.strip() for x in (title, body or "") if x and x.strip())
+        if url and url not in text:
+            text += f"\n\n{url}"
+        s = self._call("POST", "/api/v1/statuses", token, status=text)
+        return status_post(s, (s.get("account") or {}).get("uri") or community_local_id)
 
     def _favourite(self, token: str, local_id: str, score: int) -> None:
         if score == -1:

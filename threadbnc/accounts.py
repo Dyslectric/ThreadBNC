@@ -14,7 +14,8 @@ is done as it. Its session is refreshed before it runs out, whenever it's used.
 Mastodon: signing in on your Mastodon server's own page (OAuth; see
 adapters/mastodon.py) adds your Mastodon account (or GoToSocial, Akkoma...).
 Posts that came from hashtags, and their replies, are liked and replied to as
-it, the same way.
+it, the same way. Post forms can post on it, and on your Bluesky account, as
+well as in communities (post_on).
 
 Every write happens on the account's *home* server (the only place its token
 is valid), so targets are resolved there first by ActivityPub id. What the
@@ -595,6 +596,30 @@ class Poster:
         # A new Bluesky post may not have reached the AppView yet: store it as made, without reading it back.
         return self.bouncer._ingest_post(post, account.domain, post.local_id, adapter, source_url=post.ap_id,
                                          retention="manual", capture=account.is_bluesky)
+
+    def post_on(self, account: Account, title: str, body: str | None = None, url: str | None = None) -> int:
+        """A new post on your Mastodon or Bluesky account itself, not in a
+        community. Neither has titles: the title and text go together, and
+        the link becomes a card. It's kept permanently, stored as made (your
+        Mastodon posts are filed under your account, read back from your
+        server). Returns the thread id."""
+        if not (account.is_mastodon or account.is_bluesky):
+            raise AccountError(f"{account.handle} can only post in communities.")
+        title = title.strip()
+        if not title:
+            raise AccountError("A post needs a title.")
+        url = (url or "").strip() or None
+        card = {"card": self.bouncer.articles.link_card(url)} if account.is_bluesky and url else {}
+
+        def act(adapter: ThreadiverseAdapter, token: str) -> Any:
+            home = (adapter.resolve_as(token, account.actor_ap_id).get("community", "") if account.is_bluesky
+                    else account.actor_ap_id)
+            return adapter, adapter.create_post(token, home, title, (body or "").strip() or None, url, **card)
+
+        adapter, post = self._run(account, act)
+        domain, reader = (BSKY_DOMAIN, adapter) if account.is_bluesky else (TAG_DOMAIN, self.bouncer.tag_adapter)
+        return self.bouncer._ingest_post(post, domain, post.local_id, reader, source_url=post.ap_id,
+                                         retention="manual", capture=True)
 
     # -- reposting -------------------------------------------------------------------
     def repost_draft(self, thread_id: int) -> dict[str, Any]:

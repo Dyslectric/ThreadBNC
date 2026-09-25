@@ -301,14 +301,23 @@ document.documentElement.classList.add("js");
     if (form && ev.target.matches("select, input[type=checkbox]")) form.requestSubmit();
   });
 
-  // Post forms that can go to several communities: the button says how many.
+  // Post forms that can go to several communities, and on your Mastodon and
+  // Bluesky accounts: the button says where.
   function countPosts(form) {
     const button = $("button:not([type=button])", form);
     if (!button) return;
     button.dataset.label ??= button.textContent;
+    const label = button.dataset.label;
     const typed = ($("input[name=community]", form)?.value || "").split(/[,\s]+/).filter(Boolean).length;
     const n = $$("input[name=community_id]:checked", form).length + typed + (form.action.endsWith("/submit") ? 1 : 0);
-    button.textContent = n > 1 ? `${button.dataset.label} in ${n} communities` : button.dataset.label;
+    const on = $$("input[name=account_id]:checked", form).map((box) => box.dataset.kind);
+    if (!on.length) {
+      button.textContent = n > 1 ? `${label} in ${n} communities` : label;
+      return;
+    }
+    const places = [...(n ? [n === 1 ? "1 community" : `${n} communities`] : []), ...on];
+    const listed = places.length > 1 ? `${places.slice(0, -1).join(", ")} and ${places.at(-1)}` : places[0];
+    button.textContent = `${label} to ${listed}`;
   }
   document.addEventListener("input", (ev) => {
     const form = ev.target.closest("form[data-post-count]");

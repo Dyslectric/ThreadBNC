@@ -22,7 +22,9 @@ text. Videos come as a stream, not a file, so only their cover picture is kept.
 Ids are bsky.app addresses (see base.py): accounts https://bsky.app/profile/<did>,
 feeds .../feed/<name>, posts .../post/<rkey>. A post's local id is the account
 or feed it arrived through (a followed "community" name) and its at:// address,
-so reading it again keeps it where it was.
+so reading it again keeps it where it was. Posts picked out of Jetstream for
+a followed hashtag (jetstream.py) arrive through "tag:<hashtag>", and are
+filed under the hashtag.
 """
 
 from __future__ import annotations
@@ -37,7 +39,7 @@ from urllib.parse import quote, urlencode, urlparse
 from .. import languages
 from ..db import fmt_ts, parse_ts, utcnow
 from ..render import escape_markdown, plain_lines
-from .activitypub import title_from
+from .activitypub import tag_community, title_from
 from .base import (
     BSKY_DOMAIN,
     CommentList,
@@ -51,8 +53,10 @@ from .base import (
     RemoteNotFound,
     RemoteRejected,
     RemoteUnavailable,
+    TAG_PREFIX,
     ThreadiverseAdapter,
     ThreadRef,
+    normalize_tag,
 )
 
 API = "public.api.bsky.app"
@@ -64,6 +68,7 @@ REPOST = "app.bsky.feed.repost"
 CARD_THUMB = "https://cdn.bsky.app/img/feed_thumbnail/plain/{did}/{cid}@jpeg"  # where an uploaded card picture shows
 TIMELINE = "/timeline"  # a followed name ending in this is your own Following timeline
 POST_CHARS = 300  # Bluesky's limit, in graphemes; counted here in characters
+GET_POSTS = 25  # the most posts getPosts reads at once
 REFRESH_BEFORE = 300  # seconds before the access token runs out that it's refreshed
 _AUTH_ERRORS = {"ExpiredToken", "InvalidToken", "AuthMissing", "AuthenticationRequired", "AuthFactorTokenRequired",
                 "AccountTakedown"}
@@ -130,6 +135,26 @@ def rich_markdown(text: str | None, facets: Any = None) -> str | None:
         at = end
     pieces.append(escape_markdown(data[at:].decode("utf-8", "replace")))
     return plain_lines("".join(pieces).strip().split("\n"))
+
+
+def record_tags(record: dict[str, Any]) -> list[str]:
+    """A post record's hashtags, named as followed ones are (lowercase, no #):
+    those in its text (facets) and those added beside it ("tags"), in order."""
+    raw = []
+    for f in record.get("facets") if isinstance(record.get("facets"), list) else []:
+        for feature in (f.get("features") or []) if isinstance(f, dict) else []:
+            if isinstance(feature, dict) and str(feature.get("$type") or "").endswith("#tag"):
+                raw.append(str(feature.get("tag") or ""))
+    raw += [t for t in record.get("tags") or [] if isinstance(t, str)] if isinstance(record.get("tags"), list) else []
+    out: list[str] = []
+    for text in raw:
+        try:
+            tag = normalize_tag(text)
+        except ValueError:
+            continue
+        if tag not in out:
+            out.append(tag)
+    return out
 
 
 def facets_for(text: str, did_of: Callable[[str], str | None]) -> list[dict[str, Any]]:
@@ -458,6 +483,8 @@ class BlueskyAdapter(ThreadiverseAdapter):
         return c
 
     def _community(self, name: str) -> NCommunity:
+        if name.startswith(TAG_PREFIX):  # a post picked out of Jetstream for a hashtag (tagged_posts)
+            return tag_community(name[len(TAG_PREFIX):])
         return self._communities.get(name) or self.fetch_community(CommunityRef(BSKY_DOMAIN, name, BSKY_DOMAIN))
 
     def list_community_posts(self, ref: CommunityRef, sort: str = "New", page: int = 1,
@@ -533,6 +560,20 @@ class BlueskyAdapter(ThreadiverseAdapter):
             gallery=content.pictures if len(content.pictures) > 1 else [],
             language=languages.normalize(next(iter(record.get("langs") or []), None)),
         )
+
+    def tagged_posts(self, tagged: dict[str, str]) -> list[NPost]:
+        """Posts seen made with a followed hashtag (jetstream.py), read from the
+        AppView to show like any other: {at:// address: hashtag}, at most
+        GET_POSTS of them. Those it doesn't have (deleted, or hidden by Bluesky's
+        moderation) are left out. Each is filed under its hashtag."""
+        posts = self._get("app.bsky.feed.getPosts", uris=list(tagged)[:GET_POSTS]).get("posts") or []
+        out = []
+        for view in posts:
+            tag = tagged.get(view.get("uri")) if isinstance(view, dict) else None
+            if tag:
+                name = TAG_PREFIX + tag
+                out.append(self._post(view, self._community(name), name))
+        return out
 
     def posts_linking(self, url: str, limit: int = 25) -> list[dict[str, Any]]:
         """Posts that link to a page (in their text or a link card), most liked

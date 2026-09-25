@@ -37,8 +37,8 @@ from . import media as media_mod
 from . import storage as storage_mod
 from . import thumbs as thumbs_mod
 from .actor import ActorEndpoints
-from .adapters import (BSKY_DOMAIN, RSS_PREFIX, CommunityRef, RemoteError, host_of, is_bluesky, is_reddit_host,
-                       is_rss, is_tag)
+from .adapters import (BSKY_DOMAIN, RSS_PREFIX, CommunityRef, RemoteError, from_fediverse, host_of, is_bluesky,
+                       is_fedi_account, is_reddit_host, is_rss, is_tag)
 from .adapters.base import RSS_DOMAIN, TAG_DOMAIN
 from .accounts import Account, AccountError, Poster
 from .bouncer import PUSHED_POLL_MINUTES, Bouncer
@@ -54,6 +54,7 @@ from .sso import CALLBACK_PATH, SingleSignOn, callback_url
 PROXY_SECRET_HEADER = "X-ThreadBNC-Proxy-Secret"
 from .config import Settings, load_settings
 from .federation import Federation, InboxRelay, summarize
+from .jetstream import BlueskyTags
 from .tags import TagRelays
 from .db import fmt_ts, open_database, parse_ts, utcnow
 from .render import MediaInfo, looks_like_media, render_markdown
@@ -265,8 +266,8 @@ def is_reddit(ap_id: str | None) -> bool:
 def chandle(name: str, ap_id: str | None, plain: bool = False) -> Markup | str:
     """A community's handle: r/name for subreddits, the feed's title for feeds
     (the channel's name for YouTube), #name for hashtags, @handle for Bluesky
-    accounts and the feed's name for Bluesky feeds,
-    !name@host otherwise (with the host dimmed unless `plain`)."""
+    accounts and the feed's name for Bluesky feeds, @name@host for your
+    Mastodon account, !name@host otherwise (with the host dimmed unless `plain`)."""
     if is_reddit(ap_id):
         return f"r/{name}"
     if is_bluesky(ap_id):
@@ -276,6 +277,10 @@ def chandle(name: str, ap_id: str | None, plain: bool = False) -> Markup | str:
         return f"{name} ({kind})" if plain else Markup('{}<span class="muted"> · {}</span>').format(name, kind)
     if is_tag(ap_id):
         return f"#{name}"
+    if is_fedi_account(ap_id):
+        host = host_of(ap_id or "")
+        return f"@{name}@{host} (Mastodon)" if plain else Markup(
+            '@{}<span class="muted">@{} · Mastodon</span>').format(name, host)
     if is_youtube_feed(ap_id):
         return f"{name} (YouTube)" if plain else Markup('{}<span class="muted"> · YouTube</span>').format(name)
     if is_rss(ap_id):
@@ -354,6 +359,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     federation = Federation(poster, settings.relay_inboxes) if settings.relay_inboxes else None
     # ThreadBNC's own ActivityPub identity, following hashtags through a relay.
     tags = TagRelays(bouncer, bouncer.actor, settings.tag_relay) if bouncer.actor else None
+    # ...and on Bluesky, picked out of its Jetstream.
+    bluesky_tags = BlueskyTags(bouncer, settings.jetstream_url, settings.user_agent) if settings.jetstream_url else None
 
     def lemmy_servers() -> list[str]:
         """Your own Lemmy and PieFed servers: the relayed ones, then the ones you have accounts on."""
@@ -369,10 +376,14 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             bouncer.start_thread()
             if federation:
                 federation.start_thread()
+            if bluesky_tags:
+                bluesky_tags.start_thread()
         yield
         bouncer.stop()
         if federation:
             federation.stop()
+        if bluesky_tags:
+            bluesky_tags.stop()
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     templates = Jinja2Templates(directory=str(HERE / "templates"))
@@ -382,7 +393,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                                  livestream=livestream.stream_of,
                                  running_time=running_time)
     # A Lemmy or PieFed community (not a subreddit, a feed or Bluesky): one that can be pushed.
-    templates.env.tests["is_federated"] = lambda ap_id: (not is_rss(ap_id) and not is_tag(ap_id)
+    templates.env.tests["is_federated"] = lambda ap_id: (not is_rss(ap_id) and not from_fediverse(ap_id)
                                                          and not is_bluesky(ap_id)
                                                          and not is_reddit_host(host_of(ap_id)))
     def static_url(name: str) -> str:
@@ -454,7 +465,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                                  password_login=bool(settings.password),
                                  proxy_login=bool(settings.proxy_auth_header), chandle=chandle,
                                  is_reddit=is_reddit, is_rss=is_rss, is_tag=is_tag, is_youtube=is_youtube_feed,
-                                 is_bluesky=is_bluesky,
+                                 is_bluesky=is_bluesky, from_fediverse=from_fediverse, is_fedi_account=is_fedi_account,
                                  actor_handle=bouncer.actor.handle if bouncer.actor else None,
                                  reading_articles=bouncer.articles.enabled)
     app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
@@ -556,6 +567,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         app.add_middleware(ActorEndpoints, actor=bouncer.actor, receive=tags.receive, expects=tags.expects)
     app.state.federation = federation
     app.state.tags = tags
+    app.state.bluesky_tags = bluesky_tags
 
     def push_handle() -> str | None:
         account = federation.account() if federation else None
@@ -1330,12 +1342,16 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         with db.connect() as conn:
             f = conn.execute("SELECT * FROM community_follows WHERE community_id=?", (cid,)).fetchone()
         if f["source_domain"] == TAG_DOMAIN:
-            if f["push_state"] == "pending":
-                flash(request, f"Following. {bouncer.actor.handle} asked the relay for posts tagged "  # type: ignore[union-attr]
-                               f"#{f['source_ref']}; they arrive as they're made, from now on.")
+            tag, also = f["source_ref"], ", with those posted on Bluesky," if bluesky_tags else ""
+            if bouncer.actor is None:
+                flash(request, f"Following. Posts tagged #{tag} on Bluesky arrive as they're made, from now on.")
+            elif f["push_state"] == "pending":
+                flash(request, f"Following. {bouncer.actor.handle} asked the relay for posts tagged #{tag}; "
+                               f"they arrive as they're made{also} from now on.")
             else:
                 flash(request, f"Following, but the relay couldn't be asked for its posts yet: {f['push_error']}. "
-                               "It's asked again every half hour.", "warn-flash")
+                               "It's asked again every half hour."
+                               + (" Posts on Bluesky arrive meanwhile." if bluesky_tags else ""), "warn-flash")
         elif f["push_state"] == "subscribed":
             flash(request, f"Following. {push_handle()} subscribed, so posts arrive as they're made.")
         elif f["polling"]:
@@ -1520,6 +1536,9 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                                    (cid,)).fetchall()
             follows = feed_mod.followed_communities(conn)
             media_data = media_mod.community_stats(conn, cid) if tab == "media" else None
+            bluesky_last = conn.execute(  # the last post a hashtag got from Bluesky
+                "SELECT MAX(retained_at) AS at FROM archived_threads WHERE community_id=? AND source_domain=?",
+                (cid, BSKY_DOMAIN)).fetchone()["at"] if is_tag(c["canonical_ap_id"]) else None
         me = acting(request)
         powers = mod.powers(me, cid)
         mod_data: dict[str, Any] = {}
@@ -1557,6 +1576,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                       media_choices=media_mod.parse_choices(c["media_policy"]), media_kinds=media_mod.KINDS,
                       transcoded=media_mod.TRANSCODED, by_rate=media_mod.BY_RATE,
                       can_transcode=bouncer.media.can_transcode(),
+                      jetstream=bluesky_tags if settings.embedded_bouncer else None, bluesky_last=bluesky_last,
                       snapshot=snapshot)
 
     def media_choices(form: Any) -> tuple[dict[str, dict[str, Any]], str | None]:
@@ -2427,18 +2447,19 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
 
     @app.get("/post", response_class=HTMLResponse)
     def new_post_form(request: Request):
-        targets = repost_targets(acting(request), poster.reddit_account())
-        return render(request, "post.html", draft={"title": "", "url": "", "body": ""}, targets=targets,
-                      chosen=last_targets(request, targets), action="/post")
+        return render(request, "post.html", draft={"title": "", "url": "", "body": ""}, action="/post",
+                      **post_form(request))
 
     @app.post("/post")
     def new_post(request: Request, title: str = Form(...), url: str = Form(""), body: str = Form(""),
-                 community_id: list[str] = Form([]), community: str = Form("")):
-        """A new post in the communities picked in the global composer."""
+                 community_id: list[str] = Form([]), community: str = Form(""), account_id: list[str] = Form([])):
+        """A new post in the communities, and on the accounts, picked in the global composer."""
         def act(account: Account) -> RedirectResponse:
-            cids = picked_communities(community_id, community)
+            on = picked_accounts(account_id)
+            cids = picked_communities(community_id, community, required=not on)
             return post_to_many(request, account, cids, lambda cid, text: poster.submit(
-                account, cid, title, text, url), body, "Posted. It's kept automatically.", "/post")
+                account, cid, title, text, url), body, "Posted. It's kept automatically.", "/post",
+                on=on, post_on=lambda a: poster.post_on(a, title, body, url))
         return account_action(request, "/post", act)
 
     @app.post("/c/{cid}/submit")
@@ -2469,7 +2490,9 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         out = []
         for r in rows:
             c = dict(r, host=host_of(r["canonical_ap_id"]), label=chandle(r["name"], r["canonical_ap_id"], True))
-            if is_rss(r["canonical_ap_id"]) or is_bluesky(r["canonical_ap_id"]):
+            # Hashtags and your Mastodon posts aren't places to post: your Mastodon and
+            # Bluesky accounts are offered instead (post_accounts).
+            if is_rss(r["canonical_ap_id"]) or is_bluesky(r["canonical_ap_id"]) or from_fediverse(r["canonical_ap_id"]):
                 continue
             if is_reddit(r["canonical_ap_id"]):
                 if not reddit_me or not c["followed"]:
@@ -2485,11 +2508,34 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         out.sort(key=lambda c: (c["rank"], c["name"].lower(), c["host"]))
         return out
 
-    def picked_communities(community_ids: list[str], community: str, first: int | None = None) -> list[int]:
+    def post_accounts() -> list[Account]:
+        """Your Mastodon and Bluesky accounts, which post forms can post on too
+        (one that needs signing in again is shown, but can't be ticked)."""
+        return [a for a in poster.list() if a.is_mastodon or a.is_bluesky]
+
+    def picked_accounts(account_ids: list[str]) -> list[Account]:
+        ids = {int(x) for x in account_ids if x.strip().isdigit()}
+        return [a for a in post_accounts() if a.id in ids and a.status == "ok"]
+
+    def post_form(request: Request) -> dict[str, Any]:
+        """What _post_form.html offers and ticks: communities, and your Mastodon
+        and Bluesky accounts, as the last post went (see last_targets)."""
+        targets, on = repost_targets(acting(request), poster.reddit_account()), post_accounts()
+        last_on = request.session.get("post_on")
+        ready = [a for a in on if a.status == "ok"]
+        chosen_on = {a.id for a in ready if isinstance(last_on, list) and a.id in last_on}
+        chosen = last_targets(request, targets)
+        if not chosen and not chosen_on and ready:
+            chosen_on = {ready[0].id}
+        return {"targets": targets, "chosen": chosen, "post_on": on, "chosen_on": chosen_on}
+
+    def picked_communities(community_ids: list[str], community: str, first: int | None = None,
+                           required: bool = True) -> list[int]:
         """The communities a post form chose: ticked in its list, and typed as
         !name@host (several separated by commas or spaces; looked up, not
         followed). `first` (the community a new post is for) goes first. All are
-        found before anything is posted, so a typo doesn't leave a partial post."""
+        found before anything is posted, so a typo doesn't leave a partial post.
+        Not `required` when accounts to post on were ticked instead."""
         cids = [first] if first else []
         cids += [int(x) for x in community_ids if x.strip().isdigit()]
         for name in re.split(r"[,\s]+", community.strip()) if community.strip() else []:
@@ -2499,8 +2545,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                 raise AccountError(f"Couldn't find {name}: {exc}") from exc
             with db.transaction() as conn:
                 cids.append(store.upsert_community(conn, found, utcnow()))
-        if not cids:
-            raise AccountError("Pick a community to post it in.")
+        if not cids and required:
+            raise AccountError("Pick a community to post it in, or an account to post it on.")
         return list(dict.fromkeys(cids))
 
     def community_label(cid: int) -> str:
@@ -2509,24 +2555,38 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         return str(chandle(c["name"], c["canonical_ap_id"], True)) if c else f"community {cid}"
 
     def post_to_many(request: Request, account: Account, cids: list[int], make: Callable[[int, str], int],
-                     body: str, ok: str, fallback: str) -> RedirectResponse:
+                     body: str, ok: str, fallback: str, on: list[Account] | None = None,
+                     post_on: Callable[[Account], int] | None = None) -> RedirectResponse:
         """Post in each community in turn: make(cid, body) posts one and returns
         its thread. Copies after the first point back at it ("cross-posted
-        from:"). One that fails doesn't stop the rest; the message says which."""
+        from:"). Then on each account in `on` (post_on(account), with the text
+        as written: a Mastodon or Bluesky post has no room to spare). One that
+        fails doesn't stop the rest; the message says which."""
+        on = on or []
         made: list[int] = []
         failed = []
+        total = len(cids) + len(on)
         for cid in cids:
             try:
                 made.append(make(cid, poster.crosspost_body(made[0], body) if made else body))
             except AccountError as exc:
-                if len(cids) == 1:
+                if total == 1:
                     raise
                 failed.append(f"{community_label(cid)}: {exc}")
+        for a in on:
+            try:
+                made.append(post_on(a))  # type: ignore[misc]
+            except AccountError as exc:
+                if total == 1:
+                    raise
+                failed.append(f"{a.handle}: {exc}")
         request.session["repost_to"] = cids
+        request.session["post_on"] = [a.id for a in on]
+        places = "communities" if not on else "places"
         if failed:
-            flash(request, f"Posted in {len(made)} of {len(cids)} communities. Failed: " + "; ".join(failed), "error")
+            flash(request, f"Posted in {len(made)} of {total} {places}. Failed: " + "; ".join(failed), "error")
         elif len(made) > 1:
-            flash(request, f"Posted in {len(made)} communities. They're kept automatically.")
+            flash(request, f"Posted in {len(made)} {places}. They're kept automatically.")
         else:
             flash(request, ok)
         if not made:
@@ -2535,8 +2595,11 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
 
     def last_targets(request: Request, targets: list[dict[str, Any]]) -> set[int]:
         """The communities to tick on a post form: where the last post went (if
-        still offered), else the first one offered."""
+        still offered), else the first one offered, unless the last post only
+        went on your Mastodon or Bluesky account."""
         last = request.session.get("repost_to")
+        if last == [] and request.session.get("post_on"):
+            return set()
         last = set(last) if isinstance(last, list) else {last}
         chosen = {c["id"] for c in targets if c["id"] in last}
         return chosen or ({targets[0]["id"]} if targets else set())
@@ -2552,20 +2615,21 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         except AccountError as exc:
             flash(request, str(exc), "error")
             return RedirectResponse(f"/t/{tid}", status_code=303)
-        targets = repost_targets(acting(request), poster.reddit_account())
-        return render(request, "repost.html", t=t, draft=draft, targets=targets,
-                      chosen=last_targets(request, targets), action=f"/t/{tid}/repost")
+        return render(request, "repost.html", t=t, draft=draft, action=f"/t/{tid}/repost", **post_form(request))
 
     @app.post("/t/{tid}/repost")
     def repost(request: Request, tid: int, title: str = Form(...), url: str = Form(""), body: str = Form(""),
-               community_id: list[str] = Form([]), community: str = Form("")):
+               community_id: list[str] = Form([]), community: str = Form(""), account_id: list[str] = Form([])):
         """Post a copy in your communities: ticked in the list, or typed as
-        !name@host (looked up, not followed)."""
+        !name@host (looked up, not followed); and on the Mastodon and Bluesky
+        accounts ticked."""
         def act(account: Account) -> RedirectResponse:
-            cids = picked_communities(community_id, community)
+            on = picked_accounts(account_id)
+            cids = picked_communities(community_id, community, required=not on)
             return post_to_many(request, account, cids, lambda cid, text: poster.repost(
                 account, tid, cid, title, text, url), body, "Reposted. It's kept automatically, and shown "
-                                                            "together with the original.", f"/t/{tid}/repost")
+                                                            "together with the original.", f"/t/{tid}/repost",
+                on=on, post_on=lambda a: poster.post_on(a, title, body, url))
         return account_action(request, f"/t/{tid}/repost", act)
 
     # ---- YouTube -------------------------------------------------------------
@@ -3183,18 +3247,19 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             a = conn.execute("SELECT * FROM articles WHERE id=? AND status='ok'", (aid,)).fetchone()
         if a is None:
             raise HTTPException(404)
-        targets = repost_targets(acting(request), poster.reddit_account())
-        return render(request, "article_post.html", a=a, draft=article_draft(a), targets=targets,
-                      chosen=last_targets(request, targets), action=f"/a/{aid}/post")
+        return render(request, "article_post.html", a=a, draft=article_draft(a), action=f"/a/{aid}/post",
+                      **post_form(request))
 
     @app.post("/a/{aid}/post")
     def article_post(request: Request, aid: int, title: str = Form(...), url: str = Form(""), body: str = Form(""),
-                     community_id: list[str] = Form([]), community: str = Form("")):
-        """Share an article read here as a link post in your communities."""
+                     community_id: list[str] = Form([]), community: str = Form(""), account_id: list[str] = Form([])):
+        """Share an article read here as a link post in your communities, and on your accounts."""
         def act(account: Account) -> RedirectResponse:
-            cids = picked_communities(community_id, community)
+            on = picked_accounts(account_id)
+            cids = picked_communities(community_id, community, required=not on)
             return post_to_many(request, account, cids, lambda cid, text: poster.submit(
-                account, cid, title, text, url), body, "Posted. It's kept automatically.", f"/a/{aid}/post")
+                account, cid, title, text, url), body, "Posted. It's kept automatically.", f"/a/{aid}/post",
+                on=on, post_on=lambda a: poster.post_on(a, title, body, url))
         return account_action(request, f"/a/{aid}/post", act)
 
     @app.post("/t/{tid}/article/retry")

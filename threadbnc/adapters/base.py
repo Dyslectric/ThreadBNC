@@ -203,14 +203,30 @@ def is_rss(ap_id: str | None) -> bool:
 
 # Hashtags followed through a relay (tags.py) are communities on a pseudo
 # server too: "tag:selfhosted". Their posts are ordinary fediverse posts,
-# read from their own servers (adapters/activitypub.py).
+# read from their own servers (adapters/activitypub.py), and Bluesky posts
+# picked out of its Jetstream (jetstream.py), read from Bluesky.
 TAG_DOMAIN = "hashtag"
 TAG_PREFIX = "tag:"
 _HASHTAG = re.compile(r"^\w+$")
+# A fediverse account's own address (Mastodon, GoToSocial, Akkoma...): where
+# posts you make on your Mastodon account are filed. Lemmy and PieFed never
+# put a community there (theirs are /c/name, and their people /u/name).
+_FEDI_ACCOUNT = re.compile(r"^/(?:users/[^/]+|@[^/]+)/?$")
 
 
 def is_tag(ap_id: str | None) -> bool:
     return (ap_id or "").startswith(TAG_PREFIX)
+
+
+def is_fedi_account(ap_id: str | None) -> bool:
+    parsed = urlparse(ap_id or "")
+    return parsed.scheme == "https" and bool(_FEDI_ACCOUNT.match(parsed.path)) and not is_bluesky(ap_id)
+
+
+def from_fediverse(community_ap_id: str | None) -> bool:
+    """A community whose posts come from anywhere on the fediverse (a hashtag,
+    or your Mastodon account's posts): acted on as your Mastodon account."""
+    return is_tag(community_ap_id) or is_fedi_account(community_ap_id)
 
 
 def normalize_tag(text: str) -> str:

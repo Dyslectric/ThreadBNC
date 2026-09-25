@@ -210,11 +210,11 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
    the counts each copy's server reported, for a post posted more than once. #}
 {% macro tile_votes(i, breakdown=False) -%}
 {% set bsky = is_bluesky(i.canonical_ap_id) %}
-{% set masto = is_tag(i.c_ap) %}
+{% set masto = from_fediverse(i.c_ap) and not bsky %}
 {% if is_rss(i.canonical_ap_id) or (bsky and not bluesky_me) or (masto and not mastodon_me) %}{{ votes(i.upvotes, i.downvotes, i.score) }}{% else %}
 {% set eligible = [] %}{% set handles = [] %}
 {% for c in i.copies %}
-  {% set acct = none if is_rss(c.canonical_ap_id) else (mastodon_me if is_tag(c.c_ap) else reddit_me if is_reddit(c.canonical_ap_id) else bluesky_me if is_bluesky(c.canonical_ap_id) else acting) %}
+  {% set acct = none if is_rss(c.canonical_ap_id) else (bluesky_me if is_bluesky(c.canonical_ap_id) else mastodon_me if from_fediverse(c.c_ap) else reddit_me if is_reddit(c.canonical_ap_id) else acting) %}
   {% if acct %}{% set _ = eligible.append(c) %}{% if acct.handle not in handles %}{% set _ = handles.append(acct.handle) %}{% endif %}{% endif %}
 {% endfor %}
 {% set reddit = is_reddit(i.canonical_ap_id) %}
