@@ -50,7 +50,7 @@
 {% if tab in ('threads', 'videos', 'audio') %}
   {% set base = '/kept?' ~ ('tab=' ~ tab ~ '&' if tab != 'threads') %}
   {% if tab == 'videos' %}<p class="tab-note small muted">Kept posts that are a video: YouTube links (saved once kept), and videos posted or embedded.
-    Also YouTube videos you saved from a link's box.</p>
+    YouTube videos you save from a link's box are kept as posts too, in their channel.</p>
   {% elif tab == 'audio' %}<p class="tab-note small muted">Kept posts that link to an audio file, to play from here.</p>{% endif %}
   {% if linked_videos %}
   <section class="linked-videos" aria-labelledby="linked-videos-title">

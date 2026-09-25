@@ -241,6 +241,11 @@ def parse_page(html: str, url: str, now: datetime | None = None) -> Page | None:
 class Watch:
     description: str | None  # as Markdown (description_markdown)
     likes: int | None
+    # What its post needs when it's kept from a link rather than a followed channel.
+    title: str | None = None
+    channel: str | None = None
+    channel_id: str | None = None
+    published: str | None = None  # as the page says it: "2026-09-01T07:00:00-07:00", or just the day
 
 
 def _player_response(html: str) -> dict[str, Any] | None:
@@ -269,14 +274,25 @@ def _likes(data: dict[str, Any] | None, html: str) -> int | None:
 
 
 def parse_watch(html: str) -> Watch | None:
-    """A video's page: its description and likes. None if the page has no
-    data in it (YouTube may have changed it, or asked for a sign-in)."""
+    """A video's page: its description and likes, title, channel and when it
+    came out. None if the page has no data in it (YouTube may have changed
+    it, or asked for a sign-in)."""
     player = _player_response(html)
     data = _initial_data(html)
     if player is None and data is None:
         return None
-    text = ((player or {}).get("videoDetails") or {}).get("shortDescription")  # the whole of it, despite the name
-    return Watch(description_markdown(text) if isinstance(text, str) else None, _likes(data, html))
+    details = (player or {}).get("videoDetails") or {}
+    micro = ((player or {}).get("microformat") or {}).get("playerMicroformatRenderer") or {}
+    text = details.get("shortDescription")  # the whole of it, despite the name
+
+    def s(v: Any) -> str | None:
+        return (v.strip() or None) if isinstance(v, str) else None
+
+    channel_id = s(details.get("channelId")) or s(micro.get("externalChannelId"))
+    return Watch(description_markdown(text) if isinstance(text, str) else None, _likes(data, html),
+                 title=s(details.get("title")), channel=s(details.get("author")) or s(micro.get("ownerChannelName")),
+                 channel_id=channel_id if channel_id and re.fullmatch(r"UC[\w-]{22}", channel_id) else None,
+                 published=s(micro.get("publishDate")) or s(micro.get("uploadDate")))
 
 
 _URL = re.compile(r"https?://[^\s<>\"]+[^\s<>\".,;:!?)\]'’]")

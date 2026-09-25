@@ -2611,22 +2611,28 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             title = youtube.titles(conn, [vid]).get(vid)
             thumb = conn.execute("SELECT id FROM media WHERE url=? AND status='ok' AND content_type LIKE 'image/%'",
                                  (youtube.thumbnail_url(vid),)).fetchone()
+            post = conn.execute(  # the post it's kept as (Bouncer.keep_youtube), or a followed channel's
+                "SELECT t.id FROM archived_threads t JOIN objects o ON o.id=t.root_object_id "
+                "WHERE o.canonical_ap_id=? AND t.retention='manual' AND t.trashed_at IS NULL",
+                (f"{RSS_PREFIX}yt:video:{vid}",)).fetchone()
         title = title or bouncer.youtube_titles([vid]).get(vid)  # yt-dlp couldn't say
         yt = bouncer.youtube.status()
         saving = m is not None and m["status"] == "pending" and bool(m["wanted_at"] or not m["held"])
         return render(request, "video_pane.html" if pane else "video.html", vid=vid, v=v, m=m, title=title,
                       saved=saved, saving=saving, thumb=thumb["id"] if thumb else None, yt=yt,
+                      post=post["id"] if post else None,
                       watch=youtube.watch_url(vid), pane=pane,
                       too_big=bool(v and v["size_bytes"] and v["size_bytes"] > yt["max_mb"] * 1_000_000))
 
     @app.post("/youtube/v/{vid}/save")
     def youtube_video_save(request: Request, vid: str):
         """Save the video: downloaded in the background at the YouTube page's
-        resolution, and kept whether or not a post links to it."""
+        resolution, and kept as a post the way a followed channel's video is
+        (Bouncer.keep_youtube), with its description and comments."""
         video_id_or_404(vid)
         with db.transaction() as conn:
             media_mod.want_youtube(conn, vid, utcnow())
-        bouncer.wake.set()
+        bouncer.enqueue("keep_youtube", {"vid": vid})
         return RedirectResponse(f"/youtube/v/{vid}", status_code=303)
 
     @app.get("/youtube/titles")

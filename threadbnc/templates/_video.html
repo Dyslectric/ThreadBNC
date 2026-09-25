@@ -17,6 +17,7 @@
     <video class="media" src="/media/{{ m.id }}"{% if thumb %} poster="/media/{{ thumb }}"{% endif %} controls playsinline preload="metadata"></video>
     <p class="small muted">Saved here · {{ m.size_bytes | size }} · {{ when(m.fetched_at) }}</p>
     <div class="row">
+      {% if post %}<a class="button secondary" href="/t/{{ post }}">{{ icon('star-fill') }} Kept post</a>{% endif %}
       <a class="button secondary" href="{{ watch }}" rel="noreferrer noopener nofollow" target="_blank">{{ icon('external') }} Watch on YouTube</a>
     </div>
   {% else %}
@@ -34,11 +35,12 @@
     {% if saving %}<p class="small muted" role="status">Downloading… It plays here once it's saved.</p>
     {% elif m and m.wanted_at and m.status == 'failed' %}<p class="small bad-text">Couldn't save it: {{ m.error }}
       <a href="/youtube">YouTube settings</a></p>
-    {% else %}<p>Download the video and archive it here, or go and watch it on YouTube?</p>{% endif %}
+    {% else %}<p>Download the video and keep it here, as a post with its description and comments, or go and watch it on YouTube?</p>{% endif %}
     <div class="row">
       {% if not saving %}<form method="post" action="/youtube/v/{{ vid }}/save" class="inline" data-video-save>
         <button{% if too_big or not yt.downloader %} disabled{% endif %}>{{ icon('arrow-down') }}
           {{- ' Try again' if m and m.wanted_at and m.status == 'failed' else ' Download and archive' }}</button></form>{% endif %}
+      {% if post %}<a class="button secondary" href="/t/{{ post }}">{{ icon('star-fill') }} Kept post</a>{% endif %}
       <a class="button secondary" href="{{ watch }}" rel="noreferrer noopener nofollow" target="_blank">{{ icon('external') }} Watch on YouTube</a>
     </div>
   {% endif %}
