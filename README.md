@@ -78,6 +78,7 @@ ThreadBNC behaves like one more subscribed server, or like your own browser, nev
 | **Your own feeds** (`/f/{id}`, **New feed** in the sidebar) | A named mix of communities, each feed with its own default sort, time range, filter and view. Mark all read covers just its communities. The ✎ next to its name edits or deletes it; the communities and their posts are untouched. |
 | **Community** (`/c/{id}`) | The same feed for one community, plus ★ Kept, **Live on server** (browse its full history, fetched live), **Media** (what it archives, size limit, transcoding) and a log. Follow settings sit behind the "✓ Following" pill. |
 | **Communities** | Follow a community (starts with its current first page) and manage the check interval and retention for each one. |
+| **Articles** (`/articles`) | The articles linked most often by passively captured posts still in the archive, over the past day, week, month or all retained posts. Redirects, tracking links and canonical versions of the same page are counted together. |
 | **★ Kept** | Keep a post by link, see kept threads grouped by community, recent changes and the bouncer queue. |
 | **Search** (`/search`, and the box in the header) | Every version of every archived post and comment. See [Search](#search). |
 | **Inbox** | Replies, mentions and private messages for all your accounts. See [Inbox](#inbox). |

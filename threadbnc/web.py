@@ -981,6 +981,25 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             resp.delete_cookie("theme")
         return resp
 
+    # ---- trending articles ---------------------------------------------
+    ARTICLE_PAGE = 25
+
+    @app.get("/articles", response_class=HTMLResponse)
+    def trending_articles(request: Request, t: str = "week", page: int = 1):
+        """The pages linked most often by passive captures still in the archive."""
+        window = t if t in feed_mod.WINDOWS else "week"
+        delta = feed_mod.WINDOWS[window]
+        now = parse_ts(utcnow()) or datetime.now(timezone.utc)
+        since = fmt_ts(now - delta) if delta is not None else None
+        page = max(1, page)
+        with db.connect() as conn:
+            items, has_more = articles.trending(conn, since, page, ARTICLE_PAGE)
+        for a in items:
+            a["excerpt"] = feed_mod.excerpt(articles.excerpt(a.pop("content_html"), 400), 260)
+            a["minutes"] = max(1, round((a["word_count"] or 0) / 230)) if a["word_count"] else None
+        return render(request, "articles.html", articles=items, window=window, page=page,
+                      has_more=has_more)
+
     # ---- kept (the archive) ---------------------------------------------
     KEPT_TABS = ("threads", "videos", "audio", "articles", "changed", "log")
     KEPT_MEDIA = {"videos": "video", "audio": "audio"}  # tab: feed.MEDIA_KINDS

@@ -22,6 +22,7 @@
     <nav class="primary" aria-label="Main" id="site-nav" data-live>
       {% for href, name, ico, on in [('/', 'Feed', 'feed', path == '/'),
                                      ('/communities', 'Communities', 'communities', path.startswith('/communities') or path.startswith('/c/')),
+                                     ('/articles', 'Articles', 'article', path.startswith('/articles')),
                                      ('/post', 'New post', 'pencil', path == '/post'),
                                      ('/kept', 'Kept', 'star', path.startswith('/kept')),
                                      ('/inbox', 'Inbox', 'inbox', path.startswith('/inbox'))] %}
@@ -105,6 +106,7 @@
         <div><dt><kbd>/</kbd></dt><dd>Search</dd></div>
         <div><dt><kbd>g</kbd> <kbd>f</kbd></dt><dd>Go to the feed</dd></div>
         <div><dt><kbd>g</kbd> <kbd>c</kbd></dt><dd>Communities</dd></div>
+        <div><dt><kbd>g</kbd> <kbd>a</kbd></dt><dd>Trending articles</dd></div>
         <div><dt><kbd>g</kbd> <kbd>k</kbd></dt><dd>Kept</dd></div>
         <div><dt><kbd>g</kbd> <kbd>i</kbd></dt><dd>Inbox</dd></div>
         <div><dt><kbd>g</kbd> <kbd>t</kbd></dt><dd>Trash</dd></div>

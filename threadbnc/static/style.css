@@ -1065,6 +1065,14 @@ a.article-link.dived, a[data-dive].dived, a.video-link.dived, a.live-link.dived 
 .article-card .pc-title { display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .article-card .pc-title a { font-family: Georgia, "Iowan Old Style", "Times New Roman", serif; font-weight: 600; }
 
+/* ---- Trending articles ---- */
+.articles-page { max-width: 820px; margin: 0 auto; }
+.articles-head { align-items: flex-start; }
+.articles-head p { margin: 2px 0 0; }
+.article-controls { justify-content: space-between; }
+.trend-posts { font-variant-numeric: tabular-nums; }
+.trending-article .pc-title { font-size: 1.12rem; }
+
 .pc-changes { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 4px 0 2px; padding: 2px 8px 2px 6px;
   border-radius: 8px; background: var(--bg); border: 1px solid var(--line); color: var(--muted); }
 .pc-changes:hover { text-decoration: none; border-color: var(--muted); }

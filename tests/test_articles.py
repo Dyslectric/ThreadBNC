@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 from threadbnc import articles, feed, media, storage
+from threadbnc.db import fmt_ts
 from threadbnc.render import MediaInfo
 from threadbnc.web import create_app
 
@@ -136,6 +139,45 @@ def test_article_read_and_shown(server, abouncer, settings):
     assert f'src="/media/{pic["id"]}"' in r.text and "news.test/img" not in r.text
     pane = client.get(f"/t/{tid}/article?pane=1").text
     assert "<html" not in pane and "data-dive-close" in pane
+
+
+def test_trending_articles_page_counts_current_posts_and_merges_aliases(server, abouncer, settings):
+    now = datetime.now(timezone.utc)
+    tids = []
+    for local_id, title, url, created in [
+        ("1", "Redirected link", "https://news.test/moved", fmt_ts(now)),
+        ("2", "Canonical link", "https://news.test/story", fmt_ts(now - timedelta(hours=1))),
+        ("3", "An older article", "https://news.test/2026/09/other-story-here",
+         fmt_ts(now - timedelta(days=40))),
+    ]:
+        server.add_post(local_id, title, "", created=created)
+        server.edit_post(local_id, url=url)
+        tids.append(abouncer.ingest_url(f"https://{DOMAIN}/post/{local_id}", "auto"))
+    abouncer.promote(tids[0])  # Kept later, but it still originated as a passive capture.
+    server.add_post("4", "Manually saved", "", created=fmt_ts(now))
+    server.edit_post("4", url="https://news.test/linking")
+    abouncer.ingest_url(f"https://{DOMAIN}/post/4")
+    abouncer.articles.fetch_pending()
+
+    with abouncer.db.connect() as conn:
+        recent, more = articles.trending(conn, fmt_ts(now - timedelta(days=7)))
+        all_time, _ = articles.trending(conn)
+    assert not more
+    assert [(a["title"], a["post_count"], a["community_count"]) for a in recent] == [
+        ("Harbour wall to be rebuilt", 2, 1),
+    ]
+    assert [(a["title"], a["post_count"]) for a in all_time] == [
+        ("Harbour wall to be rebuilt", 2), ("The other story", 1),
+    ]
+
+    client = TestClient(create_app(settings, abouncer))
+    client.post("/login", data={"password": "pw"})
+    page = client.get("/articles").text
+    assert "Trending articles" in page and "2 posts" in page
+    assert page.count("Harbour wall to be rebuilt") == 1
+    assert "The other story" not in page
+    assert 'href="/articles"' in page and 'aria-current="page"' in page
+    assert "The other story" in client.get("/articles?t=all").text
 
 
 def test_article_pictures_follow_the_posts_own(server, abouncer):
