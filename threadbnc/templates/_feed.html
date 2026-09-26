@@ -88,6 +88,10 @@
         <button class="menu-item {{ 'on' if scrolling }}" aria-pressed="{{ 'true' if scrolling else 'false' }}">
           <span class="tick">{% if scrolling %}{{ icon('check') }}{% endif %}</span><span class="grow">Mark posts read as I scroll past them</span></button>
       </form>
+      {% set n_hidden = hidden_count() %}
+      <div class="menu-section">
+        <a class="menu-item" href="/hidden"><span class="tick">{{ icon('hide') }}</span><span class="grow">Hidden people and feeds{% if n_hidden %} ({{ n_hidden }}){% endif %}</span></a>
+      </div>
       {% set langs = feed_languages() %}
       <form method="post" action="/feed/languages" class="menu-section">
         <label class="menu-label" for="feed-languages">Languages</label>
@@ -163,7 +167,33 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
 {% macro post_content_link(i, short=False) -%}
 {% if i.video %}<a class="act read-post" href="/t/{{ i.id }}#post-text" title="Show the video{{ ' and its description' if i.body }} here" aria-expanded="false">{{ icon('play') }}<span{% if short %} class="sr-only"{% endif %}>Video</span></a>
 {% elif i.body_link %}<a class="act direct-link" href="{{ i.body_link }}" target="_blank" rel="noreferrer noopener nofollow" title="Open the link" aria-label="Open link">{{ icon('link') }}<span{% if short %} class="sr-only"{% endif %}>Open link</span></a>
-{% elif i.body %}<a class="act read-post" href="/t/{{ i.id }}#post-text" title="Show the post text here" aria-expanded="false">{{ icon('article') }}<span{% if short %} class="sr-only"{% endif %}>Post text</span></a>{% endif %}
+{% elif i.body %}<a class="act read-post" href="/t/{{ i.id }}#post-text" title="Show the post{{ "'s pictures and" if i.thumb and i.thumb.pics | length > 1 }} text here" aria-expanded="false">{{ icon('article') }}<span{% if short %} class="sr-only"{% endif %}>Post text</span></a>
+{% elif not short and i.thumb and i.thumb.pics | length > 1 %}<a class="act read-post" href="/t/{{ i.id }}#post-text" title="Show its {{ i.thumb.pics | length }} pictures here" aria-expanded="false">{{ icon('picture') }}<span>Pictures</span></a>{% endif %}
+{%- endmacro %}
+
+{# Hide whoever posted it (hidden.py): their posts leave every feed and new ones
+   aren't saved. A feed's or a YouTube channel's posts are all by it, so there
+   it's the feed or channel that's hidden, and the warning says so. #}
+{% macro hide_button(i, short=False) -%}
+{% set channel = is_youtube(i.c_ap) %}
+{% if channel or is_rss(i.c_ap) %}
+  {% set what = 'YouTube channel' if channel else 'feed' %}
+  {% set key, kind, label = i.c_ap, 'community', chandle(i.cname, i.c_ap) %}
+  {% set warn = 'This hides the whole ' ~ what ~ ' ' ~ label ~ ', not just this post: every post from it leaves your feeds and new ones aren\'t saved, though you still follow it. You can show it again from Feed options → Hidden.' %}
+  {% set title = 'Hide this ' ~ what %}
+{% elif i.author_ap %}
+  {% set key, kind = i.author_ap, 'author' %}
+  {% set label = ('@' ~ i.username) if is_bluesky(i.canonical_ap_id) else (i.username ~ (('@' ~ i.a_instance) if i.a_instance else '')) %}
+  {% set warn = 'Hide ' ~ label ~ '? Their posts leave all your feeds, wherever they post, and new ones aren\'t saved. You can show them again from Feed options → Hidden.' %}
+  {% set title = 'Hide ' ~ label ~ ': their posts leave your feeds, and new ones aren\'t saved' %}
+{% endif %}
+{% if key %}
+<form method="post" action="/hide" class="inline" data-confirm="{{ warn }}">
+  <input type="hidden" name="key" value="{{ key }}"><input type="hidden" name="kind" value="{{ kind }}">
+  <input type="hidden" name="label" value="{{ label }}">
+  <button class="act hide-source" title="{{ title }}">{{ icon('hide') }}<span class="{{ 'sr-only' if short }}">Hide {{ 'channel' if channel else 'feed' if kind == 'community' else 'user' }}</span></button>
+</form>
+{% endif %}
 {%- endmacro %}
 
 {% macro repost_link(i, short=False) -%}
@@ -276,6 +306,7 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
         {{ keep_button(i.id, i.all_kept, i.group, anchor='p' ~ i.id, short=True, refresh='p' ~ i.id) }}
         {% if not i.all_kept %}{{ trash_button(i.id, i.group, ('p' ~ next_id) if next_id else '', short=True, refresh='p' ~ i.id) }}{% endif %}
         {{ repost_link(i, short=True) }}
+        {{ hide_button(i, short=True) }}
       </div>
     </div>
   </div>
@@ -325,6 +356,7 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
         {{ trash_button(i.id, i.group, ('p' ~ next_id) if next_id else '', refresh='p' ~ i.id) }}
       {% endif %}
       {{ repost_link(i) }}
+      {{ hide_button(i) }}
       {% if not i.all_kept and i.expires_at %}<span class="muted expires" title="Auto-captured; deleted {{ i.expires_at | absolute }} unless kept">{{ icon('clock') }}expires {{ i.expires_at | ago }}</span>{% endif %}
     </div>
   </div>
@@ -356,6 +388,7 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
     {{ keep_button(i.id, i.all_kept, i.group, anchor='p' ~ i.id, refresh='p' ~ i.id) }}
     {% if not i.all_kept %}{{ trash_button(i.id, i.group, ('p' ~ next_id) if next_id else '', refresh='p' ~ i.id) }}{% endif %}
     {{ repost_link(i) }}
+    {{ hide_button(i) }}
   </div>
 </article>
 {% endmacro %}
@@ -391,6 +424,20 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
 </a></li>
 {%- endmacro %}
 
+{# A folder in your own arrangement of the Following list (sidebar.py): open or
+   closed as you left it, and open whatever you left it as while you're in it. #}
+{% macro follow_folder(e, current_id) -%}
+{% set inside = current_id in (e.follows | map(attribute='id') | list) %}
+<li class="fl-folder"><details data-remember="/following/folders/{{ e.id }}"{% if e.open or inside %} open{% endif %}>
+  <summary class="fl-folder-name" title="{{ e.follows | length }} in {{ e.name }}">{{ icon('chevron-down', 'chev') }}<span class="fl-name">{{ e.name }}</span>
+    {% if e.unread %}<span class="count" aria-label="{{ e.unread }} unread">{{ e.unread }}</span>{% endif %}</summary>
+  <ul class="follow-list fl-sub">
+    {% for f in e.follows %}{{ follow_link(f, current_id) }}{% endfor %}
+    {% if not e.follows %}<li class="muted small fl-empty">Empty</li>{% endif %}
+  </ul>
+</details></li>
+{%- endmacro %}
+
 {% macro sidebar(follows, current_id=none, feed_id=none) %}
 {# Grouped by kind of source once the list is long enough to need it. #}
 {% set g = namespace(fedi=[], reddit=[], youtube=[], bluesky=[], feeds=[]) %}
@@ -424,8 +471,13 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
     <details class="fl-panel" data-remember="/feed/sidebar"{% if not collapsed %} open{% endif %}>
     <summary class="fl-summary" title="Show or hide the communities you follow">
       <h2>Following</h2><span class="count muted">{{ follows | length }}</span><span class="grow"></span>{{ icon('chevron-down', 'chev') }}</summary>
+    {% set arranged = arranged_follows(follows) %}
     <ul class="follow-list">
-      {% if grouped %}
+      {% if arranged %}
+        {% for e in arranged.entries %}
+          {% if e.kind == 'folder' %}{{ follow_folder(e, current_id) }}{% else %}{{ follow_link(e.f, current_id) }}{% endif %}
+        {% endfor %}
+      {% elif grouped %}
         {% for label, fs in groups %}
           <li class="fl-group" aria-hidden="true">{{ label }}</li>
           {% for f in fs %}{{ follow_link(f, current_id) }}{% endfor %}
@@ -435,13 +487,16 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
       {% endif %}
       {% if not follows %}<li class="muted small">Not following anything yet.</li>{% endif %}
       <li class="fl-add"><a href="/communities#follow">{{ icon('plus') }}<span class="fl-name">Follow</span></a></li>
+      <li class="fl-add fl-edit"><a href="/following">{{ icon('pencil') }}<span class="fl-name">Edit list</span></a></li>
     </ul>
     <form method="post" action="/follow" class="stack follow-quick">
       <input name="community" placeholder="!community@instance, r/name, @someone.bsky.social, a YouTube channel or a feed URL" required aria-label="Community to follow">
       <input type="hidden" name="backfill" value="1">
       <button class="small">Follow</button>
     </form>
-    <p class="small"><a href="/communities">Manage follows →</a></p>
+    <p class="small fl-manage"><a href="/following">{{ icon('pencil') }}Edit this list</a>
+      {%- if arranged and arranged.hidden %} <span class="muted">({{ arranged.hidden | length }} hidden)</span>{% endif %}
+      · <a href="/communities">Manage follows →</a></p>
     </details>
   </section>
 </aside>

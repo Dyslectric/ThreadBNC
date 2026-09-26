@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from . import articles, dupes, languages, videos, youtube
+from . import articles, dupes, hidden, languages, videos, youtube
 from .adapters.base import is_reddit_host
 from .db import Conn, fmt_ts, parse_ts, utcnow
 from .render import AUDIO_EXTENSIONS, VIDEO_EXTENSIONS, looks_like_audio, sole_link
@@ -93,6 +93,7 @@ SELECT * FROM (
            o.cur_missing, o.revision_count, o.thumbnail_url, o.upvotes, o.downvotes, o.dupe_key,
            COALESCE(o.dupe_key, 'thread:' || t.id) AS dkey,
            r.title, r.body, r.url, r.metadata_json AS rmeta, a.username, a.instance AS a_instance,
+           a.canonical_ap_id AS author_ap,
            c.name AS cname, c.canonical_ap_id AS c_ap, {touched} AS touched,
            (SELECT COUNT(*) FROM objects x WHERE x.thread_id=t.id AND x.object_type='comment') AS n_comments,
            (SELECT COUNT(*) FROM objects x WHERE x.thread_id=t.id AND x.discovered_late=1
@@ -166,6 +167,7 @@ def custom_feeds(conn: Conn) -> list[dict[str, Any]]:
     for r in conn.execute("SELECT feed_id, community_id FROM custom_feed_communities"):
         members.setdefault(r[0], []).append(r[1])
     shown, params = languages.thread_shown_sql(languages.load(conn), "root_object_id")
+    shown += " AND " + hidden.thread_sql(conn)
     unread = {r[0]: r[1] for r in conn.execute(
         "SELECT community_id, COUNT(*) FROM archived_threads WHERE trashed_at IS NULL AND last_viewed_at IS NULL "
         f"AND {shown} GROUP BY community_id", params)}
@@ -253,7 +255,7 @@ def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: lis
         scope += " AND t.retention='manual'"
     elif thread_ids is None:
         sql, params = languages.shown_sql(languages.load(conn), "o.language")
-        scope += " AND " + sql
+        scope += " AND " + sql + " AND " + hidden.thread_sql(conn, "t.")
         args += params
     if media in MEDIA_KINDS:
         sql, params = MEDIA_KINDS[media]
@@ -353,7 +355,8 @@ def thumbnails(conn: Conn,
         oid = r["object_id"]
         is_link = r["url"] == links.get(oid)
         rank = 0 if is_link else 1 if r["url"] == previews.get(oid) else 3 if r["from_article"] else 2
-        pic = {"id": r["id"], "video": r["content_type"].startswith("video/"), "is_link": is_link, "rank": rank}
+        pic = {"id": r["id"], "video": r["content_type"].startswith("video/"), "is_link": is_link, "rank": rank,
+               "url": r["url"]}
         found.setdefault(oid, []).append(pic)
         if oid not in out or rank < out[oid]["rank"]:
             out[oid] = dict(pic)
@@ -454,6 +457,7 @@ def followed_communities(conn: Conn) -> list[dict[str, Any]]:
     """Every followed community, with how many posts it shows (in the languages
     chosen) and how many of those are unread."""
     shown, params = languages.thread_shown_sql(languages.load(conn), "t.root_object_id")
+    shown += " AND " + hidden.thread_sql(conn, "t.")
     rows = conn.execute(
         """SELECT c.id, c.name, c.title, c.canonical_ap_id, f.poll_interval_minutes, f.retention_days,
                   f.last_polled_at, f.last_error, f.source_domain, f.push_state, f.push_error, f.last_push_at,
@@ -480,6 +484,7 @@ def mark_read(conn: Conn, now: str, community_id: int | None = None,
     their last_viewed_at, which is what unmark_read(now) undoes."""
     scope = _scope(community_id, community_ids, "community_id")
     shown, params = languages.thread_shown_sql(languages.load(conn), "root_object_id")
+    shown += " AND " + hidden.thread_sql(conn)
     unread = conn.execute(
         f"SELECT COUNT(*) FROM archived_threads WHERE trashed_at IS NULL AND last_viewed_at IS NULL "
         f"AND {scope[0]} AND {shown}", [*scope[1], *params]).fetchone()[0]

@@ -419,6 +419,8 @@ class Federation:
         created, since = parse_ts(post.created_at), parse_ts(f["capture_since"])
         if created and since and created < since:
             return "skipped", "older than the follow"
+        if self.bouncer.hidden(post):
+            return "skipped", "by someone you've hidden"
         tid = self.bouncer._ingest_post(post, account.domain, post.local_id, self.bouncer.adapter_for(account.domain),
                                         capture=True,
                                         source_url=post.ap_id, retention="auto")

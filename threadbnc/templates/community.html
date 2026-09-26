@@ -121,6 +121,14 @@
       {% endif %}
       </div>
     </header>
+    {% if hidden_here %}
+    <div class="flash warn-flash" role="status">{{ icon('hide') }}
+      <span><strong>You've hidden this {{ 'channel' if is_youtube(c.canonical_ap_id) else 'feed' }}.</strong> Its posts are left out of
+        your feeds, this page included, and new ones aren't saved.</span>
+      <form method="post" action="/unhide" class="inline"><input type="hidden" name="key" value="{{ c.canonical_ap_id }}">
+        <button class="small">Show it again</button></form>
+    </div>
+    {% endif %}
     {% if following and follow.last_error %}
     <div class="flash error" role="alert">{{ icon('alert') }}
       <span><strong>Checking this community is failing.</strong> {{ follow.last_error }}

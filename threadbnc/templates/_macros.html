@@ -115,6 +115,27 @@
 
 {# Move a thread (and its copies when `group`) to the trash. `next_anchor`: the
    element to come back to, since this one leaves the page. #}
+{# A post's pictures (and videos) at full width, swiped or stepped through with
+   the arrows, one at a time: on the post's page, and in its text opened in a feed.
+   `pics`: feed.thumbnails' "pics". #}
+{% macro carousel(pics) -%}
+<div class="gallery"{% if pics | length > 1 %} data-gallery{% endif %}>
+  <div class="gallery-track">
+    {% for p in pics %}
+    <div class="gallery-slide">
+      {% if p.video %}<video src="/media/{{ p.id }}" controls preload="metadata" playsinline></video>
+      {% else %}<img src="{{ thumb(p.id, 'picture') }}" alt="" loading="lazy">{% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% if pics | length > 1 %}
+  <button type="button" class="gallery-nav prev" data-step="-1" aria-label="Previous picture">{{ icon('chevron-left') }}</button>
+  <button type="button" class="gallery-nav next" data-step="1" aria-label="Next picture">{{ icon('chevron-right') }}</button>
+  <span class="gallery-count"><span data-at>1</span>/{{ pics | length }}</span>
+  {% endif %}
+</div>
+{%- endmacro %}
+
 {% macro trash_button(tid, group=False, next_anchor='', short=False, refresh='') -%}
 <form method="post" action="/t/{{ tid }}/trash" class="inline" data-inplace="{{ refresh }}" data-gone="Moved to trash">
   {% if group %}<input type="hidden" name="group" value="1">{% endif %}

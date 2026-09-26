@@ -514,6 +514,15 @@ CREATE TABLE IF NOT EXISTS custom_feed_communities (
     PRIMARY KEY (feed_id, community_id)
 );
 
+-- People, feeds and YouTube channels you've hidden (hidden.py): their posts are
+-- left out of feeds and not captured any more.
+CREATE TABLE IF NOT EXISTS hidden_sources (
+    key TEXT PRIMARY KEY,              -- an author's canonical id, or a community's (a feed, a channel)
+    kind TEXT NOT NULL,                -- author | community
+    label TEXT,                        -- what it was called when hidden
+    hidden_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS app_settings (
     key TEXT PRIMARY KEY,
     value TEXT

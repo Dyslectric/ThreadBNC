@@ -26,6 +26,7 @@ from typing import Any, Callable
 
 from . import articles, livestream, media, store, thumbs, traffic, youtube
 from . import feed as feed_mod
+from . import hidden as hidden_mod
 from .adapters import (
     BSKY_DOMAIN,
     CommentList,
@@ -267,6 +268,12 @@ class Bouncer:
             raise
         self._note_contact(ref.domain, True)
         return self._ingest_post(post, ref.domain, local, adapter, source_url=url, retention=retention)
+
+    def hidden(self, post: NPost) -> bool:
+        """Whether a post is by someone, or in a feed, you've hidden (hidden.py):
+        it isn't captured."""
+        with self.db.connect() as conn:
+            return hidden_mod.hides(conn, post.author.ap_id if post.author else None, post.community.ap_id)
 
     def _existing_thread(self, ap_id: str) -> Any:
         with self.db.connect() as conn:
@@ -1179,7 +1186,7 @@ class Bouncer:
             created = parse_ts(post.created_at)
             if created and since and created < since:
                 continue
-            if self._existing_thread(post.ap_id):
+            if self._existing_thread(post.ap_id) or self.hidden(post):
                 continue
             if is_reddit_host(ref.domain) and post.body:
                 # A subreddit's posts are stored as their title, link and pictures;

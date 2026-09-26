@@ -372,7 +372,7 @@ class BlueskyStream:
         captured = 0
         for post in posts:
             since, created = followed[post.community.name], parse_ts(post.created_at)
-            if since and created and created < since:
+            if (since and created and created < since) or self.bouncer.hidden(post):
                 continue
             self.bouncer._ingest_post(post, BSKY_DOMAIN, post.local_id, adapter, capture=True,
                                       source_url=post.ap_id, retention="auto")

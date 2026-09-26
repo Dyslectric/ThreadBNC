@@ -124,7 +124,8 @@ def status_view(status: dict[str, Any], domain: str) -> dict[str, Any]:
     return {"url": status.get("url") or status.get("uri"), "uri": status.get("uri"),
             "text": plain_text(status.get("content")).strip()[:3000], "warning": warning or None,
             "handle": acct if "@" in acct else f"{acct}@{domain}", "name": account.get("display_name") or None,
-            "author_url": account.get("url"), "link": card.get("url"), "link_title": card.get("title") or None,
+            "author_url": account.get("url"), "author_uri": account.get("uri"),
+            "link": card.get("url"), "link_title": card.get("title") or None,
             "pictures": sum(1 for m in media if m.get("type") == "image"),
             "video": any(m.get("type") in ("video", "gifv") for m in media), "quote": False,
             "images": [u for u in ([m.get("url") if m.get("type") == "image" else m.get("preview_url") for m in media
@@ -319,6 +320,8 @@ class MastodonStream:
         created, since = parse_ts(post.created_at), parse_ts(followed[tag])
         if created and since and created < since:
             return {"skipped": "older than the follow"}
+        if self.bouncer.hidden(post):
+            return {"skipped": "by someone you've hidden"}
         adapter = self.bouncer.tag_adapter
         tid = self.bouncer._ingest_post(post, TAG_DOMAIN, post.local_id, adapter, capture=True,
                                         source_url=post.ap_id, retention="auto")
