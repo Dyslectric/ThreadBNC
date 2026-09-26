@@ -55,7 +55,7 @@ from urllib.parse import urlencode, urlparse
 from websockets.exceptions import WebSocketException
 from websockets.sync.client import connect
 
-from . import trends
+from . import languages, trends
 from .adapters import TAG_DOMAIN, RemoteError, RemoteNotFound, normalize_tag
 from .adapters.activitypub import account_community, context_comments, plain_text, status_id, status_post
 from .adapters.base import host_of
@@ -170,6 +170,7 @@ def status_view(status: dict[str, Any], domain: str) -> dict[str, Any]:
             "link": card.get("url"), "link_title": card.get("title") or None,
             "pictures": sum(1 for m in media if m.get("type") == "image"),
             "video": any(m.get("type") in ("video", "gifv") for m in media), "quote": False,
+            "lang": languages.normalize(status.get("language")),
             "images": [u for u in ([m.get("url") if m.get("type") == "image" else m.get("preview_url") for m in media
                                     if m.get("type") in ("image", "video", "gifv")] or [card.get("image")])
                        if isinstance(u, str) and u.startswith("https://")][:trends.PICTURES]}
@@ -393,8 +394,9 @@ class MastodonStream:
             self.tally.reply(f"{domain}/{reply_to}")
         account = status.get("account") if isinstance(status.get("account"), dict) else {}
         author = account.get("url") or account.get("acct")
-        self.tally.post_links(status_links(status), author)
-        self.tally.post_tags(status_tags(status), author)
+        lang = languages.normalize(status.get("language"))
+        self.tally.post_links(status_links(status), author, lang)
+        self.tally.post_tags(status_tags(status), author, lang)
         if not reply_to and status.get("visibility", "public") == "public":
             tag = next((t for t in status_tags(status) if t in tags), None)
             if tag and not self.bouncer._existing_thread(status["uri"]):

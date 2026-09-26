@@ -1164,6 +1164,12 @@ a.article-link.dived, a[data-dive].dived, a.video-link.dived, a.live-link.dived 
 .trend-tags { list-style: none; padding: 4px 0; margin: 0; }
 .trend-tags-heading { font-size: 1.05rem; margin: 18px 0 2px; }
 .trend-tags-heading + p { margin: 0 0 8px; }
+.trend-look-back { display: inline-flex; align-items: center; gap: 6px; }
+.trend-look-back label { display: inline-flex; align-items: center; gap: 4px; margin: 0; color: var(--muted); }
+.trend-look-back input[type="date"] { width: auto; padding: 3px 6px; font-size: 0.9em; }
+.trend-history-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; margin-top: 4px; }
+.trend-history-head .trend-tags-heading { margin: 0; }
+.trend-history-head + p { margin: 2px 0 8px; }
 .trend-tag { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 4px 12px;
   padding: 7px 14px; border-bottom: 1px solid var(--line); }
 .trend-tag:last-child { border-bottom: none; }

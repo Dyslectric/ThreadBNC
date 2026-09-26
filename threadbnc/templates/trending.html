@@ -3,14 +3,59 @@
 {% block title %}Trending{% endblock %}
 {% block content %}
 {% set st = status %}
+{#- A link to this page with some of its choices changed (None: back to its default). -#}
+{% macro q(path, over) -%}
+{%- set merged = dict(params, **over) -%}
+{{ path }}{% for k, v in merged.items() if v %}{% if loop.first %}?{% else %}&{% endif %}{{ k }}={{ v | urlencode }}{% endfor %}
+{%- endmacro %}
+{% macro language_seg(path) %}
+  {% if langs.chosen %}
+    <nav class="seg" aria-label="Languages">
+      <a title="Mostly in {% for c in langs.chosen %}{{ language_name(c) }}{{ ', ' if not loop.last }}{% endfor %}, the languages feeds show (Feed options → Languages)"
+         href="{{ q(path, {'lang': None, 'page': None}) }}" class="{{ 'on' if not langs.all }}" {% if not langs.all %}aria-current="page"{% endif %}>Your languages</a>
+      <a href="{{ q(path, {'lang': 'all', 'page': None}) }}" class="{{ 'on' if langs.all }}" {% if langs.all %}aria-current="page"{% endif %}>All</a>
+    </nav>
+  {% endif %}
+{% endmacro %}
+{% macro look_back(path) %}
+  {% if history.first %}
+    <form method="get" action="{{ path }}" class="inline trend-look-back small">
+      <input type="hidden" name="src" value="{{ source }}">
+      {% if langs.all %}<input type="hidden" name="lang" value="all">{% endif %}
+      <label>{{ icon('clock') }} <span class="sr-only">Look back to</span>
+        <input type="date" name="on" value="{{ history.day or history.last }}" min="{{ history.first }}" max="{{ history.last }}"></label>
+      <button class="small secondary" title="What was posted most that day (UTC), as kept in History">Look back</button>
+    </form>
+  {% endif %}
+{% endmacro %}
+{% macro history_head(what) %}
+  {% set h = history %}
+  <div class="trend-history-head">
+    <h2 class="trend-tags-heading">{{ what }} on {{ h.day }}</h2>
+    <nav class="small actions">
+      {% if h.previous %}<a class="act" href="{{ q(request.url.path, {'on': h.previous, 'page': None}) }}">{{ icon('chevron-left') }}<span>{{ h.previous }}</span></a>{% endif %}
+      {% if h.next %}<a class="act" href="{{ q(request.url.path, {'on': h.next, 'page': None}) }}"><span>{{ h.next }}</span>{{ icon('chevron-right') }}</a>{% endif %}
+      <a class="act" href="{{ q(request.url.path, {'on': None, 'page': None}) }}">Back to now</a>
+    </nav>
+  </div>
+  <p class="small muted">The day in UTC, as kept in History: the {{ '{:,}'.format(keep_top) }} most posted on each network.
+    {% for s, n in h.counted.items() %}{{ 'Bluesky' if s == 'bluesky' else 'Mastodon' }} was counted {{ n }} of its 24 hours{{ '; ' if not loop.last else '.' }}{% endfor %}</p>
+{% endmacro %}
+{% macro rising_note() %}
+  {% if span %}
+  <p class="small muted">Posted at least {{ 'twice' if ratio == '2' else ratio ~ ' times' }} as much as usual in the past {{ rising_hours }} hours, compared with the week before;
+    furthest above usual first.
+    {% for s in span.new %}<span class="bad-text">{{ 'Bluesky' if s == 'bluesky' else 'Mastodon' }} was counted for under {{ baseline }} hours before that, so everything on it looks new.</span>{% endfor %}</p>
+  {% endif %}
+{% endmacro %}
 <div class="articles-page trending-page">
   <div class="feed-head articles-head">
     <div>
       <h1>{{ icon('trending', 'title-icon') }} Trending</h1>
       <p class="muted small">
         {%- if tab == 'posts' %} What's liked and talked about most on Bluesky and Mastodon, from their streams.
-        {%- elif tab == 'tags' %} The hashtags used in the most posts on Bluesky and Mastodon.
-        {%- else %} The pages posted most on Bluesky, on Mastodon and in your archive.{% endif %}</p>
+        {%- elif tab == 'tags' %} The hashtags used in the most posts on Bluesky and Mastodon, and those rising.
+        {%- else %} The pages posted most on Bluesky, on Mastodon and in your archive, and those rising.{% endif %}</p>
     </div>
     <details class="menu trend-settings">
       <summary class="button small secondary">{{ icon('settings') }} Sources</summary>
@@ -104,26 +149,27 @@
   </p>
 
 {% if tab == 'posts' %}
-  {% set base = '/trending?sort=' ~ sort ~ '&t=' ~ window ~ '&src=' ~ source %}
+  {% set base = q('/trending', {}) %}
   <div class="feed-controls article-controls">
     <nav class="seg" aria-label="Rank by">
       {% for key, label in [('likes', 'Most liked'), ('replies', 'Most replies')] %}
-        <a href="/trending?sort={{ key }}&t={{ window }}&src={{ source }}" class="{{ 'on' if sort == key }}"
+        <a href="{{ q('/trending', {'sort': key}) }}" class="{{ 'on' if sort == key }}"
            {% if sort == key %}aria-current="page"{% endif %}>{{ label }}</a>
       {% endfor %}
     </nav>
     <nav class="seg" aria-label="Posted in the past">
       {% for key, label in [('day', 'Day'), ('week', 'Week')] %}
-        <a href="/trending?sort={{ sort }}&t={{ key }}&src={{ source }}" class="{{ 'on' if window == key }}"
+        <a href="{{ q('/trending', {'t': key}) }}" class="{{ 'on' if window == key }}"
            {% if window == key %}aria-current="page"{% endif %}>{{ label }}</a>
       {% endfor %}
     </nav>
     <nav class="seg" aria-label="Where">
       {% for key, label in [('all', 'Both'), ('bluesky', 'Bluesky'), ('mastodon', 'Mastodon')] %}
-        <a href="/trending?sort={{ sort }}&t={{ window }}&src={{ key }}" class="{{ 'on' if source == key }}"
+        <a href="{{ q('/trending', {'src': key}) }}" class="{{ 'on' if source == key }}"
            {% if source == key %}aria-current="page"{% endif %}>{{ label }}</a>
       {% endfor %}
     </nav>
+    {{ language_seg('/trending') }}
   </div>
 
   <div id="items" class="cards" data-items>
@@ -204,16 +250,27 @@
   {{ load_more(base ~ '&page=' ~ (page + 1) if has_more else none, base if page > 1 else none, page) }}
 
 {% elif tab == 'articles' %}
-  {% set base = '/trending/articles?t=' ~ window %}
+  {% set base = q('/trending/articles', {}) %}
+  {% set live = not history.day %}
   <div class="feed-controls article-controls">
     <nav class="seg" aria-label="Time range">
-      {% for key, label in [('day', 'Day'), ('week', 'Week'), ('month', 'Month')] %}
-        <a href="/trending/articles?t={{ key }}" class="{{ 'on' if window == key }}"
-           {% if window == key %}aria-current="page"{% endif %}>{{ label }}</a>
+      {% for key, label in [('rising', 'Rising'), ('day', 'Day'), ('week', 'Week'), ('month', 'Month')] %}
+        <a href="{{ q('/trending/articles', {'t': key, 'on': None}) }}" class="{{ 'on' if live and window == key }}"
+           {% if live and window == key %}aria-current="page"{% endif %}>{{ label }}</a>
       {% endfor %}
     </nav>
-    <span class="muted small">The {{ cached }} most posted of each are read, and kept while they stay there.</span>
+    <nav class="seg" aria-label="Where">
+      {% for key, label in [('all', 'All'), ('bluesky', 'Bluesky'), ('mastodon', 'Mastodon'), ('archive', 'Archive')] if live or key != 'archive' %}
+        <a href="{{ q('/trending/articles', {'src': key}) }}" class="{{ 'on' if source == key }}"
+           {% if source == key %}aria-current="page"{% endif %}>{{ label }}</a>
+      {% endfor %}
+    </nav>
+    {{ language_seg('/trending/articles') }}
+    {{ look_back('/trending/articles') }}
   </div>
+  {% if not live %}{{ history_head('Articles') }}
+  {% elif window == 'rising' %}{{ rising_note() }}
+  {% else %}<p class="muted small">The {{ cached }} at the top of each ranking are read, and kept while they stay there.</p>{% endif %}
 
   <div id="items" class="cards" data-items>
   {% for a in articles %}
@@ -225,10 +282,17 @@
       {% endif %}
       <div class="pc-main">
         <div class="pc-meta small">
+          {% if a.score is defined %}
+          <span class="pill new trend-posts" title="Posted in the past {{ rising_hours }} hours">{{ a.recent }} post{{ 's' if a.recent != 1 }} in {{ rising_hours }} hours</span>
+          <span class="muted">usually {{ '%.0f' | format(a.usual) if a.usual >= 1 else 'none' if a.usual == 0 else 'under 1' }}</span>
+          {% else %}
           <span class="pill new trend-posts">{{ a.total }} post{{ 's' if a.total != 1 }}</span>
-          {% if a.bluesky %}<span title="Posted on Bluesky">Bluesky {{ a.bluesky }}</span>{% endif %}
-          {% if a.mastodon %}<span title="Posted on Mastodon">· Mastodon {{ a.mastodon }}</span>{% endif %}
-          {% if a.archive %}<span title="Linked by posts in your archive, in {{ a.community_count }} communit{{ 'ies' if a.community_count != 1 else 'y' }}">· Archive {{ a.archive }}</span>{% endif %}
+          {% endif %}
+          {% set rising_now = a.score is defined %}
+          {% set on_bluesky, on_mastodon, in_archive = (a.recent_bluesky, a.recent_mastodon, a.recent_archive) if rising_now else (a.bluesky, a.mastodon, a.archive) %}
+          {% if on_bluesky %}<span title="Posted on Bluesky">{{ '· ' if rising_now }}Bluesky {{ on_bluesky }}</span>{% endif %}
+          {% if on_mastodon %}<span title="Posted on Mastodon">· Mastodon {{ on_mastodon }}</span>{% endif %}
+          {% if in_archive %}<span title="Linked by posts in your archive, in {{ a.community_count }} communit{{ 'ies' if a.community_count != 1 else 'y' }}">· Archive {{ in_archive }}</span>{% endif %}
           · <span class="pc-community">{{ a.site_name or (original | host) }}</span>
           {% if a.byline %}· <span>{{ a.byline }}</span>{% endif %}
           {% if a.minutes %}· <span>{{ a.minutes }} min read</span>{% endif %}
@@ -251,27 +315,35 @@
   </div>
 
   {% if not articles %}
-    <section class="card empty"><p class="muted">No links posted in this time range yet.</p></section>
+    <section class="card empty"><p class="muted">
+      {%- if not live %}Nothing was kept of this day{{ ' in these languages' if langs.codes }}.
+      {%- elif window == 'rising' %}Nothing posted far more than usual{{ ' on ' ~ source | title if source != 'all' }} lately.
+      {%- else %}No links posted {{ 'on ' ~ source | title ~ ' ' if source != 'all' }}in this time range yet.{% endif %}</p></section>
   {% endif %}
   {{ load_more(base ~ '&page=' ~ (page + 1) if has_more else none, base if page > 1 else none, page) }}
 
 {% else %}
-  {% set base = '/trending/tags?t=' ~ window ~ '&src=' ~ source %}
+  {% set base = q('/trending/tags', {}) %}
+  {% set live = not history.day %}
   <div class="feed-controls article-controls">
     <nav class="seg" aria-label="Time range">
-      {% for key, label in [('day', 'Day'), ('week', 'Week'), ('month', 'Month')] %}
-        <a href="/trending/tags?t={{ key }}&src={{ source }}" class="{{ 'on' if window == key }}"
-           {% if window == key %}aria-current="page"{% endif %}>{{ label }}</a>
+      {% for key, label in [('rising', 'Rising'), ('day', 'Day'), ('week', 'Week'), ('month', 'Month')] %}
+        <a href="{{ q('/trending/tags', {'t': key, 'on': None}) }}" class="{{ 'on' if live and window == key }}"
+           {% if live and window == key %}aria-current="page"{% endif %}>{{ label }}</a>
       {% endfor %}
     </nav>
     <nav class="seg" aria-label="Where">
       {% for key, label in [('all', 'Both'), ('bluesky', 'Bluesky'), ('mastodon', 'Mastodon')] %}
-        <a href="/trending/tags?t={{ window }}&src={{ key }}" class="{{ 'on' if source == key }}"
+        <a href="{{ q('/trending/tags', {'src': key}) }}" class="{{ 'on' if source == key }}"
            {% if source == key %}aria-current="page"{% endif %}>{{ label }}</a>
       {% endfor %}
     </nav>
-    <span class="muted small">Each account counts once an hour for a hashtag.</span>
+    {{ language_seg('/trending/tags') }}
+    {{ look_back('/trending/tags') }}
   </div>
+  {% if not live %}{{ history_head('Hashtags') }}
+  {% elif window == 'rising' %}{{ rising_note() }}
+  {% else %}<p class="muted small">Each account counts once an hour for a hashtag.</p>{% endif %}
 
   {% for server in servers %}
   <h2 class="trend-tags-heading">Trending on {{ server.domain }}</h2>
@@ -311,7 +383,12 @@
     <li class="trend-tag" data-entry>
       <span class="trend-tag-name">{% if t.community_id %}<a href="/c/{{ t.community_id }}">#{{ t.tag }}</a>{% else %}#{{ t.tag }}{% endif %}</span>
       <span class="trend-tag-counts small">
+        {% if t.score is defined %}
+        <span class="pill new" title="Posted in the past {{ rising_hours }} hours">{{ t.total }} post{{ 's' if t.total != 1 }} in {{ rising_hours }} hours</span>
+        <span class="muted">usually {{ '%.0f' | format(t.usual) if t.usual >= 1 else 'none' if t.usual == 0 else 'under 1' }}</span>
+        {% else %}
         <span class="pill new">{{ t.total }} post{{ 's' if t.total != 1 }}</span>
+        {% endif %}
         {% if t.bluesky %}<span class="muted">Bluesky {{ t.bluesky }}</span>{% endif %}
         {% if t.mastodon %}<span class="muted">Mastodon {{ t.mastodon }}</span>{% endif %}
       </span>
@@ -330,6 +407,8 @@
   {% else %}
     <section class="card empty"><p class="muted">
       {%- if source == 'mastodon' and (not st.mastodon_scope or st.mastodon_closed) and not st.chosen.fedibuzz %}Mastodon's hashtags are counted from FediBuzz's firehose or a public timeline you listen to: choose under Sources.
+      {%- elif not live %}Nothing was kept of this day{{ ' in these languages' if langs.codes }}.
+      {%- elif window == 'rising' %}No hashtags used far more than usual {{ 'on ' ~ ('Bluesky' if source == 'bluesky' else 'Mastodon') ~ ' ' if source != 'all' }}lately.
       {%- else %}No hashtags counted {{ 'on ' ~ ('Bluesky' if source == 'bluesky' else 'Mastodon') ~ ' ' if source != 'all' }}in this time range yet.{% endif %}</p></section>
   {% endif %}
   {{ load_more(base ~ '&page=' ~ (page + 1) if has_more else none, base if page > 1 else none, page) }}

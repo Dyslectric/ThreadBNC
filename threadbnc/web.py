@@ -1136,16 +1136,53 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                 "mastodon_scope": (mastodon_subscription(db) or {}).get("scope"), "scopes": MASTODON_SCOPES,
                 "actor": bouncer.actor.handle if bouncer.actor else None}
 
+    def trend_languages(lang: str) -> dict[str, Any]:
+        """Trending shows what's in the languages feeds show (languages.py),
+        unless `lang` is "all": {"chosen": those languages, "codes": the ones
+        shown (none: all), "all": whether every language is shown}."""
+        with db.connect() as conn:
+            chosen = languages.load(conn)
+        every = lang == "all" or not chosen
+        return {"chosen": chosen, "codes": [] if every else chosen, "all": lang == "all"}
+
+    def trend_params(**values: Any) -> dict[str, Any]:
+        """A Trending page's query, for its links: without what's as it is by default."""
+        return {k: v for k, v in values.items() if v not in (None, "", False)}
+
+    trend_consts = {"rising_hours": int(trends_mod.RISING_RECENT.total_seconds() // 3600),
+                    "ratio": f"{trends_mod.RISING_RATIO:g}", "baseline": trends_mod.RISING_BASELINE,
+                    "keep_top": trends_mod.KEEP_TOP}
+
+    def history_day(on: str) -> str | None:
+        """A day to look back on in History ('2026-09-25'), if `on` is one."""
+        try:
+            return datetime.strptime(on, "%Y-%m-%d").date().isoformat() if on else None
+        except ValueError:
+            return None
+
+    def history_status(conn: Any, day: str | None) -> dict[str, Any]:
+        """What the Trending page says of History: the days kept, and of the day shown."""
+        first, last = trends_mod.history_days(conn)
+        out: dict[str, Any] = {"first": first, "last": last, "day": day}
+        if day:
+            moment = datetime.strptime(day, "%Y-%m-%d").date()
+            out["counted"] = trends_mod.counted_hours(conn, day)
+            out["previous"] = (moment - timedelta(days=1)).isoformat() if first and day > first else None
+            out["next"] = (moment + timedelta(days=1)).isoformat() if last and day < last else None
+        return out
+
     @app.get("/trending", response_class=HTMLResponse)
-    def trending_posts(request: Request, sort: str = "likes", t: str = "day", src: str = "all", page: int = 1):
+    def trending_posts(request: Request, sort: str = "likes", t: str = "day", src: str = "all", page: int = 1,
+                       lang: str = ""):
         """The posts most liked, or most replied to, on Bluesky and Mastodon lately."""
         sort = sort if sort in trends_mod.POST_SORTS else "likes"
         window = t if t in trends_mod.POST_WINDOWS else "day"
         source = src if src in trends_mod.SOURCES else "all"
         page = max(1, page)
+        langs = trend_languages(lang)
         with db.connect() as conn:
             items, has_more = trends_mod.trending_posts(conn, window, sort, None if source == "all" else source,
-                                                        page, TRENDING_PAGE)
+                                                        page, TRENDING_PAGE, codes=langs["codes"])
             ap_ids = [i["view"].get("uri") or i["view"].get("url") for i in items]
             here = {r["canonical_ap_id"]: r["id"] for r in conn.execute(
                 f"SELECT o.canonical_ap_id, t.id FROM objects o JOIN archived_threads t ON t.root_object_id=o.id "
@@ -1164,34 +1201,63 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             key = i["view"].get("url") if i["source"] == "bluesky" else i["view"].get("uri")
             i["liked"], i["reposted"] = key in mine["like"], key in mine["repost"]
         return render(request, "trending.html", tab="posts", posts=items, sort=sort, window=window, source=source,
-                      page=page, has_more=has_more, status=trending_status())
+                      page=page, has_more=has_more, status=trending_status(), langs=langs,
+                      params=trend_params(sort=sort, t=window, src=source, lang="all" if langs["all"] else None))
 
     @app.get("/trending/articles", response_class=HTMLResponse)
-    def trending_articles(request: Request, t: str = "week", page: int = 1):
-        """The pages posted most on Bluesky, on Mastodon and in the archive."""
-        window = t if t in trends_mod.WINDOWS else "week"
+    def trending_articles(request: Request, t: str = "week", src: str = "all", page: int = 1, lang: str = "",
+                          on: str = ""):
+        """The pages posted most on Bluesky, on Mastodon and in the archive, or
+        on one of them; those posted far more than usual lately (Rising); or
+        those posted most on a day kept in History (`on`)."""
+        window = t if t in trends_mod.RANKINGS else "week"
+        day = history_day(on)
+        source = src if src in trends_mod.ARTICLE_SOURCES and not (day and src == "archive") else "all"
+        chosen = None if source == "all" else source
         page = max(1, page)
+        langs = trend_languages(lang)
         with db.connect() as conn:
-            items, has_more = trends_mod.trending_articles(conn, ranking(window), page, TRENDING_PAGE)
+            if day:
+                ranked = trends_mod.links_on(conn, day, chosen, langs["codes"])
+            else:
+                ranked = trends_mod.order_articles(ranking(window), chosen, window == "rising", langs["codes"])
+            items, has_more = trends_mod.trending_articles(conn, ranked, page, TRENDING_PAGE)
+            history = history_status(conn, day)
+            span = trends_mod.rising_span(conn) if window == "rising" and not day else None
         for a in items:
             a["excerpt"] = feed_mod.excerpt(articles.excerpt(a.pop("content_html", None), 400), 260) \
                 or (a.get("description") or "")
             a["minutes"] = max(1, round((a["word_count"] or 0) / 230)) if a["word_count"] else None
-        return render(request, "trending.html", tab="articles", articles=items, window=window, page=page,
-                      has_more=has_more, status=trending_status(), cached=trends_mod.TOP_CACHED)
+        return render(request, "trending.html", tab="articles", articles=items, window=window, source=source,
+                      page=page, has_more=has_more, status=trending_status(), cached=trends_mod.TOP_CACHED,
+                      langs=langs, history=history, span=span, **trend_consts,
+                      params=trend_params(t=window, src=source, lang="all" if langs["all"] else None, on=day))
 
     @app.get("/trending/tags", response_class=HTMLResponse)
-    def trending_tags(request: Request, t: str = "day", src: str = "all", page: int = 1):
-        """The hashtags used in the most posts on Bluesky and Mastodon, or on one of them."""
-        window = t if t in trends_mod.WINDOWS else "day"
+    def trending_tags(request: Request, t: str = "day", src: str = "all", page: int = 1, lang: str = "",
+                      on: str = ""):
+        """The hashtags used in the most posts on Bluesky and Mastodon, or on
+        one of them; those used far more than usual lately (Rising); or those
+        used most on a day kept in History (`on`)."""
+        window = t if t in trends_mod.RANKINGS else "day"
+        day = history_day(on)
         source = src if src in trends_mod.SOURCES else "all"
+        chosen = None if source == "all" else source
         page = max(1, page)
+        langs = trend_languages(lang)
         with db.connect() as conn:
-            items, has_more = trends_mod.trending_tags(conn, window, page, TAGS_PAGE,
-                                                       source=None if source == "all" else source)
-            servers = trends_mod.trending_on_servers(conn) if source == "mastodon" and page == 1 else []
+            if day:
+                items, has_more = trends_mod.tags_on(conn, day, chosen, page, TAGS_PAGE, langs["codes"])
+            else:
+                items, has_more = trends_mod.trending_tags(conn, window, page, TAGS_PAGE, source=chosen,
+                                                           codes=langs["codes"])
+            servers = trends_mod.trending_on_servers(conn) if source == "mastodon" and page == 1 and not day else []
+            history = history_status(conn, day)
+            span = trends_mod.rising_span(conn) if window == "rising" and not day else None
         return render(request, "trending.html", tab="tags", tags=items, window=window, source=source, page=page,
-                      has_more=has_more, status=trending_status(), per_page=TAGS_PAGE, servers=servers)
+                      has_more=has_more, status=trending_status(), per_page=TAGS_PAGE, servers=servers,
+                      langs=langs, history=history, span=span, **trend_consts,
+                      params=trend_params(t=window, src=source, lang="all" if langs["all"] else None, on=day))
 
     @app.get("/trending/peek", response_class=HTMLResponse)
     def trending_peek(request: Request, source: str, ref: str):
