@@ -84,10 +84,21 @@ def main() -> None:
         attach(bouncer, settings)
         attach_inbox(bouncer, settings)
     if args.cmd == "bouncer":
-        if settings.jetstream_url:  # hashtags on Bluesky
-            from .jetstream import BlueskyTags
+        from . import trends
+        from .mastodon_stream import MastodonStream
+        from .vault import TokenVault
 
-            BlueskyTags(bouncer, settings.jetstream_url, settings.user_agent).start_thread()
+        # Your Mastodon server's public timeline, when subscribed to (hashtags, Trending).
+        timeline = MastodonStream(bouncer, TokenVault(settings.credentials_key, settings.data_dir), settings.user_agent)
+        timeline.start_thread()
+        counting = False
+        if settings.jetstream_url:  # hashtags on Bluesky, and what's posted there counted for Trending
+            from .jetstream import BlueskyStream
+
+            BlueskyStream(bouncer, settings.jetstream_url, settings.user_agent).start_thread()
+            counting = True
+        trends.Trends(bouncer, lambda: trends.archive_skips(counting and trends.settings(bouncer.db)["bluesky"],
+                                                            timeline.active()))
         bouncer.run_forever()
     elif args.cmd == "archive":
         print(f"thread {bouncer.ingest_url(args.url)}")

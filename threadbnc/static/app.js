@@ -1586,7 +1586,7 @@ document.documentElement.classList.add("js");
   // ---- keyboard shortcuts ---------------------------------------------------------
   let current = null;
   let gPending = null;
-  const GO = { f: "/", c: "/communities", a: "/articles", k: "/kept", i: "/inbox", t: "/trash", s: "/search" };
+  const GO = { f: "/", c: "/communities", r: "/trending", a: "/trending/articles", k: "/kept", i: "/inbox", t: "/trash", s: "/search" };
 
   function items() {
     const entries = $$("[data-entry]").filter(shown);

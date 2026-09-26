@@ -11,8 +11,8 @@ import pytest
 from compression import zstd
 from fastapi.testclient import TestClient
 
-from threadbnc import jetstream
-from threadbnc.jetstream import BAD_FRAMES, CURSOR, JOB, BlueskyTags, match
+from threadbnc import jetstream, trends
+from threadbnc.jetstream import BAD_FRAMES, CURSOR, JOB, BlueskyStream, match
 from threadbnc.web import create_app
 
 from .test_bluesky import ALICE, bsky, one, post_view, signed_in, thread  # noqa: F401
@@ -47,7 +47,7 @@ def event(rkey, text, tags=(), beside=None, reply=False, op="create", time_us=No
 
 @pytest.fixture
 def listening(bouncer, bsky):  # noqa: F811
-    listener = BlueskyTags(bouncer, "wss://jetstream.test/subscribe", "test")
+    listener = BlueskyStream(bouncer, "wss://jetstream.test/subscribe", "test")
     listener.dictionary = None  # uncompressed, unless a test gives it a dictionary
     return listener
 
@@ -173,6 +173,7 @@ def test_listening_notes_posts_and_carries_on_where_it_left_off(bouncer, bsky, l
 
 
 def test_listening_stops_when_no_hashtag_is_followed(bouncer, bsky, listening, monkeypatch):  # noqa: F811
+    trends.save_settings(bouncer.db, bluesky=False)  # and nothing is counted for Trending
     cid = bouncer.follow_community("#cats", None, 30, False)
     events = [event("x1", "#cats", ["cats"]), event("x2", "#cats", ["cats"])]
     monkeypatch.setattr(jetstream, "connect",
@@ -225,7 +226,7 @@ def test_the_dictionary_kept_here_is_a_zstd_one():
 
 def test_without_a_dictionary_events_are_read_uncompressed(bouncer, bsky, monkeypatch, tmp_path):  # noqa: F811
     monkeypatch.setattr(jetstream, "DICTIONARY", tmp_path / "missing")
-    assert BlueskyTags(bouncer, "wss://jetstream.test/subscribe", "test").dictionary is None
+    assert BlueskyStream(bouncer, "wss://jetstream.test/subscribe", "test").dictionary is None
     monkeypatch.setattr(jetstream, "zstd", None)
     assert jetstream.load_dictionary() is None
 
@@ -261,8 +262,8 @@ def test_a_hashtags_page_says_its_listening_to_bluesky(settings, bouncer, bsky):
     client.post("/login", data={"password": "pw"})
     cid = bouncer.follow_community("#cats", None, 30, False)
     assert "Connecting" in client.get(f"/c/{cid}").text
-    app.state.bluesky_tags.connected_since = stamp()
+    app.state.bluesky_stream.connected_since = stamp()
     page = client.get(f"/c/{cid}").text
     assert "From Bluesky" in page and "posts tagged #cats are kept" in page
-    app.state.bluesky_tags.connected_since, app.state.bluesky_tags.last_error = None, "Connection refused"
+    app.state.bluesky_stream.connected_since, app.state.bluesky_stream.last_error = None, "Connection refused"
     assert "can&#39;t be reached" in client.get(f"/c/{cid}").text or "can't be reached" in client.get(f"/c/{cid}").text

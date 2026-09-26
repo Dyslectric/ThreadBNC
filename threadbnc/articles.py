@@ -52,12 +52,16 @@ MAX_PAGE_BYTES = 5_000_000
 CARD_IMAGE_BYTES = 1_000_000  # Bluesky's limit for a link card's picture
 STANDALONE_DAYS = 30  # an article last opened from a link this long ago, not kept, no post linking to it, goes
 MIN_WORDS = 80  # less than this is a teaser, a paywall or not an article
+# An article read because it was among the most posted (trends.py) goes this
+# long after it last was, so one hovering at the edge isn't read again and again.
+TRENDING_GRACE = timedelta(hours=6)
 CHUNK = 64 * 1024
 
 # Sites whose pages are players, feeds or apps rather than articles.
 SKIP_HOSTS = ("youtube.com", "youtu.be", "imgur.com", "twitter.com", "x.com", "instagram.com", "tiktok.com",
               "twitch.tv", "vimeo.com", "bsky.app", "facebook.com", "streamable.com", "redgifs.com",
-              "catbox.moe", "discord.com", "discord.gg", "spotify.com", "soundcloud.com")
+              "catbox.moe", "discord.com", "discord.gg", "spotify.com", "soundcloud.com",
+              "whatsapp.com", "line.me", "t.me", "telegram.me")
 
 TAGS = ALLOWED_TAGS | {"figure", "figcaption", "i", "b", "u", "mark", "small"}
 
@@ -179,114 +183,6 @@ def same_page(conn: Conn, article_id: int) -> list[int]:
     return sorted(ids | {article_id})
 
 
-def trending(conn: Conn, since: str | None = None, page: int = 1,
-             per_page: int = 25) -> tuple[list[dict[str, Any]], bool]:
-    """Articles most often linked by the current posts in the archive.
-
-    Count only each post's current link, then combine article rows that share
-    one of their known addresses (the posted link, redirect destination or
-    canonical URL). Nothing is fetched here: pending articles use their
-    newest post's title until somebody opens them in a feed or reader.
-    """
-    where, params = "", []
-    if since:
-        where = "AND COALESCE(o.created_at, o.first_seen_at) >= ?"
-        params.append(since)
-    posts = [dict(r) for r in conn.execute(
-        f"""SELECT t.id AS tid, t.community_id, o.id AS object_id,
-                   COALESCE(o.created_at, o.first_seen_at) AS posted_at,
-                   r.title AS post_title, a.id AS article_id,
-                   c.name AS cname, c.canonical_ap_id AS c_ap
-            FROM archived_threads t
-            JOIN objects o ON o.id=t.root_object_id
-            JOIN revisions r ON r.object_id=o.id AND r.seq=o.revision_count
-            JOIN articles a ON a.url=r.url
-            JOIN article_refs ar ON ar.object_id=o.id AND ar.article_id=a.id
-            JOIN communities c ON c.id=t.community_id
-            WHERE t.trashed_at IS NULL
-              AND (t.retention='auto' OR t.promoted_at IS NOT NULL) {where}""", params).fetchall()]
-    if not posts:
-        return [], False
-
-    ids = sorted({p["article_id"] for p in posts})
-    marks = ",".join("?" * len(ids))
-    rows = {r["id"]: dict(r) for r in conn.execute(
-        f"""SELECT id, url, status, title, byline, site_name, published, word_count,
-                   fetched_from, canonical_url, first_seen_at, fetched_at
-            FROM articles WHERE id IN ({marks})""", ids).fetchall()}
-
-    # Union the article rows that are known by any one common address. This
-    # gives the ranking the same redirect/canonical matching as discussions.
-    parent = {aid: aid for aid in ids}
-
-    def root(aid: int) -> int:
-        while parent[aid] != aid:
-            parent[aid] = parent[parent[aid]]
-            aid = parent[aid]
-        return aid
-
-    by_key: dict[str, int] = {}
-    for k in conn.execute(f"SELECT article_id, key FROM article_keys WHERE article_id IN ({marks})", ids):
-        aid, key = k["article_id"], k["key"]
-        other = by_key.setdefault(key, aid)
-        left, right = root(aid), root(other)
-        if left != right:
-            parent[right] = left
-
-    grouped_posts: dict[int, list[dict[str, Any]]] = {}
-    grouped_ids: dict[int, set[int]] = {}
-    for p in posts:
-        group = root(p["article_id"])
-        grouped_posts.setdefault(group, []).append(p)
-        grouped_ids.setdefault(group, set()).add(p["article_id"])
-
-    items: list[dict[str, Any]] = []
-    for group, linked in grouped_posts.items():
-        article_ids = grouped_ids[group]
-        direct = {aid: 0 for aid in article_ids}
-        for p in linked:
-            direct[p["article_id"]] += 1
-        choices = [rows[aid] for aid in article_ids]
-        representative = max(choices, key=lambda a: (
-            a["status"] == "ok", bool(a["title"]), direct[a["id"]],
-            a["fetched_at"] or a["first_seen_at"], -a["id"]))
-        latest = max(linked, key=lambda p: (p["posted_at"] or "", p["tid"]))
-        item = dict(representative)
-        item.update(
-            article_ids=sorted(article_ids),
-            post_count=len({p["tid"] for p in linked}),
-            community_count=len({p["community_id"] for p in linked}),
-            latest_post=latest,
-            latest_posted_at=latest["posted_at"],
-        )
-        if not item["title"]:
-            item["title"] = latest["post_title"]
-        items.append(item)
-
-    # Stable sorts put newer articles first within equal post/community counts.
-    items.sort(key=lambda a: (a["latest_posted_at"] or "", a["id"]), reverse=True)
-    items.sort(key=lambda a: (a["post_count"], a["community_count"]), reverse=True)
-    page = max(1, page)
-    start = (page - 1) * per_page
-    shown = items[start:start + per_page]
-    if shown:
-        shown_ids = sorted({aid for item in shown for aid in item["article_ids"]})
-        shown_marks = ",".join("?" * len(shown_ids))
-        content = {r["id"]: r["content_html"] for r in conn.execute(
-            f"SELECT id, content_html FROM articles WHERE id IN ({shown_marks})", shown_ids)}
-        pictures = {r["article_id"]: r["mid"] for r in conn.execute(
-            f"""SELECT am.article_id, MIN(m.id) AS mid
-                FROM article_media am JOIN media m ON m.id=am.media_id
-                WHERE am.article_id IN ({shown_marks}) AND m.status='ok'
-                  AND m.content_type LIKE 'image/%' AND m.content_type != 'image/svg+xml'
-                GROUP BY am.article_id""", shown_ids)}
-        for item in shown:
-            item["content_html"] = content.get(item["id"])
-            item["picture"] = next((pictures[aid] for aid in [item["id"], *item["article_ids"]]
-                                    if aid in pictures), None)
-    return shown, len(items) > start + per_page
-
-
 def _marks(values: list[Any]) -> str:
     return ",".join("?" * len(values))
 
@@ -362,16 +258,20 @@ def attach_pictures(conn: Conn, article_id: int, urls: list[str], now: str) -> N
 
 def collect_orphans(conn: Conn, now: str | None = None) -> int:
     """Delete articles nothing wants any more: no post links to them, they
-    weren't kept, and they weren't opened from a link in the last
-    STANDALONE_DAYS. Their pictures go with the media, once nothing else uses them."""
-    cutoff = fmt_ts(parse_ts(now or utcnow()) - timedelta(days=STANDALONE_DAYS))  # type: ignore[operator]
+    weren't kept, they weren't opened from a link in the last
+    STANDALONE_DAYS, and they haven't been among the most posted for
+    TRENDING_GRACE (trends.py). Their pictures go with the media, once nothing
+    else uses them."""
+    moment = parse_ts(now or utcnow())
+    cutoff = fmt_ts(moment - timedelta(days=STANDALONE_DAYS))  # type: ignore[operator]
+    trended = fmt_ts(moment - TRENDING_GRACE)  # type: ignore[operator]
     unwanted = ("NOT EXISTS (SELECT 1 FROM article_refs r WHERE r.article_id=articles.id) AND kept_at IS NULL "
-                "AND (opened_at IS NULL OR opened_at < ?)")
+                "AND (opened_at IS NULL OR opened_at < ?) AND (trending_at IS NULL OR trending_at < ?)")
     for table in ("article_media", "article_links", "article_keys", "article_prints", "discussions",
                   "discussion_checks"):
         conn.execute(f"DELETE FROM {table} WHERE article_id IN (SELECT id FROM articles WHERE {unwanted})",
-                     (cutoff,))
-    return conn.execute(f"DELETE FROM articles WHERE {unwanted}", (cutoff,)).rowcount
+                     (cutoff, trended))
+    return conn.execute(f"DELETE FROM articles WHERE {unwanted}", (cutoff, trended)).rowcount
 
 
 def ensure(conn: Conn, url: str, now: str) -> Any:

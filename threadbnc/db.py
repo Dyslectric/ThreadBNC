@@ -290,7 +290,8 @@ CREATE TABLE IF NOT EXISTS articles (
     ap_url TEXT,              -- its ActivityPub copy, for a blog that federates (its replies are its comments)
     webmention_url TEXT,      -- where it takes webmentions
     simhash TEXT,             -- a fingerprint of its text, for "probably the same story" (links.py)
-    title_key TEXT            -- its headline, reduced (links.title_key), for the same
+    title_key TEXT,           -- its headline, reduced (links.title_key), for the same
+    trending_at TEXT          -- last seen among the most posted (trends.py): read for that, and kept while it is
 );
 CREATE INDEX IF NOT EXISTS articles_pending ON articles(status, next_attempt_at);
 
@@ -551,6 +552,48 @@ CREATE TABLE IF NOT EXISTS traffic (
     PRIMARY KEY (hour, direction, host, community_id, purpose)
 );
 
+-- Links posted on Bluesky and Mastodon, counted as the streams bring them
+-- (trends.py), by the hour, then by the day (hour 'T00') once two days old.
+-- Only counted: the pages themselves are read for the most posted alone.
+CREATE TABLE IF NOT EXISTS link_counts (
+    key TEXT NOT NULL,                 -- links.key of the link
+    hour TEXT NOT NULL,                -- UTC: 2026-09-25T14
+    source TEXT NOT NULL,              -- bluesky | mastodon
+    posts BIGINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (key, hour, source)
+);
+CREATE INDEX IF NOT EXISTS link_counts_hour ON link_counts(hour);
+
+-- What each counted link is: as first posted, and its card's title when a post had one.
+CREATE TABLE IF NOT EXISTS links_seen (
+    key TEXT PRIMARY KEY,
+    url TEXT NOT NULL,
+    title TEXT,
+    description TEXT,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    posts BIGINT NOT NULL DEFAULT 0    -- all counted, for tidying away the ones posted once
+);
+
+-- Posts on Bluesky and Mastodon that the streams showed people replying to,
+-- quoting or liking (trends.py): what's counted as it arrives, and the totals
+-- as last read from Bluesky's AppView or your Mastodon server. Kept a week.
+CREATE TABLE IF NOT EXISTS stream_posts (
+    source TEXT NOT NULL,              -- bluesky | mastodon
+    ref TEXT NOT NULL,                 -- bluesky: its at:// address; mastodon: its id on your server
+    created_at TEXT,                   -- when it was posted, as far as known
+    first_seen_at TEXT NOT NULL,
+    replies_seen BIGINT NOT NULL DEFAULT 0,
+    quotes_seen BIGINT NOT NULL DEFAULT 0,
+    likes_seen BIGINT NOT NULL DEFAULT 0,      -- Bluesky, while likes are read from the stream
+    likes BIGINT, replies BIGINT, reposts BIGINT,
+    checked_at TEXT,                   -- when those totals were read
+    gone INTEGER NOT NULL DEFAULT 0,   -- deleted, or not shown any more
+    view_json TEXT,                    -- how to show it: author, text, picture, link
+    PRIMARY KEY (source, ref)
+);
+CREATE INDEX IF NOT EXISTS stream_posts_created ON stream_posts(created_at);
+
 CREATE TABLE IF NOT EXISTS jobs (
     id INTEGER PRIMARY KEY,
     kind TEXT NOT NULL,
@@ -648,6 +691,7 @@ COLUMN_MIGRATIONS = [
     ("discussions", "content", "TEXT"),
     ("objects", "language", "TEXT"),
     ("community_follows", "in_home", "INTEGER NOT NULL DEFAULT 1"),
+    ("articles", "trending_at", "TEXT"),
 ]
 
 # Tables with an integer `id` key: inserts into these get `RETURNING id` on

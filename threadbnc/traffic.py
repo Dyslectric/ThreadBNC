@@ -53,6 +53,7 @@ PURPOSES = {
     "discussions": "Looking for discussions of articles",
     "saving": "Saving posts you added",
     "hashtags": "Reading posts that hashtags bring",
+    "trends": "Trending: likes and replies of posts talked about, most posted articles",
     "upkeep": "Inboxes, follows and other upkeep",
     "browsing": "While you browse: lookups, posting, voting",
     "": "Other",

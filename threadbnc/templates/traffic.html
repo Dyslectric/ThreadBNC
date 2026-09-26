@@ -83,13 +83,21 @@
 <section class="card">
   <h2>Streams and relays</h2>
   <p class="small muted">What arrives without ThreadBNC asking each time: Bluesky's Jetstream while a hashtag is
-    followed, a relay's deliveries of posts with a followed hashtag, and deliveries to your own servers passed on
+    followed or Bluesky is counted for Trending, your Mastodon server's public timeline while you're subscribed to it,
+    a relay's deliveries of posts with a followed hashtag, and deliveries to your own servers passed on
     through ThreadBNC.</p>
   {% if jetstream %}
   <p class="small">
     {% if jetstream.connected_since %}<span class="pill good">connected</span> Jetstream since {{ when(jetstream.connected_since) }}{{ ', compressed' if jetstream.dictionary is not none }}.
-    {% else %}<span class="pill muted">not connected</span> Jetstream: {{ 'it connects while a hashtag is followed.' if not jetstream.last_error else '' }}{% endif %}
+    {% else %}<span class="pill muted">not connected</span> Jetstream: {{ 'it connects while a hashtag is followed, or Bluesky is counted for Trending.' if not jetstream.last_error else '' }}{% endif %}
     {% if jetstream.last_error %}<span class="bad-text">Last trouble {{ when(jetstream.last_error_at) }}: {{ jetstream.last_error }}</span>{% endif %}
+  </p>
+  {% endif %}
+  {% if timeline_stream %}
+  <p class="small">
+    {% if timeline_stream.connected_since %}<span class="pill good">connected</span> Mastodon: {{ timeline_stream.connected_to }} since {{ when(timeline_stream.connected_since) }}.
+    {% else %}<span class="pill muted">not connected</span> Mastodon's public timeline.{% endif %}
+    {% if timeline_stream.last_error %}<span class="bad-text">Last trouble {{ when(timeline_stream.last_error_at) }}: {{ timeline_stream.last_error }}</span>{% endif %}
   </p>
   {% endif %}
   {% set streams = r.streams.sorted('bytes_in') %}

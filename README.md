@@ -4,7 +4,8 @@ A private, feed-first reader for Lemmy, PieFed, Reddit, RSS/Atom feeds, podcasts
 
 **Following and reading:**
 - Follow communities. Lemmy and PieFed posts arrive as they're made, pushed through your own Lemmy server (see [Pushes from your own server](#pushes-from-your-own-server)); feeds and subreddits are checked on a schedule.
-- Follow **#hashtags**: public posts with them arrive from Mastodon and the rest of the fediverse through a tag relay, and from Bluesky through its Jetstream (see [Hashtags](#hashtags)).
+- Follow **#hashtags**: public posts with them arrive from Mastodon and the rest of the fediverse through a tag relay (or your Mastodon server's public timeline, once you subscribe to it), and from Bluesky through its Jetstream (see [Hashtags](#hashtags)).
+- **Trending** shows the posts most liked and most replied to on Bluesky and Mastodon, and the articles posted most there and in your archive (see [Trending](#trending)).
 - Your **feed** is built from the saved copy. Posts you haven't opened stand out, opened posts show "N new comments", and you can sort by New, Active, Top or Most comments.
 - **Opening a post** reads its comments and saves the article it links to, like a browser would. The page shows the saved copy at once and swaps in the fresh one.
 - The feed keeps working when an instance is down, and shows edits, removals and deletions as history instead of losing them.
@@ -62,7 +63,9 @@ ThreadBNC behaves like one more subscribed server, or like your own browser, nev
 - **Discussions elsewhere, when you open it.** Opening a post with a linked article, or the article, asks your own Lemmy server, Reddit (when connected) and Bluesky (when you're signed in) for other posts of it, and a blog that federates or takes webmentions for its replies: once, then not again for an hour (see [Discussions](#discussions)).
 - **Votes, cheaply.** Votes are updated every 5 minutes for a post's first half hour, then every 10, every 30 until 6 hours, hourly until a day, daily until a week, and then not at all (opening a post still updates them). A pushed community's come from your own server; a checked community's from one listing covering all its posts; only a post kept on its own is asked about by itself.
 - **Hashtags through a relay.** A followed hashtag is one Follow to its relay. Each post it passes on is read once from its own server, a signed request like any receiving server makes, and its votes aren't checked in the background at all; opening it reads it again with its replies.
-- **Hashtags on Bluesky, from its public stream.** Bluesky offers nothing to subscribe to for a hashtag, only one stream of everything posted there. While any hashtag is followed, ThreadBNC listens to it (Jetstream, new posts only, compressed: about 30 a second, about 1 GB a day), keeps the posts with a followed hashtag, and asks Bluesky for those alone, up to 25 in one request.
+- **Hashtags on Bluesky, from its public stream.** Bluesky offers nothing to subscribe to for a hashtag, only one stream of everything posted there. While any hashtag is followed, or Bluesky is counted for Trending (on unless you turn it off), ThreadBNC listens to it (Jetstream, new posts only, compressed: about 25 a second, about 0.75 GB a day), keeps the posts with a followed hashtag, and asks Bluesky for those alone, up to 25 in one request.
+- **Your Mastodon server's public timeline, when you subscribe.** One streaming connection to your own server, as your account. Posts with a followed hashtag are kept from it (instead of through the relays); the rest are only counted.
+- **Trending's totals, a few at a time.** Likes and replies of the posts replied to most are read from Bluesky's AppView (up to 100 posts every 5 minutes, 25 to a request) and from your Mastodon server (20 to a request, at most one a minute, and its trending posts every 15 minutes). Only the 12 most posted articles of the day, week and month are read.
 - **Reddit only while you're here,** spread out, one subreddit at a time (see [Checking, conservatively](#checking-conservatively)).
 - **Pictures at once, videos later.** Pictures and thumbnails are downloaded as posts arrive; full videos wait until you open or keep a post showing them.
 - **Video players are the sites' own.** A post that is a video's link, or a video link's box, loads the site's player in your browser (YouTube's from youtube-nocookie.com), or plays a video file from where it is. Nothing is downloaded for that. A video from a site is only downloaded when you press **Download and archive**, or keep a post that links to a YouTube video.
@@ -78,7 +81,7 @@ ThreadBNC behaves like one more subscribed server, or like your own browser, nev
 | **Your own feeds** (`/f/{id}`, **New feed** in the sidebar) | A named mix of communities, each feed with its own default sort, time range, filter and view. Mark all read covers just its communities. The ✎ next to its name edits or deletes it; the communities and their posts are untouched. |
 | **Community** (`/c/{id}`) | The same feed for one community, plus ★ Kept, **Live on server** (browse its full history, fetched live), **Media** (what it archives, size limit, transcoding) and a log. Follow settings sit behind the "✓ Following" pill. |
 | **Communities** | Follow a community (starts with its current first page) and manage the check interval and retention for each one. |
-| **Articles** (`/articles`) | The articles linked most often by passively captured posts still in the archive, over the past day, week, month or all retained posts. Redirects, tracking links and canonical versions of the same page are counted together. |
+| **Trending** (`/trending`) | **Posts**: the posts most liked, or most replied to, on Bluesky and Mastodon over the past day or week. **Articles**: the pages posted most on Bluesky, on Mastodon and in the archive over the past day, week or month. **Sources** chooses what's counted. See [Trending](#trending). |
 | **★ Kept** | Keep a post by link, see kept threads grouped by community, recent changes and the bouncer queue. |
 | **Search** (`/search`, and the box in the header) | Every version of every archived post and comment. See [Search](#search). |
 | **Inbox** | Replies, mentions and private messages for all your accounts. See [Inbox](#inbox). |
@@ -320,6 +323,37 @@ their own **Bluesky** group in the sidebar and in the feed editor. Everything is
 - Signed out, likes show as votes but nothing can be liked, replied to or posted. Reposting a Bluesky post to one of your Lemmy communities works either way.
 - **Keeping one post:** a `bsky.app/profile/…/post/…` link can be kept like any post link.
 
+## Trending
+
+The **Trending** page (`/trending`, `g r`) ranks what's posted and talked about, from two streams read as
+posts are made: Bluesky's [Jetstream](#on-bluesky), and your Mastodon server's public timeline once you
+subscribe to it. Apart from posts with a followed hashtag, nothing they bring is saved as a post; it's counted.
+**Sources**, at the top of the page, chooses what's counted:
+
+- **Bluesky**, on by default. Jetstream stays connected for it (about 0.75 GB a day, compressed). Likes are
+  either read from Bluesky's AppView for the posts replied to most (the default: a few requests every 5
+  minutes), or counted from the stream as they happen (exact, but about 3.4 GB a day more).
+- **Mastodon**: your server's public timeline, federated (everything public it hears of) or local (only what's
+  posted on it). Mastodon only streams it to someone signed in, so this needs your Mastodon account (see
+  [Hashtags](#hashtags)). While subscribed, it also takes the place of the tag relays for your hashtags.
+  Mastodon streams no likes: the totals of the posts replied to most, and your server's own trending posts,
+  are read from your server now and then.
+
+**Posts** shows the posts made in the past day or week, most liked or most replied to, on Bluesky, Mastodon or
+both: their text, who posted them, their link and their totals. No pictures are loaded from other sites. A
+Bluesky post can be opened here (saved like one opened from a link, so it expires unless you keep it).
+Replies count for the post that started the thread, quotes for the post quoted. Posts go after a week.
+
+**Articles** ranks pages by how many posts linked them in the past day, week or month: on Bluesky, on Mastodon
+and in the archive (the posts captured from what you follow). Links to the same page count together: tracking
+parameters, AMP copies and wrappers are taken off (see [Linked articles](#linked-articles)), and once a page is
+read, the address it redirected to and the one it says it lives at count as it too. Posts from Bluesky, and
+hashtags' posts while the Mastodon timeline is subscribed to, aren't counted again from the archive. Only the
+counts are kept: links posted once in their first day, or fewer than five times in their first week, are
+forgotten, and counts go after a month. The **12 most posted of each** of the day, week and month are read, so
+they can be read here, and kept while they stay among them; six hours after dropping out they go like any other
+article nothing links to.
+
 ## Hashtags
 
 Follow a hashtag (`#selfhosted` in the Communities box) and public posts with it arrive in your feed from across
@@ -359,6 +393,17 @@ post with it.
   that address has to be reachable from your browser (it is, if you're using it). Replies and mentions of
   your Mastodon account don't come to the Inbox yet. **Repost** works either way.
 
+### From your Mastodon server's public timeline
+
+Signed in to your Mastodon account, you can subscribe to your server's public timeline under **Sources** on the
+[Trending](#trending) page. While you are, hashtags' fediverse posts come from it instead of the relays:
+ThreadBNC unfollows them, and follows them again when you unsubscribe. A public post (not a reply) with a
+followed hashtag is kept as it arrives, under the first followed hashtag it lists. The federated timeline has
+what your server hears of, which for a big server is a lot and for a small one less than a relay; the local
+one only what's posted on your server. Mastodon's stream can't carry on from where it left off, so posts made
+while it's disconnected are missed. Hashtags can be followed this way without `THREADBNC_ACTOR_DOMAIN`, and posts
+are then read again from their own server's public Mastodon API when you open them.
+
 ### On Bluesky
 
 Bluesky can't follow a hashtag either, and has nothing to subscribe to for one: everything posted on it goes out
@@ -366,9 +411,10 @@ on one public stream instead. [Jetstream](https://github.com/bluesky-social/jets
 WebSocket, and ThreadBNC asks it for new posts only (no likes, follows or reposts). It needs no account, and no
 ActivityPub actor: without `THREADBNC_ACTOR_DOMAIN`, hashtags come from Bluesky alone.
 
-- **While any hashtag is followed**, one connection stays open and every post made on Bluesky passes through it:
-  about 30 a second. Compressed, that's about 11 KB/s or 1 GB a day, half what it is uncompressed (measured
-  September 2026). With none followed, it's closed.
+- **While any hashtag is followed, or Bluesky is counted for [Trending](#trending)**, one connection stays open
+  and every post made on Bluesky passes through it: about 25 a second. Compressed, that's about 9 KB/s or 0.75 GB
+  a day, half what it is uncompressed (measured September 2026). Counting likes from the stream adds about 150
+  a second, 3.4 GB a day. With neither, it's closed.
 - **Compression** is zstd, each event on its own, with a dictionary Jetstream publishes. ThreadBNC keeps a copy
   (`threadbnc/jetstream_zstd_dictionary`, from Bluesky's
   [jetstream-legacy](https://github.com/bluesky-social/jetstream-legacy) repository, MIT licensed; its licence is
@@ -644,7 +690,7 @@ API (each call with `Authorization: Bearer $THREADBNC_API_TOKEN`):
 | `THREADBNC_RELAY_INBOXES` | *(none)* | Your own Lemmy servers whose inboxes are routed through ThreadBNC, as `domain=Lemmy's address`, comma-separated (see [Pushes from your own server](#pushes-from-your-own-server)) |
 | `THREADBNC_ACTOR_DOMAIN` | unset | The domain of ThreadBNC's own ActivityPub actor, for following hashtags on the fediverse (see [Hashtags](#hashtags)). Unset: hashtags come from Bluesky alone |
 | `THREADBNC_TAG_RELAY` | `https://relay.fedi.buzz/tag/{tag}` | The relay actor followed for each hashtag, `{tag}` standing for it |
-| `THREADBNC_JETSTREAM` | `wss://jetstream2.us-east.bsky.network/subscribe` | The Jetstream hashtags are picked out of on Bluesky (see [On Bluesky](#on-bluesky)); `off`: fediverse hashtags only |
+| `THREADBNC_JETSTREAM` | `wss://jetstream2.us-east.bsky.network/subscribe` | The Jetstream hashtags are picked out of, and Trending counts, on Bluesky (see [On Bluesky](#on-bluesky)); `off`: fediverse hashtags only, and Bluesky isn't counted |
 | `THREADBNC_ARTICLES` | `1` | Read the web pages posts link to and keep the article, for **Read article** (see [Linked articles](#linked-articles)); `0` turns it off |
 | `THREADBNC_DISCUSSIONS` | `1` | Look for where an article is discussed elsewhere when it's opened (see [Discussions](#discussions)); `0` turns it off |
 | `THREADBNC_PROXY_AUTH_HEADER` | unset | Header in which a signing-in reverse proxy passes the user's name, e.g. `X-authentik-username` |

@@ -1,15 +1,20 @@
-"""Following hashtags on Bluesky, through its Jetstream.
+"""Bluesky's Jetstream: following hashtags there, and counting what's
+posted and talked about for the Trending page.
 
 Bluesky can't follow a hashtag either, and nothing on it can be subscribed to
 for one: everything posted anywhere on Bluesky goes out on one public stream
 instead. Jetstream (https://github.com/bluesky-social/jetstream) serves that
 stream as JSON over a WebSocket, and can be asked for new posts only (no
-likes, follows or reposts).
+follows or reposts), or posts and likes.
 
-So while at least one hashtag is followed, ThreadBNC keeps one connection
-open to Jetstream and reads every post made on Bluesky as it's made (about 30
-a second in September 2026: about 1 GB a day compressed), keeping only those
-with a followed hashtag:
+So while a hashtag is followed, or what's posted on Bluesky is counted for the
+Trending page (trends.py, on unless you turn it off there), ThreadBNC keeps one
+connection open to Jetstream and reads every post made on Bluesky as it's made
+(about 25 a second in September 2026: about 0.75 GB a day compressed). Every
+post's links are counted, and so are replies (for the post that started the
+thread) and quotes; with likes counted from the stream too (a choice on the
+Trending page), likes come as well: about 150 a second, another 3.4 GB a day.
+Of the posts themselves it keeps only those with a followed hashtag:
 
 1. A new post (not a reply: replies belong under their post) with a followed
    hashtag, in its text or beside it, is noted with the first such hashtag.
@@ -32,7 +37,7 @@ Without it, or without zstd in this Python, or when events stop decompressing
 with it (Jetstream changed its dictionary), they're read uncompressed.
 
 Nothing is sent to Jetstream but the request to listen. With no hashtag
-followed, the connection is closed."""
+followed and nothing counted, the connection is closed."""
 
 from __future__ import annotations
 
@@ -51,7 +56,8 @@ from websockets.exceptions import WebSocketException
 from websockets.sync.client import connect
 
 from .adapters import BSKY_DOMAIN
-from .adapters.bluesky import GET_POSTS, POST, record_tags, web_url
+from . import trends
+from .adapters.bluesky import GET_POSTS, LIKE, POST, record_tags, web_url
 from .bouncer import Bouncer
 from .db import parse_ts, utcnow
 from .traffic import record
@@ -70,7 +76,7 @@ FIRST_TRY = timedelta(seconds=15)  # the AppView may be a moment behind the stre
 RETRY_AFTER = timedelta(minutes=2)
 FLUSH_EVERY = 5.0  # seconds between batches of posts noted
 SAVE_EVERY = 30.0  # seconds between saves of where the stream got to
-TAGS_EVERY = 60.0  # the followed hashtags are read again at least this often
+TAGS_EVERY = 60.0  # the followed hashtags (and what's counted) are read again at least this often
 MAX_BACKOFF = 300.0
 DICTIONARY = Path(__file__).with_name("jetstream_zstd_dictionary")
 MAX_EVENT = 2 ** 20  # bytes: the most one event may decompress to
@@ -93,31 +99,85 @@ def load_dictionary() -> Any:
         return None
 
 
-def match(raw: str | bytes, tags: set[str]) -> tuple[str, str] | None:
-    """(at:// address, hashtag) when an event from the stream is a new post,
-    not a reply, with one of `tags`; else None."""
+def _event(raw: str | bytes) -> dict[str, Any] | None:
     if isinstance(raw, bytes):
         raw = raw.decode("utf-8", "replace")
-    if "#tag" not in raw and '"tags"' not in raw:  # most posts have no hashtag: not worth reading
-        return None
     try:
         event = json.loads(raw)
     except ValueError:
         return None
-    commit = event.get("commit") if isinstance(event, dict) else None
-    if not isinstance(commit, dict) or commit.get("operation") != "create" or commit.get("collection") != POST:
+    return event if isinstance(event, dict) else None
+
+
+def _created(event: dict[str, Any], collection: str) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """(commit, record) when an event is something new in `collection`."""
+    commit = event.get("commit")
+    if not isinstance(commit, dict) or commit.get("operation") != "create" or commit.get("collection") != collection:
         return None
     record = commit.get("record")
-    if not isinstance(record, dict) or record.get("reply") or not event.get("did") or not commit.get("rkey"):
+    if not isinstance(record, dict) or not event.get("did") or not commit.get("rkey"):
         return None
-    tag = next((t for t in record_tags(record) if t in tags), None)
-    return (f"at://{event['did']}/{POST}/{commit['rkey']}", tag) if tag else None
+    return commit, record
 
 
-class BlueskyTags:
+def tagged(event: dict[str, Any], tags: set[str]) -> tuple[str, str] | None:
+    """(at:// address, hashtag) when an event is a new post, not a reply,
+    with one of `tags`; else None."""
+    made = _created(event, POST) if tags else None
+    if made is None or made[1].get("reply"):
+        return None
+    tag = next((t for t in record_tags(made[1]) if t in tags), None)
+    return (f"at://{event['did']}/{POST}/{made[0]['rkey']}", tag) if tag else None
+
+
+def match(raw: str | bytes, tags: set[str]) -> tuple[str, str] | None:
+    """tagged(), for an event as the stream sends it."""
+    event = _event(raw)
+    return tagged(event, tags) if event is not None else None
+
+
+def _recent(uri: Any) -> str | None:
+    """When a post was made, if it's one made recently enough to count
+    replies to and likes of (trends.MAX_POST_AGE)."""
+    made = trends.post_time(uri) if isinstance(uri, str) else None
+    moment = parse_ts(made)
+    if moment is None or moment < parse_ts(utcnow()) - trends.MAX_POST_AGE:  # type: ignore[operator]
+        return None
+    return made
+
+
+def _uri(value: Any) -> Any:
+    return value.get("uri") if isinstance(value, dict) else None
+
+
+def count(event: dict[str, Any], tally: trends.Tally) -> None:
+    """Count what an event says for the Trending page (trends.py): a new
+    post's links, and the post it replies to (its thread's first) or quotes;
+    a like of a recent post."""
+    made = _created(event, POST)
+    if made is not None:
+        record = made[1]
+        root = _uri(record["reply"].get("root")) if isinstance(record.get("reply"), dict) else None
+        if (at := _recent(root)) is not None:
+            tally.reply(root, at)
+        quoted = trends.bluesky_quoted(record)
+        if (at := _recent(quoted)) is not None:
+            tally.quote(quoted, at)  # type: ignore[arg-type]
+        tally.post_links(trends.bluesky_links(record), event.get("did"))
+        return
+    liked = _created(event, LIKE)
+    if liked is not None:
+        subject = _uri(liked[1].get("subject"))
+        if (at := _recent(subject)) is not None:
+            tally.like(subject, at)
+
+
+class BlueskyStream:
     def __init__(self, bouncer: Bouncer, url: str, user_agent: str):
         self.bouncer, self.db, self.url, self.user_agent = bouncer, bouncer.db, url, user_agent
-        self.wake = threading.Event()  # the hashtags followed changed
+        self.wake = threading.Event()  # the hashtags followed, or what's counted, changed
+        self.tally = trends.Tally("bluesky")
+        self._counted_to = 0  # the time (microseconds) of the last event counted: one read again isn't
         self._stop = threading.Event()
         self._noted: dict[str, str] = {}  # at:// address -> hashtag, not yet asked for
         # What the community page says of it: connected since when, and the last trouble.
@@ -137,17 +197,28 @@ class BlueskyTags:
         with self.db.connect() as conn:
             return {r["name"] for r in conn.execute(FOLLOWED_SQL)}
 
+    def wanted(self) -> tuple[set[str], bool, bool]:
+        """(the hashtags followed, whether what's posted is counted, whether likes are too)."""
+        chosen = trends.settings(self.db)
+        counting = bool(chosen["bluesky"])
+        return self.followed(), counting, counting and chosen["bluesky_likes"] == "stream"
+
+    def listening(self) -> bool:
+        """Whether the stream is wanted at all (for pages saying so)."""
+        tags, counting, _ = self.wanted()
+        return bool(tags) or counting
+
     # -- listening -----------------------------------------------------------------
     def run_forever(self) -> None:
         backoff = 1.0
         while not self._stop.is_set():
-            tags = self.followed()
-            if not tags:
+            tags, counting, likes = self.wanted()
+            if not tags and not counting:
                 self.wake.wait(TAGS_EVERY)
                 self.wake.clear()
                 continue
             try:
-                self._listen(tags)
+                self._listen(tags, counting, likes)
                 backoff = 1.0
                 continue
             except (OSError, WebSocketException) as exc:
@@ -162,9 +233,10 @@ class BlueskyTags:
     def _trouble(self, error: str) -> None:
         self.last_error, self.last_error_at = error[:300], utcnow()
 
-    def _listen(self, tags: set[str]) -> None:
-        """Read the stream until no hashtag is followed any more, or ThreadBNC stops."""
-        params = [("wantedCollections", POST)]
+    def _listen(self, tags: set[str], counting: bool = False, likes: bool = False) -> None:
+        """Read the stream until it's no longer wanted, what's wanted of it
+        changes (likes, or not), or ThreadBNC stops."""
+        params = [("wantedCollections", POST)] + ([("wantedCollections", LIKE)] if likes else [])
         compressed = self.dictionary is not None
         if compressed:
             params.append(("compress", "true"))
@@ -175,7 +247,8 @@ class BlueskyTags:
         with connect(f"{self.url}?{urlencode(params)}", user_agent_header=self.user_agent, open_timeout=20,
                      max_size=2 ** 20) as ws:
             self.connected_since, self.last_error, self._bad = utcnow(), None, 0
-            log.info("Jetstream: listening for %d hashtags%s", len(tags), ", compressed" if compressed else "")
+            log.info("Jetstream: listening for %d hashtags%s%s%s", len(tags), ", counting" if counting else "",
+                     " with likes" if likes else "", ", compressed" if compressed else "")
             flushed = saved = refreshed = time.monotonic()
             host, messages, received = urlparse(self.url).hostname, 0, 0  # counted (traffic.py) at each flush
             try:
@@ -191,9 +264,7 @@ class BlueskyTags:
                         return  # the dictionary stopped fitting: connect again, uncompressed
                     if text is not None:
                         last = text
-                        hit = match(text, tags)
-                        if hit:
-                            self._noted[hit[0]] = hit[1]
+                        self._take(text, tags, counting)
                     now = time.monotonic()
                     if now - flushed >= FLUSH_EVERY:
                         self._flush()
@@ -204,8 +275,8 @@ class BlueskyTags:
                         saved = now
                     if self.wake.is_set() or now - refreshed >= TAGS_EVERY:
                         self.wake.clear()
-                        tags, refreshed = self.followed(), now
-                        if not tags:
+                        (tags, counting, now_likes), refreshed = self.wanted(), now
+                        if (not tags and not counting) or now_likes != likes:
                             return
             finally:
                 self.connected_since = None
@@ -213,6 +284,24 @@ class BlueskyTags:
                 record("in", host, requests=messages, bytes_in=received)
                 if last is not None:
                     self._save(last)
+
+    def _take(self, text: str, tags: set[str], counting: bool) -> None:
+        """One event: noted if it's a post with a followed hashtag, and counted."""
+        if not counting and "#tag" not in text and '"tags"' not in text:  # most have no hashtag: not worth reading
+            return
+        event = _event(text)
+        if event is None:
+            return
+        hit = tagged(event, tags)
+        if hit:
+            self._noted[hit[0]] = hit[1]
+        if counting:
+            when = event.get("time_us")
+            if isinstance(when, int):
+                if when <= self._counted_to:  # read again, after connecting again
+                    return
+                self._counted_to = when
+            count(event, self.tally)
 
     def _decode(self, raw: str | bytes) -> str | None:
         """An event's JSON: sent as text uncompressed, or as a zstd frame
@@ -252,7 +341,8 @@ class BlueskyTags:
                          "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (CURSOR, m.group(1)))
 
     def _flush(self) -> None:
-        """Ask for the posts noted, GET_POSTS to a job."""
+        """Ask for the posts noted, GET_POSTS to a job, and write what was counted."""
+        self.tally.flush(self.db)
         noted, self._noted = list(self._noted.items()), {}
         for i in range(0, len(noted), GET_POSTS):
             self.bouncer.enqueue(JOB, {"posts": dict(noted[i:i + GET_POSTS])}, delay=FIRST_TRY)
