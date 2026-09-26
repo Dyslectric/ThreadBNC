@@ -141,8 +141,9 @@
                title="Show its comments here, as saved">{{ icon('comment') }} <span class="n">{{ p.replies or 0 }}</span></a>
             {% else %}
             <a class="trend-meter trend-peek {{ 'sorted' if sort == 'replies' }}" href="{{ v.url | safe_url or '#' }}"
-               data-peek="/trending/peek?source={{ p.source }}&ref={{ p.ref | urlencode }}" aria-expanded="false"
-               title="Show its text and replies here, read from {{ site }}">{{ icon('comment') }} <span class="n">{{ p.replies or 0 }}</span></a>
+               data-peek="/trending/peek?source={{ p.source }}&ref={{ p.ref | urlencode }}"
+               data-open="/trending/open" data-source="{{ p.source }}" data-ref="{{ p.ref }}" aria-expanded="false"
+               title="Show its text and comments here, to sort and reply to (it's saved here, as a post opened from a link is)">{{ icon('comment') }} <span class="n">{{ p.replies or 0 }}</span></a>
             {% endif %}
             <form method="post" action="/trending/act" class="inline" data-trend-act>
               <input type="hidden" name="source" value="{{ p.source }}"><input type="hidden" name="ref" value="{{ p.ref }}">

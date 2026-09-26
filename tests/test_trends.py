@@ -324,6 +324,7 @@ def test_the_trending_page(settings, bouncer, bsky):  # noqa: F811
     # Its replies open under it, read from Bluesky (nothing saved); keeping it saves it.
     peek = f"/trending/peek?source=bluesky&ref={quote(at(busy), safe='/')}"
     assert f'data-peek="{peek}"' in page and 'class="trend-meter trend-peek' in page
+    assert 'data-open="/trending/open" data-source="bluesky"' in page
     assert 'action="/archive"' in page and 'action="/trending/act"' in page
     view = bsky.author_feed[0]["post"]
     bsky.threads[view["uri"]] = thread(view, thread(post_view("re1", "Cute!", did="did:plc:bob",
@@ -332,6 +333,16 @@ def test_the_trending_page(settings, bouncer, bsky):  # noqa: F811
     assert "data-peek-body" in shown and "Cute!" in shown and "1 reply" in shown and "<html" not in shown
     assert rows(bouncer, "SELECT id FROM archived_threads") == []
     assert web_client.get("/trending/peek", params={"source": "bluesky", "ref": "at://nobody"}).status_code == 404
+    # Opened to reply to: saved here first (as a post opened from a link), then its comments are its thread's.
+    fetch = {"X-ThreadBNC-Fetch": "1"}
+    job = web_client.post("/trending/open", data={"source": "bluesky", "ref": at(busy)}, headers=fetch).json()["job"]
+    run_due_now(bouncer)
+    saved = web_client.get(f"/api/jobs/{job}").json()["result"]["thread_id"]
+    assert rows(bouncer, "SELECT retention FROM archived_threads WHERE id=?", saved) == [{"retention": "auto"}]
+    assert "Cute!" in web_client.get(f"/t/{saved}?inline=1").text
+    assert web_client.post("/trending/open", data={"source": "bluesky", "ref": at(busy)}, headers=fetch).json() == {
+        "thread_id": saved}
+    assert f'class="trend-meter inline-comments' in web_client.get("/trending").text  # its comments are here now
     # Articles are read here, where they're listed: saved ones from the archive, others on the way.
     articles_page = web_client.get("/trending/articles?t=day").text
     assert "Big news" in articles_page and "What happened" in articles_page and "Bluesky 1" in articles_page
@@ -551,8 +562,8 @@ def test_subscribing_to_your_mastodon_servers_public_timeline(web, tagged, fedi,
         if request.url.path in ("/api/v1/statuses/300/reblog", "/api/v1/statuses/300/unreblog"):
             boosted.append(request.url.path.split("/", 4)[-1])
             return httpx.Response(200, json=masto_status("300", "A thread"))
-        if request.url.path == "/api/v1/statuses/300/context":
-            assert request.headers["authorization"] == f"Bearer {TOKEN}"
+        if request.url.path == "/api/v1/statuses/300/context":  # as you (a peek), or anyone (saving it)
+            assert request.headers.get("authorization") in (f"Bearer {TOKEN}", None)
             return httpx.Response(200, json={"ancestors": [], "descendants": [
                 masto_status("302", "A reply here", reply_to="300")]})
         if request.url.path == "/api/v1/trends/statuses":
@@ -577,6 +588,17 @@ def test_subscribing_to_your_mastodon_servers_public_timeline(web, tagged, fedi,
     assert f"data-peek=\"/trending/peek?source=mastodon&ref={HOME}/300\"" in page and "Keep</span>" not in page
     shown = web.get("/trending/peek", params={"source": "mastodon", "ref": f"{HOME}/300"}).text
     assert "A reply here" in shown and "carol@home.test" in shown
+    # Opened to reply to: saved from its own server, filed under whoever posted it, replied to as your account.
+    fedi.home.statuses["300"] = masto_status("300", "A thread")
+    job = web.post("/trending/open", data={"source": "mastodon", "ref": f"{HOME}/300"},
+                   headers={"X-ThreadBNC-Fetch": "1"}).json()["job"]
+    run_jobs(b)
+    tid = web.get(f"/api/jobs/{job}").json()["result"]["thread_id"]
+    saved = one(b, "SELECT t.source_domain, t.retention, c.canonical_ap_id FROM archived_threads t "
+                   "JOIN communities c ON c.id=t.community_id WHERE t.id=?", tid)
+    assert (saved["source_domain"], saved["retention"], saved["canonical_ap_id"]) == (
+        "hashtag", "auto", f"https://{HOME}/users/carol")
+    assert "Comment as @dave@home.test" in web.get(f"/t/{tid}?inline=1").text
     # Liked and boosted as your account, on your server.
     fedi.home.statuses["300"] = masto_status("300", "A thread")
     web.post("/trending/act", data={"source": "mastodon", "ref": f"{HOME}/300", "what": "like", "on": "1"})

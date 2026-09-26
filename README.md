@@ -349,9 +349,10 @@ card's or video's cover) are downloaded once it scrolls onto the screen, and sho
 bigger. Nothing is loaded from other sites by your browser. They go when the post does.
 The totals are buttons: **♥** likes the post (or takes the like back) and the repost button reposts it on
 Bluesky or boosts it on Mastodon, as your account there (see [Accounts and posting](#accounts-and-posting)).
-**💬** opens the post's whole text and its replies under it, read when you open them (from Bluesky, or from
-your Mastodon server while you're subscribed, else the post's own server) and not saved; a post already saved
-here shows its saved comments instead. A post linking an article has **Read article**, which reads it under
+**💬** opens the post's whole text and its comments under it, to sort, vote on and reply to like any other's: it's
+saved here first, as a post opened from a link is (it expires unless you keep it), from Bluesky or the post's own
+server. A Mastodon post is filed under whoever posted it, and replied to as your Mastodon account. If it can't be
+saved, its replies are shown to read only. A post linking an article has **Read article**, which reads it under
 the post; a link to a video or a livestream opens its player there, as in the feed. A Bluesky post can be kept
 (saved with its replies, like **Keep a link**).
 Replies count for the post that started the thread, quotes for the post quoted. Posts go after a week.
@@ -905,7 +906,7 @@ When a post links to a web page, the page is read when you open or keep the post
 Under a post with a linked article (and in the reader) is where else the article is being talked about:
 
 - **Posted here:** other posts ThreadBNC has of the same page, even by another link. Links count as the same page when they differ only by `www.`/`m.`, `http`/`https`, a trailing slash, `index.html` or click-tracking parameters (`utm_*`, `fbclid` and the like); when one is an AMP copy (`/amp`, `amp.` sites, Google's AMP cache); when one wraps the other (the Wayback Machine, archive.today, 12ft.io, Google's and Facebook's redirects); or when reading them led to the same page (short links, feedburner) or the page names the other as its own address (`<link rel="canonical">`, `og:url`). So a feed's article and the posts of it in communities find each other.
-- **Elsewhere:** found when you open the post or the article, and again after an hour: posts of the link on your own Lemmy or PieFed server (every post federated to it, not only from communities you follow), on Reddit in any subreddit (when Reddit is connected), and on Bluesky (only when you're signed in to Bluesky, since it only searches for someone signed in); the replies to the post on a blog that federates (a WordPress, Ghost or WriteFreely blog whose page links its ActivityPub copy); and the replies and mentions a page has collected on webmention.io. Only posts of the article itself are listed, asked for by up to three of its addresses (Lemmy and Reddit match links exactly). **Open here** saves a Lemmy, PieFed, Reddit or Bluesky post like one opened from a link, with its comments, and it expires unless you keep it; replies open where they were written.
+- **Elsewhere:** found when you open the post or the article, and again after an hour: posts of the link on your own Lemmy or PieFed server (every post federated to it, not only from communities you follow), on Reddit in any subreddit (when Reddit is connected), and on Bluesky (only when you're signed in to Bluesky, since it only searches for someone signed in); the replies to the post on a blog that federates (a WordPress, Ghost or WriteFreely blog whose page links its ActivityPub copy); and the replies and mentions a page has collected on webmention.io. Only posts of the article itself are listed, asked for by up to three of its addresses (Lemmy and Reddit match links exactly). **Open here** saves a Lemmy, PieFed, Reddit or Bluesky post like one opened from a link, with its comments, and it expires unless you keep it; expanding one does the same, so its comments can be sorted and replied to where it's listed. Replies (on a blog, or webmentions) open where they were written.
 - **Probably the same story:** articles here on other pages with nearly the same text (a wire story on several papers' sites) or the same headline within two days. They're listed, not merged.
 - `THREADBNC_DISCUSSIONS=0` stops looking elsewhere; posts of the same page here are still listed.
 

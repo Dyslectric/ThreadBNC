@@ -1806,7 +1806,28 @@ document.documentElement.classList.add("js");
   }
 
   async function loadSavedDiscussion(d, body) {
-    const tid = d.dataset.thread;
+    return loadSavedThread(d.dataset.thread, body);
+  }
+
+  // A post found elsewhere, or on Trending, saved here first (as Open here
+  // does: it expires unless you keep it), so its comments can be sorted,
+  // voted on and replied to like any other's. Returns its thread's id.
+  async function savedThreadId(action, fields) {
+    const data = await post(action, fields || {});
+    if (data.thread_id) return String(data.thread_id);
+    if (!data.job) throw new Error("it couldn't be saved");
+    const until = Date.now() + 90000;
+    while (Date.now() < until) {
+      const r = await fetch(`/api/jobs/${data.job}`, { credentials: "same-origin" });
+      const job = r.ok ? await r.json() : null;
+      if (job && job.status === "done" && job.result && job.result.thread_id) return String(job.result.thread_id);
+      if (job && job.status === "failed") throw new Error(job.error || "it couldn't be saved");
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    throw new Error("saving it is taking a while");
+  }
+
+  async function loadSavedThread(tid, body) {
     const url = new URL(`/t/${tid}?inline=1`, location.href);
     const doc = await fetchDoc(url.href);
     const comments = $(".comments", doc);
@@ -2162,9 +2183,26 @@ document.documentElement.classList.add("js");
     link.setAttribute("aria-busy", "true");
     const loading = document.createElement("p");
     loading.className = "muted small trend-peek-box";
-    loading.textContent = "Reading its replies…";
+    loading.textContent = link.dataset.open ? "Saving it here, with its comments…" : "Reading its replies…";
     main.append(loading);
     try {
+      let tid = null;
+      if (link.dataset.open) {
+        try {
+          tid = await savedThreadId(link.dataset.open, { source: link.dataset.source, ref: link.dataset.ref });
+        } catch (e) {
+          toast({ kind: "error", text: `Couldn't save it here (${e.message}): its replies are shown to read only.` });
+        }
+      }
+      if (tid) {
+        const holder = document.createElement("div");
+        loading.replaceWith(holder);
+        box = await loadSavedThread(tid, holder);
+        box.classList.add("trend-peek-box");
+        box.opener = link;
+        showTrendPeek(link, box, true);
+        return;
+      }
       const fresh = $("[data-peek-body]", await fetchDoc(link.dataset.peek));
       if (!fresh) throw new Error("nothing to show");
       box = document.adoptNode(fresh);
@@ -2190,6 +2228,14 @@ document.documentElement.classList.add("js");
     body.innerHTML = '<p class="muted">Loading…</p>';
     try {
       let box;
+      if (!d.dataset.thread && d.dataset.open) {  // saved here first, to reply to
+        body.innerHTML = '<p class="muted">Saving it here, with its comments…</p>';
+        try {
+          d.dataset.thread = await savedThreadId(d.dataset.open);
+        } catch (e) {
+          toast({ kind: "error", text: `Couldn't save it here (${e.message}): its replies are shown to read only.` });
+        }
+      }
       if (d.dataset.thread) box = await loadSavedDiscussion(d, body);
       else {
         box = $("[data-peek-body]", await fetchDoc(d.dataset.peek));

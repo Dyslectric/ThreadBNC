@@ -55,11 +55,12 @@ def tag_community(tag: str, description: str | None = None) -> NCommunity:
                       description=description)
 
 
-def account_community(actor: str) -> NCommunity:
-    """Your Mastodon account, as the community the posts you make on it are filed under."""
+def account_community(actor: str, description: str | None = None) -> NCommunity:
+    """Your Mastodon account, as the community the posts you make on it are
+    filed under; or someone else's, for their posts saved from Trending."""
     name = urlparse(actor).path.rstrip("/").rsplit("/", 1)[-1].lstrip("@")
     return NCommunity(ap_id=actor, name=name, domain=TAG_DOMAIN, title=None, local_id=actor,
-                      description="The posts you've made on your Mastodon account from ThreadBNC.")
+                      description=description or "The posts you've made on your Mastodon account from ThreadBNC.")
 
 
 def community_for(key: str) -> NCommunity:

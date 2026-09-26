@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import replace
 import threading
 import time
 import traceback
@@ -41,7 +42,8 @@ from websockets.sync.client import connect
 
 from . import trends
 from .adapters import TAG_DOMAIN, RemoteError, RemoteNotFound, normalize_tag
-from .adapters.activitypub import context_comments, plain_text, status_post
+from .adapters.activitypub import account_community, context_comments, plain_text, status_id, status_post
+from .adapters.base import host_of
 from .bouncer import Bouncer
 from .db import fmt_ts, parse_ts, utcnow
 from .traffic import record, tagged
@@ -53,6 +55,7 @@ SETTING = "mastodon_public"  # app setting (JSON): {"scope": one of SCOPES}; mis
 SCOPES = {"public": "Everything public your server hears of (its federated timeline)",
           "public:local": "Only what's posted on your server (its local timeline)"}
 JOB = "mastodon_tagged"
+OPEN_JOB = "mastodon_open"  # a post from Trending, saved here to read and reply to
 FLUSH_EVERY = 5.0
 REFRESH_EVERY = 60.0  # seconds: the hashtags followed, and the subscription, are read again this often
 MAX_BACKOFF = 300.0
@@ -158,6 +161,7 @@ class MastodonStream:
         bouncer.follow_hooks.append(self._changed)
         bouncer.unfollow_hooks.append(self._changed)
         bouncer.job_handlers[JOB] = self.capture
+        bouncer.job_handlers[OPEN_JOB] = self.save_post
         bouncer.hooks.append(self.upkeep)
         bouncer.tag_adapter.mastodon = self.active  # hashtags can be followed without an actor of ThreadBNC's own
 
@@ -325,6 +329,32 @@ class MastodonStream:
         adapter = self.bouncer.tag_adapter
         tid = self.bouncer._ingest_post(post, TAG_DOMAIN, post.local_id, adapter, capture=True,
                                         source_url=post.ap_id, retention="auto")
+        return {"thread_id": tid}
+
+    # -- a post from Trending, saved to read and reply to -----------------------------
+    def save_post(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """A job: save a Mastodon post from Trending with its replies, as a post
+        opened from a link is (it expires unless you keep it), so they can be
+        sorted and replied to as your Mastodon account. It's read from its own
+        server, as that shows it to anyone, and filed under whoever posted it."""
+        uri = payload["uri"]
+        existing = self.bouncer._existing_thread(uri)
+        if existing:
+            return {"thread_id": existing["id"]}
+        sid = status_id(uri)
+        if sid is None:
+            raise RemoteNotFound(f"{uri} isn't a post a Mastodon-like server can show")
+        status = self.bouncer.http.get_json(host_of(uri), f"/api/v1/statuses/{sid}")
+        account = status.get("account") or {}
+        actor = account.get("uri") or account.get("url")
+        if not isinstance(actor, str) or not actor.startswith("https://"):
+            raise RemoteNotFound(f"{uri}: who posted it isn't said")
+        post = status_post(status, actor)
+        who = str(account.get("acct") or account.get("username") or "someone")
+        post = replace(post, community=account_community(
+            actor, f"Posts by {who} on the fediverse, saved here from Trending."))
+        tid = self.bouncer._ingest_post(post, TAG_DOMAIN, post.local_id, self.bouncer.tag_adapter, source_url=uri,
+                                        retention="auto")
         return {"thread_id": tid}
 
     # -- a post's replies, read when it's expanded on Trending ------------------------
