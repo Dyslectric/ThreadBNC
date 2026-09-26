@@ -8,8 +8,8 @@
    feed: its text, then its comments. app.js fills them in: for a post saved
    here (`thread`) from its page, with its comments to reply to and vote on;
    for one found elsewhere from `peek` (discussion_peek.html). #}
-{% macro item(title, peek=none, thread=none) -%}
-<details class="discussion"{% if thread %} data-thread="{{ thread }}"{% else %} data-peek="{{ peek }}"{% endif %}>
+{% macro item(title, peek=none, thread=none, open=none) -%}
+<details class="discussion"{% if thread %} data-thread="{{ thread }}"{% else %} data-peek="{{ peek }}"{% if open %} data-open="{{ open }}"{% endif %}{% endif %}>
   <summary>{{ icon('comment', 'discussion-icon') }}<span class="discussion-head"><span class="discussion-title">{{ title }}</span>
     <span class="muted">{{ caller("meta") }}</span></span>{{ icon('chevron-down', 'chev') }}</summary>
   <div class="discussion-panel">
@@ -38,7 +38,7 @@
   {% if talk.found %}
   <h3>Elsewhere</h3>
   <ul class="plain discussion-list">{% for d in talk.found %}<li>
-    {%- call(part) item(d.title, "/discussions/" ~ d.id, d.thread_id) %}
+    {%- call(part) item(d.title, "/discussions/" ~ d.id, d.thread_id, ("/discussions/" ~ d.id ~ "/open") if d.openable) %}
       {%- if part == "meta" %}·
         {%- if d.place %} {{ d.place }}{% endif %}
         {%- if d.author %} · {{ d.author }}{% endif %}

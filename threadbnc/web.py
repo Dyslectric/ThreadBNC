@@ -60,7 +60,7 @@ PROXY_SECRET_HEADER = "X-ThreadBNC-Proxy-Secret"
 from .config import Settings, load_settings
 from .federation import Federation, InboxRelay, summarize
 from .jetstream import BlueskyStream
-from .mastodon_stream import SCOPES as MASTODON_SCOPES, MastodonStream
+from .mastodon_stream import OPEN_JOB as MASTODON_OPEN_JOB, SCOPES as MASTODON_SCOPES, MastodonStream
 from .mastodon_stream import subscribe as mastodon_subscribe, subscription as mastodon_subscription
 from .tags import TagRelays
 from .db import fmt_ts, open_database, parse_ts, utcnow
@@ -1260,6 +1260,28 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     @app.get("/trending/pictures")
     def trending_pictures(post: list[str] = Query([])):
         return trending_pictures_answer(post)
+
+    @app.post("/trending/open")
+    def trending_open(request: Request, source: str = Form(...), ref: str = Form(...)):
+        """A trending post, saved here with its replies (as a post opened from a link:
+        it expires unless you keep it), to read, sort and reply to. app.js is told
+        the thread, or the job saving it; a form goes to wait for it."""
+        with db.connect() as conn:
+            row = conn.execute("SELECT view_json FROM stream_posts WHERE source=? AND ref=?", (source, ref)).fetchone()
+        if row is None or not row["view_json"]:
+            raise HTTPException(404)
+        view = json.loads(row["view_json"])
+        ap_id = view.get("url") if source == "bluesky" else view.get("uri")
+        if not ap_id:
+            raise HTTPException(404)
+        here = bouncer._existing_thread(ap_id)
+        if here is not None:
+            return JSONResponse({"thread_id": here["id"]}) if is_fetch(request) else \
+                RedirectResponse(f"/t/{here['id']}", status_code=303)
+        job = (bouncer.enqueue("ingest", {"url": ap_id, "retention": "auto"}) if source == "bluesky"
+               else bouncer.enqueue(MASTODON_OPEN_JOB, {"uri": ap_id}))
+        return JSONResponse({"job": job}) if is_fetch(request) else \
+            RedirectResponse(f"/jobs/{job}/wait", status_code=303)
 
     @app.get("/articles")
     def old_articles_page(t: str = "week"):
@@ -3524,10 +3546,12 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                                 "WHERE o.canonical_ap_id=?", (d["url"],)).fetchone() if d else None
         if d is None or d["source"] not in discussions_mod.OPENABLE or not discussions_mod.openable(d["url"]):
             raise HTTPException(404)
-        if here is not None:
-            return RedirectResponse(f"/t/{here['id']}", status_code=303)
+        if here is not None:  # (app.js is told the thread, or the job saving it)
+            return JSONResponse({"thread_id": here["id"]}) if is_fetch(request) else \
+                RedirectResponse(f"/t/{here['id']}", status_code=303)
         job = bouncer.enqueue("ingest", {"url": d["url"], "retention": "auto"})
-        return RedirectResponse(f"/jobs/{job}/wait", status_code=303)
+        return JSONResponse({"job": job}) if is_fetch(request) else \
+            RedirectResponse(f"/jobs/{job}/wait", status_code=303)
 
     @app.get("/discussions/{did}", response_class=HTMLResponse)
     def discussion_peek(request: Request, did: int):

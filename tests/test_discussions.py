@@ -323,6 +323,8 @@ def test_a_post_found_elsewhere_opens_here(server, dbouncer, looking):
     assert part.count(f'href="/t/{new_tid}"') == 1 and "Open here" in part  # (the Bluesky one still)
     again = client.post(f"/discussions/{did}/open", follow_redirects=False)
     assert again.headers["location"] == f"/t/{new_tid}"
+    # app.js, saving it as it's expanded, is told the thread (or the job saving it) instead.
+    assert client.post(f"/discussions/{did}/open", headers={"X-ThreadBNC-Fetch": "1"}).json() == {"thread_id": new_tid}
 
 
 def discussion_id(b, url: str) -> int:
@@ -338,6 +340,8 @@ def test_each_one_expands_into_its_text_then_its_replies(server, dbouncer, looki
     part = client.get(f"/t/{tid}").text
     did = discussion_id(dbouncer, f"https://{DOMAIN}/post/77")
     assert f'data-peek="/discussions/{did}"' in part and '<details class="discussion"' in part
+    # Expanded with JavaScript, one that can be saved here is, so its comments can be replied to (app.js).
+    assert f'data-open="/discussions/{did}/open"' in part
     # A Lemmy post is read from your own server when it's expanded, with its comments, best first.
     server.add_post("77", "Posted in tech", "The council **finally** agreed.")
     server.add_comment("77", "c1", "First!")
