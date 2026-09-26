@@ -61,6 +61,7 @@ from .config import Settings, load_settings
 from .federation import Federation, InboxRelay, summarize
 from .jetstream import BlueskyStream
 from .mastodon_stream import OPEN_JOB as MASTODON_OPEN_JOB, SCOPES as MASTODON_SCOPES, MastodonStream
+from .fedibuzz import FediBuzzStream
 from .mastodon_stream import feed_closed as mastodon_feed_closed
 from .mastodon_stream import subscribe as mastodon_subscribe, subscription as mastodon_subscription
 from .tags import TagRelays
@@ -372,13 +373,16 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     tags = TagRelays(bouncer, bouncer.actor, settings.tag_relay, mastodon_stream.active) if bouncer.actor else None
     # ...and on Bluesky, picked out of its Jetstream, which also counts what's posted there for Trending.
     bluesky_stream = BlueskyStream(bouncer, settings.jetstream_url, settings.user_agent) if settings.jetstream_url else None
+    # ...and FediBuzz's firehose of the fediverse, counted with that timeline once turned on on the Trending page.
+    fedibuzz = FediBuzzStream(bouncer, mastodon_stream.tally, settings.user_agent)
     if tags:  # a live feed found off (or on again): follow the relays again (or stop) now, not in half an hour
         mastodon_stream.closed_hooks.append(lambda: tags.housekeeping(now=True))
 
     def archive_skips() -> tuple[str, ...]:
         """The archive's posts that a stream counts already, for Trending."""
-        return trends_mod.archive_skips(bool(bluesky_stream) and trends_mod.settings(db)["bluesky"],
-                                        mastodon_stream.active())
+        chosen = trends_mod.settings(db)
+        return trends_mod.archive_skips(bool(bluesky_stream) and chosen["bluesky"],
+                                        mastodon_stream.active() or chosen["fedibuzz"])
 
     trend_upkeep = trends_mod.Trends(bouncer, archive_skips)
 
@@ -399,6 +403,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             if bluesky_stream:
                 bluesky_stream.start_thread()
             mastodon_stream.start_thread()
+            fedibuzz.start_thread()
         yield
         bouncer.stop()
         if federation:
@@ -406,6 +411,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         if bluesky_stream:
             bluesky_stream.stop()
         mastodon_stream.stop()
+        fedibuzz.stop()
         traffic_mod.METER.flush()
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
@@ -610,6 +616,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     app.state.tags = tags
     app.state.bluesky_stream = bluesky_stream
     app.state.mastodon_stream = mastodon_stream
+    app.state.fedibuzz = fedibuzz
     app.state.templates = templates
     app.state.trends = trend_upkeep
 
@@ -1125,6 +1132,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         return {"chosen": chosen, "bluesky": bluesky_stream, "embedded": settings.embedded_bouncer,
                 "mastodon": mastodon_stream, "mastodon_account": mastodon_stream.account(),
                 "mastodon_accounts": mastodon_stream.accounts(), "mastodon_closed": mastodon_stream.closed(),
+                "fedibuzz": fedibuzz,
                 "mastodon_scope": (mastodon_subscription(db) or {}).get("scope"), "scopes": MASTODON_SCOPES,
                 "actor": bouncer.actor.handle if bouncer.actor else None}
 
@@ -1299,14 +1307,14 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     @app.post("/trending/settings")
     def trending_settings(request: Request, bluesky: str | None = Form(None), bluesky_likes: str = Form("appview"),
                           mastodon_scope: str = Form(""), mastodon_account: str = Form(""),
-                          mastodon_tags: str | None = Form(None)):
+                          mastodon_tags: str | None = Form(None), fedibuzz_on: str | None = Form(None, alias="fedibuzz")):
         """What's counted, and whether a Mastodon server's public timeline is subscribed to, as which account."""
         before = mastodon_stream.active()
         signed_in = mastodon_stream.accounts()
         changes: dict[str, Any] = {}
         if signed_in:  # (the choice is only offered then)
             changes["mastodon_tags"] = bool(mastodon_tags)
-        trends_mod.save_settings(db, bluesky=bool(bluesky), **changes,
+        trends_mod.save_settings(db, bluesky=bool(bluesky), fedibuzz=bool(fedibuzz_on), **changes,
                                  bluesky_likes=bluesky_likes if bluesky_likes in trends_mod.LIKES_FROM else "appview")
         scope = mastodon_scope if mastodon_scope in MASTODON_SCOPES else None
         which = next((a for a in signed_in if str(a["id"]) == mastodon_account), signed_in[0] if signed_in else None)
@@ -1324,6 +1332,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         if bluesky_stream:
             bluesky_stream.wake.set()
         mastodon_stream.wake.set()
+        fedibuzz.wake.set()
         ranked.clear()
         if tags and mastodon_stream.active() != before:  # follow the relays again, or stop: not while you wait
             threading.Thread(target=tags.housekeeping, kwargs={"now": True}, name="relays", daemon=True).start()
@@ -2199,7 +2208,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         traffic_mod.METER.flush()  # this process's latest; a bouncer running on its own adds its own each minute
         return render(request, "traffic.html", r=traffic_mod.report(db, days), periods=TRAFFIC_PERIODS,
                       jetstream=bluesky_stream, jetstream_host=urlparse(settings.jetstream_url or "").hostname,
-                      timeline_stream=mastodon_stream if mastodon_subscription(db) else None)
+                      timeline_stream=mastodon_stream if mastodon_subscription(db) else None,
+                      fedibuzz=fedibuzz if trends_mod.settings(db)["fedibuzz"] and settings.embedded_bouncer else None)
 
     @app.get("/storage/integrity", response_class=HTMLResponse)
     def integrity_page(request: Request, deep: int = 0):

@@ -91,6 +91,10 @@ def main() -> None:
         # Your Mastodon server's public timeline, when subscribed to (hashtags, Trending).
         timeline = MastodonStream(bouncer, TokenVault(settings.credentials_key, settings.data_dir), settings.user_agent)
         timeline.start_thread()
+        from .fedibuzz import FediBuzzStream
+
+        # FediBuzz's firehose, when counted for Trending: in the same tally, so what arrives both ways counts once.
+        FediBuzzStream(bouncer, timeline.tally, settings.user_agent).start_thread()
         counting = False
         if settings.jetstream_url:  # hashtags on Bluesky, and what's posted there counted for Trending
             from .jetstream import BlueskyStream
@@ -98,7 +102,7 @@ def main() -> None:
             BlueskyStream(bouncer, settings.jetstream_url, settings.user_agent).start_thread()
             counting = True
         trends.Trends(bouncer, lambda: trends.archive_skips(counting and trends.settings(bouncer.db)["bluesky"],
-                                                            timeline.active()))
+                                                            timeline.active() or trends.settings(bouncer.db)["fedibuzz"]))
         bouncer.run_forever()
     elif args.cmd == "archive":
         print(f"thread {bouncer.ingest_url(args.url)}")

@@ -31,6 +31,14 @@
             {% endif %}
           </fieldset>
           <fieldset>
+            <legend>FediBuzz</legend>
+            <label><input type="checkbox" name="fedibuzz" value="1" {{ 'checked' if st.chosen.fedibuzz }}>
+              Count hashtags and links from FediBuzz's firehose: what's posted publicly across the fediverse, as
+              fedi.buzz gathers it (no account needed; about 3 GB a day)</label>
+            <p class="muted">Counted as Mastodon's, with your server's timeline if you listen to one too: a post that
+              arrives both ways counts once. Its replies aren't counted.</p>
+          </fieldset>
+          <fieldset>
             <legend>Mastodon</legend>
             {% if st.mastodon_account %}
             {% if st.mastodon_accounts | length > 1 %}
@@ -79,6 +87,12 @@
       {% elif st.bluesky.last_error %}<span class="pill bad">Bluesky</span> <span class="bad-text">{{ st.bluesky.last_error }}</span>
       {% else %}<span class="pill warn">Bluesky</span> connecting.{% endif %}
     {% else %}<span class="pill muted">Bluesky</span> not counted.{% endif %}
+    {% if st.chosen.fedibuzz %}
+      {% if not st.embedded %}<span class="pill">FediBuzz</span> counted by the bouncer.
+      {% elif st.fedibuzz.connected_since %}<span class="pill good">FediBuzz</span> counting since {{ when(st.fedibuzz.connected_since) }}.
+      {% elif st.fedibuzz.last_error %}<span class="pill bad">FediBuzz</span> <span class="bad-text">{{ st.fedibuzz.last_error }}</span>
+      {% else %}<span class="pill warn">FediBuzz</span> connecting.{% endif %}
+    {% endif %}
     {% if st.mastodon_scope and st.mastodon_account and st.mastodon_closed %}
       <span class="pill bad">Mastodon</span> <span class="bad-text">{{ st.mastodon_closed }}{% if st.actor %} Hashtags come from the relays meanwhile.{% endif %}</span>
     {% elif st.mastodon_scope and st.mastodon_account %}
@@ -283,10 +297,12 @@
   {% endfor %}
   </ol>
   {% endfor %}
-  {% if source == 'mastodon' and page == 1 and st.mastodon_account %}
+  {% if source == 'mastodon' and page == 1 and (servers or st.chosen.fedibuzz) %}
+  {% set listening = st.mastodon_scope and st.mastodon_account and not st.mastodon_closed %}
   <h2 class="trend-tags-heading">Counted here</h2>
-  <p class="small muted">{% if st.mastodon_scope and not st.mastodon_closed %}From {{ st.mastodon_account[0] }}'s {{ 'local' if st.mastodon_scope == 'public:local' else 'federated' }} timeline, as it arrives.
-    {%- else %}Counted from a public timeline you listen to, under Sources.{% endif %}</p>
+  <p class="small muted">
+    {%- if st.chosen.fedibuzz or listening %}From {% if st.chosen.fedibuzz %}FediBuzz's firehose{% endif %}{% if st.chosen.fedibuzz and listening %} and {% endif %}{% if listening %}{{ st.mastodon_account[0] }}'s {{ 'local' if st.mastodon_scope == 'public:local' else 'federated' }} timeline{% endif %}, as it arrives.
+    {%- else %}Counted from FediBuzz's firehose or a public timeline you listen to, under Sources.{% endif %}</p>
   {% endif %}
 
   {% if tags %}
@@ -313,7 +329,7 @@
   </ol>
   {% else %}
     <section class="card empty"><p class="muted">
-      {%- if source == 'mastodon' and (not st.mastodon_scope or st.mastodon_closed) %}Mastodon's hashtags are counted from a public timeline you listen to: choose one under Sources.
+      {%- if source == 'mastodon' and (not st.mastodon_scope or st.mastodon_closed) and not st.chosen.fedibuzz %}Mastodon's hashtags are counted from FediBuzz's firehose or a public timeline you listen to: choose under Sources.
       {%- else %}No hashtags counted {{ 'on ' ~ ('Bluesky' if source == 'bluesky' else 'Mastodon') ~ ' ' if source != 'all' }}in this time range yet.{% endif %}</p></section>
   {% endif %}
   {{ load_more(base ~ '&page=' ~ (page + 1) if has_more else none, base if page > 1 else none, page) }}

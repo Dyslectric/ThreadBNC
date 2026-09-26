@@ -110,6 +110,7 @@ def settings(db: Database) -> dict[str, Any]:
         got["bluesky_likes"] = "appview"
     got["bluesky"] = got.get("bluesky") is not False
     got["mastodon_tags"] = got.get("mastodon_tags") is not False  # ask your servers what's trending on them
+    got["fedibuzz"] = got.get("fedibuzz") is True  # count FediBuzz's firehose (fedibuzz.py): ~3 GB a day, so asked for
     return got
 
 
@@ -943,6 +944,6 @@ class Trends:
 
 def archive_skips(bluesky_counted: bool, mastodon_counted: bool) -> tuple[str, ...]:
     """The archive's own posts that a stream counts already: Bluesky's (all of
-    it is in Jetstream) and, with your Mastodon server's public timeline,
-    hashtags' (they come from it then)."""
+    it is in Jetstream) and, with your Mastodon server's public timeline or
+    FediBuzz's firehose, hashtags' (they come from there, or from FediBuzz's relays)."""
     return tuple(d for d, on in ((BSKY_DOMAIN, bluesky_counted), (TAG_DOMAIN, mastodon_counted)) if on)
