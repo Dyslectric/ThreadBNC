@@ -582,15 +582,18 @@ def trending_articles(conn: Conn, items: list[dict[str, Any]], page: int = 1,
 # --- ranking hashtags ------------------------------------------------------------
 
 def trending_tags(conn: Conn, window: str = "day", page: int = 1, per_page: int = 50,
-                  now: str | None = None) -> tuple[list[dict[str, Any]], bool]:
+                  now: str | None = None, source: str | None = None) -> tuple[list[dict[str, Any]], bool]:
     """The hashtags used in the most posts in the window, on Bluesky and
-    Mastodon, with the hashtag's community here when it's followed."""
+    Mastodon (or ranked by one `source` alone: Bluesky's far bigger stream
+    would bury Mastodon's), with the hashtag's community here when it's followed."""
     since = _since(window, now)
     page = max(1, page)
+    rank = f"SUM(CASE WHEN source='{source}' THEN posts ELSE 0 END)" if source in SOURCES else "SUM(posts)"
     rows = conn.execute(
         "SELECT tag, SUM(CASE WHEN source='bluesky' THEN posts ELSE 0 END) AS bluesky, "
         "SUM(CASE WHEN source='mastodon' THEN posts ELSE 0 END) AS mastodon, SUM(posts) AS total "
-        "FROM tag_counts WHERE hour >= ? GROUP BY tag ORDER BY SUM(posts) DESC, tag LIMIT ? OFFSET ?",
+        f"FROM tag_counts WHERE hour >= ? GROUP BY tag HAVING {rank} > 0 ORDER BY {rank} DESC, SUM(posts) DESC, tag "
+        "LIMIT ? OFFSET ?",
         (since[:13], per_page + 1, (page - 1) * per_page)).fetchall()
     items = [{"tag": r["tag"], "bluesky": int(r["bluesky"] or 0), "mastodon": int(r["mastodon"] or 0),
               "total": int(r["total"] or 0), "community_id": None, "following": False} for r in rows[:per_page]]

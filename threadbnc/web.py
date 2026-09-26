@@ -1169,13 +1169,15 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                       has_more=has_more, status=trending_status(), cached=trends_mod.TOP_CACHED)
 
     @app.get("/trending/tags", response_class=HTMLResponse)
-    def trending_tags(request: Request, t: str = "day", page: int = 1):
-        """The hashtags used in the most posts on Bluesky and Mastodon."""
+    def trending_tags(request: Request, t: str = "day", src: str = "all", page: int = 1):
+        """The hashtags used in the most posts on Bluesky and Mastodon, or on one of them."""
         window = t if t in trends_mod.WINDOWS else "day"
+        source = src if src in trends_mod.SOURCES else "all"
         page = max(1, page)
         with db.connect() as conn:
-            items, has_more = trends_mod.trending_tags(conn, window, page, TAGS_PAGE)
-        return render(request, "trending.html", tab="tags", tags=items, window=window, page=page,
+            items, has_more = trends_mod.trending_tags(conn, window, page, TAGS_PAGE,
+                                                       source=None if source == "all" else source)
+        return render(request, "trending.html", tab="tags", tags=items, window=window, source=source, page=page,
                       has_more=has_more, status=trending_status(), per_page=TAGS_PAGE)
 
     @app.get("/trending/peek", response_class=HTMLResponse)

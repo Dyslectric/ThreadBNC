@@ -227,12 +227,18 @@
   {{ load_more(base ~ '&page=' ~ (page + 1) if has_more else none, base if page > 1 else none, page) }}
 
 {% else %}
-  {% set base = '/trending/tags?t=' ~ window %}
+  {% set base = '/trending/tags?t=' ~ window ~ '&src=' ~ source %}
   <div class="feed-controls article-controls">
     <nav class="seg" aria-label="Time range">
       {% for key, label in [('day', 'Day'), ('week', 'Week'), ('month', 'Month')] %}
-        <a href="/trending/tags?t={{ key }}" class="{{ 'on' if window == key }}"
+        <a href="/trending/tags?t={{ key }}&src={{ source }}" class="{{ 'on' if window == key }}"
            {% if window == key %}aria-current="page"{% endif %}>{{ label }}</a>
+      {% endfor %}
+    </nav>
+    <nav class="seg" aria-label="Where">
+      {% for key, label in [('all', 'Both'), ('bluesky', 'Bluesky'), ('mastodon', 'Mastodon')] %}
+        <a href="/trending/tags?t={{ window }}&src={{ key }}" class="{{ 'on' if source == key }}"
+           {% if source == key %}aria-current="page"{% endif %}>{{ label }}</a>
       {% endfor %}
     </nav>
     <span class="muted small">Each account counts once an hour for a hashtag.</span>
@@ -254,13 +260,16 @@
         <form method="post" action="/follow" class="inline"><input type="hidden" name="community" value="#{{ t.tag }}">
           <button class="act" title="Follow #{{ t.tag }}: its posts arrive in your feed from now on">{{ icon('plus') }}<span>Follow</span></button></form>
         {% endif %}
-        <a class="act" href="https://bsky.app/hashtag/{{ t.tag | urlencode }}" target="_blank" rel="noreferrer noopener nofollow" title="On Bluesky">{{ icon('external') }}<span class="sr-only">#{{ t.tag }} on Bluesky</span></a>
+        {% if source != 'mastodon' %}<a class="act" href="https://bsky.app/hashtag/{{ t.tag | urlencode }}" target="_blank" rel="noreferrer noopener nofollow" title="On Bluesky">{{ icon('external') }}<span class="sr-only">#{{ t.tag }} on Bluesky</span></a>{% endif %}
+        {% if source != 'bluesky' and st.mastodon_account %}<a class="act" href="https://{{ st.mastodon_account[0] }}/tags/{{ t.tag | urlencode }}" target="_blank" rel="noreferrer noopener nofollow" title="On {{ st.mastodon_account[0] }}">{{ icon('external') }}<span class="sr-only">#{{ t.tag }} on {{ st.mastodon_account[0] }}</span></a>{% endif %}
       </span>
     </li>
   {% endfor %}
   </ol>
   {% else %}
-    <section class="card empty"><p class="muted">No hashtags counted in this time range yet.</p></section>
+    <section class="card empty"><p class="muted">
+      {%- if source == 'mastodon' and not st.mastodon_scope %}Mastodon's hashtags are counted from your server's public timeline: subscribe to it under Sources.
+      {%- else %}No hashtags counted {{ 'on ' ~ ('Bluesky' if source == 'bluesky' else 'Mastodon') ~ ' ' if source != 'all' }}in this time range yet.{% endif %}</p></section>
   {% endif %}
   {{ load_more(base ~ '&page=' ~ (page + 1) if has_more else none, base if page > 1 else none, page) }}
 {% endif %}

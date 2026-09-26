@@ -278,6 +278,27 @@ def test_hashtags_used_most_are_listed(settings, bouncer):
     assert '<input type="hidden" name="community" value="#cats">' not in page
 
 
+def test_hashtags_can_be_ranked_by_one_network(settings, bouncer):
+    # Bluesky's stream is far bigger: its hashtags would bury Mastodon's in one list.
+    for source, tags in (("bluesky", ["cats"] * 50 + ["dogs"] * 30), ("mastodon", ["birds"] * 3 + ["dogs"])):
+        tally = trends.Tally(source)
+        for tag in tags:
+            tally.post_tags([tag])
+        tally.flush(bouncer.db)
+    with bouncer.db.connect() as conn:
+        both, _ = trends.trending_tags(conn, "day", per_page=2)
+        mastodon, _ = trends.trending_tags(conn, "day", source="mastodon")
+        bluesky, _ = trends.trending_tags(conn, "day", source="bluesky")
+    assert [t["tag"] for t in both] == ["cats", "dogs"]
+    assert [(t["tag"], t["mastodon"], t["bluesky"]) for t in mastodon] == [("birds", 3, 0), ("dogs", 1, 30)]
+    assert [t["tag"] for t in bluesky] == ["cats", "dogs"]
+    web_client = TestClient(create_app(settings, bouncer))
+    web_client.post("/login", data={"password": "pw"})
+    page = web_client.get("/trending/tags", params={"src": "mastodon"}).text
+    assert page.index("#birds") < page.index("#dogs") and "#cats" not in page and "Mastodon 3" in page
+    assert 'href="/trending/tags?t=week&src=mastodon"' in page
+
+
 # --- ranking posts ---------------------------------------------------------------------
 
 def test_bluesky_posts_talked_about_have_their_totals_read(bouncer, bsky):  # noqa: F811
