@@ -109,6 +109,7 @@ PAIRS_KEPT = 8  # days
 KEEP_TOP = 1000  # of each network, each day
 KEEP_AFTER = timedelta(minutes=5)  # after the day ends, so its last counts are in
 HISTORY_THROUGH = "trend_history_through"  # app setting: the last day kept
+HOURS_FILLED = "trend_hours_filled"  # app setting: when backfill_hours filled in the hours counted before
 
 # Reading the totals of the posts most replied to (Bluesky: through the AppView).
 CHECK_EVERY = 300.0  # seconds between rounds
@@ -445,10 +446,12 @@ def _forget_pairs(db: Database, moment: datetime) -> None:
 def backfill_hours(db: Database, moment: datetime) -> None:
     """The hours counted before trend_hours was kept, as the counts show
     them: each hour with counts in the past DAILY_AFTER, and every hour of
-    the days before that (added up by the day already). Once, while it's empty."""
+    the days before that (added up by the day already). Once (HOURS_FILLED):
+    not "while it's empty", as the streams write this hour's within seconds of
+    starting, well before the first tidy. Hours it has already are left as they are."""
+    if db.get_setting(HOURS_FILLED):
+        return
     with db.connect() as conn:
-        if conn.execute("SELECT 1 FROM trend_hours LIMIT 1").fetchone():
-            return
         daily = (moment - DAILY_AFTER).strftime(HOUR)
         found: set[tuple[str, str]] = set()
         for counts in ("tag_counts", "link_counts"):
@@ -457,10 +460,12 @@ def backfill_hours(db: Database, moment: datetime) -> None:
                     found.add((r["hour"], r["source"]))
                 else:
                     found.update((f"{r['hour'][:10]}T{h:02d}", r["source"]) for h in range(24))
-    if found:
-        with db.transaction(exclusive=False) as conn:
-            conn.executemany("INSERT INTO trend_hours(hour, source, posts) VALUES (?,?,0) "
-                             "ON CONFLICT(hour, source) DO NOTHING", sorted(found))
+    with db.transaction(exclusive=False) as conn:
+        conn.executemany("INSERT INTO trend_hours(hour, source, posts) VALUES (?,?,0) "
+                         "ON CONFLICT(hour, source) DO NOTHING", sorted(found))
+        conn.execute("INSERT INTO app_settings(key, value) VALUES (?, ?) "
+                     "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (HOURS_FILLED, utcnow()))
+    log.info("Trending: filled in %d hours counted before they were kept, for Rising", len(found))
 
 
 def keep_days(db: Database, moment: datetime) -> list[str]:
@@ -481,6 +486,7 @@ def keep_days(db: Database, moment: datetime) -> list[str]:
     while day <= last:
         keep_day(db, day.isoformat())
         kept.append(day.isoformat())
+        log.info("Trending's History: kept %s", day.isoformat())
         day += timedelta(days=1)
     return kept
 
