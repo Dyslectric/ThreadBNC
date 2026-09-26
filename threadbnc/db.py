@@ -583,6 +583,8 @@ CREATE TABLE IF NOT EXISTS links_seen (
     last_seen_at TEXT NOT NULL,
     posts BIGINT NOT NULL DEFAULT 0    -- all counted, for tidying away the ones posted once
 );
+CREATE INDEX IF NOT EXISTS links_seen_first ON links_seen(first_seen_at);
+CREATE INDEX IF NOT EXISTS links_seen_last ON links_seen(last_seen_at);
 
 -- Hashtags used on Bluesky and Mastodon, counted like links (trends.py).
 CREATE TABLE IF NOT EXISTS tag_counts (
@@ -600,6 +602,8 @@ CREATE TABLE IF NOT EXISTS tags_seen (
     last_seen_at TEXT NOT NULL,
     posts BIGINT NOT NULL DEFAULT 0
 );
+CREATE INDEX IF NOT EXISTS tags_seen_first ON tags_seen(first_seen_at);
+CREATE INDEX IF NOT EXISTS tags_seen_last ON tags_seen(last_seen_at);
 
 -- Posts on Bluesky and Mastodon that the streams showed people replying to,
 -- quoting or liking (trends.py): what's counted as it arrives, and the totals
@@ -619,6 +623,9 @@ CREATE TABLE IF NOT EXISTS stream_posts (
     PRIMARY KEY (source, ref)
 );
 CREATE INDEX IF NOT EXISTS stream_posts_created ON stream_posts(created_at);
+CREATE INDEX IF NOT EXISTS stream_posts_first ON stream_posts(first_seen_at);
+-- The posts the Trending page can show: those whose totals have been read.
+CREATE INDEX IF NOT EXISTS stream_posts_shown ON stream_posts(source, created_at) WHERE view_json IS NOT NULL;
 
 -- Those posts' pictures, downloaded once they're shown on Trending; they go with the post.
 CREATE TABLE IF NOT EXISTS stream_post_media (
@@ -941,12 +948,17 @@ class Database:
             conn.close()
 
     @contextmanager
-    def transaction(self) -> Iterator[Any]:
+    def transaction(self, exclusive: bool = True) -> Iterator[Any]:
+        """A write transaction. On Postgres every one takes the same lock, so
+        they happen one at a time, as on SQLite; `exclusive=False` doesn't, for
+        writes that only add to or tidy their own tables (the streams' counts,
+        trends.py) and would otherwise hold up everything else while they run."""
         if self.is_postgres:
             raw = self._get_pg()
             try:
                 with raw.transaction():
-                    raw.execute("SELECT pg_advisory_xact_lock(%s)", (_PG_WRITE_LOCK,))
+                    if exclusive:
+                        raw.execute("SELECT pg_advisory_xact_lock(%s)", (_PG_WRITE_LOCK,))
                     yield _PgConn(raw)
             finally:
                 self._put_pg(raw)

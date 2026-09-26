@@ -69,6 +69,12 @@ LIKES_FROM = ("appview", "stream")
 HOUR = "%Y-%m-%dT%H"
 
 TOP_CACHED = 12  # the most posted articles of each window read and kept for reading
+RANKED_KEPT = 200  # the most posted of each window kept as ranked (the page shows these, ranked in the background)
+RANKING = "trending_rank:"  # app setting, + window: {"at": when, "items": [...]}
+STALE_RANKING = timedelta(minutes=45)  # older than this, the page ranks for itself
+READ_JOB = "trending_article"
+READ_SPACING = timedelta(seconds=20)  # between the articles read, so other work carries on in between
+TIDY_BATCH = 2000  # rows forgotten at a time, each lot a short transaction of its own
 PICTURES = 4  # a trending post's pictures downloaded, at most
 CACHE_EVERY = 900.0  # seconds between choosing them
 RANK_KEYS = 3000  # the most posted links in a window looked at when ranking
@@ -265,7 +271,12 @@ class Tally:
         if not found and not tags and not posts:
             return
         now = utcnow()
-        with db.transaction() as conn:
+        # Rows in the same order every time (by their key), so two streams
+        # writing at once never wait on each other's rows the other way round.
+        tags = dict(sorted(tags.items()))
+        found = dict(sorted(found.items()))
+        posts = dict(sorted(posts.items()))
+        with db.transaction(exclusive=False) as conn:
             conn.executemany(
                 "INSERT INTO tag_counts(tag, hour, source, posts) VALUES (?,?,?,?) ON CONFLICT(tag, hour, source) "
                 "DO UPDATE SET posts=tag_counts.posts+excluded.posts",
@@ -298,37 +309,68 @@ class Tally:
                 [(self.source, ref, e[3], now, e[0], e[1], e[2]) for ref, e in posts.items()])
 
 
-def tidy(conn: Conn, now: str | None = None) -> None:
+def tidy(db: Database, now: str | None = None) -> int:
     """Add up old hourly counts by the day, forget links and hashtags posted
-    too rarely to trend, and posts too old or too quiet."""
+    too rarely to trend, and posts too old or too quiet. Done a little at a
+    time, each in a short transaction of its own that holds nothing else up:
+    these tables are big (hundreds of thousands of links a day). Returns how
+    many of the posts forgotten had pictures here."""
     moment = parse_ts(now or utcnow()) or datetime.now(timezone.utc)
     for counts, seen, key in (("link_counts", "links_seen", "key"), ("tag_counts", "tags_seen", "tag")):
-        _tidy_counts(conn, moment, counts, seen, key)
-    conn.execute("DELETE FROM stream_posts WHERE COALESCE(created_at, first_seen_at) < ? OR "
-                 "(replies_seen + quotes_seen + likes_seen < ? AND first_seen_at < ? AND checked_at IS NULL)",
-                 (fmt_ts(moment - KEEP_POSTS), QUIET_SEEN, fmt_ts(moment - QUIET_AFTER)))
-    conn.execute("DELETE FROM stream_post_media WHERE NOT EXISTS (SELECT 1 FROM stream_posts p "
-                 "WHERE p.source=stream_post_media.source AND p.ref=stream_post_media.ref)")
+        _roll_up(db, moment, counts, key)
+        once, few = fmt_ts(moment - ONCE_AFTER), fmt_ts(moment - FEW_AFTER)
+        _forget(db, seen, [key], "(posts < 2 AND first_seen_at < ?) OR (posts < ? AND first_seen_at < ?) "
+                "OR last_seen_at < ?", (once, FEW_POSTS, few, fmt_ts(moment - KEEP_COUNTS)), also=(counts,))
+        with db.transaction(exclusive=False) as conn:
+            conn.execute(f"DELETE FROM {counts} WHERE hour < ?", ((moment - KEEP_COUNTS).strftime(HOUR),))
+    return _forget(db, "stream_posts", ["source", "ref"],
+                   "COALESCE(created_at, first_seen_at) < ? OR (replies_seen + quotes_seen + likes_seen < ? "
+                   "AND first_seen_at < ? AND checked_at IS NULL)",
+                   (fmt_ts(moment - KEEP_POSTS), QUIET_SEEN, fmt_ts(moment - QUIET_AFTER)), also=("stream_post_media",))
 
 
-def _tidy_counts(conn: Conn, moment: datetime, counts: str, seen: str, key: str) -> None:
-    """tidy() for one kind of count: `counts` by the hour, `seen` their totals, both by `key`."""
+def _roll_up(db: Database, moment: datetime, counts: str, key: str) -> None:
+    """Hourly counts over DAILY_AFTER old added up by the day (into the day's
+    'T00' hour), an hour at a time."""
     daily = (moment - DAILY_AFTER).strftime(HOUR)
-    rows = conn.execute(
-        f"SELECT {key} AS k, substr(hour, 1, 10) AS day, source, SUM(posts) AS n FROM {counts} "
-        f"WHERE hour < ? AND hour NOT LIKE '%T00' GROUP BY {key}, substr(hour, 1, 10), source", (daily,)).fetchall()
-    if rows:
-        conn.execute(f"DELETE FROM {counts} WHERE hour < ? AND hour NOT LIKE '%T00'", (daily,))
-        conn.executemany(
-            f"INSERT INTO {counts}({key}, hour, source, posts) VALUES (?,?,?,?) ON CONFLICT({key}, hour, source) "
-            f"DO UPDATE SET posts={counts}.posts+excluded.posts",
-            [(r["k"], r["day"] + "T00", r["source"], r["n"]) for r in rows])
-    once, few = fmt_ts(moment - ONCE_AFTER), fmt_ts(moment - FEW_AFTER)
-    forgotten = "(posts < 2 AND first_seen_at < ?) OR (posts < ? AND first_seen_at < ?) OR last_seen_at < ?"
-    params = (once, FEW_POSTS, few, fmt_ts(moment - KEEP_COUNTS))
-    conn.execute(f"DELETE FROM {counts} WHERE {key} IN (SELECT {key} FROM {seen} WHERE {forgotten})", params)
-    conn.execute(f"DELETE FROM {seen} WHERE {forgotten}", params)
-    conn.execute(f"DELETE FROM {counts} WHERE hour < ?", ((moment - KEEP_COUNTS).strftime(HOUR),))
+    with db.connect() as conn:
+        hours = [r[0] for r in conn.execute(
+            f"SELECT DISTINCT hour FROM {counts} WHERE hour < ? AND hour NOT LIKE '%T00' ORDER BY hour", (daily,))]
+    for hour in hours:
+        with db.transaction(exclusive=False) as conn:
+            conn.execute(
+                f"INSERT INTO {counts}({key}, hour, source, posts) SELECT {key}, ?, source, SUM(posts) FROM {counts} "
+                f"WHERE hour=? GROUP BY {key}, source ON CONFLICT({key}, hour, source) "
+                f"DO UPDATE SET posts={counts}.posts+excluded.posts", (hour[:10] + "T00", hour))
+            conn.execute(f"DELETE FROM {counts} WHERE hour=?", (hour,))
+
+
+def _forget(db: Database, table: str, keys: list[str], where: str, params: tuple[Any, ...],
+            also: tuple[str, ...] = ()) -> int:
+    """Delete the rows of `table` matching `where`, and the rows of the `also`
+    tables with the same `keys`, TIDY_BATCH at a time. Returns how many rows
+    of the last `also` table went."""
+    gone = 0
+    cols = ", ".join(keys)
+    with db.connect() as conn:  # all of them in one look, then deleted a batch at a time
+        everything = sorted(tuple(r) for r in conn.execute(f"SELECT {cols} FROM {table} WHERE {where}", params))
+    for start in range(0, len(everything), TIDY_BATCH):
+        rows = everything[start:start + TIDY_BATCH]
+        if len(keys) == 1:
+            match, values = f"{keys[0]} IN ({_marks(rows)})", [r[0] for r in rows]
+        else:  # (source, ref): by source
+            groups: dict[Any, list[Any]] = {}
+            for first, second in rows:
+                groups.setdefault(first, []).append(second)
+            match = " OR ".join(f"({keys[0]}=? AND {keys[1]} IN ({_marks(v)}))" for v in groups.values())
+            values = [x for first, v in groups.items() for x in (first, *v)]
+        with db.transaction(exclusive=False) as conn:
+            for other in also:
+                removed = conn.execute(f"DELETE FROM {other} WHERE {match}", values).rowcount
+                if other == also[-1]:
+                    gone += max(removed or 0, 0)
+            conn.execute(f"DELETE FROM {table} WHERE {match}", values)
+    return gone
 
 
 # --- ranking articles ---------------------------------------------------------
@@ -481,6 +523,30 @@ def _marks(values: list[Any]) -> str:
     return ",".join("?" * len(values))
 
 
+def store_ranking(db: Database, ranked: dict[str, list[dict[str, Any]]], now: str) -> None:
+    """Keep each window's ranking (its RANKED_KEPT most posted) for the page,
+    which reads it rather than ranking while you wait."""
+    with db.transaction(exclusive=False) as conn:
+        for window, items in ranked.items():
+            conn.execute("INSERT INTO app_settings(key, value) VALUES (?, ?) "
+                         "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                         (RANKING + window, json.dumps({"at": now, "items": items[:RANKED_KEPT]}, default=str)))
+
+
+def stored_ranking(conn: Conn, window: str, now: str | None = None) -> list[dict[str, Any]] | None:
+    """A window's ranking as last kept (store_ranking), unless it's stale."""
+    row = conn.execute("SELECT value FROM app_settings WHERE key=?", (RANKING + window,)).fetchone()
+    try:
+        kept = json.loads(row[0]) if row and row[0] else None
+    except ValueError:
+        return None
+    at = parse_ts(kept.get("at")) if isinstance(kept, dict) else None
+    moment = parse_ts(now or utcnow()) or datetime.now(timezone.utc)
+    if at is None or moment - at > STALE_RANKING:
+        return None
+    return kept.get("items") or []
+
+
 def trending_articles(conn: Conn, items: list[dict[str, Any]], page: int = 1,
                       per_page: int = 25) -> tuple[list[dict[str, Any]], bool]:
     """A page of `items` (ranked_articles), with what the page shows of each:
@@ -490,6 +556,14 @@ def trending_articles(conn: Conn, items: list[dict[str, Any]], page: int = 1,
     shown = [dict(i) for i in items[start:start + per_page]]
     ids = sorted({aid for item in shown for aid in item["article_ids"]})
     if ids:
+        now_ = {r["id"]: dict(r) for r in conn.execute(
+            f"SELECT id, status, title, byline, site_name, published, word_count, fetched_from, canonical_url, "
+            f"fetched_at FROM articles WHERE id IN ({_marks(ids)})", ids)}
+        for item in shown:
+            if item["id"] in now_:
+                fresh = now_[item["id"]]
+                item.update({k: v for k, v in fresh.items() if v is not None or k == "status"})
+        shown = [i for i in shown if i.get("status") != "skipped"]
         content = {r["id"]: r["content_html"] for r in conn.execute(
             f"SELECT id, content_html FROM articles WHERE id IN ({_marks(ids)})", ids)}
         pictures = {r["article_id"]: r["mid"] for r in conn.execute(
@@ -549,8 +623,8 @@ def trending_posts(conn: Conn, window: str = "day", sort: str = "likes", source:
         where, params = " AND source=?", [since, source]
     page = max(1, page)
     rows = conn.execute(
-        f"SELECT *, {score} AS score FROM stream_posts WHERE gone=0 AND view_json IS NOT NULL "
-        f"AND COALESCE(created_at, first_seen_at) >= ?{where} ORDER BY score DESC, created_at DESC LIMIT ? OFFSET ?",
+        f"SELECT *, {score} AS score FROM stream_posts WHERE view_json IS NOT NULL AND gone=0 "
+        f"AND created_at >= ?{where} ORDER BY score DESC, created_at DESC LIMIT ? OFFSET ?",
         (*params, per_page + 1, (page - 1) * per_page)).fetchall()
     out = []
     for r in rows[:per_page]:
@@ -681,18 +755,17 @@ class Trends:
         # () -> the source domains a stream counts already (see ranked_articles).
         self.archive_skips = archive_skips or (lambda: ())
         self._tidied = self._checked = self._cached = 0.0
+        self._tidying = threading.Lock()
         bouncer.hooks.append(self.upkeep)
+        bouncer.job_handlers[READ_JOB] = self.read_article
 
     def upkeep(self) -> None:
         now = time.monotonic()
         if now - self._tidied >= TIDY_EVERY:
             self._tidied = now
-            with self.db.transaction() as conn:
-                tidy(conn)
-                files = media_mod.collect_orphans(conn, self.bouncer.media_dir)  # the pictures of posts gone
-            for f in files:  # only after that committed
-                f.unlink(missing_ok=True)
-                thumbs.remove_for(self.bouncer.media_dir, f.stem)
+            # A few seconds of database work an hour: on a thread of its own, so the
+            # bouncer's one worker (opening posts, reading comments) isn't held up.
+            threading.Thread(target=self.tidy_now, name="trends-tidy", daemon=True).start()
         if now - self._checked >= CHECK_EVERY:
             self._checked = now
             with tagged("trends"):
@@ -704,6 +777,22 @@ class Trends:
             self._cached = now
             with tagged("trends"):
                 self.cache_articles()
+
+    def tidy_now(self) -> None:
+        """tidy(), and the pictures of the posts it forgot. One at a time."""
+        if not self._tidying.acquire(blocking=False):
+            return
+        try:
+            if tidy(self.db):  # posts with pictures went: their pictures go too
+                with self.db.transaction() as conn:
+                    files = media_mod.collect_orphans(conn, self.bouncer.media_dir)
+                for f in files:  # only after that committed
+                    f.unlink(missing_ok=True)
+                    thumbs.remove_for(self.bouncer.media_dir, f.stem)
+        except Exception:  # tried again in an hour
+            log.exception("tidying the trends' counts failed")
+        finally:
+            self._tidying.release()
 
     def check_bluesky(self, now: str | None = None) -> int:
         """Read the totals of the Bluesky posts most talked about lately, and
@@ -729,29 +818,23 @@ class Trends:
                                    "reposts": v.get("repostCount"),
                                    "created_at": fmt_ts(created) if created else post_time(v["uri"]),
                                    "view": bluesky_view(v)}
-            with self.db.transaction() as conn:
+            with self.db.transaction(exclusive=False) as conn:
                 record_totals(conn, "bluesky", found, chunk, now or utcnow())
 
-    def cache_articles(self, now: str | None = None, rounds: int = 3) -> list[int]:
-        """Read the TOP_CACHED most posted articles of each window, if they
-        aren't already, and mark them as trending so they're kept. Pages read
-        that turn out not to be articles drop out of the ranking, so the ones
-        that take their place are read too, for up to `rounds` rounds."""
-        wanted: set[int] = set()
-        for _ in range(rounds):
-            marked, read = self._cache_round(now)
-            wanted |= marked
-            if not read:
-                break
-        return sorted(wanted)
-
-    def _cache_round(self, now: str | None) -> tuple[set[int], bool]:
-        """One round of cache_articles: (the ids marked, whether any had to be read)."""
+    def cache_articles(self, now: str | None = None) -> list[int]:
+        """Rank the articles of each window, and keep the ranking for the page
+        (store_ranking). Mark the TOP_CACHED most posted of each as trending so
+        they're kept, and read the ones not read yet: each a job of its own,
+        READ_SPACING apart, so opening posts and the like go on meanwhile. A
+        page read that isn't an article drops out of the next ranking, and the
+        next one in is read then."""
         stamp = now or utcnow()
         wanted: dict[int, Any] = {}
         skips = tuple(self.archive_skips())
         with self.db.connect() as conn:
-            tops = [ranked_articles(conn, window, now, archive_skips=skips)[:TOP_CACHED] for window in WINDOWS]
+            ranked = {window: ranked_articles(conn, window, now, archive_skips=skips) for window in WINDOWS}
+        store_ranking(self.db, ranked, stamp)
+        tops = [items[:TOP_CACHED] for items in ranked.values()]
         with self.db.transaction() as conn:
             for top in tops:
                 for item in top:
@@ -766,15 +849,23 @@ class Trends:
                         articles.add_keys(conn, aid, [url])
                     conn.execute("UPDATE articles SET trending_at=? WHERE id=?", (stamp, aid))
                     wanted[aid] = True
-            pending = [conn.execute("SELECT * FROM articles WHERE id=?", (aid,)).fetchone() for aid in wanted]
-        fetcher = self.bouncer.articles
-        read = False
-        if fetcher.enabled:
-            for row in pending:
-                if row is not None and row["status"] == "pending" and (row["next_attempt_at"] or "") <= stamp:
-                    fetcher.fetch_one(row)
-                    read = True
-        return set(wanted), read
+            pending = [aid for aid in wanted if conn.execute(
+                "SELECT 1 FROM articles WHERE id=? AND status='pending'", (aid,)).fetchone()]
+            queued = {json.loads(r[0]).get("article_id") for r in conn.execute(
+                "SELECT payload_json FROM jobs WHERE kind=? AND status IN ('queued', 'running')", (READ_JOB,))}
+        if self.bouncer.articles.enabled:
+            for i, aid in enumerate(a for a in pending if a not in queued):
+                self.bouncer.enqueue(READ_JOB, {"article_id": aid}, delay=READ_SPACING * i if i else None)
+        return sorted(wanted)
+
+    def read_article(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """A job: read one of the most posted articles, if it's still waiting to be."""
+        with self.db.connect() as conn:
+            row = conn.execute("SELECT * FROM articles WHERE id=?", (payload["article_id"],)).fetchone()
+        if row is None or row["status"] != "pending" or (row["next_attempt_at"] or "") > utcnow():
+            return {"skipped": "read already, or not due"}
+        self.bouncer.articles.fetch_one(row)
+        return {"article_id": row["id"]}
 
 
 def archive_skips(bluesky_counted: bool, mastodon_counted: bool) -> tuple[str, ...]:

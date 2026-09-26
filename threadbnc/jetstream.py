@@ -337,7 +337,7 @@ class BlueskyStream:
         m = _TIME_US.search(raw if isinstance(raw, str) else raw.decode("utf-8", "replace"))
         if not m:
             return
-        with self.db.transaction() as conn:
+        with self.db.transaction(exclusive=False) as conn:
             conn.execute("INSERT INTO app_settings(key, value) VALUES (?, ?) "
                          "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (CURSOR, m.group(1)))
 

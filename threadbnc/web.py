@@ -1103,12 +1103,16 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     ranked: dict[tuple[Any, ...], tuple[float, list[dict[str, Any]]]] = {}
 
     def ranking(window: str) -> list[dict[str, Any]]:
+        """A window's ranking: as the bouncer last ranked it (trends.cache_articles),
+        else ranked here, now, and reused for RANK_FOR."""
         key = (window, archive_skips())
         hit = ranked.get(key)
         if hit and time.monotonic() - hit[0] < RANK_FOR:
             return hit[1]
         with db.connect() as conn:
-            items = trends_mod.ranked_articles(conn, window, archive_skips=key[1])
+            items = trends_mod.stored_ranking(conn, window)
+            if items is None:
+                items = trends_mod.ranked_articles(conn, window, archive_skips=key[1])
         ranked[key] = (time.monotonic(), items)
         return items
 

@@ -21,6 +21,7 @@ from threadbnc.web import create_app
 from .conftest import DOMAIN
 from .test_articles import abouncer, fake_web  # noqa: F401
 from .test_bluesky import ALICE, bsky, post_view, signed_in, thread  # noqa: F401
+from .test_jetstream import run_due_now
 from .test_mastodon import HOME, TOKEN, WithHome, fedi, sign_in, web  # noqa: F401
 from .test_tags import client, follow, one, run_jobs, tagged  # noqa: F401
 
@@ -206,7 +207,13 @@ def test_the_most_posted_are_read_and_kept_while_they_trend(bouncer, abouncer, m
     count_links(abouncer, "mastodon", "https://news.test/2026/09/other-story-here")
     monkeypatch.setattr(trends, "TOP_CACHED", 2)
     upkeep = trends.Trends(abouncer)
-    wanted = upkeep.cache_articles()
+    upkeep.cache_articles()
+    # Each read by a job of its own, spaced out so other work carries on meanwhile.
+    queued = rows(abouncer, "SELECT run_after, created_at FROM jobs WHERE kind=? ORDER BY id", trends.READ_JOB)
+    assert len(queued) == 2 and queued[0]["run_after"] == queued[0]["created_at"] < queued[1]["run_after"]
+    run_due_now(abouncer)
+    wanted = upkeep.cache_articles()  # the next round
+    run_due_now(abouncer)
     got = {r["url"]: r for r in rows(abouncer, "SELECT * FROM articles")}
     # The one that wasn't an article made way for the next, which was read in the next round.
     assert got.pop("https://news.test/teaser/2026-story")["status"] == "skipped"
@@ -217,7 +224,9 @@ def test_the_most_posted_are_read_and_kept_while_they_trend(bouncer, abouncer, m
     # Read once: the link it was posted with and where it was read from are one page now.
     with abouncer.db.connect() as conn:
         ranked = trends.ranked_articles(conn, "week")
+        kept = trends.stored_ranking(conn, "week")  # what the page shows, without ranking while you wait
     assert [a["id"] for a in ranked] == [story["id"], got["https://news.test/2026/09/other-story-here"]["id"]]
+    assert kept[0]["id"] == story["id"]
     # Once it's no longer among the most posted, it goes like any article nothing links to.
     with abouncer.db.transaction() as conn:
         assert articles.collect_orphans(conn, stamp(hours=1)) == 0
@@ -235,7 +244,7 @@ def test_counts_are_tidied(bouncer):
             for h in range(3):
                 conn.execute("INSERT INTO link_counts(key, hour, source, posts) VALUES (?,?,?,?)",
                              (key, (first + timedelta(hours=h)).strftime("%Y-%m-%dT%H"), "bluesky", 3))
-        trends.tidy(conn)
+    trends.tidy(bouncer.db)
     assert {r["key"] for r in rows(bouncer, "SELECT key FROM links_seen")} == {"https://a.test/often",
                                                                               "https://a.test/today"}
     often = rows(bouncer, "SELECT hour, posts FROM link_counts WHERE key='https://a.test/often' ORDER BY hour")
@@ -368,10 +377,8 @@ def test_trending_posts_pictures_are_downloaded_once_shown(settings, abouncer, b
     assert web_client.get(pic["full"]).content.startswith(b"\x89PNG")
     # They go with the post.
     with abouncer.db.transaction() as conn:
-        trends.tidy(conn, stamp(days=9))
-    upkeep = trends.Trends(abouncer)
-    upkeep._checked = upkeep._cached = time.monotonic()
-    upkeep.upkeep()
+        conn.execute("UPDATE stream_posts SET created_at=?", (stamp(days=-9),))
+    trends.Trends(abouncer).tidy_now()  # (upkeep does this on a thread of its own, hourly)
     assert rows(abouncer, "SELECT id FROM media") == [] and rows(abouncer, "SELECT * FROM stream_post_media") == []
 
 
