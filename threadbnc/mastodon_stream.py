@@ -387,6 +387,16 @@ class MastodonStream:
                    if r["ref"].startswith(f"{domain}/")][:CHECK_POSTS]
         if not due:
             return 0
+        self.read(wanted, due, now)
+        return len(due)
+
+    def read(self, wanted: tuple[str, str, str, str], refs: list[str], now: str | None = None) -> None:
+        """Read these posts (refs on your server) from it: their totals, and
+        who posted them and what they say and show."""
+        domain = wanted[0]
+        due = [ref for ref in refs if ref.startswith(f"{domain}/")][:CHECK_POSTS]
+        if not due:
+            return
         ids = [ref.split("/", 1)[1] for ref in due]
         try:
             got = self._get(wanted, "/api/v1/statuses", **{"id[]": ids})
@@ -400,7 +410,6 @@ class MastodonStream:
         found = {f"{domain}/{s['id']}": totals(s, domain) for s in got if isinstance(s, dict) and s.get("id")}
         with self.db.transaction() as conn:
             trends.record_totals(conn, "mastodon", found, due, now or utcnow())
-        return len(due)
 
     def check_trending(self, wanted: tuple[str, str, str, str], now: str | None = None) -> int:
         """Your server's own trending posts, with their totals: those it saw

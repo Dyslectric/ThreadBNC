@@ -348,7 +348,9 @@ The totals are buttons: **♥** likes the post (or takes the like back) and the 
 Bluesky or boosts it on Mastodon, as your account there (see [Accounts and posting](#accounts-and-posting)).
 **💬** opens the post's whole text and its replies under it, read when you open them (from Bluesky, or from
 your Mastodon server while you're subscribed, else the post's own server) and not saved; a post already saved
-here shows its saved comments instead. A Bluesky post can be kept (saved with its replies, like **Keep a link**).
+here shows its saved comments instead. A post linking an article has **Read article**, which reads it under
+the post; a link to a video or a livestream opens its player there, as in the feed. A Bluesky post can be kept
+(saved with its replies, like **Keep a link**).
 Replies count for the post that started the thread, quotes for the post quoted. Posts go after a week.
 
 **Articles** ranks pages by how many posts linked them in the past day, week or month: on Bluesky, on Mastodon

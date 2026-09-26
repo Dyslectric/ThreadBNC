@@ -114,7 +114,11 @@
         {% if v.warning %}<p class="small"><span class="pill warn">CW</span> {{ v.warning }}</p>{% endif %}
         <p class="trend-text">{{ v.text or '(no text)' }}</p>
         {% if v.link and v.link | safe_url %}
-          <p class="small"><a href="{{ v.link | safe_url }}" target="_blank" rel="noreferrer noopener nofollow">{{ icon('link') }} {{ v.link_title or (v.link | host) }}</a></p>
+          {% set box = link_box(v.link) %}
+          <p class="small trend-link">
+          {%- if box %}<a class="{{ box.cls }}" href="{{ box.href }}" title="{{ box.title }}" aria-expanded="false">{{ icon('video' if box.cls == 'video-link' else 'play') }} {{ v.link_title or (v.link | host) }}</a>
+          {%- else %}<a href="{{ v.link | safe_url }}" target="_blank" rel="noreferrer noopener nofollow">{{ icon('link') }} {{ v.link_title or (v.link | host) }}</a>{% endif %}
+          </p>
         {% endif %}
         <div class="trend-pics" id="pics-{{ p.key }}" {% if not p.pictures %}hidden{% endif %}>
           {% for mid in p.pictures %}<button type="button" class="trend-pic" data-full="/media/{{ mid }}" aria-pressed="false"
@@ -147,6 +151,10 @@
                       title="{{ 'Repost' if p.source == 'bluesky' else 'Boost' }} it as your {{ site }} account">{{ icon('repost') }} <span class="n">{{ p.reposts or 0 }}</span></button>
             </form>
           </span>
+          {% if v.link is readable %}
+            <a class="act read-article" href="/read?url={{ v.link | urlencode }}" aria-expanded="false"
+               title="Read the linked article here">{{ icon('article') }}<span>Read article</span></a>
+          {% endif %}
           {% if not p.here and p.source == 'bluesky' %}
             <form method="post" action="/archive" class="inline" data-inplace="tp-{{ p.key }}"><input type="hidden" name="url" value="{{ v.url }}">
               <button class="act" title="Save it here with its replies, and keep it">{{ icon('star') }}<span>Keep</span></button></form>

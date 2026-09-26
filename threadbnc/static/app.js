@@ -1896,7 +1896,9 @@ document.documentElement.classList.add("js");
       }
       if (pictureQueue.size && !pictureTimer) pictureTimer = setTimeout(askTrendPictures, 300);
     }, { rootMargin: "200px 0px" });
-    for (const card of $$(".trending-post[data-pictures]", root)) pictureObserver.observe(card);
+    const cards = $$(".trending-post[data-pictures]", root);
+    if (root.matches && root.matches(".trending-post[data-pictures]")) cards.push(root);  // one "Load more" added
+    for (const card of cards) pictureObserver.observe(card);
   }
 
   function showTrendPictures(ready) {
@@ -1934,7 +1936,8 @@ document.documentElement.classList.add("js");
       showTrendPictures(data.ready);
       for (const p of posts) if (data.waiting.includes(keyOfPost(p))) pictureWaiting.add(p);
     } catch (e) { return; }
-    pictureUntil = Date.now() + 90000;
+    // Pictures are downloaded one a second from each site, so a page of them can take a few minutes.
+    pictureUntil = Date.now() + 300000;
     if (pictureWaiting.size && !pictureCheck) pictureCheck = setTimeout(checkTrendPictures, 2500);
   }
 
@@ -1952,7 +1955,7 @@ document.documentElement.classList.add("js");
       showTrendPictures(data.ready);
       for (const p of posts) if (!data.waiting.includes(keyOfPost(p))) pictureWaiting.delete(p);
     } catch (e) { /* tried again below */ }
-    if (pictureWaiting.size && Date.now() < pictureUntil) pictureCheck = setTimeout(checkTrendPictures, 2500);
+    if (pictureWaiting.size && Date.now() < pictureUntil) pictureCheck = setTimeout(checkTrendPictures, 3000);
   }
 
   document.addEventListener("click", (ev) => {

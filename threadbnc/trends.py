@@ -566,9 +566,16 @@ def trending_posts(conn: Conn, window: str = "day", sort: str = "likes", source:
     shown = pictures_of(conn, [(i["source"], i["ref"]) for i in out])
     for item in out:
         item["pictures"], item["pictures_waiting"] = shown.get((item["source"], item["ref"]), ([], False))
-        item["pictures_waiting"] = item["pictures_waiting"] or (bool(item["view"].get("images"))
-                                                                and not item["pictures"])
+        view = item["view"]
+        item["pictures_waiting"] = item["pictures_waiting"] or not item["pictures"] and (
+            bool(view.get("images")) or (unread_pictures(view)))
     return out, len(rows) > per_page
+
+
+def unread_pictures(view: dict[str, Any]) -> bool:
+    """Whether a post was last read before its pictures' addresses were kept
+    (it's read again when it's shown: see the Trending page's /trending/pictures)."""
+    return "images" not in view and bool(view.get("pictures") or view.get("video") or view.get("link"))
 
 
 def post_key(source: str, ref: str) -> str:
@@ -703,8 +710,14 @@ class Trends:
         who posted them and what they say, from the AppView."""
         with self.db.connect() as conn:
             due = [r["ref"] for r in due_checks(conn, "bluesky", CHECK_POSTS, now)]
+        self.read_bluesky(due, now)
+        return len(due)
+
+    def read_bluesky(self, refs: list[str], now: str | None = None) -> None:
+        """Read these Bluesky posts (at:// addresses) from the AppView: their
+        totals, and who posted them and what they say and show."""
         adapter = self.bouncer.bluesky_adapter
-        for chunk in _chunks(due, GET_POSTS):
+        for chunk in _chunks(refs, GET_POSTS):
             views = adapter._get("app.bsky.feed.getPosts", uris=chunk).get("posts") or []
             found = {}
             for v in views:
@@ -718,7 +731,6 @@ class Trends:
                                    "view": bluesky_view(v)}
             with self.db.transaction() as conn:
                 record_totals(conn, "bluesky", found, chunk, now or utcnow())
-        return len(due)
 
     def cache_articles(self, now: str | None = None, rounds: int = 3) -> list[int]:
         """Read the TOP_CACHED most posted articles of each window, if they
