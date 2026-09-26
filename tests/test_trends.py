@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 
 from urllib.parse import quote
 
-from threadbnc import articles, jetstream, languages, mastodon_stream, stories, trends
+from threadbnc import articles, jetstream, languages, mastodon_stream, trends
 from threadbnc.db import fmt_ts
 from threadbnc.jetstream import BlueskyStream
 from threadbnc.web import create_app
@@ -869,7 +869,7 @@ def test_each_hashtag_shows_its_heat_over_the_time_shown(settings, bouncer):
     # The past day by the hour, as its counts are (25 hours, from the start of the first), now last.
     assert day["hourly"] and len(day["cells"]) == 25 and day["cells"][-1]["at"] == hour_ago(0)
     cells = day["tags"]["quake"]["cells"]
-    assert [c["posts"] for c in cells[-4:]] == [10, 8, 30, 0] and [c["level"] for c in cells[-4:]] == [2, 2, 4, 0]
+    assert [c["posts"] for c in cells[-4:]] == [10, 8, 30, 0] and [c["height"] for c in cells[-4:]] == [33, 27, 100, 0]
     assert day["tags"]["quake"]["busiest"] == 23 and day["tags"]["none"]["busiest"] is None
     assert all(c["counted"] for c in day["cells"]) and not any(c["marked"] for c in day["cells"])
     assert [c["posts"] for c in bluesky["tags"]["quake"]["cells"][-4:]] == [10, 0, 30, 0]
@@ -878,11 +878,12 @@ def test_each_hashtag_shows_its_heat_over_the_time_shown(settings, bouncer):
     assert not week["hourly"] and [c["at"] for c in week["cells"]][-1] == datetime.now(timezone.utc).date().isoformat()
     assert len(week["cells"]) == 7 and sum(c["posts"] for c in week["tags"]["quake"]["cells"]) == 48
     page = logged_in(settings, bouncer).get("/trending/tags").text
-    assert 'class="trend-heat" role="img" aria-label="#quake: busiest ' in page and ", 30 posts\"" in page
-    assert f'title="{hour_ago(1)[:10]} {hour_ago(1)[11:13]}:00 UTC: 30 posts"' in page
-    assert "Each hashtag's posts in the past day, by the hour (UTC)." in page
-    assert "the past 6, which Rising compares, are underlined" in logged_in(settings, bouncer).get(
-        "/trending/tags", params={"t": "rising"}).text
+    assert 'aria-label="#quake: busiest ' in page and ", 30 posts\"" in page and "tallest 30" in page
+    assert f"<title>{hour_ago(1)[:10]} {hour_ago(1)[11:13]}:00 UTC: 30 posts</title>" in page
+    assert '<rect class="bar" x="23.12" y="0" width="0.76" height="100"/>' in page  # the tallest, drawn full height
+    assert "Each hashtag's posts in the past day, a bar an hour (UTC)." in page
+    rising = logged_in(settings, bouncer).get("/trending/tags", params={"t": "rising"}).text
+    assert "which Rising compares, darker" in rising and '<div class="trend-hist has-marked"' in rising
 
 
 def test_articles_can_be_ranked_by_one_network_and_rising(settings, bouncer):
@@ -991,8 +992,8 @@ def test_each_days_most_posted_are_kept_in_history(settings, bouncer, monkeypatc
     assert "Back to now" in page and "Bluesky was counted 24 of its 24 hours" in page
     # Each hashtag's heat is the week around the day, by the day, as History kept it.
     before = (now - timedelta(days=4)).date().isoformat()
-    assert "the day itself underlined" in page and 'class="hc h4 marked"' in page and f'title="{day}: 50 posts"' in page
-    assert f'title="{before}: not counted"' in page
+    assert "itself darker" in page and f'<g class="marked"><title>{day}: 50 posts</title>' in page
+    assert f"<title>{before}: not counted</title>" in page
     page = web_client.get("/trending/tags", params={"on": day, "src": "mastodon"}).text
     assert "#birds" in page and "#cats" not in page
     page = web_client.get("/trending/articles", params={"on": day}).text
@@ -1003,62 +1004,14 @@ def test_each_days_most_posted_are_kept_in_history(settings, bouncer, monkeypatc
 
 # --- stories ------------------------------------------------------------------------------
 
-def test_what_is_posted_together_is_counted(bouncer, monkeypatch):
-    monkeypatch.setattr(trends, "PAIR_ITEMS", 3)
-    tally = trends.Tally("bluesky")
-    quake = "https://news.test/2026/09/quake"
-    tally.post([(quake, "Quake", None)], ["earthquake", "japan"], "did:plc:ann")
-    tally.post([(quake + "?utm_source=x", None, None)], ["earthquake"], "did:plc:ann")  # the same account, same hour
-    tally.post([(quake, None, None)], ["earthquake", "tsunami", "news"], "did:plc:ben")  # links first, then 3 at most
-    tally.post([], ["alone"], "did:plc:cat")
-    tally.flush(bouncer.db)
-    key = trends.countable(quake)
-    got = {(r["a"], r["b"]): r["posts"] for r in rows(bouncer, "SELECT a, b, posts FROM pair_counts")}
-    assert got == {("#earthquake", key): 2, ("#japan", key): 1, ("#earthquake", "#japan"): 1,
-                   ("#tsunami", key): 1, ("#earthquake", "#tsunami"): 1}
-    assert rows(bouncer, "SELECT posts FROM link_counts") == [{"posts": 2}]  # still counted as before
-    # Pairs posted together once in a day that's over, and any over a week old, are forgotten.
-    now = datetime.now(timezone.utc)
-    with bouncer.db.transaction() as conn:
-        conn.executemany("INSERT INTO pair_counts(a, b, day, posts) VALUES (?,?,?,?)",
-                         [("#a", "#b", (now - timedelta(days=2)).date().isoformat(), 1),
-                          ("#a", "#c", (now - timedelta(days=2)).date().isoformat(), 5),
-                          ("#a", "#d", (now - timedelta(days=9)).date().isoformat(), 50)])
-    trends.tidy(bouncer.db)
-    left = {(r["a"], r["b"]) for r in rows(bouncer, "SELECT a, b FROM pair_counts")}
-    assert ("#a", "#c") in left and ("#a", "#b") not in left and ("#a", "#d") not in left
-    assert ("#japan", key) in left  # today's aren't over yet
-
-
-def test_stories_group_what_is_posted_together(settings, bouncer):
-    counting(bouncer, "bluesky")
-    quake, quake2, cat = "https://news.test/2026/quake", "https://other.test/2026/quake-live", "https://pets.test/cat"
-    for key, posts in ((quake, 40), (quake2, 25), (cat, 30)):
-        counted(bouncer, "link_counts", key, "bluesky", [0], posts, url=key)
-    for tag, posts in (("news", 500), ("earthquake", 60), ("caturday", 50), ("tsunami", 20)):
-        counted(bouncer, "tag_counts", tag, "bluesky", [0], posts)
-    today = datetime.now(timezone.utc).date().isoformat()
-    together = [(quake, "#earthquake", 20), (quake2, "#earthquake", 12), (quake, quake2, 5),
-                ("#earthquake", "#tsunami", 10), (quake, "#news", 8), ("#earthquake", "#news", 10),
-                (cat, "#caturday", 15)]
-    with bouncer.db.transaction() as conn:
-        conn.executemany("INSERT INTO pair_counts(a, b, day, posts) VALUES (?,?,?,?)",
-                         [(min(a, b), max(a, b), today, n) for a, b, n in together])
-    with bouncer.db.connect() as conn:
-        articles_ = trends.order_articles(trends.ranked_articles(conn, "day"))
-        tags, _ = trends.trending_tags(conn, "day", 1, 60)
-        got = stories.stories(conn, articles_, tags, "day")
-    # #news is posted with the quake, but it's posted with far more besides: it joins nothing. Hashtags
-    # only join articles together, so a story of hashtags alone isn't one.
-    assert [[a["url"] for a in s["articles"]] for s in got] == [[quake, quake2], [cat]]
-    assert got[0]["measure"] == 40 and got[0]["linked"] == 20 + 17 + 10 and "tags" not in got[0]
-    page = logged_in(settings, bouncer).get("/trending/stories").text
-    assert 'href="/trending/stories" class="on" aria-current="page"' in page
-    assert page.index(f"Page {quake}") < page.index(f"Page {quake2}") < page.index(f"Page {cat}")
-    assert "2 articles · posted together 47 times" in page and "40 posts" in page
-    assert "#news" not in page and "#earthquake" not in page and 'name="community"' not in page
-    rising = logged_in(settings, bouncer).get("/trending/stories", params={"t": "rising"}).text
-    assert "posts in 6 hours" in rising and "compared with the week before" in rising
+def test_stories_went_to_articles(settings, bouncer):
+    web_client = logged_in(settings, bouncer)
+    r = web_client.get("/trending/stories", params={"t": "rising", "src": "bluesky"}, follow_redirects=False)
+    assert r.status_code == 301 and r.headers["location"] == "/trending/articles?t=rising&src=bluesky"
+    assert web_client.get("/trending/stories", follow_redirects=False).headers["location"] == "/trending/articles?t=day"
+    assert "/trending/stories" not in web_client.get("/trending/articles").text
+    with bouncer.db.connect() as conn:  # what they were made of goes too
+        assert not conn.execute("SELECT name FROM sqlite_master WHERE name='pair_counts'").fetchall()
 
 
 def test_hours_counted_before_are_filled_in_though_the_streams_start_first(bouncer):

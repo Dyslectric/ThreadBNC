@@ -621,18 +621,6 @@ CREATE TABLE IF NOT EXISTS link_langs (
     PRIMARY KEY (key, lang)
 );
 
--- Hashtags and links posted together (trends.py): each pair once per post, and
--- once an hour for each account, by the day. Stories (stories.py) are made of what's
--- posted together. `a` and `b` are "#" + a hashtag, or a link's key; a < b.
-CREATE TABLE IF NOT EXISTS pair_counts (
-    a TEXT NOT NULL,
-    b TEXT NOT NULL,
-    day TEXT NOT NULL,                 -- UTC: 2026-09-25
-    posts BIGINT NOT NULL DEFAULT 0,
-    PRIMARY KEY (a, b, day)
-);
-CREATE INDEX IF NOT EXISTS pair_counts_day ON pair_counts(day);
-
 -- The hours each stream was counting, and how many posts it looked at: what
 -- Rising compares against, and how much of a day History saw. Kept for good.
 CREATE TABLE IF NOT EXISTS trend_hours (
@@ -974,6 +962,7 @@ class Database:
         conn.execute("CREATE INDEX IF NOT EXISTS objects_dupe ON objects(dupe_key)")
         conn.execute("CREATE INDEX IF NOT EXISTS article_links_key ON article_links(link_key)")
         conn.execute("CREATE INDEX IF NOT EXISTS articles_title_key ON articles(title_key)")
+        conn.execute("DROP TABLE IF EXISTS pair_counts")  # what Trending's Stories were made of, until 2026-09-26
         from .dupes import backfill
         backfill(conn)
         from .media import migrate_legacy
