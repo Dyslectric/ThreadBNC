@@ -84,7 +84,7 @@ ThreadBNC behaves like one more subscribed server, or like your own browser, nev
 | **Your own feeds** (`/f/{id}`, **New feed** in the sidebar) | A named mix of communities, each feed with its own default sort, time range, filter and view. Mark all read covers just its communities. The ✎ next to its name edits or deletes it; the communities and their posts are untouched. |
 | **Community** (`/c/{id}`) | The same feed for one community, plus ★ Kept, **Live on server** (browse its full history, fetched live), **Media** (what it archives, size limit, transcoding) and a log. Follow settings sit behind the "✓ Following" pill. |
 | **Communities** | Follow a community (starts with its current first page) and manage the check interval and retention for each one. |
-| **Trending** (`/trending`) | **Posts**: the posts most liked, or most replied to, on Bluesky and Mastodon over the past day or week. **Articles**: the pages posted most on Bluesky, on Mastodon and in the archive over the past day, week or month. **Tags**: the hashtags used in the most posts. **Rising** shows what's posted far more than usual, **Look back** any day since it started keeping them, all in your feeds' languages. Posts' replies and articles open in place. **Sources** chooses what's counted. See [Trending](#trending). |
+| **Trending** (`/trending`) | **Posts**: the posts most liked, or most replied to, on Bluesky and Mastodon over the past day or week. **Articles**: the pages posted most on Bluesky, on Mastodon and in the archive over the past day, week or month. **Tags**: the hashtags used in the most posts. **Stories**: those articles and hashtags grouped by what's posted together. **Rising** shows what's posted far more than usual, **Look back** any day since it started keeping them, all in your feeds' languages. Posts' replies and articles open in place. **Sources** chooses what's counted. See [Trending](#trending). |
 | **Post** (`/t/{id}`) | A post's pictures are a carousel at full width: swipe, or use the arrows. |
 | **★ Kept** | Keep a post by link, see kept threads grouped by community, recent changes and the bouncer queue. |
 | **Search** (`/search`, and the box in the header) | Every version of every archived post and comment. See [Search](#search). |
@@ -372,6 +372,19 @@ isn't among those is read when you open it. A post in the archive that links it 
 
 **Tags** lists the hashtags used in the most posts in the past day, week or month, on Bluesky and Mastodon,
 counted like links (each account once an hour for a hashtag), with **Follow** for each one you don't follow yet.
+
+### Stories
+
+One piece of news shows up as several articles, from different sites, and a few hashtags. **Stories** groups
+them: the streams also count which links and hashtags each post has together (each two of a post's first six,
+once an hour for each account, by the day), and the articles and hashtags at the top of Rising, or of the past
+day or week, are grouped by it. Taken in the order they're ranked, each joins the story it's posted with most,
+when the posts with both are at least 15% of what both are posted (their posts' geometric mean, a story's posts
+being all of its members') and at least 3 posts; otherwise it starts its own. That keeps a hashtag posted with
+everything, like #news, out of every story: what it shares with any one story is a small part of it. A story
+shows its top article (or hashtag), its other articles, each readable in place, and its hashtags. What's posted
+together is only kept for 8 days, and pairs posted together once in a day are forgotten after it, so stories
+aren't in History.
 
 ### Rising
 

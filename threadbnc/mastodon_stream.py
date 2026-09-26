@@ -395,8 +395,7 @@ class MastodonStream:
         account = status.get("account") if isinstance(status.get("account"), dict) else {}
         author = account.get("url") or account.get("acct")
         lang = languages.normalize(status.get("language"))
-        self.tally.post_links(status_links(status), author, lang)
-        self.tally.post_tags(status_tags(status), author, lang)
+        self.tally.post(status_links(status), status_tags(status), author, lang)
         if not reply_to and status.get("visibility", "public") == "public":
             tag = next((t for t in status_tags(status) if t in tags), None)
             if tag and not self.bouncer._existing_thread(status["uri"]):
