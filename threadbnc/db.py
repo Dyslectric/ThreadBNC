@@ -605,6 +605,21 @@ CREATE TABLE IF NOT EXISTS tags_seen (
 CREATE INDEX IF NOT EXISTS tags_seen_first ON tags_seen(first_seen_at);
 CREATE INDEX IF NOT EXISTS tags_seen_last ON tags_seen(last_seen_at);
 
+-- The hashtags your Mastodon server (the first account's) says are trending on it
+-- (/api/v1/trends/tags, mastodon_stream.py), as it last said: its counts, not ours.
+CREATE TABLE IF NOT EXISTS server_trending_tags (
+    domain TEXT NOT NULL,
+    place INTEGER NOT NULL,           -- 0 first, in its order
+    tag TEXT NOT NULL,                -- as followed ones are named: lowercase, no #
+    name TEXT NOT NULL,               -- as the server writes it
+    recent BIGINT NOT NULL DEFAULT 0,  -- posts with it in the past two days (UTC), as the server saw
+    people_recent BIGINT NOT NULL DEFAULT 0,  -- each day's people, added up
+    week BIGINT NOT NULL DEFAULT 0,   -- the past seven days
+    people_week BIGINT NOT NULL DEFAULT 0,  -- each day's people, added up
+    read_at TEXT NOT NULL,
+    PRIMARY KEY (domain, tag)
+);
+
 -- Posts on Bluesky and Mastodon that the streams showed people replying to,
 -- quoting or liking (trends.py): what's counted as it arrives, and the totals
 -- as last read from Bluesky's AppView or your Mastodon server. Kept a week.

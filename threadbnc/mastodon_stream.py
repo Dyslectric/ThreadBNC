@@ -24,7 +24,22 @@ What arrives is used for:
 
 A dropped connection is made again, waiting longer each time it fails. Unlike
 Jetstream, Mastodon's stream can't carry on from where it left off, so posts
-made while it's down are missed (as for the relays)."""
+made while it's down are missed (as for the relays).
+
+Its admins can turn a server's live feeds off (mastodon.social has): the
+stream still connects, but sends no one its new posts, only deletions. What
+the server says of them (/api/v2/instance, configuration.timelines_access) is
+read before listening, and again every ACCESS_EVERY: while the feed chosen
+is off, nothing is listened to and hashtags keep coming from the relays. You
+can be signed in to more than one Mastodon account, so the timeline can be
+another server's than the one you like and reply from (accounts.py uses the
+first one signed in).
+
+Apart from the stream, the server of the first Mastodon account signed in
+(the one that likes and replies) is asked which hashtags are trending on it
+(/api/v1/trends/tags), every TRENDING_EVERY, for the Trending page's Tags tab
+(trends.record_server_tags). Trends spread across servers, so asking others
+too would mostly repeat it."""
 
 from __future__ import annotations
 
@@ -51,9 +66,15 @@ from .vault import TokenVault, VaultError
 
 log = logging.getLogger(__name__)
 
-SETTING = "mastodon_public"  # app setting (JSON): {"scope": one of SCOPES}; missing: not subscribed
+SETTING = "mastodon_public"  # app setting (JSON): {"scope": one of SCOPES, "account": its id}; missing: not subscribed
+CLOSED = "mastodon_public_closed"  # app setting (JSON): {"domain", "scope", "why"} while that live feed is off
 SCOPES = {"public": "Everything public your server hears of (its federated timeline)",
           "public:local": "Only what's posted on your server (its local timeline)"}
+FEEDS = {"public": ("remote", "federated"), "public:local": ("local", "local")}  # scope: (timelines_access key, name)
+ACCESS_EVERY = 3600.0  # seconds: what a server says of its live feeds is read again this often
+TRENDING_TAGS = 20  # the most /api/v1/trends/tags gives at once
+ACCOUNTS_SQL = ("SELECT id, domain, username, token_enc FROM accounts WHERE software='mastodon' AND status='ok' "
+                "AND token_enc IS NOT NULL ORDER BY id")
 JOB = "mastodon_tagged"
 OPEN_JOB = "mastodon_open"  # a post from Trending, saved here to read and reply to
 FLUSH_EVERY = 5.0
@@ -67,24 +88,42 @@ FOLLOWED_SQL = ("SELECT c.name, f.capture_since FROM community_follows f JOIN co
                 "WHERE f.active=1 AND c.canonical_ap_id LIKE 'tag:%'")
 
 
-def subscription(db: Any) -> dict[str, Any] | None:
-    """What's subscribed to ({"scope": ...}), or None."""
-    raw = db.get_setting(SETTING)
+def _json_setting(db: Any, key: str) -> dict[str, Any] | None:
+    raw = db.get_setting(key)
     try:
         got = json.loads(raw) if raw else None
     except ValueError:
         return None
-    return got if isinstance(got, dict) and got.get("scope") in SCOPES else None
+    return got if isinstance(got, dict) else None
 
 
-def subscribe(db: Any, scope: str | None) -> None:
-    """Subscribe to `scope` of your server's public timeline, or (None) stop."""
+def subscription(db: Any) -> dict[str, Any] | None:
+    """What's subscribed to ({"scope": ..., "account": id or None}), or None."""
+    got = _json_setting(db, SETTING)
+    return got if got and got.get("scope") in SCOPES else None
+
+
+def subscribe(db: Any, scope: str | None, account_id: int | None = None) -> None:
+    """Subscribe to `scope` of a Mastodon server's public timeline, as the
+    account `account_id` there (None: the first one signed in), or (None) stop."""
     with db.transaction() as conn:
         if scope in SCOPES:
             conn.execute("INSERT INTO app_settings(key, value) VALUES (?, ?) "
-                         "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (SETTING, json.dumps({"scope": scope})))
+                         "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                         (SETTING, json.dumps({"scope": scope, "account": account_id})))
         else:
             conn.execute("DELETE FROM app_settings WHERE key=?", (SETTING,))
+
+
+def feed_closed(access: dict[str, Any] | None, domain: str, scope: str) -> str | None:
+    """Why `scope` of the server's timeline sends nothing, going by what it
+    says of its live feeds (`access`: timelines_access.live_feeds), or None."""
+    key, name = FEEDS[scope]
+    if not access or access.get(key) != "disabled":
+        return None
+    other = next((s for s, (k, _) in FEEDS.items() if s != scope and access.get(k) not in (None, "disabled")), None)
+    return (f"{domain} has turned off its {name} live feed, so it streams no one its new posts. "
+            + (f"Its {FEEDS[other][1]} timeline is still open." if other else "")).strip()
 
 
 def status_tags(status: dict[str, Any]) -> list[str]:
@@ -150,7 +189,9 @@ class MastodonStream:
         self.wake = threading.Event()  # the subscription, or the hashtags followed, changed
         self._stop = threading.Event()
         self._streaming: dict[str, str] = {}  # your server -> where its stream is
-        self._checked = self._trending = 0.0
+        self._access: dict[str, tuple[float, dict[str, Any] | None]] = {}  # server -> (when read, its live feeds)
+        self._checked = self._trending = self._tags_read = 0.0
+        self.closed_hooks: list[Any] = []  # called when a live feed is found off, or on again
         self._peek_lock = threading.Lock()
         self._peeked: dict[str, tuple[float, dict[str, Any]]] = {}  # ref -> (when, what peek() read)
         # What the Trending and hashtag pages say of it.
@@ -169,19 +210,28 @@ class MastodonStream:
         self.wake.set()
 
     # -- what's wanted ---------------------------------------------------------------
-    def account(self) -> tuple[str, str, str] | None:
-        """(server, access token, handle) of your Mastodon account, when you're
-        signed in to one and its session can be read."""
+    def accounts(self) -> list[dict[str, Any]]:
+        """Your Mastodon accounts ({"id", "domain", "handle"}), the first signed in first."""
         with self.db.connect() as conn:
-            row = conn.execute("SELECT domain, username, token_enc FROM accounts WHERE software='mastodon' "
-                               "AND status='ok' AND token_enc IS NOT NULL ORDER BY id LIMIT 1").fetchone()
-        if row is None:
-            return None
+            rows = conn.execute(ACCOUNTS_SQL).fetchall()
+        return [{"id": r["id"], "domain": r["domain"], "handle": f"@{r['username']}@{r['domain']}"} for r in rows]
+
+    def _token(self, row: Any) -> str | None:
         try:
-            access = json.loads(self.vault.decrypt(row["token_enc"]))["access"]
+            return json.loads(self.vault.decrypt(row["token_enc"]))["access"]
         except (VaultError, ValueError, KeyError, TypeError):
             return None
-        return row["domain"], access, f"@{row['username']}@{row['domain']}"
+
+    def account(self) -> tuple[str, str, str] | None:
+        """(server, access token, handle) of the Mastodon account the public
+        timeline is listened to as: the one chosen, else the first signed in,
+        when its session can be read."""
+        chosen = (subscription(self.db) or {}).get("account")
+        with self.db.connect() as conn:
+            rows = conn.execute(ACCOUNTS_SQL).fetchall()
+        row = next((r for r in rows if r["id"] == chosen), rows[0] if rows else None)
+        access = self._token(row) if row is not None else None
+        return (row["domain"], access, f"@{row['username']}@{row['domain']}") if access else None
 
     def wanted(self) -> tuple[str, str, str, str] | None:
         """(server, token, handle, scope) while subscribed and signed in."""
@@ -189,9 +239,57 @@ class MastodonStream:
         account = self.account() if chosen else None
         return (*account, chosen["scope"]) if chosen and account else None
 
+    def closed(self) -> str | None:
+        """Why the timeline subscribed to sends nothing (its server turned that
+        live feed off), as last found, or None."""
+        chosen, found = subscription(self.db), _json_setting(self.db, CLOSED)
+        account = self.account() if chosen and found else None
+        if chosen and found and account and (found.get("domain"), found.get("scope")) == (account[0], chosen["scope"]):
+            return str(found.get("why") or "")
+        return None
+
     def active(self) -> bool:
         """Whether hashtags come from your server's public timeline (not the relays)."""
-        return subscription(self.db) is not None and self.account() is not None
+        return subscription(self.db) is not None and self.account() is not None and self.closed() is None
+
+    def feed_access(self, domain: str) -> dict[str, Any] | None:
+        """What the server says of its live feeds ({"local": ..., "remote": ...},
+        each public, authenticated or disabled), read again every ACCESS_EVERY;
+        None if it doesn't say (Mastodon before 4.5, other software) or can't be asked."""
+        hit = self._access.get(domain)
+        if hit and time.monotonic() - hit[0] < ACCESS_EVERY:
+            return hit[1]
+        try:
+            info = self.bouncer.http.get_json(domain, "/api/v2/instance")
+            access = ((info.get("configuration") or {}).get("timelines_access") or {}).get("live_feeds")
+            access = access if isinstance(access, dict) else None
+        except RemoteNotFound:
+            access = None
+        except RemoteError as exc:  # asked again next time; meanwhile, as it last said
+            log.info("%s didn't say whether its live feeds are open: %s", domain, exc)
+            return hit[1] if hit else None
+        self._access[domain] = (time.monotonic(), access)
+        return access
+
+    def check_feed(self, wanted: tuple[str, str, str, str]) -> str | None:
+        """Whether the timeline wanted sends anything: why not (remembered, so
+        active() and the Trending page know), or None."""
+        domain, scope = wanted[0], wanted[3]
+        why = feed_closed(self.feed_access(domain), domain, scope)
+        found = _json_setting(self.db, CLOSED)
+        now = {"domain": domain, "scope": scope, "why": why} if why else None
+        if found != now:
+            with self.db.transaction() as conn:
+                if now:
+                    conn.execute("INSERT INTO app_settings(key, value) VALUES (?, ?) "
+                                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (CLOSED, json.dumps(now)))
+                else:
+                    conn.execute("DELETE FROM app_settings WHERE key=?", (CLOSED,))
+            if why:
+                log.warning("Mastodon stream: %s", why)
+            for hook in self.closed_hooks:
+                hook()
+        return why
 
     def followed(self) -> set[str]:
         with self.db.connect() as conn:
@@ -207,6 +305,11 @@ class MastodonStream:
                 self.wake.clear()
                 continue
             try:
+                if self.check_feed(wanted):  # nothing would arrive: don't listen to its deletions alone
+                    self.last_error = None
+                    self.wake.wait(ACCESS_EVERY)
+                    self.wake.clear()
+                    continue
                 self._listen(wanted)
                 backoff = 1.0
                 continue
@@ -267,7 +370,7 @@ class MastodonStream:
                     if self.wake.is_set() or now - refreshed >= REFRESH_EVERY:
                         self.wake.clear()
                         refreshed = now
-                        if self.wanted() != wanted:
+                        if self.wanted() != wanted or self.check_feed(wanted):
                             return
                         tags = self.followed()
             finally:
@@ -392,11 +495,16 @@ class MastodonStream:
     # -- totals, for Trending --------------------------------------------------------
     def upkeep(self) -> None:
         """A bouncer hook: read the totals of the posts most replied to, and
-        your server's trending posts, while subscribed."""
+        your server's trending posts, while subscribed; and the hashtags
+        trending on each server you're signed in to, whether or not."""
         now = time.monotonic()
         if now - self._checked < CHECK_EVERY:
             return
         self._checked = now
+        if now - self._tags_read >= TRENDING_EVERY:
+            self._tags_read = now
+            with tagged("trends"):
+                self.read_trending_tags()
         wanted = self.wanted()
         if wanted is None:
             return
@@ -464,3 +572,30 @@ class MastodonStream:
             trends.record_totals(conn, "mastodon", found, [], now or utcnow())
         return len(found)
 
+
+    # -- the hashtags trending on your servers, for Trending's Tags tab ---------------------
+    def read_trending_tags(self, now: str | None = None) -> int:
+        """Ask your first Mastodon account's server which hashtags are trending
+        on it, as that account (one request), unless that's turned off on the
+        Trending page. Returns how many servers answered."""
+        servers: dict[str, str] = {}
+        if trends.settings(self.db)["mastodon_tags"]:
+            with self.db.connect() as conn:
+                row = conn.execute(ACCOUNTS_SQL).fetchone()
+            token = self._token(row) if row is not None else None
+            if token:
+                servers[row["domain"]] = token
+        answered = 0
+        for domain, token in servers.items():
+            try:
+                got = self.bouncer.http.request_json("GET", domain, "/api/v1/trends/tags",
+                                                     params={"limit": TRENDING_TAGS}, token=token)
+            except RemoteError as exc:  # what it said last time stays
+                log.info("%s didn't say which hashtags are trending: %s", domain, exc)
+                continue
+            with self.db.transaction(exclusive=False) as conn:
+                trends.record_server_tags(conn, domain, trends.server_tags(got), now or utcnow())
+            answered += 1
+        with self.db.transaction(exclusive=False) as conn:
+            trends.forget_server_tags(conn, list(servers))
+        return answered

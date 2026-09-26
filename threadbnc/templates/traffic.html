@@ -84,6 +84,7 @@
   <h2>Streams and relays</h2>
   <p class="small muted">What arrives without ThreadBNC asking each time: Bluesky's Jetstream while a hashtag is
     followed or Bluesky is counted for Trending, your Mastodon server's public timeline while you're subscribed to it,
+    FediBuzz's firehose while it's counted for Trending,
     a relay's deliveries of posts with a followed hashtag, and deliveries to your own servers passed on
     through ThreadBNC.</p>
   {% if jetstream %}
@@ -98,6 +99,13 @@
     {% if timeline_stream.connected_since %}<span class="pill good">connected</span> Mastodon: {{ timeline_stream.connected_to }} since {{ when(timeline_stream.connected_since) }}.
     {% else %}<span class="pill muted">not connected</span> Mastodon's public timeline.{% endif %}
     {% if timeline_stream.last_error %}<span class="bad-text">Last trouble {{ when(timeline_stream.last_error_at) }}: {{ timeline_stream.last_error }}</span>{% endif %}
+  </p>
+  {% endif %}
+  {% if fedibuzz %}
+  <p class="small">
+    {% if fedibuzz.connected_since %}<span class="pill good">connected</span> FediBuzz's firehose since {{ when(fedibuzz.connected_since) }}.
+    {% else %}<span class="pill muted">not connected</span> FediBuzz's firehose.{% endif %}
+    {% if fedibuzz.last_error %}<span class="bad-text">Last trouble {{ when(fedibuzz.last_error_at) }}: {{ fedibuzz.last_error }}</span>{% endif %}
   </p>
   {% endif %}
   {% set streams = r.streams.sorted('bytes_in') %}
