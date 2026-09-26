@@ -50,7 +50,7 @@ from urllib.parse import urlparse
 from . import articles, links as links_mod
 from . import media as media_mod
 from . import thumbs
-from .adapters import BSKY_DOMAIN, TAG_DOMAIN, TAG_PREFIX, RemoteError
+from .adapters import BSKY_DOMAIN, TAG_DOMAIN, TAG_PREFIX, RemoteError, normalize_tag
 from .adapters.activitypub import status_id
 from .adapters.bluesky import GET_POSTS, POST
 from .db import Conn, Database, fmt_ts, parse_ts, utcnow
@@ -109,6 +109,7 @@ def settings(db: Database) -> dict[str, Any]:
     if got.get("bluesky_likes") not in LIKES_FROM:
         got["bluesky_likes"] = "appview"
     got["bluesky"] = got.get("bluesky") is not False
+    got["mastodon_tags"] = got.get("mastodon_tags") is not False  # ask your servers what's trending on them
     return got
 
 
@@ -596,7 +597,15 @@ def trending_tags(conn: Conn, window: str = "day", page: int = 1, per_page: int 
         "LIMIT ? OFFSET ?",
         (since[:13], per_page + 1, (page - 1) * per_page)).fetchall()
     items = [{"tag": r["tag"], "bluesky": int(r["bluesky"] or 0), "mastodon": int(r["mastodon"] or 0),
-              "total": int(r["total"] or 0), "community_id": None, "following": False} for r in rows[:per_page]]
+              "total": int(r["total"] or 0)} for r in rows[:per_page]]
+    return _here(conn, items), len(rows) > per_page
+
+
+def _here(conn: Conn, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Hashtags ({"tag": ...}) with their community here, when there is one,
+    and whether it's followed."""
+    for item in items:
+        item["community_id"], item["following"] = None, False
     if items:
         names = [TAG_PREFIX + i["tag"] for i in items]
         here = {r["canonical_ap_id"][len(TAG_PREFIX):]: r for r in conn.execute(
@@ -607,7 +616,68 @@ def trending_tags(conn: Conn, window: str = "day", page: int = 1, per_page: int 
             r = here.get(item["tag"])
             if r is not None:
                 item["community_id"], item["following"] = r["id"], bool(r["active"])
-    return items, len(rows) > per_page
+    return items
+
+
+def server_tags(got: Any) -> list[dict[str, Any]]:
+    """The hashtags a Mastodon server says are trending on it
+    (/api/v1/trends/tags), in its order: {"tag" (named as followed ones are),
+    "name" (as it writes it), "recent"/"week" (posts in the past two days, as
+    its own app shows, and seven), "people_recent"/"people_week" (each day's
+    people, added up)}. Its history is a day (UTC) at a time, today first."""
+    out: list[dict[str, Any]] = []
+    for t in got if isinstance(got, list) else []:
+        if not isinstance(t, dict):
+            continue
+        try:
+            tag = normalize_tag(str(t.get("name") or ""))
+        except ValueError:
+            continue
+        days = [h for h in t.get("history") or [] if isinstance(h, dict)][:7]
+        if tag not in {o["tag"] for o in out}:
+            out.append({"tag": tag, "name": str(t["name"])[:100],
+                        "recent": sum(_count(d, "uses") for d in days[:2]),
+                        "people_recent": sum(_count(d, "accounts") for d in days[:2]),
+                        "week": sum(_count(d, "uses") for d in days),
+                        "people_week": sum(_count(d, "accounts") for d in days)})
+    return out
+
+
+def _count(day: dict[str, Any], key: str) -> int:
+    try:
+        return int(day.get(key) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def record_server_tags(conn: Conn, domain: str, tags: list[dict[str, Any]], now: str) -> None:
+    """What a server said is trending on it, in place of what it said before."""
+    conn.execute("DELETE FROM server_trending_tags WHERE domain=?", (domain,))
+    conn.executemany(
+        "INSERT INTO server_trending_tags(domain, place, tag, name, recent, people_recent, week, people_week, read_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?)",
+        [(domain, i, t["tag"], t["name"], t["recent"], t["people_recent"], t["week"], t["people_week"], now)
+         for i, t in enumerate(tags)])
+
+
+def forget_server_tags(conn: Conn, keep: list[str]) -> None:
+    """Forget what servers you're no longer signed in to said was trending."""
+    conn.execute("DELETE FROM server_trending_tags" + (f" WHERE domain NOT IN ({_marks(keep)})" if keep else ""), keep)
+
+
+def trending_on_servers(conn: Conn) -> list[dict[str, Any]]:
+    """What each server you're signed in to last said is trending on it:
+    [{"domain", "read_at", "tags": [...]}], in the order the servers were signed in to."""
+    rows = conn.execute("SELECT s.* FROM server_trending_tags s LEFT JOIN "
+                        "(SELECT domain, MIN(id) AS first FROM accounts WHERE software='mastodon' GROUP BY domain) a "
+                        "ON a.domain=s.domain ORDER BY a.first, s.domain, s.place").fetchall()
+    out: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        server = out.setdefault(r["domain"], {"domain": r["domain"], "read_at": r["read_at"], "tags": []})
+        server["tags"].append({k: r[k] for k in ("tag", "name", "recent", "people_recent", "week", "people_week")})
+    for server in out.values():
+        _here(conn, server["tags"])
+    return list(out.values())
 
 
 # --- ranking posts ------------------------------------------------------------

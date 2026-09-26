@@ -373,7 +373,7 @@ def test_the_trending_page(settings, bouncer, bsky):  # noqa: F811
         articles_page.split("pc-title")[1].split("</h2>")[0]
     # Counting Bluesky's likes from the stream, or not counting it at all.
     web_client.post("/trending/settings", data={"bluesky": "1", "bluesky_likes": "stream"})
-    assert trends.settings(bouncer.db) == {"bluesky": True, "bluesky_likes": "stream"}
+    assert trends.settings(bouncer.db) == {"bluesky": True, "bluesky_likes": "stream", "mastodon_tags": True}
     web_client.post("/trending/settings", data={"bluesky_likes": "appview"})
     assert trends.settings(bouncer.db)["bluesky"] is False
     # Without a Mastodon account, its timeline can't be subscribed to.
@@ -538,7 +538,7 @@ def test_subscribing_to_your_mastodon_servers_public_timeline(web, tagged, fedi,
     assert "public timeline, as @dave@home.test" in web.get("/trending").text
 
     web.post("/trending/settings", data={"bluesky": "1", "mastodon_scope": "public:local"})
-    assert mastodon_stream.subscription(b.db) == {"scope": "public:local"} and stream.active()
+    assert mastodon_stream.subscription(b.db)["scope"] == "public:local" and stream.active()
     relays.housekeeping(now=True)  # (the page does this in the background)
     f = one(b, "SELECT * FROM community_follows WHERE community_id=?", cid)
     assert f["push_state"] is None and f["push_actor"] is None
@@ -631,6 +631,93 @@ def test_subscribing_to_your_mastodon_servers_public_timeline(web, tagged, fedi,
     assert not stream.active()
     relays.housekeeping(now=True)
     assert one(b, "SELECT push_state FROM community_follows WHERE community_id=?", cid)["push_state"] == "pending"
+
+
+def test_a_server_whose_live_feeds_are_off_isnt_listened_to(web, tagged, fedi):  # noqa: F811
+    """mastodon.social streams its public timeline to no one: only deletions arrive."""
+    b, _ = tagged
+    stream, relays = web.app.state.mastodon_stream, web.app.state.tags
+    cid = follow(b, relays)
+    web.get("/accounts/mastodon/callback", params={"state": sign_in(web, fedi), "code": "good"})
+    web.post("/login", data={"password": "pw"})
+    fedi.home.live_feeds = {"local": "public", "remote": "disabled"}
+    page = web.post("/trending/settings", data={"bluesky": "1", "mastodon_scope": "public"}).text
+    assert "home.test has turned off its federated live feed" in page and "local timeline is still open" in page
+    assert mastodon_stream.subscription(b.db) is None and not stream.active()
+
+    # Subscribed before the server turned it off: found when the stream next looks, and the relays followed again.
+    web.post("/trending/settings", data={"bluesky": "1", "mastodon_scope": "public:local"})
+    assert stream.active()
+    relays.housekeeping(now=True)
+    assert one(b, "SELECT push_state FROM community_follows WHERE community_id=?", cid)["push_state"] is None
+    fedi.home.live_feeds = {"local": "disabled", "remote": "disabled"}
+    stream._access.clear()
+    assert "turned off its local live feed" in stream.check_feed(stream.wanted())
+    assert not stream.active() and "turned off its local live feed" in stream.closed()
+    assert one(b, "SELECT push_state FROM community_follows WHERE community_id=?", cid)["push_state"] == "pending"
+    page = web.get("/trending").text
+    assert '<span class="pill bad">Mastodon</span>' in page and "Hashtags come from the relays meanwhile." in page
+    # On again.
+    fedi.home.live_feeds = {"local": "public", "remote": "authenticated"}
+    stream._access.clear()
+    assert stream.check_feed(stream.wanted()) is None and stream.active() and stream.closed() is None
+
+
+def test_another_mastodon_account_can_be_listened_as(web, tagged, fedi, monkeypatch):  # noqa: F811
+    from . import test_mastodon
+
+    b, _ = tagged
+    stream = web.app.state.mastodon_stream
+    web.get("/accounts/mastodon/callback", params={"state": sign_in(web, fedi), "code": "good"})
+    web.post("/login", data={"password": "pw"})
+    monkeypatch.setattr(test_mastodon, "ME", {"id": "2", "username": "erin", "acct": "erin", "display_name": "Erin",
+                                              "uri": f"https://{HOME}/users/erin"})
+    web.get("/accounts/mastodon/callback", params={"state": sign_in(web, fedi), "code": "good"})  # kept beside dave
+    assert [a["handle"] for a in stream.accounts()] == ["@dave@home.test", "@erin@home.test"]
+    accounts = web.get("/accounts").text  # dave still likes and replies
+    assert accounts.index("dave") < accounts.index("Used automatically to like and reply") < accounts.index("erin")         < accounts.index("Can listen to home.test's public timeline for Trending")
+    assert "Signed in as <strong>@dave@home.test</strong>" in accounts
+    erin = stream.accounts()[1]["id"]
+    assert f'<option value="{erin}" >@erin@home.test</option>' in web.get("/trending").text
+    web.post("/trending/settings", data={"bluesky": "1", "mastodon_scope": "public", "mastodon_account": str(erin),
+                                         "mastodon_tags": "1"})
+    assert mastodon_stream.subscription(b.db) == {"scope": "public", "account": erin}
+    assert stream.account()[2] == "@erin@home.test" and stream.wanted()[3] == "public"
+    assert "Signed in as <strong>@dave@home.test</strong>" in web.get("/accounts").text
+
+
+def test_the_hashtags_trending_on_your_mastodon_server(web, tagged, fedi):  # noqa: F811
+    b, _ = tagged
+    stream = web.app.state.mastodon_stream
+    web.get("/accounts/mastodon/callback", params={"state": sign_in(web, fedi), "code": "good"})
+    web.post("/login", data={"password": "pw"})
+    fedi.home.trending = [
+        {"name": "Caturday", "url": f"https://{HOME}/tags/caturday", "history": [
+            {"day": "1790000000", "uses": "120", "accounts": "80"}, {"day": "1789913600", "uses": "300", "accounts": "200"}]},
+        {"name": "not a tag!", "history": []},
+        {"name": "fediverse", "url": f"https://{HOME}/tags/fediverse", "history": [
+            {"day": "1790000000", "uses": "9", "accounts": "1"}]}]
+    assert stream.read_trending_tags() == 1
+    with b.db.connect() as conn:
+        (server,) = trends.trending_on_servers(conn)
+    assert server["domain"] == HOME
+    assert [(t["tag"], t["name"], t["recent"], t["people_recent"], t["week"]) for t in server["tags"]] == [
+        ("caturday", "Caturday", 420, 280, 420), ("fediverse", "fediverse", 9, 1, 9)]
+    page = web.get("/trending/tags", params={"src": "mastodon"}).text
+    assert f"Trending on {HOME}" in page and "#Caturday" in page and "420 posts</span>" in page
+    assert "280 people in the past 2 days · 420 posts this week" in page and "1 person in the past 2 days" in page
+    assert f'href="https://{HOME}/tags/caturday"' in page
+    assert f"Trending on {HOME}" not in web.get("/trending/tags").text  # Both: counted here only
+    # Asked again: replaced. Turned off: not asked, and forgotten.
+    fedi.home.trending = fedi.home.trending[2:]
+    stream.read_trending_tags()
+    with b.db.connect() as conn:
+        assert [t["tag"] for t in trends.trending_on_servers(conn)[0]["tags"]] == ["fediverse"]
+    web.post("/trending/settings", data={"bluesky": "1", "mastodon_scope": ""})
+    assert trends.settings(b.db)["mastodon_tags"] is False
+    assert stream.read_trending_tags() == 0
+    with b.db.connect() as conn:
+        assert trends.trending_on_servers(conn) == []
 
 
 def test_hashtags_can_be_followed_from_the_timeline_alone(settings, server, bouncer, monkeypatch):

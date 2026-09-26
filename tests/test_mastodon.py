@@ -39,6 +39,8 @@ class FakeHome:
         self.posted: list[dict] = []
         self.deleted: list[str] = []
         self.context: list[dict] = []  # the replies to any post, for anyone asking
+        self.live_feeds = {"local": "public", "remote": "public"}  # what it says of its live feeds
+        self.trending: list[dict] = []  # /api/v1/trends/tags
         self.statuses = {
             "9001": status("9001", NOTE, "alice@masto.test", "New homelab!", favourites_count=7),
             "9002": status("9002", BOB_REPLY, "bob@other.test", "Nice rack", spoiler_text="racks",
@@ -50,6 +52,10 @@ class FakeHome:
         body = json.loads(request.content) if request.content else {}
         if path == "/api/v1/instance":
             return httpx.Response(200, json={"uri": HOME, "title": "Home"})
+        if path == "/api/v2/instance":
+            return httpx.Response(200, json={"domain": HOME, "title": "Home", "configuration": {
+                "urls": {"streaming": "wss://streaming.home.test"},
+                "timelines_access": {"live_feeds": self.live_feeds}}})
         if path == "/api/v1/apps" and method == "POST":
             self.apps.append(body)
             return httpx.Response(200, json={"client_id": "cid", "client_secret": "csecret"})
@@ -69,6 +75,8 @@ class FakeHome:
             return httpx.Response(200, json=self.statuses[public.group(1)])
         if request.headers.get("authorization") != f"Bearer {TOKEN}":
             return httpx.Response(401, json={"error": "The access token is invalid"})
+        if path == "/api/v1/trends/tags":
+            return httpx.Response(200, json=self.trending[:int(request.url.params.get("limit", 10))])
         if path == "/api/v1/accounts/verify_credentials":
             return httpx.Response(200, json=ME)
         if path == "/api/v2/search":

@@ -33,7 +33,15 @@
           <fieldset>
             <legend>Mastodon</legend>
             {% if st.mastodon_account %}
-            <label for="mastodon-scope">Your server's public timeline, as {{ st.mastodon_account[2] }}</label>
+            {% if st.mastodon_accounts | length > 1 %}
+            <label for="mastodon-account">Listen as</label>
+            <select id="mastodon-account" name="mastodon_account">
+              {% for a in st.mastodon_accounts %}
+              <option value="{{ a.id }}" {{ 'selected' if a.handle == st.mastodon_account[2] }}>{{ a.handle }}</option>
+              {% endfor %}
+            </select>
+            {% endif %}
+            <label for="mastodon-scope">{% if st.mastodon_accounts | length > 1 %}That server's public timeline{% else %}Your server's public timeline, as {{ st.mastodon_account[2] }}{% endif %}</label>
             <select id="mastodon-scope" name="mastodon_scope">
               <option value="" {{ 'selected' if not st.mastodon_scope }}>Not subscribed</option>
               {% for key, label in st.scopes.items() %}
@@ -41,7 +49,12 @@
               {% endfor %}
             </select>
             <p class="muted">While subscribed, hashtags you follow get their fediverse posts from it{% if st.actor %}
-              instead of the tag relays{% endif %}, and its posts' links and replies are counted here.</p>
+              instead of the tag relays{% endif %}, and its posts' links, hashtags and replies are counted here. Some servers
+              (mastodon.social among them) have turned their live feeds off: nothing arrives from those, so sign in to an
+              account on another server to listen to. A federated timeline is about 0.8 GB a day on a server of 10,000 people.</p>
+            <label><input type="checkbox" name="mastodon_tags" value="1" {{ 'checked' if st.chosen.mastodon_tags }}>
+              Ask {{ st.mastodon_accounts[0].domain }} which hashtags are trending on it (one request every 15 minutes),
+              for the Tags tab</label>
             {% else %}
             <p class="muted">Mastodon only streams its public timeline to someone signed in: sign in to your Mastodon
               account on the <a href="/accounts">Accounts</a> page to subscribe to it.</p>
@@ -66,7 +79,9 @@
       {% elif st.bluesky.last_error %}<span class="pill bad">Bluesky</span> <span class="bad-text">{{ st.bluesky.last_error }}</span>
       {% else %}<span class="pill warn">Bluesky</span> connecting.{% endif %}
     {% else %}<span class="pill muted">Bluesky</span> not counted.{% endif %}
-    {% if st.mastodon_scope and st.mastodon_account %}
+    {% if st.mastodon_scope and st.mastodon_account and st.mastodon_closed %}
+      <span class="pill bad">Mastodon</span> <span class="bad-text">{{ st.mastodon_closed }}{% if st.actor %} Hashtags come from the relays meanwhile.{% endif %}</span>
+    {% elif st.mastodon_scope and st.mastodon_account %}
       {% if not st.embedded %}<span class="pill">Mastodon</span> {{ st.mastodon_account[2] }}'s {{ 'local' if st.mastodon_scope == 'public:local' else 'federated' }} timeline.
       {% elif st.mastodon.connected_since %}<span class="pill good">Mastodon</span> {{ st.mastodon_account[2] }}'s {{ 'local' if st.mastodon_scope == 'public:local' else 'federated' }} timeline since {{ when(st.mastodon.connected_since) }}.
       {% elif st.mastodon.last_error %}<span class="pill bad">Mastodon</span> <span class="bad-text">{{ st.mastodon.last_error }}</span>
@@ -244,6 +259,36 @@
     <span class="muted small">Each account counts once an hour for a hashtag.</span>
   </div>
 
+  {% for server in servers %}
+  <h2 class="trend-tags-heading">Trending on {{ server.domain }}</h2>
+  <p class="small muted">What {{ server.domain }} says is trending, in its order, as read {{ when(server.read_at) }}. Its own counts,
+    of posts made on it and those it hears of, in the past 2 days.</p>
+  <ol class="card trend-tags">
+  {% for t in server.tags %}
+    <li class="trend-tag">
+      <span class="trend-tag-name">{% if t.community_id %}<a href="/c/{{ t.community_id }}">#{{ t.name }}</a>{% else %}#{{ t.name }}{% endif %}</span>
+      <span class="trend-tag-counts small">
+        <span class="pill new">{{ t.recent }} post{{ 's' if t.recent != 1 }}</span>
+        <span class="muted">{{ t.people_recent }} {{ 'person' if t.people_recent == 1 else 'people' }} in the past 2 days · {{ t.week }} posts this week</span>
+      </span>
+      <span class="trend-tag-actions small">
+        {% if t.following %}<a class="act" href="/c/{{ t.community_id }}">{{ icon('check') }}<span>Following</span></a>
+        {% else %}
+        <form method="post" action="/follow" class="inline"><input type="hidden" name="community" value="#{{ t.tag }}">
+          <button class="act" title="Follow #{{ t.tag }}: its posts arrive in your feed from now on">{{ icon('plus') }}<span>Follow</span></button></form>
+        {% endif %}
+        <a class="act" href="https://{{ server.domain }}/tags/{{ t.tag | urlencode }}" target="_blank" rel="noreferrer noopener nofollow" title="On {{ server.domain }}">{{ icon('external') }}<span class="sr-only">#{{ t.tag }} on {{ server.domain }}</span></a>
+      </span>
+    </li>
+  {% endfor %}
+  </ol>
+  {% endfor %}
+  {% if source == 'mastodon' and page == 1 and st.mastodon_account %}
+  <h2 class="trend-tags-heading">Counted here</h2>
+  <p class="small muted">{% if st.mastodon_scope and not st.mastodon_closed %}From {{ st.mastodon_account[0] }}'s {{ 'local' if st.mastodon_scope == 'public:local' else 'federated' }} timeline, as it arrives.
+    {%- else %}Counted from a public timeline you listen to, under Sources.{% endif %}</p>
+  {% endif %}
+
   {% if tags %}
   <ol class="card trend-tags" start="{{ (page - 1) * per_page + 1 }}" data-items>
   {% for t in tags %}
@@ -268,7 +313,7 @@
   </ol>
   {% else %}
     <section class="card empty"><p class="muted">
-      {%- if source == 'mastodon' and not st.mastodon_scope %}Mastodon's hashtags are counted from your server's public timeline: subscribe to it under Sources.
+      {%- if source == 'mastodon' and (not st.mastodon_scope or st.mastodon_closed) %}Mastodon's hashtags are counted from a public timeline you listen to: choose one under Sources.
       {%- else %}No hashtags counted {{ 'on ' ~ ('Bluesky' if source == 'bluesky' else 'Mastodon') ~ ' ' if source != 'all' }}in this time range yet.{% endif %}</p></section>
   {% endif %}
   {{ load_more(base ~ '&page=' ~ (page + 1) if has_more else none, base if page > 1 else none, page) }}

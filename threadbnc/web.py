@@ -61,6 +61,7 @@ from .config import Settings, load_settings
 from .federation import Federation, InboxRelay, summarize
 from .jetstream import BlueskyStream
 from .mastodon_stream import OPEN_JOB as MASTODON_OPEN_JOB, SCOPES as MASTODON_SCOPES, MastodonStream
+from .mastodon_stream import feed_closed as mastodon_feed_closed
 from .mastodon_stream import subscribe as mastodon_subscribe, subscription as mastodon_subscription
 from .tags import TagRelays
 from .db import fmt_ts, open_database, parse_ts, utcnow
@@ -371,6 +372,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     tags = TagRelays(bouncer, bouncer.actor, settings.tag_relay, mastodon_stream.active) if bouncer.actor else None
     # ...and on Bluesky, picked out of its Jetstream, which also counts what's posted there for Trending.
     bluesky_stream = BlueskyStream(bouncer, settings.jetstream_url, settings.user_agent) if settings.jetstream_url else None
+    if tags:  # a live feed found off (or on again): follow the relays again (or stop) now, not in half an hour
+        mastodon_stream.closed_hooks.append(lambda: tags.housekeeping(now=True))
 
     def archive_skips() -> tuple[str, ...]:
         """The archive's posts that a stream counts already, for Trending."""
@@ -1121,6 +1124,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         chosen = trends_mod.settings(db)
         return {"chosen": chosen, "bluesky": bluesky_stream, "embedded": settings.embedded_bouncer,
                 "mastodon": mastodon_stream, "mastodon_account": mastodon_stream.account(),
+                "mastodon_accounts": mastodon_stream.accounts(), "mastodon_closed": mastodon_stream.closed(),
                 "mastodon_scope": (mastodon_subscription(db) or {}).get("scope"), "scopes": MASTODON_SCOPES,
                 "actor": bouncer.actor.handle if bouncer.actor else None}
 
@@ -1177,8 +1181,9 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         with db.connect() as conn:
             items, has_more = trends_mod.trending_tags(conn, window, page, TAGS_PAGE,
                                                        source=None if source == "all" else source)
+            servers = trends_mod.trending_on_servers(conn) if source == "mastodon" and page == 1 else []
         return render(request, "trending.html", tab="tags", tags=items, window=window, source=source, page=page,
-                      has_more=has_more, status=trending_status(), per_page=TAGS_PAGE)
+                      has_more=has_more, status=trending_status(), per_page=TAGS_PAGE, servers=servers)
 
     @app.get("/trending/peek", response_class=HTMLResponse)
     def trending_peek(request: Request, source: str, ref: str):
@@ -1293,17 +1298,29 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
 
     @app.post("/trending/settings")
     def trending_settings(request: Request, bluesky: str | None = Form(None), bluesky_likes: str = Form("appview"),
-                          mastodon_scope: str = Form("")):
-        """What's counted, and whether your Mastodon server's public timeline is subscribed to."""
+                          mastodon_scope: str = Form(""), mastodon_account: str = Form(""),
+                          mastodon_tags: str | None = Form(None)):
+        """What's counted, and whether a Mastodon server's public timeline is subscribed to, as which account."""
         before = mastodon_stream.active()
-        trends_mod.save_settings(db, bluesky=bool(bluesky),
+        signed_in = mastodon_stream.accounts()
+        changes: dict[str, Any] = {}
+        if signed_in:  # (the choice is only offered then)
+            changes["mastodon_tags"] = bool(mastodon_tags)
+        trends_mod.save_settings(db, bluesky=bool(bluesky), **changes,
                                  bluesky_likes=bluesky_likes if bluesky_likes in trends_mod.LIKES_FROM else "appview")
         scope = mastodon_scope if mastodon_scope in MASTODON_SCOPES else None
-        if scope and mastodon_stream.account() is None:
+        which = next((a for a in signed_in if str(a["id"]) == mastodon_account), signed_in[0] if signed_in else None)
+        if scope and which is None:
             flash(request, "Sign in to your Mastodon account on the Accounts page first: Mastodon only streams its "
                            "public timeline to someone signed in.", "error")
             scope = None
-        mastodon_subscribe(db, scope)
+        elif scope and which:
+            why = mastodon_feed_closed(mastodon_stream.feed_access(which["domain"]), which["domain"], scope)
+            if why:  # nothing would arrive: say so now, rather than listen to deletions alone
+                flash(request, why + " Sign in to an account on a server whose live feeds are open, on the Accounts "
+                                     "page, and choose it here.", "error")
+                scope = None
+        mastodon_subscribe(db, scope, which["id"] if scope and which else None)
         if bluesky_stream:
             bluesky_stream.wake.set()
         mastodon_stream.wake.set()

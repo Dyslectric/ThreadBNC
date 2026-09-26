@@ -1162,6 +1162,8 @@ a.article-link.dived, a[data-dive].dived, a.video-link.dived, a.live-link.dived 
 .trend-pic.big img { height: auto; max-height: 80vh; object-fit: contain; }
 .trending-page .feed-controls { flex-wrap: wrap; gap: 8px; }
 .trend-tags { list-style: none; padding: 4px 0; margin: 0; }
+.trend-tags-heading { font-size: 1.05rem; margin: 18px 0 2px; }
+.trend-tags-heading + p { margin: 0 0 8px; }
 .trend-tag { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 4px 12px;
   padding: 7px 14px; border-bottom: 1px solid var(--line); }
 .trend-tag:last-child { border-bottom: none; }

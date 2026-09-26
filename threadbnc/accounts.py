@@ -293,7 +293,10 @@ class Poster:
 
     # -- the Mastodon account -------------------------------------------------------
     def mastodon_account(self) -> Account | None:
-        return next((a for a in self.list() if a.is_mastodon), None)
+        """The Mastodon account that likes, replies and boosts: the first one
+        signed in. Others are for listening to their server's public timeline
+        (mastodon_stream.py), and can be posted from."""
+        return min((a for a in self.list() if a.is_mastodon), key=lambda a: a.id, default=None)
 
     def _setting(self, key: str) -> dict[str, Any]:
         raw = self.db.get_setting(key)
@@ -366,8 +369,10 @@ class Poster:
             account = self.add_session(domain, token, adapter)
         except AccountError as exc:
             return None, str(exc)
-        if before and before.id != account.id:  # one Mastodon account: signing in as another replaces it
-            self.remove(before.id)
+        if before and before.id != account.id:  # another one: kept beside it, which still likes and replies
+            return account, (f"Signed in to Mastodon as {account.handle} too. Likes and replies still go through "
+                             f"{before.handle}; choose {account.handle} under Trending → Sources to listen to "
+                             f"{account.domain}'s public timeline.")
         return account, f"Signed in to Mastodon as {account.handle}."
 
     def add(self, server: str, username: str, password: str, totp: str | None = None) -> Account:

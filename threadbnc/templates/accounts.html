@@ -33,7 +33,11 @@
         </form>
       </details>
       {% elif a.is_mastodon %}
+      {% if mastodon_me and a.id == mastodon_me.id %}
       <span class="small muted">Used automatically to like and reply to posts from hashtags</span>
+      {% else %}
+      <span class="small muted">Can listen to {{ a.domain }}'s public timeline for Trending (<a href="/trending">Trending → Sources</a>)</span>
+      {% endif %}
       <details class="reply-box">
         <summary class="small">Remove…</summary>
         <form method="post" action="/accounts/{{ a.id }}/remove">
@@ -117,7 +121,8 @@
     <p>Signed in as <strong>{{ mastodon_me.handle }}</strong>{% if mastodon_me.status != 'ok' %} <span class="pill bad">needs login</span>{% endif %}</p>
     <p class="small muted">Likes and replies on posts from hashtags, and on their replies, are made as {{ mastodon_me.handle }}
       automatically. A reply mentions who it answers, as Mastodon's app does, so they see it. Sign in again below to renew
-      access or switch accounts.</p>
+      access. Signing in to another account keeps this one: the other can listen to its server's public timeline for
+      Trending, if that server's live feeds are open (mastodon.social's aren't).</p>
   {% else %}
     <p class="muted">Posts from hashtags are read without an account. Sign in to your Mastodon account to like and reply to
       them and to their replies. GoToSocial, Akkoma and Pleroma accounts work too.</p>
@@ -125,7 +130,7 @@
   <form method="post" action="/accounts/mastodon" class="stack">
     <label>Your server <input name="server" required placeholder="mastodon.social"
       value="{{ mastodon_me.domain if mastodon_me else '' }}"></label>
-    <button>{{ 'Sign in again' if mastodon_me else 'Sign in to Mastodon' }}</button>
+    <button>{{ 'Sign in (again, or as another account)' if mastodon_me else 'Sign in to Mastodon' }}</button>
   </form>
   <p class="small muted">You approve ThreadBNC on your server's own page, so your password never comes here. ThreadBNC keeps
     the access your server gives it, encrypted, and you can revoke it there under Preferences → Account → Authorized apps.</p>
