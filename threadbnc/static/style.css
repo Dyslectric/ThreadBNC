@@ -1175,27 +1175,24 @@ a.article-link.dived, a[data-dive].dived, a.video-link.dived, a.live-link.dived 
 .trend-history-head .trend-tags-heading { margin: 0; }
 .trend-history-head + p { margin: 2px 0 8px; }
 .trend-tag { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 4px 12px;
-  padding: 7px 14px; border-bottom: 1px solid var(--line); }
+  padding: 14px 16px 12px; border-bottom: 1px solid var(--line); }
 .trend-tag:last-child { border-bottom: none; }
 .trend-tag-name { font-weight: 600; overflow-wrap: anywhere; }
 .trend-tag-counts { display: inline-flex; gap: 8px; align-items: center; font-variant-numeric: tabular-nums; }
 .trend-tag-actions { display: inline-flex; gap: 2px; align-items: center; }
-/* A hashtag's posts over the time shown, one cell an hour or a day, darkest its busiest. */
-.trend-heat { grid-column: 1 / -1; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 2px;
-  height: 16px; padding-bottom: 4px; }
-.hc { display: block; border-radius: 2px; background: color-mix(in srgb, var(--line) 55%, var(--card)); }
-.hc.h1 { background: color-mix(in srgb, var(--accent) 22%, var(--card)); }
-.hc.h2 { background: color-mix(in srgb, var(--accent) 45%, var(--card)); }
-.hc.h3 { background: color-mix(in srgb, var(--accent) 70%, var(--card)); }
-.hc.h4 { background: var(--accent); }
-.hc.off { background: repeating-linear-gradient(135deg, var(--line) 0 2px, transparent 2px 4px); }
-.hc.marked { box-shadow: 0 4px 0 -1px var(--text); }
-.trend-heat-key { margin: 0 0 6px; }
-.trend-heat-legend { display: inline-flex; align-items: center; gap: 2px; white-space: nowrap; margin-left: 4px; }
-.trend-heat-legend .hc:first-child { margin-left: 3px; }
-.trend-heat-legend .h4 { margin-right: 3px; }
-.trend-heat-legend .hc { display: inline-block; width: 10px; height: 10px; }
-.trend-heat-legend .hc.off { margin: 0 3px; }
+/* A hashtag's posts over the time shown, a bar an hour or a day, each drawn to its own tallest. */
+.trend-hist { grid-column: 1 / -1; margin-top: 6px; }
+.trend-hist svg { display: block; width: 100%; height: 64px; border-bottom: 1px solid var(--line); }
+.trend-hist .bar { fill: var(--accent); }
+.trend-hist.has-marked g:not(.marked) .bar { fill: color-mix(in srgb, var(--accent) 40%, var(--card)); }
+.trend-hist g:hover .bar, .trend-hist.has-marked g:hover .bar { fill: var(--text); }
+.trend-hist .hit { fill: transparent; }
+.trend-hist .off { fill: color-mix(in srgb, var(--line) 70%, transparent); }
+.trend-hist-axis { display: flex; justify-content: space-between; gap: 8px; margin-top: 2px; font-size: 0.75em;
+  font-variant-numeric: tabular-nums; }
+.trend-hist-key { margin: 0 0 6px; }
+.trend-hist-off { display: inline-block; width: 10px; height: 10px; vertical-align: -1px; border-radius: 2px;
+  background: color-mix(in srgb, var(--line) 70%, transparent); }
 @media (max-width: 600px) {
   .trend-tag { grid-template-columns: minmax(0, 1fr) auto; }
   .trend-tag-counts { grid-column: 1; grid-row: 2; flex-wrap: wrap; gap: 2px 8px; }

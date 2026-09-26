@@ -1020,20 +1020,20 @@ def _here(conn: Conn, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 HEAT_HOURS = 24  # Rising's heat: the hours up to now, the past RISING_RECENT of them marked
 HEAT_AROUND = 3  # a History day's heat: the days either side of it
-HEAT_LEVELS = 4
+HEAT_LEAST = 4  # a bar's height (of 100) when it has any posts, so it shows
 
 
 def tag_heat(conn: Conn, tags: list[str], window: str = "day", source: str | None = None,
              now: str | None = None, day: str | None = None) -> dict[str, Any]:
     """How much each of `tags` was used over the time a Tags ranking covers,
-    on `source` or both, for a heat strip: by the hour for Rising
+    on `source` or both, for a histogram: by the hour for Rising
     (HEAT_HOURS, the past RISING_RECENT `marked`) and the past day, by the
     day for the past week or month, and for a History `day`, the days
     HEAT_AROUND either side of it (it `marked`). {"hourly", "cells":
     [{"at": '2026-09-26T14' or '2026-09-26', "marked", "counted": whether
     the streams were counting then}], "tags": {tag: {"cells": [{"posts",
-    "level" (0 to HEAT_LEVELS, of that tag's busiest)}, ...], "busiest":
-    its busiest cell's index, if any}}}."""
+    "height" (0 to 100, of that tag's busiest)}, ...], "busiest": its
+    busiest cell's index, if any}}}."""
     moment = parse_ts(now or utcnow()) or datetime.now(timezone.utc)
     sources = (source,) if source in SOURCES else tuple(SOURCES)
     this_hour = moment.replace(minute=0, second=0, microsecond=0)
@@ -1077,7 +1077,8 @@ def tag_heat(conn: Conn, tags: list[str], window: str = "day", source: str | Non
         counts = [posts[tag].get(a, 0) for a in at]
         busiest = max(counts, default=0)
         out[tag] = {"busiest": counts.index(busiest) if busiest else None,
-                    "cells": [{"posts": n, "level": math.ceil(HEAT_LEVELS * n / busiest) if n else 0} for n in counts]}
+                    "cells": [{"posts": n, "height": max(HEAT_LEAST, round(100 * n / busiest)) if n else 0}
+                              for n in counts]}
     return {"hourly": hourly, "tags": out,
             "cells": [{"at": a, "marked": a in marked, "counted": a in counted} for a in at]}
 

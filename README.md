@@ -372,10 +372,10 @@ isn't among those is read when you open it. A post in the archive that links it 
 
 **Tags** lists the hashtags used in the most posts in the past day, week or month, on Bluesky and Mastodon,
 counted like links (each account once an hour for a hashtag), with **Follow** for each one you don't follow yet.
-Each has a heat strip of its posts over that time: by the hour (UTC) for the past day, and for Rising the past
-24 hours with the 6 it compares underlined; by the day for a week or a month; and on a day in
-[History](#history), the days either side of it. Each is shaded against its own busiest hour or day, so it
-shows when a hashtag took off, not how big it is; hours the streams weren't counting are hatched.
+Each has a histogram of its posts over that time: a bar an hour (UTC) for the past day, and for Rising the past
+24 hours with the 6 it compares darker; a bar a day for a week or a month; and on a day in [History](#history),
+the days either side of it. Each is drawn to its own tallest bar (the number under it), so it shows when a
+hashtag took off, not how big it is; hours the streams weren't counting are greyed.
 
 ### Stories
 

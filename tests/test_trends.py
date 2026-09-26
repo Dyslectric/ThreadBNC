@@ -869,7 +869,7 @@ def test_each_hashtag_shows_its_heat_over_the_time_shown(settings, bouncer):
     # The past day by the hour, as its counts are (25 hours, from the start of the first), now last.
     assert day["hourly"] and len(day["cells"]) == 25 and day["cells"][-1]["at"] == hour_ago(0)
     cells = day["tags"]["quake"]["cells"]
-    assert [c["posts"] for c in cells[-4:]] == [10, 8, 30, 0] and [c["level"] for c in cells[-4:]] == [2, 2, 4, 0]
+    assert [c["posts"] for c in cells[-4:]] == [10, 8, 30, 0] and [c["height"] for c in cells[-4:]] == [33, 27, 100, 0]
     assert day["tags"]["quake"]["busiest"] == 23 and day["tags"]["none"]["busiest"] is None
     assert all(c["counted"] for c in day["cells"]) and not any(c["marked"] for c in day["cells"])
     assert [c["posts"] for c in bluesky["tags"]["quake"]["cells"][-4:]] == [10, 0, 30, 0]
@@ -878,11 +878,12 @@ def test_each_hashtag_shows_its_heat_over_the_time_shown(settings, bouncer):
     assert not week["hourly"] and [c["at"] for c in week["cells"]][-1] == datetime.now(timezone.utc).date().isoformat()
     assert len(week["cells"]) == 7 and sum(c["posts"] for c in week["tags"]["quake"]["cells"]) == 48
     page = logged_in(settings, bouncer).get("/trending/tags").text
-    assert 'class="trend-heat" role="img" aria-label="#quake: busiest ' in page and ", 30 posts\"" in page
-    assert f'title="{hour_ago(1)[:10]} {hour_ago(1)[11:13]}:00 UTC: 30 posts"' in page
-    assert "Each hashtag's posts in the past day, by the hour (UTC)." in page
-    assert "the past 6, which Rising compares, are underlined" in logged_in(settings, bouncer).get(
-        "/trending/tags", params={"t": "rising"}).text
+    assert 'aria-label="#quake: busiest ' in page and ", 30 posts\"" in page and "tallest 30" in page
+    assert f"<title>{hour_ago(1)[:10]} {hour_ago(1)[11:13]}:00 UTC: 30 posts</title>" in page
+    assert '<rect class="bar" x="23.12" y="0" width="0.76" height="100"/>' in page  # the tallest, drawn full height
+    assert "Each hashtag's posts in the past day, a bar an hour (UTC)." in page
+    rising = logged_in(settings, bouncer).get("/trending/tags", params={"t": "rising"}).text
+    assert "which Rising compares, darker" in rising and '<div class="trend-hist has-marked"' in rising
 
 
 def test_articles_can_be_ranked_by_one_network_and_rising(settings, bouncer):
@@ -991,8 +992,8 @@ def test_each_days_most_posted_are_kept_in_history(settings, bouncer, monkeypatc
     assert "Back to now" in page and "Bluesky was counted 24 of its 24 hours" in page
     # Each hashtag's heat is the week around the day, by the day, as History kept it.
     before = (now - timedelta(days=4)).date().isoformat()
-    assert "the day itself underlined" in page and 'class="hc h4 marked"' in page and f'title="{day}: 50 posts"' in page
-    assert f'title="{before}: not counted"' in page
+    assert "itself darker" in page and f'<g class="marked"><title>{day}: 50 posts</title>' in page
+    assert f"<title>{before}: not counted</title>" in page
     page = web_client.get("/trending/tags", params={"on": day, "src": "mastodon"}).text
     assert "#birds" in page and "#cats" not in page
     page = web_client.get("/trending/articles", params={"on": day}).text
