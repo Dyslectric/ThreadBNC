@@ -296,7 +296,9 @@ document.documentElement.classList.add("js");
       input.value = "1";
       form.append(input);
       form.dataset.confirmed = "1";
-      form.requestSubmit(submitter);
+      // Sent again once this event is over: a form asked to submit while its
+      // submit event is still being handled isn't submitted at all.
+      setTimeout(() => form.requestSubmit(submitter && submitter.isConnected ? submitter : null));
       return;
     }
     if (form.hasAttribute("data-theme-form") && submitter) {
@@ -467,7 +469,7 @@ document.documentElement.classList.add("js");
   }, true);
   // In the pictures view a gallery takes the shape of its first picture, so paging doesn't resize it.
   function shapeGallery(img) {
-    const g = img.closest(".picture-media [data-gallery]");
+    const g = img.closest(".picture-media [data-gallery], .post-gallery [data-gallery]");
     if (!g || img.parentElement !== g.querySelector(".gallery-slide") || !img.naturalWidth) return;
     const ratio = Math.min(2.2, Math.max(0.6, img.naturalWidth / img.naturalHeight));
     g.style.setProperty("--ratio", ratio);
@@ -999,9 +1001,10 @@ document.documentElement.classList.add("js");
   function postParts(doc) {
     const video = $("article.post > .post-media .video-box, article.post > .post-media video", doc);
     const player = video && video.closest(".post-media");
+    const pictures = $("article.post > .post-gallery", doc);
     const content = $("article.post > .md", doc);
     if (content) content.classList.add("expanded-post-content");
-    return [player, content].filter(Boolean).map((el) => document.adoptNode(el));
+    return [player, pictures, content].filter(Boolean).map((el) => document.adoptNode(el));
   }
 
   function commentRoot(panel) { return $(".comments", panel); }
@@ -1842,6 +1845,119 @@ document.documentElement.classList.add("js");
     if (toggle) showDiscussionPanel(d, toggle.dataset.show, toggle.getAttribute("aria-expanded") !== "true");
     else showDiscussionPanel(d, rail.closest(".inline-panel").dataset.kind, false);
   }, true);
+
+  // ---- arranging the Following list (/following) -------------------------------------
+  // A row is dragged into place (into a folder, or out of one: folders stay at
+  // the top level), or moved with its arrows or into a folder with its menu.
+  // Each list's rows are then numbered in order, and a community's folder set
+  // to the one it's in: that's what the form sends.
+  function renumberLayout(form) {
+    for (const list of $$(".le-list", form)) {
+      if ("hiddenList" in list.dataset) continue;
+      [...list.children].forEach((row, n) => {
+        const pos = $(".le-pos", row);
+        if (pos) pos.value = n + 1;
+        const folder = row.matches(".le-community") && $(".le-in", row);
+        if (folder) folder.value = list.dataset.list;
+      });
+    }
+  }
+
+  function unhideRow(row) {
+    const box = $("input[name^=hide_]", row);
+    if (box && box.checked && !row.parentElement.matches("[data-hidden-list]")) {
+      box.checked = false;
+      row.classList.remove("le-hidden");
+    }
+  }
+
+  document.addEventListener("click", (ev) => {
+    const button = ev.target.closest(".layout-editor [data-move]");
+    if (!button) return;
+    const row = button.closest(".le-row");
+    const up = Number(button.dataset.move) < 0;
+    const next = up ? row.previousElementSibling : row.nextElementSibling;
+    const folder = row.parentElement.closest(".le-folder");
+    if (next) {
+      if (up) next.before(row); else next.after(row);
+    } else if (folder && row.matches(".le-community")) {  // off the end of a folder: out of it
+      if (up) folder.before(row); else folder.after(row);
+    }
+    renumberLayout(row.closest("form"));
+    button.focus();
+  });
+
+  document.addEventListener("change", (ev) => {
+    const select = ev.target.closest(".layout-editor .le-in");
+    if (select) {
+      const form = select.closest("form");
+      const row = select.closest(".le-row");
+      const list = $$(".le-list", form).find((l) => l.dataset.list === select.value && !("hiddenList" in l.dataset));
+      if (list && row.parentElement !== list) list.append(row);
+      unhideRow(row);
+      renumberLayout(form);
+      return;
+    }
+    const hide = ev.target.closest(".layout-editor input[name^=hide_]");
+    if (hide) hide.closest(".le-row").classList.toggle("le-hidden", hide.checked);
+  });
+
+  let draggedRow = null;
+  const DROP_MARKS = ["le-drop-before", "le-drop-after", "le-drop-into"];
+  const clearDropMarks = () => $$(".le-drop-before, .le-drop-after, .le-drop-into").forEach((el) =>
+    el.classList.remove(...DROP_MARKS));
+
+  // Where a row dropped here would go: {into: list} or {before|after: row}; null where it can't.
+  function dropPlace(ev) {
+    if (!draggedRow || !ev.target.closest) return null;
+    const community = draggedRow.matches(".le-community");
+    const line = ev.target.closest(".layout-editor .le-folder > .le-line");
+    if (line && community && line.parentElement !== draggedRow) return { into: $(".le-members", line.parentElement) };
+    let row = ev.target.closest(".layout-editor .le-row");
+    if (row && !community) row = row.closest(".le-top > .le-row");  // folders stay at the top level
+    if (row && row !== draggedRow && !draggedRow.contains(row) && !row.closest("[data-hidden-list]")) {
+      const box = (row.matches(".le-folder") ? $(".le-line", row) : row).getBoundingClientRect();
+      return ev.clientY < box.top + box.height / 2 ? { before: row } : { after: row };
+    }
+    const list = ev.target.closest(".layout-editor .le-list");
+    if (list && !list.matches("[data-hidden-list]") && (community || list.matches(".le-top")) &&
+        !draggedRow.contains(list) && !row) return { into: list };
+    return null;
+  }
+
+  document.addEventListener("dragstart", (ev) => {
+    const row = ev.target.closest && ev.target.closest(".layout-editor .le-row");
+    if (!row || ev.target.closest("input, select, button")) return;
+    draggedRow = row;
+    row.classList.add("le-dragging");
+    ev.dataTransfer.effectAllowed = "move";
+    ev.dataTransfer.setData("text/plain", row.dataset.community || row.dataset.folder || "");
+  });
+  document.addEventListener("dragend", () => {
+    if (draggedRow) draggedRow.classList.remove("le-dragging");
+    draggedRow = null;
+    clearDropMarks();
+  });
+  document.addEventListener("dragover", (ev) => {
+    const place = dropPlace(ev);
+    if (!place) return;
+    ev.preventDefault();
+    clearDropMarks();
+    if (place.into) place.into.classList.add("le-drop-into");
+    else (place.before || place.after).classList.add(place.before ? "le-drop-before" : "le-drop-after");
+  });
+  document.addEventListener("drop", (ev) => {
+    const place = dropPlace(ev);
+    if (!place) return;
+    ev.preventDefault();
+    const row = draggedRow;
+    if (place.into) place.into.append(row);
+    else if (place.before) place.before.before(row);
+    else place.after.after(row);
+    clearDropMarks();
+    unhideRow(row);
+    renumberLayout(row.closest("form"));
+  });
 
   // ---- a trending post's like and repost buttons ----------------------------------
   // Shown done at once, the count with them; put back if it didn't go through.

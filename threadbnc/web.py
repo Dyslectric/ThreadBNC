@@ -39,6 +39,8 @@ from . import storage as storage_mod
 from . import thumbs as thumbs_mod
 from . import traffic as traffic_mod
 from . import trends as trends_mod
+from . import hidden as hidden_mod
+from . import sidebar as sidebar_mod
 from .actor import ActorEndpoints
 from .adapters import (BSKY_DOMAIN, RSS_PREFIX, CommunityRef, RemoteError, from_fediverse, host_of, is_bluesky,
                        is_fedi_account, is_reddit_host, is_rss, is_tag)
@@ -605,6 +607,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     app.state.tags = tags
     app.state.bluesky_stream = bluesky_stream
     app.state.mastodon_stream = mastodon_stream
+    app.state.templates = templates
     app.state.trends = trend_upkeep
 
     def push_handle() -> str | None:
@@ -995,6 +998,80 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
               "Posts stay unread until you open them.")
         return RedirectResponse(back(request, "/"), status_code=303)
 
+    # ---- the Following list's own arrangement (sidebar.py) ------------------------
+    def arranged_follows(follows: list[dict[str, Any]]) -> dict[str, Any] | None:
+        with db.connect() as conn:
+            return sidebar_mod.arrange(follows, sidebar_mod.load(conn))
+
+    templates.env.globals["arranged_follows"] = arranged_follows
+
+    @app.get("/following", response_class=HTMLResponse)
+    def following_editor(request: Request):
+        """Arrange the Following list: folders, order, and what it leaves out."""
+        with db.connect() as conn:
+            follows = feed_mod.followed_communities(conn)
+            layout = sidebar_mod.load(conn)
+        return render(request, "following.html", arr=sidebar_mod.current(follows, layout), arranged=layout is not None)
+
+    @app.post("/following")
+    async def following_save(request: Request):
+        form = await request.form()
+        with db.transaction() as conn:
+            follows = feed_mod.followed_communities(conn)
+            sidebar_mod.save(conn, sidebar_mod.from_form(form, follows, sidebar_mod.load(conn)))
+        if form.get("add"):
+            flash(request, f"Added the folder {str(form.get('new_folder') or '').strip()}: move communities into it."
+                  if str(form.get("new_folder") or "").strip() else "Give the folder a name first.",
+                  "info" if str(form.get("new_folder") or "").strip() else "error")
+            return RedirectResponse("/following", status_code=303)
+        flash(request, "Saved your Following list.")
+        return RedirectResponse("/following", status_code=303)
+
+    @app.post("/following/reset")
+    def following_reset(request: Request):
+        with db.transaction() as conn:
+            sidebar_mod.save(conn, None)
+        flash(request, "Your Following list is in alphabetical order again.")
+        return RedirectResponse("/following", status_code=303)
+
+    @app.post("/following/folders/{folder}")
+    def following_folder(request: Request, folder: str, collapsed: str = Form("0")):
+        """Remember a folder in the Following list opened or closed (app.js)."""
+        with db.transaction() as conn:
+            sidebar_mod.set_open(conn, folder, collapsed != "1")
+        return RedirectResponse(back(request, "/"), status_code=303)
+
+    # ---- people and feeds you've hidden (hidden.py) ---------------------------
+    def hidden_count() -> int:
+        with db.connect() as conn:
+            return len(hidden_mod.keys(conn))
+
+    templates.env.globals["hidden_count"] = hidden_count
+
+    @app.post("/hide")
+    def hide_source(request: Request, key: str = Form(...), kind: str = Form("author"), label: str = Form("")):
+        """Hide a post's author, or a feed or channel: gone from the feeds, and nothing new of theirs saved."""
+        if kind not in hidden_mod.KINDS or not key.strip():
+            raise HTTPException(400)
+        with db.transaction() as conn:
+            hidden_mod.hide(conn, key.strip(), kind, label.strip() or None, utcnow())
+        flash(request, f"Hidden {label or key}. Their posts are left out of your feeds, and new ones aren't saved.",
+              undo={"action": "/unhide", "fields": {"key": key.strip()}})
+        return RedirectResponse(back(request, "/"), status_code=303)
+
+    @app.post("/unhide")
+    def unhide_source(request: Request, key: str = Form(...)):
+        with db.transaction() as conn:
+            hidden_mod.unhide(conn, key)
+        flash(request, "Shown again. New posts are saved again from now on.")
+        return RedirectResponse(back(request, "/hidden"), status_code=303)
+
+    @app.get("/hidden", response_class=HTMLResponse)
+    def hidden_page(request: Request):
+        with db.connect() as conn:
+            items = hidden_mod.listed(conn)
+        return render(request, "hidden.html", items=items)
+
     @app.post("/feed/languages")
     def set_feed_languages(request: Request, languages_text: str = Form("", alias="languages")):
         """The languages feeds show (languages.py); none: every language."""
@@ -1057,6 +1134,12 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             here = {r["canonical_ap_id"]: r["id"] for r in conn.execute(
                 f"SELECT o.canonical_ap_id, t.id FROM objects o JOIN archived_threads t ON t.root_object_id=o.id "
                 f"WHERE o.canonical_ap_id IN ({','.join('?' * len(ap_ids))})", ap_ids)} if ap_ids else {}
+        with db.connect() as conn:
+            hidden_keys = hidden_mod.keys(conn)
+        if hidden_keys:
+            keep = [(i, a) for i, a in zip(items, ap_ids)
+                    if (i["view"].get("author_uri") or i["view"].get("author_url")) not in hidden_keys]
+            items, ap_ids = [i for i, _ in keep], [a for _, a in keep]
         for i, ap_id in zip(items, ap_ids):
             i["here"] = here.get(ap_id)  # opened (or captured) here already
         mine = poster.stream_mine([(i["source"], i["view"].get("url") if i["source"] == "bluesky"
@@ -1795,7 +1878,10 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                                      else f"https://{ref.domain}/post/{p.local_id}"})
             except RemoteError as exc:
                 live_error = str(exc)
+        with db.connect() as conn:
+            hidden_here = c["canonical_ap_id"] in hidden_mod.keys(conn)
         return render(request, "community.html", c=c, follow=follow_row, tab=tab, feed=fp, counts=counts,
+                      hidden_here=hidden_here,
                       push_handle=push_handle(), pushed_poll=PUSHED_POLL_MINUTES,
                       events=cevents, live=live, live_error=live_error, sort=sort, window=t, unread=unread,
                       page=page, live_sort=live_sort, follows=follows, base_url=f"/c/{cid}",
@@ -3293,6 +3379,14 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         new_count = sum(1 for n in displayed if n["is_new"])
         changed_count = sum(1 for n in displayed if n["is_changed"] and not n["is_new"])
         md, media_for, preview = md_for(list(nodes))
+        post_pics: list[dict[str, Any]] = []
+        if root is not None:
+            # Its own pictures: not its link's preview (shown with the link) or its article's, nor those its text shows.
+            o_ = root["o"]
+            with db.connect() as conn:
+                found = feed_mod.thumbnails(conn, [(o_["id"], o_["url"], o_["thumbnail_url"])]).get(o_["id"])
+            post_pics = [p for p in (found or {}).get("pics", [])
+                         if p["rank"] in (0, 2) and p["url"] not in (o_["body"] or "")]
         me = acting(request)
         ap_ids = [o["canonical_ap_id"] for o in objs]
         my_votes = {**poster.my_votes(me, ap_ids), **poster.my_votes(poster.reddit_account(), ap_ids),
@@ -3316,6 +3410,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                       comment_sort=sort, comment_sorts=COMMENT_SORTS, instance=instance, since=since,
                       grouped=len(tids) > 1, post_copies=post_copies, merge=merge, article=article,
                       n_copies=max(len(copies), 1), refresh_job=refresh_job, post_audio=post_audio, talk=talk,
+                      post_pics=post_pics,
                       all_kept=all(th["retention"] == "manual" for th in threads.values()))
 
     def read_href(url: str) -> str:

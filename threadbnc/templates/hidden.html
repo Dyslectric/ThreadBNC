@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% from "_macros.html" import when, icon %}
+{% block title %}Hidden{% endblock %}
+{% block content %}
+<div class="narrow-page">
+  <div class="feed-head">
+    <div>
+      <h1>{{ icon('hide', 'title-icon') }} Hidden</h1>
+      <p class="muted small">People, feeds and YouTube channels you've hidden. Their posts are left out of your feeds, and new
+        ones aren't saved. Showing one again brings back what's still in the archive; what wasn't saved meanwhile isn't fetched.</p>
+    </div>
+  </div>
+  {% if items %}
+  <ul class="card plain hidden-list">
+    {% for h in items %}
+    <li class="hidden-item">
+      <span class="grow">
+        <strong>{{ h.label or h.key }}</strong>
+        <span class="muted small">{{ 'a feed or channel' if h.kind == 'community' else 'a person' }} · hidden {{ when(h.hidden_at) }}</span>
+        {% if h.community_id %}<a class="small" href="/c/{{ h.community_id }}">its page</a>{% endif %}
+      </span>
+      <form method="post" action="/unhide" class="inline"><input type="hidden" name="key" value="{{ h.key }}">
+        <button class="small secondary">Show again</button></form>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <section class="card empty"><p class="muted">Nothing is hidden. Hide someone from the <strong>Hide user</strong> button on
+    one of their posts in a feed.</p></section>
+  {% endif %}
+</div>
+{% endblock %}

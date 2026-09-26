@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon %}
+{% block title %}Edit your Following list{% endblock %}
+{% block content %}
+{% set folders = arr.entries | selectattr('kind', 'equalto', 'folder') | list %}
+{% macro row(f, folder, pos, hidden=False) -%}
+<li class="le-row le-community{{ ' le-hidden' if hidden }}" data-community="{{ f.id }}" draggable="true">
+  <span class="le-grip js-only" aria-hidden="true" title="Drag to move">⠿</span>
+  <span class="le-name">{{ chandle(f.name, f.canonical_ap_id) }}</span>
+  <label class="le-pos-label"><span class="sr-only">Position of {{ f.name }}</span>
+    <input class="le-pos" type="number" step="any" name="pos_{{ f.id }}" value="{{ pos }}"></label>
+  <label class="le-in-label"><span class="sr-only">Folder for {{ f.name }}</span>
+    <select class="le-in" name="in_{{ f.id }}">
+      <option value="" {{ 'selected' if not folder }}>No folder</option>
+      {% for fo in folders %}<option value="{{ fo.id }}" {{ 'selected' if fo.id == folder }}>{{ fo.name }}</option>{% endfor %}
+    </select></label>
+  <span class="le-moves js-only">
+    <button type="button" class="act" data-move="-1" title="Move up" aria-label="Move {{ f.name }} up">↑</button>
+    <button type="button" class="act" data-move="1" title="Move down" aria-label="Move {{ f.name }} down">↓</button>
+  </span>
+  <label class="le-hide small"><input type="checkbox" name="hide_{{ f.id }}" value="1" {{ 'checked' if hidden }}> Hide</label>
+</li>
+{%- endmacro %}
+<div class="narrow-page following-editor">
+  <div class="feed-head">
+    <div>
+      <h1>{{ icon('list', 'title-icon') }} Your Following list</h1>
+      <p class="muted small">How the Following list beside your feed is arranged: put communities and feeds in folders, move
+        them up and down, and hide the ones you don't need listed. Hidden ones are still followed and still in your feed.
+        Communities you follow later go at the end until you place them.</p>
+    </div>
+  </div>
+  <form method="post" action="/following" class="card layout-editor" data-layout-editor>
+    <p class="small muted js-only">Drag a row to move it, into a folder or out of one, or use ↑ ↓ and the folder menu.</p>
+    <p class="small muted no-js">Number the rows in the order you want them: folders and communities outside folders
+      together, and each folder's communities among themselves. Pick a folder for a community to put it in one.</p>
+    <ol class="le-list le-top" data-list="">
+      {% for e in arr.entries %}
+        {% if e.kind == 'folder' %}
+        <li class="le-row le-folder" data-folder="{{ e.id }}" draggable="true">
+          <div class="le-line">
+            <span class="le-grip js-only" aria-hidden="true" title="Drag to move">⠿</span>
+            {{ icon('communities') }}
+            <label class="grow"><span class="sr-only">Folder name</span>
+              <input class="le-folder-name" name="folder_name_{{ e.id }}" value="{{ e.name }}" maxlength="60" required></label>
+            <label class="le-pos-label"><span class="sr-only">Position of the folder {{ e.name }}</span>
+              <input class="le-pos" type="number" step="any" name="folder_pos_{{ e.id }}" value="{{ loop.index }}"></label>
+            <span class="le-moves js-only">
+              <button type="button" class="act" data-move="-1" title="Move up" aria-label="Move the folder {{ e.name }} up">↑</button>
+              <button type="button" class="act" data-move="1" title="Move down" aria-label="Move the folder {{ e.name }} down">↓</button>
+            </span>
+            <label class="le-hide small"><input type="checkbox" name="folder_delete_{{ e.id }}" value="1"> Delete folder</label>
+          </div>
+          <ol class="le-list le-members" data-list="{{ e.id }}">
+            {% for f in e.follows %}{{ row(f, e.id, loop.index) }}{% endfor %}
+          </ol>
+        </li>
+        {% else %}{{ row(e.f, '', loop.index) }}{% endif %}
+      {% endfor %}
+    </ol>
+    {% if arr.hidden %}
+    <h2 class="small le-hidden-head">Hidden from the list</h2>
+    <ol class="le-list le-hidden-list" data-list="" data-hidden-list>
+      {% for f in arr.hidden %}{{ row(f, '', 1000 + loop.index, hidden=True) }}{% endfor %}
+    </ol>
+    {% endif %}
+    <div class="row le-new">
+      <label class="grow"><span class="sr-only">New folder</span>
+        <input name="new_folder" placeholder="New folder name" maxlength="60"></label>
+      <button type="submit" name="add" value="1" class="secondary small">{{ icon('plus') }}Add folder</button>
+    </div>
+    <div class="row le-save">
+      <button>Save</button>
+      <a class="small" href="/">Back to your feed</a>
+      <span class="grow"></span>
+      {% if arranged %}<button form="reset-layout" class="small secondary" title="Back to alphabetical order, grouped by kind">Reset</button>{% endif %}
+    </div>
+  </form>
+  {% if arranged %}<form method="post" action="/following/reset" id="reset-layout" data-confirm="Undo your folders and order, and list everything alphabetically again?"></form>{% endif %}
+</div>
+{% endblock %}
