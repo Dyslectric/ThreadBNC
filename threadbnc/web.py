@@ -1239,8 +1239,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
 
     @app.get("/trending/stories", response_class=HTMLResponse)
     def trending_stories(request: Request, t: str = "day", src: str = "all", page: int = 1, lang: str = ""):
-        """The articles and hashtags at the top of Trending, grouped into
-        stories by what's posted together (stories.py)."""
+        """The articles at the top of Trending, grouped into stories by what's
+        posted together, the hashtags at the top joining them (stories.py)."""
         window = t if t in stories_mod.WINDOWS else "day"
         source = src if src in trends_mod.SOURCES else "all"
         chosen = None if source == "all" else source
@@ -1283,11 +1283,12 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             else:
                 items, has_more = trends_mod.trending_tags(conn, window, page, TAGS_PAGE, source=chosen,
                                                            codes=langs["codes"])
+            heat = trends_mod.tag_heat(conn, [t["tag"] for t in items], window, chosen, day=day)
             servers = trends_mod.trending_on_servers(conn) if source == "mastodon" and page == 1 and not day else []
             history = history_status(conn, day)
             span = trends_mod.rising_span(conn) if window == "rising" and not day else None
         return render(request, "trending.html", tab="tags", tags=items, window=window, source=source, page=page,
-                      has_more=has_more, status=trending_status(), per_page=TAGS_PAGE, servers=servers,
+                      has_more=has_more, status=trending_status(), per_page=TAGS_PAGE, servers=servers, heat=heat,
                       langs=langs, history=history, span=span, **trend_consts,
                       params=trend_params(t=window, src=source, lang="all" if langs["all"] else None, on=day))
 

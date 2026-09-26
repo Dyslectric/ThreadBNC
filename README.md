@@ -372,17 +372,22 @@ isn't among those is read when you open it. A post in the archive that links it 
 
 **Tags** lists the hashtags used in the most posts in the past day, week or month, on Bluesky and Mastodon,
 counted like links (each account once an hour for a hashtag), with **Follow** for each one you don't follow yet.
+Each has a heat strip of its posts over that time: by the hour (UTC) for the past day, and for Rising the past
+24 hours with the 6 it compares underlined; by the day for a week or a month; and on a day in
+[History](#history), the days either side of it. Each is shaded against its own busiest hour or day, so it
+shows when a hashtag took off, not how big it is; hours the streams weren't counting are hatched.
 
 ### Stories
 
 One piece of news shows up as several articles, from different sites, and a few hashtags. **Stories** groups
-them: the streams also count which links and hashtags each post has together (each two of a post's first six,
+the articles: the streams also count which links and hashtags each post has together (each two of a post's first six,
 once an hour for each account, by the day), and the articles and hashtags at the top of Rising, or of the past
 day or week, are grouped by it. Taken in the order they're ranked, each joins the story it's posted with most,
 when the posts with both are at least 15% of what both are posted (their posts' geometric mean, a story's posts
 being all of its members') and at least 3 posts; otherwise it starts its own. That keeps a hashtag posted with
-everything, like #news, out of every story: what it shares with any one story is a small part of it. A story
-shows its top article (or hashtag), its other articles, each readable in place, and its hashtags. What's posted
+everything, like #news, out of every story: what it shares with any one story is a small part of it. Hashtags
+only join articles together (two pages each posted with #earthquake), and aren't shown: a story is its top
+article and its others, each readable in place. What's posted
 together is only kept for 8 days, and pairs posted together once in a day are forgotten after it, so stories
 aren't in History.
 

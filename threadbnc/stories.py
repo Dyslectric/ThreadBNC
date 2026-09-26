@@ -1,4 +1,4 @@
-"""Stories: Trending's articles and hashtags grouped by what's posted together.
+"""Stories: Trending's articles grouped by what's posted together.
 
 One piece of news shows in Trending as several articles, from different sites,
 and a few hashtags. The streams count which links and hashtags each post has
@@ -14,7 +14,9 @@ far more than chance would have it:
   least STORY_MIN_POSTS posts. Otherwise it starts a story of its own. So a
   hashtag posted with everything (#news) joins nothing: what it shares with
   any one story is a small part of its posts.
-- Stories come in the order of their first, highest ranked, member.
+- A hashtag only joins articles together: a story with no articles isn't
+  one, and stories show their articles alone.
+- Stories come in the order of their first, highest ranked, article.
 
 Nothing is read from the pages to do this, and the pairs go after
 trends.PAIRS_KEPT days: stories are only for now, not for History.
@@ -49,9 +51,9 @@ def stories(conn: Conn, articles: list[dict[str, Any]], tags: list[dict[str, Any
             source: str | None = None, now: str | None = None) -> list[dict[str, Any]]:
     """Stories of the ranked `articles` (trends.order_articles) and `tags`
     (trends.trending_tags) of a ranking `window` (in WINDOWS), on `source`
-    or both: [{"articles": [...], "tags": [...], "lead": "article" | "tag",
-    "measure": the first member's, "linked": posts with two of its members}],
-    the first member first in each."""
+    or both: [{"articles": [...], "measure": the first article's, "linked":
+    posts with two of its members (its hashtags among them)}], the first
+    article first in each. The hashtags only join articles together."""
     rising = window == "rising"
     members = [("article", a, list(a["keys"])) for a in articles[:TAKEN]] + \
         [("tag", t, ["#" + t["tag"]]) for t in tags[:TAKEN]]
@@ -84,13 +86,14 @@ def stories(conn: Conn, articles: list[dict[str, Any]], tags: list[dict[str, Any
             best["linked"] += shared
         else:
             groups.append({"members": [i], "posts": size[i], "linked": 0})
+    rank = {i: n for n, i in enumerate(order)}
     out = []
     for g in groups:
-        first = g["members"][0]
-        out.append({"lead": members[first][0], "measure": measures[first], "linked": g["linked"],
-                    "articles": [members[i][1] for i in g["members"] if members[i][0] == "article"],
-                    "tags": [members[i][1] for i in g["members"] if members[i][0] == "tag"]})
-    return out
+        told = [i for i in g["members"] if members[i][0] == "article"]
+        if told:
+            out.append((rank[told[0]], {"measure": measures[told[0]], "linked": g["linked"],
+                                        "articles": [members[i][1] for i in told]}))
+    return [story for _rank, story in sorted(out, key=lambda o: o[0])]
 
 
 def _counts(conn: Conn, names: list[str], since: date) -> tuple[dict[str, int], dict[tuple[str, str], int]]:

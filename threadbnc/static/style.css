@@ -1168,8 +1168,6 @@ a.article-link.dived, a[data-dive].dived, a.video-link.dived, a.live-link.dived 
 .story-articles { list-style: none; margin: 6px 0; padding: 0 0 0 10px; border-left: 2px solid var(--line); }
 .story-articles li { margin: 3px 0; overflow-wrap: anywhere; }
 .story-articles li a { font-weight: 600; margin-right: 6px; }
-.story-tags { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin: 6px 0 2px; }
-.story-tags .pill:hover { text-decoration: none; background: var(--hover); }
 .trend-look-back { display: inline-flex; align-items: center; gap: 6px; }
 .trend-look-back label { display: inline-flex; align-items: center; gap: 4px; margin: 0; color: var(--muted); }
 .trend-look-back input[type="date"] { width: auto; padding: 3px 6px; font-size: 0.9em; }
@@ -1182,9 +1180,25 @@ a.article-link.dived, a[data-dive].dived, a.video-link.dived, a.live-link.dived 
 .trend-tag-name { font-weight: 600; overflow-wrap: anywhere; }
 .trend-tag-counts { display: inline-flex; gap: 8px; align-items: center; font-variant-numeric: tabular-nums; }
 .trend-tag-actions { display: inline-flex; gap: 2px; align-items: center; }
+/* A hashtag's posts over the time shown, one cell an hour or a day, darkest its busiest. */
+.trend-heat { grid-column: 1 / -1; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 2px;
+  height: 16px; padding-bottom: 4px; }
+.hc { display: block; border-radius: 2px; background: color-mix(in srgb, var(--line) 55%, var(--card)); }
+.hc.h1 { background: color-mix(in srgb, var(--accent) 22%, var(--card)); }
+.hc.h2 { background: color-mix(in srgb, var(--accent) 45%, var(--card)); }
+.hc.h3 { background: color-mix(in srgb, var(--accent) 70%, var(--card)); }
+.hc.h4 { background: var(--accent); }
+.hc.off { background: repeating-linear-gradient(135deg, var(--line) 0 2px, transparent 2px 4px); }
+.hc.marked { box-shadow: 0 4px 0 -1px var(--text); }
+.trend-heat-key { margin: 0 0 6px; }
+.trend-heat-legend { display: inline-flex; align-items: center; gap: 2px; white-space: nowrap; margin-left: 4px; }
+.trend-heat-legend .hc:first-child { margin-left: 3px; }
+.trend-heat-legend .h4 { margin-right: 3px; }
+.trend-heat-legend .hc { display: inline-block; width: 10px; height: 10px; }
+.trend-heat-legend .hc.off { margin: 0 3px; }
 @media (max-width: 600px) {
   .trend-tag { grid-template-columns: minmax(0, 1fr) auto; }
-  .trend-tag-counts { grid-column: 1; grid-row: 2; }
+  .trend-tag-counts { grid-column: 1; grid-row: 2; flex-wrap: wrap; gap: 2px 8px; }
   .trend-tag-actions { grid-column: 2; grid-row: 1 / span 2; }
 }
 .trend-peek-box { margin-top: 8px; }

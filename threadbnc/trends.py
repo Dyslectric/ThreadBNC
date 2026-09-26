@@ -1018,6 +1018,70 @@ def _here(conn: Conn, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return items
 
 
+HEAT_HOURS = 24  # Rising's heat: the hours up to now, the past RISING_RECENT of them marked
+HEAT_AROUND = 3  # a History day's heat: the days either side of it
+HEAT_LEVELS = 4
+
+
+def tag_heat(conn: Conn, tags: list[str], window: str = "day", source: str | None = None,
+             now: str | None = None, day: str | None = None) -> dict[str, Any]:
+    """How much each of `tags` was used over the time a Tags ranking covers,
+    on `source` or both, for a heat strip: by the hour for Rising
+    (HEAT_HOURS, the past RISING_RECENT `marked`) and the past day, by the
+    day for the past week or month, and for a History `day`, the days
+    HEAT_AROUND either side of it (it `marked`). {"hourly", "cells":
+    [{"at": '2026-09-26T14' or '2026-09-26', "marked", "counted": whether
+    the streams were counting then}], "tags": {tag: {"cells": [{"posts",
+    "level" (0 to HEAT_LEVELS, of that tag's busiest)}, ...], "busiest":
+    its busiest cell's index, if any}}}."""
+    moment = parse_ts(now or utcnow()) or datetime.now(timezone.utc)
+    sources = (source,) if source in SOURCES else tuple(SOURCES)
+    this_hour = moment.replace(minute=0, second=0, microsecond=0)
+    if day:
+        middle = datetime.strptime(day, "%Y-%m-%d").date()
+        at = [(middle + timedelta(days=d)).isoformat() for d in range(-HEAT_AROUND, HEAT_AROUND + 1)]
+        marked = {day}
+    elif window in ("rising", "day"):
+        first = this_hour - (timedelta(hours=HEAT_HOURS - 1) if window == "rising" else WINDOWS["day"])
+        hours = int((this_hour - first) / timedelta(hours=1)) + 1
+        at = [(first + timedelta(hours=h)).strftime(HOUR) for h in range(hours)]
+        recent = (moment - RISING_RECENT).strftime(HOUR)
+        marked = {a for a in at if a >= recent} if window == "rising" else set()
+    else:
+        today = moment.date()
+        at = [(today - timedelta(days=d)).isoformat() for d in range(WINDOWS[window].days - 1, -1, -1)]
+        marked = set()
+    hourly = len(at[0]) > 10
+    width = 13 if hourly else 10
+    posts: dict[str, dict[str, int]] = {t: {} for t in tags}
+    marks = _marks(list(sources))
+    for chunk in _chunks(tags):
+        if day:
+            rows = conn.execute(
+                f"SELECT tag, day AS at, SUM(posts) AS posts FROM tag_history WHERE day >= ? AND day <= ? "
+                f"AND source IN ({marks}) AND tag IN ({_marks(chunk)}) GROUP BY tag, day",
+                (at[0], at[-1], *sources, *chunk))
+        else:
+            rows = conn.execute(
+                f"SELECT tag, substr(hour, 1, {width}) AS at, SUM(posts) AS posts FROM tag_counts "
+                f"WHERE hour >= ? AND source IN ({marks}) AND tag IN ({_marks(chunk)}) GROUP BY tag, at",
+                (at[0] if hourly else at[0] + "T00", *sources, *chunk))
+        for r in rows:
+            posts[r["tag"]][r["at"]] = int(r["posts"] or 0)
+    counted = {r["at"] for r in conn.execute(
+        f"SELECT DISTINCT substr(hour, 1, {width}) AS at FROM trend_hours WHERE hour >= ? AND hour <= ? "
+        f"AND source IN ({marks})", (at[0] if hourly else at[0] + "T00", at[-1] if hourly else at[-1] + "T23",
+                                     *sources))}
+    out: dict[str, dict[str, Any]] = {}
+    for tag in tags:
+        counts = [posts[tag].get(a, 0) for a in at]
+        busiest = max(counts, default=0)
+        out[tag] = {"busiest": counts.index(busiest) if busiest else None,
+                    "cells": [{"posts": n, "level": math.ceil(HEAT_LEVELS * n / busiest) if n else 0} for n in counts]}
+    return {"hourly": hourly, "tags": out,
+            "cells": [{"at": a, "marked": a in marked, "counted": a in counted} for a in at]}
+
+
 def server_tags(got: Any) -> list[dict[str, Any]]:
     """The hashtags a Mastodon server says are trending on it
     (/api/v1/trends/tags), in its order: {"tag" (named as followed ones are),
