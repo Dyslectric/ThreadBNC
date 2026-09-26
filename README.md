@@ -66,7 +66,7 @@ ThreadBNC behaves like one more subscribed server, or like your own browser, nev
 - **Hashtags on Bluesky, from its public stream.** Bluesky offers nothing to subscribe to for a hashtag, only one stream of everything posted there. While any hashtag is followed, or Bluesky is counted for Trending (on unless you turn it off), ThreadBNC listens to it (Jetstream, new posts only, compressed: about 25 a second, about 0.75 GB a day), keeps the posts with a followed hashtag, and asks Bluesky for those alone, up to 25 in one request.
 - **Your Mastodon server's public timeline, when you subscribe.** One streaming connection to your own server, as your account. Posts with a followed hashtag are kept from it (instead of through the relays); the rest are only counted.
 - **Trending's pictures when you scroll to them.** A trending post's pictures are downloaded once it's on your screen, like a feed post's article.
-- **Trending's totals, a few at a time.** Likes and replies of the posts replied to most are read from Bluesky's AppView (up to 100 posts every 5 minutes, 25 to a request) and from your Mastodon server (20 to a request, at most one a minute, and its trending posts every 15 minutes). Only the 12 most posted articles of the day, week and month are read.
+- **Trending's totals, a few at a time.** Likes and replies of the posts replied to most are read from Bluesky's AppView (up to 100 posts every 5 minutes, 25 to a request) and from your Mastodon server (20 to a request, at most one a minute, and its trending posts every 15 minutes). Only the 12 articles at the top of each ranking (day, week, month and rising, on each network) are read, each once.
 - **Reddit only while you're here,** spread out, one subreddit at a time (see [Checking, conservatively](#checking-conservatively)).
 - **Pictures at once, videos later.** Pictures and thumbnails are downloaded as posts arrive; full videos wait until you open or keep a post showing them.
 - **Video players are the sites' own.** A post that is a video's link, or a video link's box, loads the site's player in your browser (YouTube's from youtube-nocookie.com), or plays a video file from where it is. Nothing is downloaded for that. A video from a site is only downloaded when you press **Download and archive**, or keep a post that links to a YouTube video.
@@ -84,7 +84,7 @@ ThreadBNC behaves like one more subscribed server, or like your own browser, nev
 | **Your own feeds** (`/f/{id}`, **New feed** in the sidebar) | A named mix of communities, each feed with its own default sort, time range, filter and view. Mark all read covers just its communities. The ✎ next to its name edits or deletes it; the communities and their posts are untouched. |
 | **Community** (`/c/{id}`) | The same feed for one community, plus ★ Kept, **Live on server** (browse its full history, fetched live), **Media** (what it archives, size limit, transcoding) and a log. Follow settings sit behind the "✓ Following" pill. |
 | **Communities** | Follow a community (starts with its current first page) and manage the check interval and retention for each one. |
-| **Trending** (`/trending`) | **Posts**: the posts most liked, or most replied to, on Bluesky and Mastodon over the past day or week. **Articles**: the pages posted most on Bluesky, on Mastodon and in the archive over the past day, week or month. **Tags**: the hashtags used in the most posts. Posts' replies and articles open in place. **Sources** chooses what's counted. See [Trending](#trending). |
+| **Trending** (`/trending`) | **Posts**: the posts most liked, or most replied to, on Bluesky and Mastodon over the past day or week. **Articles**: the pages posted most on Bluesky, on Mastodon and in the archive over the past day, week or month. **Tags**: the hashtags used in the most posts. **Rising** shows what's posted far more than usual, **Look back** any day since it started keeping them, all in your feeds' languages. Posts' replies and articles open in place. **Sources** chooses what's counted. See [Trending](#trending). |
 | **Post** (`/t/{id}`) | A post's pictures are a carousel at full width: swipe, or use the arrows. |
 | **★ Kept** | Keep a post by link, see kept threads grouped by community, recent changes and the bouncer queue. |
 | **Search** (`/search`, and the box in the header) | Every version of every archived post and comment. See [Search](#search). |
@@ -363,13 +363,44 @@ parameters, AMP copies and wrappers are taken off (see [Linked articles](#linked
 read, the address it redirected to and the one it says it lives at count as it too. Posts from Bluesky, and
 hashtags' posts while the Mastodon timeline is subscribed to, aren't counted again from the archive. Only the
 counts are kept: links posted once in their first day, or fewer than five times in their first week, are
-forgotten, and counts go after a month. The **12 most posted of each** of the day, week and month are read, so
-they can be read here, and kept while they stay among them; six hours after dropping out they go like any other
-article nothing links to. **Read** opens an article under its listing, as in the feed; one that isn't among
-those is read when you open it. A post in the archive that links it opens its comments the same way.
+forgotten, and counts go after a month (apart from [History](#history)). **All**, **Bluesky**, **Mastodon** or
+**Archive** ranks them by the posts in one of those alone: Bluesky's stream is about three times Mastodon's, so
+in one list its links bury Mastodon's. The **12 at the top of each ranking** (each time range, on each network)
+are read, so they can be read here, and kept while they stay among them; six hours after dropping out they go
+like any other article nothing links to. **Read** opens an article under its listing, as in the feed; one that
+isn't among those is read when you open it. A post in the archive that links it opens its comments the same way.
 
 **Tags** lists the hashtags used in the most posts in the past day, week or month, on Bluesky and Mastodon,
 counted like links (each account once an hour for a hashtag), with **Follow** for each one you don't follow yet.
+
+### Rising
+
+The most posted is mostly what's always posted (#art, #photography, the same few sites). **Rising**, on the
+Articles and Tags tabs, shows instead what's posted far more than usual: at least twice as much in the past 6
+hours as in as long the week before, with at least 3 posts. The furthest above usual come first, measured so
+that a jump from 100 to 600 posts counts for more than one from 1 to 6, and something new with 30 posts counts
+for more than the always-busy with a few more than usual. Each shows its posts in the past 6 hours and how many
+is usual. Usual is worked out from the hours each network was actually being counted, so time the streams were
+off doesn't make everything look new. A network counted for under 12 hours of the week before has nothing
+usual yet, and the page says so.
+
+### Languages
+
+Trending shows what's mostly in the languages your feeds show (**Feed options → Languages**), with **All** to
+see everything. Each counted post's language is what its server says (a Bluesky post's first, a Mastodon
+post's), and each hashtag and link keeps a count of the languages its posts were in: it's shown unless under a
+third of those that said were in one of yours. Posts, hashtags and links whose posts never said are always
+shown. With no languages chosen, everything is shown and the choice isn't offered.
+
+### History
+
+Counts go after a month, but each day's **1,000 most used hashtags and 1,000 most posted links on each
+network** are kept for good, a few minutes after the day ends (UTC), with the page each link was first posted
+as and the languages of their posts. **Look back**, on the Articles and Tags tabs, shows any day
+kept: its ranking on either network or both, and how many of its hours each network was being counted, so a day the
+streams were down for is plain to see. An article still here opens as it was read; the rest open from the
+site. On a server that's been counting for a while, the first days kept are those whose counts it still has
+(up to a month back). Keeping them takes about 200 to 300 MB a year.
 
 ## Hashtags
 

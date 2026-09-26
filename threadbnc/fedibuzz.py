@@ -29,7 +29,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from . import trends
+from . import languages, trends
 from .db import utcnow
 from .mastodon_stream import status_links, status_tags
 from .traffic import record
@@ -160,8 +160,9 @@ class FediBuzzStream:
             return
         account = status.get("account") if isinstance(status.get("account"), dict) else {}
         author = account.get("url") or account.get("uri") or account.get("acct")
-        self.tally.post_links(status_links(status), author)
-        self.tally.post_tags(status_tags(status), author)
+        lang = languages.normalize(status.get("language"))
+        self.tally.post_links(status_links(status), author, lang)
+        self.tally.post_tags(status_tags(status), author, lang)
 
     def start_thread(self) -> threading.Thread:
         t = threading.Thread(target=self.run_forever, name="fedibuzz-stream", daemon=True)

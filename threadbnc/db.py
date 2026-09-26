@@ -605,6 +605,60 @@ CREATE TABLE IF NOT EXISTS tags_seen (
 CREATE INDEX IF NOT EXISTS tags_seen_first ON tags_seen(first_seen_at);
 CREATE INDEX IF NOT EXISTS tags_seen_last ON tags_seen(last_seen_at);
 
+-- The languages of the posts each counted hashtag and link was in (trends.py),
+-- all counted: a post's first language, as its server says. They go with the
+-- hashtag or link.
+CREATE TABLE IF NOT EXISTS tag_langs (
+    tag TEXT NOT NULL,
+    lang TEXT NOT NULL,
+    posts BIGINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (tag, lang)
+);
+CREATE TABLE IF NOT EXISTS link_langs (
+    key TEXT NOT NULL,
+    lang TEXT NOT NULL,
+    posts BIGINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (key, lang)
+);
+
+-- The hours each stream was counting, and how many posts it looked at: what
+-- Rising compares against, and how much of a day History saw. Kept for good.
+CREATE TABLE IF NOT EXISTS trend_hours (
+    hour TEXT NOT NULL,
+    source TEXT NOT NULL,
+    posts BIGINT NOT NULL DEFAULT 0,   -- 0: known only from the counts (before this was kept)
+    PRIMARY KEY (hour, source)
+);
+
+-- Trending's History: each day's most used hashtags and most posted links
+-- on each network (trends.KEEP_TOP of each), kept for good once the day is over.
+CREATE TABLE IF NOT EXISTS tag_history (
+    day TEXT NOT NULL,                 -- UTC: 2026-09-25
+    tag TEXT NOT NULL,
+    source TEXT NOT NULL,
+    posts BIGINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, tag, source)
+);
+CREATE TABLE IF NOT EXISTS link_history (
+    day TEXT NOT NULL,
+    key TEXT NOT NULL,
+    source TEXT NOT NULL,
+    posts BIGINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, key, source)
+);
+-- What those hashtags and links were: the languages of their posts, and each link's page, as first posted.
+CREATE TABLE IF NOT EXISTS tags_kept (
+    tag TEXT PRIMARY KEY,
+    langs TEXT                         -- JSON: {"en": posts, ...}
+);
+CREATE TABLE IF NOT EXISTS links_kept (
+    key TEXT PRIMARY KEY,
+    url TEXT NOT NULL,
+    title TEXT,
+    description TEXT,
+    langs TEXT
+);
+
 -- The hashtags your Mastodon server (the first account's) says are trending on it
 -- (/api/v1/trends/tags, mastodon_stream.py), as it last said: its counts, not ours.
 CREATE TABLE IF NOT EXISTS server_trending_tags (
@@ -635,6 +689,7 @@ CREATE TABLE IF NOT EXISTS stream_posts (
     checked_at TEXT,                   -- when those totals were read
     gone INTEGER NOT NULL DEFAULT 0,   -- deleted, or not shown any more
     view_json TEXT,                    -- how to show it: author, text, picture, link
+    lang TEXT,                         -- its language, as languages.normalize has it, when it says
     PRIMARY KEY (source, ref)
 );
 CREATE INDEX IF NOT EXISTS stream_posts_created ON stream_posts(created_at);
@@ -750,6 +805,7 @@ COLUMN_MIGRATIONS = [
     ("objects", "language", "TEXT"),
     ("community_follows", "in_home", "INTEGER NOT NULL DEFAULT 1"),
     ("articles", "trending_at", "TEXT"),
+    ("stream_posts", "lang", "TEXT"),
 ]
 
 # Tables with an integer `id` key: inserts into these get `RETURNING id` on

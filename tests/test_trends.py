@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 
 from urllib.parse import quote
 
-from threadbnc import articles, jetstream, mastodon_stream, trends
+from threadbnc import articles, jetstream, languages, mastodon_stream, trends
 from threadbnc.db import fmt_ts
 from threadbnc.jetstream import BlueskyStream
 from threadbnc.web import create_app
@@ -205,7 +205,7 @@ def test_the_most_posted_are_read_and_kept_while_they_trend(bouncer, abouncer, m
     count_links(abouncer, "bluesky", "https://news.test/teaser/2026-story", times=9)  # read, it's not an article
     count_links(abouncer, "bluesky", "https://news.test/story?utm_source=bsky", times=4)
     count_links(abouncer, "mastodon", "https://news.test/2026/09/other-story-here")
-    monkeypatch.setattr(trends, "TOP_CACHED", 2)
+    monkeypatch.setattr(trends, "TOP_CACHED", 1)  # the most posted of each ranking: overall and on Mastodon
     upkeep = trends.Trends(abouncer)
     upkeep.cache_articles()
     # Each read by a job of its own, spaced out so other work carries on meanwhile.
@@ -222,6 +222,7 @@ def test_the_most_posted_are_read_and_kept_while_they_trend(bouncer, abouncer, m
     assert story["status"] == "ok" and story["title"] == "Harbour wall to be rebuilt" and story["trending_at"]
     assert set(r["id"] for r in got.values()) <= set(wanted)
     # Read once: the link it was posted with and where it was read from are one page now.
+    upkeep.cache_articles()
     with abouncer.db.connect() as conn:
         ranked = trends.ranked_articles(conn, "week")
         kept = trends.stored_ranking(conn, "week")  # what the page shows, without ranking while you wait
@@ -799,3 +800,169 @@ def test_hashtags_can_be_followed_from_the_timeline_alone(settings, server, boun
 
     described = bouncer.tag_adapter.fetch_community(CommunityRef("tag", "cats", "tag")).description
     assert "your Mastodon server's public timeline" in described
+
+
+# --- rising, networks, languages and history ---------------------------------------------
+
+def hour_ago(h: float) -> str:
+    return (datetime.now(timezone.utc) - timedelta(hours=h)).strftime("%Y-%m-%dT%H")
+
+
+def counting(b, *sources: str, hours: range = range(0, 24 * 5)) -> None:
+    """The streams were counting for these hours (hours ago)."""
+    with b.db.transaction() as conn:
+        conn.executemany("INSERT INTO trend_hours(hour, source, posts) VALUES (?,?,100) ON CONFLICT DO NOTHING",
+                         [(hour_ago(h), s) for s in sources for h in hours])
+
+
+def counted(b, table: str, name: str, source: str, hours, posts: int, url: str | None = None) -> None:
+    col = "tag" if table == "tag_counts" else "key"
+    with b.db.transaction() as conn:
+        conn.executemany(f"INSERT INTO {table}({col}, hour, source, posts) VALUES (?,?,?,?)",
+                         [(name, hour_ago(h), source, posts) for h in hours])
+        if url:
+            conn.execute("INSERT INTO links_seen(key, url, title, first_seen_at, last_seen_at, posts) "
+                         "VALUES (?,?,?,?,?,1) ON CONFLICT(key) DO NOTHING", (name, url, f"Page {name}", stamp(), stamp()))
+
+
+def logged_in(settings, bouncer) -> TestClient:
+    web_client = TestClient(create_app(settings, bouncer))
+    web_client.post("/login", data={"password": "pw"})
+    return web_client
+
+
+def test_hashtags_rising_are_those_used_far_more_than_usual(settings, bouncer):
+    counting(bouncer, "bluesky")
+    counted(bouncer, "tag_counts", "art", "bluesky", range(0, 24 * 5), 10)  # always busy: not rising
+    counted(bouncer, "tag_counts", "quake", "bluesky", [1], 30)  # out of nowhere
+    counted(bouncer, "tag_counts", "vote", "bluesky", range(8, 24 * 5), 1)  # usually quiet, busy now
+    counted(bouncer, "tag_counts", "vote", "bluesky", [2], 40)
+    counted(bouncer, "tag_counts", "cake", "bluesky", [2], 2)  # too few to tell
+    with bouncer.db.connect() as conn:
+        rising, more = trends.trending_tags(conn, "rising")
+        assert trends.rising_span(conn)["new"] == []
+    assert [t["tag"] for t in rising] == ["quake", "vote"] and not more
+    quake, vote = rising
+    assert (quake["total"], quake["usual"], quake["bluesky"]) == (30, 0, 30)
+    assert vote["total"] == 40 and 5 < vote["usual"] < 8  # one an hour, for the past 6 hours and a bit
+    page = logged_in(settings, bouncer).get("/trending/tags", params={"t": "rising"}).text
+    assert 'aria-current="page">Rising' in page and "#quake" in page and "#art<" not in page
+    assert "30 posts in 6 hours" in page and "usually none" in page and f"usually {vote['usual']:.0f}" in page
+    assert "compared with the week before" in page and "looks new" not in page
+    # A network counted only lately has nothing usual yet: everything on it looks new, and it says so.
+    counting(bouncer, "mastodon", hours=range(0, 3))
+    counted(bouncer, "tag_counts", "birds", "mastodon", [1], 3)
+    page = logged_in(settings, bouncer).get("/trending/tags", params={"t": "rising", "src": "mastodon"}).text
+    assert "#birds" in page and "#quake" not in page and "Mastodon was counted for under 12 hours" in page
+
+
+def test_articles_can_be_ranked_by_one_network_and_rising(settings, bouncer):
+    counting(bouncer, "bluesky", "mastodon")
+    for n, (source, hours, posts) in enumerate([("bluesky", range(0, 24 * 5), 20),  # posted a lot, always
+                                                ("mastodon", [1, 30], 4),  # Mastodon's most posted
+                                                ("bluesky", [1], 9)]):  # new
+        counted(bouncer, "link_counts", f"https://news.test/{n}", source, hours, posts, url=f"https://news.test/{n}")
+    with bouncer.db.connect() as conn:
+        week = trends.ranked_articles(conn, "week")
+        rising = trends.ranked_articles(conn, "rising")
+    assert [a["top_key"] for a in trends.order_articles(week)] == [f"https://news.test/{n}" for n in (0, 2, 1)]
+    assert [a["top_key"] for a in trends.order_articles(week, "mastodon")] == ["https://news.test/1"]
+    assert trends.order_articles(week, "archive") == []
+    ranked = trends.order_articles(rising, rising=True)
+    assert [(a["top_key"], a["recent"]) for a in ranked] == [("https://news.test/2", 9), ("https://news.test/1", 4)]
+    assert [a["top_key"] for a in trends.order_articles(rising, "bluesky", rising=True)] == ["https://news.test/2"]
+    web_client = logged_in(settings, bouncer)
+    page = web_client.get("/trending/articles", params={"src": "mastodon"}).text
+    assert "Page https://news.test/1" in page and "Page https://news.test/0" not in page
+    assert 'href="/trending/articles?t=week&src=archive"' in page
+    page = web_client.get("/trending/articles", params={"t": "rising"}).text
+    assert page.index("Page https://news.test/2") < page.index("Page https://news.test/1")
+    assert "9 posts in 6 hours" in page and "Page https://news.test/0" not in page
+
+
+def test_trending_shows_your_languages(settings, bouncer, bsky):  # noqa: F811
+    tally = trends.Tally("bluesky")
+    for tag, lang, n in (("cats", "en", 3), ("neko", "ja", 5), ("neko", "en", 1), ("both", "en", 2),
+                         ("both", "ja", 3), ("quiet", None, 1)):
+        for _ in range(n):
+            tally.post_tags([tag], lang=lang)
+    for url, lang in (("https://news.test/2026/english", "en"), ("https://news.test/2026/japanese", "ja")):
+        for _ in range(3):
+            tally.post_links([(url, url.rsplit("/", 1)[1].title(), None)], lang=lang)
+    tally.flush(bouncer.db)
+    assert rows(bouncer, "SELECT posts FROM tag_langs WHERE tag='neko' AND lang='ja'") == [{"posts": 5}]
+    # Posts say theirs too: a Jetstream record's first language, a Mastodon status's.
+    assert trends.record_lang({"langs": ["pt-BR", "en"]}) == "pt"
+    assert mastodon_stream.status_view({"language": "de", "content": "Hallo"}, "masto.test")["lang"] == "de"
+    en, ja = tid(), tid(clock=8)
+    bsky.author_feed = [{"post": post_view(en, "Hello", likes=5, created=stamp(hours=-1))},
+                        {"post": post_view(ja, "Konnichiwa", likes=9, created=stamp(hours=-1))}]
+    bsky.author_feed[0]["post"]["record"]["langs"] = ["en"]
+    bsky.author_feed[1]["post"]["record"]["langs"] = ["ja"]
+    tally.reply(at(en), trends.post_time(at(en)))
+    tally.reply(at(ja), trends.post_time(at(ja)))
+    tally.flush(bouncer.db)
+    trends.Trends(bouncer).check_bluesky()
+    with bouncer.db.connect() as conn:
+        everything, _ = trends.trending_tags(conn, "day")
+        english, _ = trends.trending_tags(conn, "day", codes=["en"])
+        posts, _ = trends.trending_posts(conn, codes=["en"])
+    assert [t["tag"] for t in everything] == ["neko", "both", "cats", "quiet"]
+    assert [t["tag"] for t in english] == ["both", "cats", "quiet"]  # 2 of 5 is over a third; unknown's shown
+    assert [p["view"]["text"] for p in posts] == ["Hello"]
+    # The page shows your languages, as feeds do, and all of them when asked.
+    web_client = logged_in(settings, bouncer)
+    assert "Your languages" not in web_client.get("/trending/tags").text  # none chosen: everything
+    with bouncer.db.transaction() as conn:
+        languages.save(conn, ["en"])
+    page = web_client.get("/trending/tags").text
+    assert "#neko<" not in page and "#cats" in page and 'aria-current="page">Your languages' in page
+    page = web_client.get("/trending/tags", params={"lang": "all"}).text
+    assert "#neko" in page and 'href="/trending/tags?t=week&src=all&lang=all"' in page
+    page = web_client.get("/trending/articles", params={"t": "day"}).text
+    assert "English" in page and "Japanese" not in page
+    assert "Japanese" in web_client.get("/trending/articles", params={"t": "day", "lang": "all"}).text
+    page = web_client.get("/trending").text
+    assert "Hello" in page and "Konnichiwa" not in page
+
+
+def test_each_days_most_posted_are_kept_in_history(settings, bouncer, monkeypatch):
+    now = datetime.now(timezone.utc)
+    day = (now - timedelta(days=3)).date().isoformat()
+    start = datetime.fromisoformat(day + "T00:00:00+00:00")
+    with bouncer.db.transaction() as conn:
+        for tag, source, posts in (("cats", "bluesky", 50), ("dogs", "bluesky", 20), ("birds", "mastodon", 7)):
+            conn.execute("INSERT INTO tag_counts(tag, hour, source, posts) VALUES (?,?,?,?)",
+                         (tag, day + "T00", source, posts))
+            conn.execute("INSERT INTO tags_seen(tag, first_seen_at, last_seen_at, posts) VALUES (?,?,?,?)",
+                         (tag, fmt_ts(start), fmt_ts(start), posts))
+        conn.execute("INSERT INTO tag_langs(tag, lang, posts) VALUES ('birds', 'fr', 7)")
+        for key, posts in (("https://news.test/2026/big", 30), ("https://news.test/2026/small", 5)):
+            conn.execute("INSERT INTO link_counts(key, hour, source, posts) VALUES (?,?,?,?)",
+                         (key, day + "T00", "bluesky", posts))
+            conn.execute("INSERT INTO links_seen(key, url, title, first_seen_at, last_seen_at, posts) "
+                         "VALUES (?,?,?,?,?,?)", (key, key, key.rsplit("/", 1)[1].title() + " story",
+                                                  fmt_ts(start), fmt_ts(start), posts))
+    monkeypatch.setattr(trends, "KEEP_TOP", 2)
+    trends.tidy(bouncer.db)
+    # Every hour of that day was counted, as far as the counts show (they're kept by the day by now).
+    assert rows(bouncer, "SELECT COUNT(*) AS n FROM trend_hours WHERE hour LIKE ?", day + "%") == [{"n": 48}]
+    assert rows(bouncer, "SELECT tag, source, posts FROM tag_history WHERE day=? ORDER BY tag", day) == [
+        {"tag": "birds", "source": "mastodon", "posts": 7}, {"tag": "cats", "source": "bluesky", "posts": 50},
+        {"tag": "dogs", "source": "bluesky", "posts": 20}]
+    assert rows(bouncer, "SELECT langs FROM tags_kept WHERE tag='birds'") == [{"langs": json.dumps({"fr": 7})}]
+    assert len(rows(bouncer, "SELECT key FROM links_kept")) == 2
+    assert bouncer.db.get_setting(trends.HISTORY_THROUGH) == (now - timedelta(days=1)).date().isoformat()
+    # Kept for good: after the counts go, History still has them.
+    trends.tidy(bouncer.db, fmt_ts(now + timedelta(days=60)))
+    assert rows(bouncer, "SELECT key FROM link_counts") == [] and rows(bouncer, "SELECT tag FROM tags_seen") == []
+    web_client = logged_in(settings, bouncer)
+    page = web_client.get("/trending/tags", params={"on": day}).text
+    assert f"Hashtags on {day}" in page and page.index("#cats") < page.index("#dogs") < page.index("#birds")
+    assert "Back to now" in page and "Bluesky was counted 24 of its 24 hours" in page
+    page = web_client.get("/trending/tags", params={"on": day, "src": "mastodon"}).text
+    assert "#birds" in page and "#cats" not in page
+    page = web_client.get("/trending/articles", params={"on": day}).text
+    assert page.index("Big story") < page.index("Small story") and "30 posts" in page
+    assert "src=archive" not in page  # the archive's links aren't kept by the day
+    assert "Nothing was kept" in web_client.get("/trending/tags", params={"on": "2020-01-01"}).text

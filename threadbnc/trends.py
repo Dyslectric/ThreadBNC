@@ -39,15 +39,17 @@ the ranking, and the next one is read instead."""
 from __future__ import annotations
 
 import hashlib
+import heapq
 import json
 import logging
+import math
 import threading
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 from urllib.parse import urlparse
 
-from . import articles, links as links_mod
+from . import articles, languages, links as links_mod
 from . import media as media_mod
 from . import thumbs
 from .adapters import BSKY_DOMAIN, TAG_DOMAIN, TAG_PREFIX, RemoteError, normalize_tag
@@ -59,8 +61,10 @@ from .traffic import tagged
 log = logging.getLogger(__name__)
 
 SOURCES = {"bluesky": "Bluesky", "mastodon": "Mastodon"}
+ARTICLE_SOURCES = {**SOURCES, "archive": "Archive"}  # articles are also counted from the archive
 WINDOWS = {"day": timedelta(days=1), "week": timedelta(days=7), "month": timedelta(days=30)}
 POST_WINDOWS = {"day": timedelta(days=1), "week": timedelta(days=7)}
+RANKINGS = ("rising", *WINDOWS)  # the articles' rankings, and the hashtags'
 POST_SORTS = ("likes", "replies")
 # App setting (JSON): {"bluesky": count what's posted on Bluesky (Jetstream stays connected),
 # "bluesky_likes": "appview" (read the totals of the posts most replied to) | "stream" (count every like)}
@@ -86,6 +90,20 @@ FEW_AFTER, FEW_POSTS = timedelta(days=7), 5  # and one posted fewer than 5 times
 KEEP_POSTS = timedelta(days=8)
 QUIET_AFTER, QUIET_SEEN = timedelta(hours=6), 3  # a post replied to, quoted or liked fewer than 3 times goes
 MAX_POST_AGE = timedelta(days=7)  # replies to and likes of older posts aren't counted
+LANG_SHARE = 1 / 3  # a hashtag or link is in your languages unless fewer of its posts were
+
+# Rising: what's posted far more in the past RISING_RECENT than in the week before.
+RISING_RECENT = timedelta(hours=6)
+RISING_BEFORE = timedelta(days=7)
+RISING_MIN = 3  # posts in the past RISING_RECENT, at least
+RISING_RATIO = 2.0  # and at least this many times as many as usual
+RISING_FLOOR = 10.0  # how little a small count is trusted: see rise()
+RISING_BASELINE = 12  # hours counted before RISING_RECENT, at least, for anything to be usual
+
+# History: each day's most used hashtags and most posted links, kept for good.
+KEEP_TOP = 1000  # of each network, each day
+KEEP_AFTER = timedelta(minutes=5)  # after the day ends, so its last counts are in
+HISTORY_THROUGH = "trend_history_through"  # app setting: the last day kept
 
 # Reading the totals of the posts most replied to (Bluesky: through the AppView).
 CHECK_EVERY = 300.0  # seconds between rounds
@@ -204,15 +222,21 @@ class Tally:
         self.links: dict[tuple[str, str], list[Any]] = {}  # (key, hour) -> [posts, link, title, description]
         self.tags: dict[tuple[str, str], int] = {}  # (hashtag, hour) -> posts
         self.posts: dict[str, list[Any]] = {}  # ref -> [replies, quotes, likes, created_at]
+        self.langs: dict[tuple[str, str, str], int] = {}  # ("tag" | "link", hashtag or link key, language) -> posts
+        self.looked: dict[str, int] = {}  # hour -> posts looked at
 
-    def post_tags(self, tags: Iterable[str], author: str | None = None) -> int:
+    def post_tags(self, tags: Iterable[str], author: str | None = None, lang: str | None = None) -> int:
         """Count one post's hashtags (named as followed ones are), each once,
-        and once an hour for each `author`. Returns how many were counted."""
+        and once an hour for each `author`, in the post's language `lang`
+        (languages.normalize) when it says. Every post the stream brings comes
+        through here, so it's also counted as looked at this hour. Returns how
+        many hashtags were counted."""
         hour = time.strftime(HOUR, time.gmtime())
         counted = 0
         with self._lock:
             if self._hour != hour:
                 self._hour, self._posted = hour, set()
+            self.looked[hour] = self.looked.get(hour, 0) + 1
             for tag in dict.fromkeys(tags):
                 mark = ("#" + tag, author)
                 if not tag or (author and mark in self._posted):
@@ -220,12 +244,16 @@ class Tally:
                 if author:
                     self._posted.add(mark)
                 self.tags[(tag, hour)] = self.tags.get((tag, hour), 0) + 1
+                if lang:
+                    self.langs[("tag", tag, lang)] = self.langs.get(("tag", tag, lang), 0) + 1
                 counted += 1
         return counted
 
-    def post_links(self, found: Iterable[tuple[str, str | None, str | None]], author: str | None = None) -> int:
+    def post_links(self, found: Iterable[tuple[str, str | None, str | None]], author: str | None = None,
+                   lang: str | None = None) -> int:
         """Count one post's links, each page once, and once an hour for each
-        `author`. Returns how many were counted."""
+        `author`, in the post's language `lang` when it says. Returns how many
+        were counted."""
         hour = time.strftime(HOUR, time.gmtime())
         seen: set[str] = set()
         with self._lock:
@@ -238,6 +266,8 @@ class Tally:
                 seen.add(key)
                 if author:
                     self._posted.add((key, author))
+                if lang:
+                    self.langs[("link", key, lang)] = self.langs.get(("link", key, lang), 0) + 1
                 entry = self.links.get((key, hour))
                 if entry is None:
                     self.links[(key, hour)] = [1, url, title, description]
@@ -268,9 +298,9 @@ class Tally:
 
     def flush(self, db: Database) -> None:
         with self._lock:
-            found, tags, posts = self.links, self.tags, self.posts
+            found, tags, posts, langs, looked = self.links, self.tags, self.posts, self.langs, self.looked
             self._clear()
-        if not found and not tags and not posts:
+        if not found and not tags and not posts and not looked:
             return
         now = utcnow()
         # Rows in the same order every time (by their key), so two streams
@@ -278,7 +308,17 @@ class Tally:
         tags = dict(sorted(tags.items()))
         found = dict(sorted(found.items()))
         posts = dict(sorted(posts.items()))
+        langs = dict(sorted(langs.items()))
         with db.transaction(exclusive=False) as conn:
+            conn.executemany(
+                "INSERT INTO trend_hours(hour, source, posts) VALUES (?,?,?) ON CONFLICT(hour, source) "
+                "DO UPDATE SET posts=trend_hours.posts+excluded.posts",
+                [(hour, self.source, n) for hour, n in sorted(looked.items())])
+            for kind, table, col in (("tag", "tag_langs", "tag"), ("link", "link_langs", "key")):
+                conn.executemany(
+                    f"INSERT INTO {table}({col}, lang, posts) VALUES (?,?,?) ON CONFLICT({col}, lang) "
+                    f"DO UPDATE SET posts={table}.posts+excluded.posts",
+                    [(name, lang, n) for (k, name, lang), n in langs.items() if k == kind])
             conn.executemany(
                 "INSERT INTO tag_counts(tag, hour, source, posts) VALUES (?,?,?,?) ON CONFLICT(tag, hour, source) "
                 "DO UPDATE SET posts=tag_counts.posts+excluded.posts",
@@ -318,17 +358,116 @@ def tidy(db: Database, now: str | None = None) -> int:
     these tables are big (hundreds of thousands of links a day). Returns how
     many of the posts forgotten had pictures here."""
     moment = parse_ts(now or utcnow()) or datetime.now(timezone.utc)
-    for counts, seen, key in (("link_counts", "links_seen", "key"), ("tag_counts", "tags_seen", "tag")):
+    backfill_hours(db, moment)
+    keep_days(db, moment)  # before anything's forgotten
+    for counts, seen, langs, key in (("link_counts", "links_seen", "link_langs", "key"),
+                                     ("tag_counts", "tags_seen", "tag_langs", "tag")):
         _roll_up(db, moment, counts, key)
         once, few = fmt_ts(moment - ONCE_AFTER), fmt_ts(moment - FEW_AFTER)
         _forget(db, seen, [key], "(posts < 2 AND first_seen_at < ?) OR (posts < ? AND first_seen_at < ?) "
-                "OR last_seen_at < ?", (once, FEW_POSTS, few, fmt_ts(moment - KEEP_COUNTS)), also=(counts,))
+                "OR last_seen_at < ?", (once, FEW_POSTS, few, fmt_ts(moment - KEEP_COUNTS)), also=(langs, counts))
         with db.transaction(exclusive=False) as conn:
             conn.execute(f"DELETE FROM {counts} WHERE hour < ?", ((moment - KEEP_COUNTS).strftime(HOUR),))
     return _forget(db, "stream_posts", ["source", "ref"],
                    "COALESCE(created_at, first_seen_at) < ? OR (replies_seen + quotes_seen + likes_seen < ? "
                    "AND first_seen_at < ? AND checked_at IS NULL)",
                    (fmt_ts(moment - KEEP_POSTS), QUIET_SEEN, fmt_ts(moment - QUIET_AFTER)), also=("stream_post_media",))
+
+
+def backfill_hours(db: Database, moment: datetime) -> None:
+    """The hours counted before trend_hours was kept, as the counts show
+    them: each hour with counts in the past DAILY_AFTER, and every hour of
+    the days before that (added up by the day already). Once, while it's empty."""
+    with db.connect() as conn:
+        if conn.execute("SELECT 1 FROM trend_hours LIMIT 1").fetchone():
+            return
+        daily = (moment - DAILY_AFTER).strftime(HOUR)
+        found: set[tuple[str, str]] = set()
+        for counts in ("tag_counts", "link_counts"):
+            for r in conn.execute(f"SELECT DISTINCT hour, source FROM {counts}"):
+                if r["hour"] >= daily:
+                    found.add((r["hour"], r["source"]))
+                else:
+                    found.update((f"{r['hour'][:10]}T{h:02d}", r["source"]) for h in range(24))
+    if found:
+        with db.transaction(exclusive=False) as conn:
+            conn.executemany("INSERT INTO trend_hours(hour, source, posts) VALUES (?,?,0) "
+                             "ON CONFLICT(hour, source) DO NOTHING", sorted(found))
+
+
+def keep_days(db: Database, moment: datetime) -> list[str]:
+    """Keep each day that's over (KEEP_AFTER ago) and isn't kept yet in
+    History: its KEEP_TOP most used hashtags and most posted links on each
+    network. Returns the days kept."""
+    last = (moment - KEEP_AFTER).date() - timedelta(days=1)  # the last whole day
+    through = db.get_setting(HISTORY_THROUGH)
+    with db.connect() as conn:
+        found = [conn.execute(f"SELECT MIN(hour) FROM {t}").fetchone() for t in ("tag_counts", "link_counts")]
+    earliest = min((r[0] for r in found if r and r[0]), default=None)
+    if earliest is None:
+        return []
+    day = datetime.strptime(earliest[:10], "%Y-%m-%d").date()
+    if through:
+        day = max(day, datetime.strptime(through, "%Y-%m-%d").date() + timedelta(days=1))
+    kept = []
+    while day <= last:
+        keep_day(db, day.isoformat())
+        kept.append(day.isoformat())
+        day += timedelta(days=1)
+    return kept
+
+
+def keep_day(db: Database, day: str) -> None:
+    """Keep one day (UTC, '2026-09-25') in History, in place of whatever was kept of it before."""
+    first, last = f"{day}T00", f"{day}T23"
+    with db.transaction(exclusive=False) as conn:
+        for counts, history, key, langs in (("tag_counts", "tag_history", "tag", "tag_langs"),
+                                            ("link_counts", "link_history", "key", "link_langs")):
+            conn.execute(f"DELETE FROM {history} WHERE day=?", (day,))
+            names: set[str] = set()
+            for source in SOURCES:
+                top = conn.execute(
+                    f"SELECT {key} AS name, SUM(posts) AS posts FROM {counts} WHERE hour >= ? AND hour <= ? "
+                    f"AND source=? GROUP BY {key} ORDER BY SUM(posts) DESC, {key} LIMIT ?",
+                    (first, last, source, KEEP_TOP)).fetchall()
+                conn.executemany(f"INSERT INTO {history}(day, {key}, source, posts) VALUES (?,?,?,?)",
+                                 [(day, r["name"], source, int(r["posts"])) for r in top])
+                names.update(r["name"] for r in top)
+            found = _langs_of(conn, langs, key, sorted(names))
+            if key == "tag":
+                conn.executemany("INSERT INTO tags_kept(tag, langs) VALUES (?,?) ON CONFLICT(tag) "
+                                 "DO UPDATE SET langs=excluded.langs",
+                                 [(n, json.dumps(found.get(n) or {})) for n in sorted(names)])
+            else:
+                conn.executemany(
+                    "INSERT INTO links_kept(key, url, title, description, langs) "
+                    "SELECT key, url, title, description, ? FROM links_seen WHERE key=? "
+                    "ON CONFLICT(key) DO UPDATE SET langs=excluded.langs, "
+                    "title=COALESCE(links_kept.title, excluded.title), "
+                    "description=COALESCE(links_kept.description, excluded.description)",
+                    [(json.dumps(found.get(n) or {}), n) for n in sorted(names)])
+        conn.execute("INSERT INTO app_settings(key, value) VALUES (?, ?) "
+                     "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (HISTORY_THROUGH, day))
+
+
+def _langs_of(conn: Conn, table: str, col: str, names: list[str]) -> dict[str, dict[str, int]]:
+    """{hashtag or link key: {language: posts}}, from tag_langs or link_langs."""
+    out: dict[str, dict[str, int]] = {}
+    for chunk in _chunks(names):
+        for r in conn.execute(f"SELECT {col} AS name, lang, posts FROM {table} WHERE {col} IN ({_marks(chunk)})",
+                              chunk):
+            out.setdefault(r["name"], {})[r["lang"]] = int(r["posts"])
+    return out
+
+
+def in_languages(langs: dict[str, int] | None, codes: list[str] | tuple[str, ...]) -> bool:
+    """Whether a hashtag or link whose posts were in `langs` ({language:
+    posts}) is shown for `codes` (languages.load; none: every one): unless
+    fewer than LANG_SHARE of its posts that say their language were in one of them."""
+    if not codes or not langs:
+        return True
+    known = sum(langs.values())
+    return not known or sum(n for lang, n in langs.items() if lang in codes) >= LANG_SHARE * known
 
 
 def _roll_up(db: Database, moment: datetime, counts: str, key: str) -> None:
@@ -382,13 +521,111 @@ def _since(window: str, now: str | None) -> str:
     return fmt_ts(moment - WINDOWS[window])
 
 
+# --- rising ---------------------------------------------------------------------
+
+def rising_span(conn: Conn, now: str | None = None) -> dict[str, Any]:
+    """What Rising compares: the past RISING_RECENT (from the start of its
+    first hour) with the RISING_BEFORE before it (from the start of its first
+    day, as counts over two days old are kept by the day). For each network,
+    how many of those hours it was counting (trend_hours), and `factor`: how
+    many posts in the recent hours are as many as usual, for each one posted
+    before them. A network counted for fewer than RISING_BASELINE hours
+    before has no usual (factor 0), and is `new`."""
+    moment = parse_ts(now or utcnow()) or datetime.now(timezone.utc)
+    recent_from = (moment - RISING_RECENT).replace(minute=0, second=0, microsecond=0)
+    since = (moment - RISING_BEFORE).replace(hour=0, minute=0, second=0, microsecond=0)
+    this_hour, recent_hour = moment.strftime(HOUR), recent_from.strftime(HOUR)
+    part = max((moment - moment.replace(minute=0, second=0, microsecond=0)).total_seconds() / 3600, 1 / 60)
+    hours = {source: [0.0, 0] for source in SOURCES}  # [recent, before]
+    for r in conn.execute("SELECT hour, source FROM trend_hours WHERE hour >= ? AND hour <= ?",
+                          (since.strftime(HOUR), this_hour)):
+        if r["source"] in hours:
+            if r["hour"] >= recent_hour:
+                hours[r["source"]][0] += part if r["hour"] == this_hour else 1
+            else:
+                hours[r["source"]][1] += 1
+    factor = {source: (recent / before if before >= RISING_BASELINE else 0.0)
+              for source, (recent, before) in hours.items()}
+    factor["archive"] = (moment - recent_from) / (recent_from - since)
+    return {"since": since.strftime(HOUR), "recent_from": recent_hour, "posted_from": fmt_ts(recent_from),
+            "factor": factor, "hours": {s: round(h[1]) for s, h in hours.items()},
+            "new": [s for s, (recent, before) in hours.items() if recent and before < RISING_BASELINE]}
+
+
+def rise(recent: float, usual: float) -> float | None:
+    """How far `recent` posts (in the past RISING_RECENT) are above `usual`
+    (as many as the week before had in as long), in something like standard
+    deviations: a small count could be chance, so it's trusted less. None
+    unless there are RISING_MIN of them, RISING_RATIO times usual."""
+    if recent < RISING_MIN or recent < RISING_RATIO * usual:
+        return None
+    return (recent - usual) / math.sqrt(usual + RISING_FLOOR)
+
+
 def ranked_articles(conn: Conn, window: str, now: str | None = None, *,
-                    archive_skips: tuple[str, ...] = ()) -> list[dict[str, Any]]:
-    """Every article (or page not read yet) posted in the window, the most
-    posted first. See the module's notes. `archive_skips`: source domains
-    whose captured posts aren't counted from the archive, because a stream
-    counts them already."""
-    return _rank(conn, _since(window, now), archive_skips)
+                    archive_skips: tuple[str, ...] = (), keep: int | None = RANKED_KEPT) -> list[dict[str, Any]]:
+    """The articles (or pages not read yet) posted in the window, the most
+    posted first; or for "rising", those posted far more than usual in the
+    past RISING_RECENT (see rising_span), furthest above usual first. See
+    the module's notes. The `keep` at the top of each network's ranking
+    (order_articles), or all of them, each with the languages of its posts
+    (`langs`). `archive_skips`: source domains whose captured posts aren't
+    counted from the archive, because a stream counts them already."""
+    span = rising_span(conn, now) if window == "rising" else None
+    since = _since(window, now) if span is None else span["since"] + ":00:00.000000Z"
+    items = _rank(conn, since, archive_skips, span)
+    if keep is not None:
+        wanted: set[tuple[Any, ...]] = set()
+        for source in (None, *ARTICLE_SOURCES):
+            wanted.update(_which(i) for i in order_articles(items, source, span is not None, keep=keep))
+        items = [i for i in items if _which(i) in wanted]
+    _article_langs(conn, items)
+    return items
+
+
+def order_articles(items: list[dict[str, Any]], source: str | None = None, rising: bool = False,
+                   codes: list[str] | tuple[str, ...] = (), keep: int | None = None) -> list[dict[str, Any]]:
+    """Ranked articles (ranked_articles) as ranked on one network (`source`,
+    in ARTICLE_SOURCES), or all of them: the most posted there, or (`rising`)
+    those furthest above usual there, each with its `score`, `recent` posts
+    and `usual`. Only those posted mostly in `codes` (in_languages), when given;
+    the first `keep`, when given. Unchanged as items are."""
+    sources = (source,) if source in ARTICLE_SOURCES else tuple(ARTICLE_SOURCES)
+    ranked: list[tuple[float, int, dict[str, Any]]] = []
+    for item in items:
+        if codes and not in_languages(item.get("langs"), codes):
+            continue
+        if rising:
+            recent = sum(item.get("recent_" + s, 0) for s in sources)
+            usual = sum(item.get("usual_" + s, 0.0) for s in sources)
+            score = rise(recent, usual)
+            if score is not None:
+                ranked.append((score, recent, {**item, "score": score, "recent": recent, "usual": usual}))
+        else:
+            posts = sum(item.get(s, 0) for s in sources)
+            if posts:
+                ranked.append((posts, item.get("archive", 0), item))
+    ordered = [i for *_, i in sorted(ranked, key=lambda r: (r[0], r[1]), reverse=True)]  # stable: newer first within
+    return ordered if keep is None else ordered[:keep]
+
+
+def _which(item: dict[str, Any]) -> tuple[Any, ...]:
+    """A ranked article, told apart from the others (order_articles copies them when rising)."""
+    return tuple(item["article_ids"]), tuple(item["keys"])
+
+
+def _article_langs(conn: Conn, items: list[dict[str, Any]]) -> None:
+    """Each ranked article's `langs`: the languages of the posts that linked
+    it on Bluesky and Mastodon (link_langs), and in the archive."""
+    found = _langs_of(conn, "link_langs", "key", sorted({k for i in items for k in i["keys"]}))
+    for item in items:
+        langs: dict[str, int] = {}
+        for key in item["keys"]:
+            for lang, n in (found.get(key) or {}).items():
+                langs[lang] = langs.get(lang, 0) + n
+        for lang, n in item.pop("archive_langs", {}).items():
+            langs[lang] = langs.get(lang, 0) + n
+        item["langs"] = langs
 
 
 def _chunks(values: list[Any], size: int = 500) -> Iterable[list[Any]]:
@@ -396,11 +633,12 @@ def _chunks(values: list[Any], size: int = 500) -> Iterable[list[Any]]:
         yield values[i:i + size]
 
 
-def _rank(conn: Conn, since: str, archive_skips: tuple[str, ...]) -> list[dict[str, Any]]:
+def _rank(conn: Conn, since: str, archive_skips: tuple[str, ...],
+          span: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     # The archive's passively captured posts, each counted for its current link.
     skip = "".join(" AND t.source_domain != ?" for _ in archive_skips)
     posts = [dict(r) for r in conn.execute(
-        f"""SELECT t.id AS tid, t.community_id, o.id AS object_id,
+        f"""SELECT t.id AS tid, t.community_id, o.id AS object_id, o.language,
                    COALESCE(o.created_at, o.first_seen_at) AS posted_at,
                    r.title AS post_title, a.id AS article_id,
                    c.name AS cname, c.canonical_ap_id AS c_ap
@@ -414,12 +652,31 @@ def _rank(conn: Conn, since: str, archive_skips: tuple[str, ...]) -> list[dict[s
               AND (t.retention='auto' OR t.promoted_at IS NOT NULL)
               AND COALESCE(o.created_at, o.first_seen_at) >= ? {skip}""",
         (since, *archive_skips)).fetchall()]
-    # The streams' counts, of the links posted most.
-    streamed = {r["key"]: {"bluesky": int(r["bluesky"] or 0), "mastodon": int(r["mastodon"] or 0)} for r in conn.execute(
+    # The streams' counts, of the links posted most on each network (and, for
+    # Rising, furthest above usual there).
+    recent_hour = span["recent_from"] if span else "9999"
+    counted = [{"key": r["key"], "bluesky": int(r["bluesky"] or 0), "mastodon": int(r["mastodon"] or 0),
+                "recent_bluesky": int(r["recent_bluesky"] or 0), "recent_mastodon": int(r["recent_mastodon"] or 0)}
+               for r in conn.execute(
         "SELECT key, SUM(CASE WHEN source='bluesky' THEN posts ELSE 0 END) AS bluesky, "
-        "SUM(CASE WHEN source='mastodon' THEN posts ELSE 0 END) AS mastodon "
-        "FROM link_counts WHERE hour >= ? GROUP BY key ORDER BY SUM(posts) DESC LIMIT ?",
-        (since[:13], RANK_KEYS)).fetchall()}
+        "SUM(CASE WHEN source='mastodon' THEN posts ELSE 0 END) AS mastodon, "
+        "SUM(CASE WHEN source='bluesky' AND hour >= ? THEN posts ELSE 0 END) AS recent_bluesky, "
+        "SUM(CASE WHEN source='mastodon' AND hour >= ? THEN posts ELSE 0 END) AS recent_mastodon "
+        "FROM link_counts WHERE hour >= ? GROUP BY key", (recent_hour, recent_hour, since[:13])).fetchall()]
+    orders: list[Any] = [lambda c: c["bluesky"] + c["mastodon"], lambda c: c["bluesky"], lambda c: c["mastodon"]]
+    if span:
+        f = span["factor"]
+
+        def rising_on(*sources: str) -> Any:
+            return lambda c: rise(sum(c["recent_" + s] for s in sources),
+                                  sum((c[s] - c["recent_" + s]) * f[s] for s in sources)) or 0
+        orders = [rising_on("bluesky", "mastodon"), rising_on("bluesky"), rising_on("mastodon")]
+    streamed: dict[str, dict[str, int]] = {}
+    for order in orders:
+        for c in heapq.nlargest(RANK_KEYS, counted, key=order):
+            if order(c) <= 0:
+                break
+            streamed[c["key"]] = c
     if not posts and not streamed:
         return []
 
@@ -468,22 +725,31 @@ def _rank(conn: Conn, since: str, archive_skips: tuple[str, ...]) -> list[dict[s
 
     items: list[dict[str, Any]] = []
     for g in groups.values():
-        counts = {"bluesky": 0, "mastodon": 0}
+        counts = {"bluesky": 0, "mastodon": 0, "recent_bluesky": 0, "recent_mastodon": 0}
         for key in g["keys"]:
-            for source, n in streamed.get(key, {}).items():
-                counts[source] += n
+            for column in counts:
+                counts[column] += streamed.get(key, {}).get(column, 0)
         linked = g["posts"]
         archive = len({p["tid"] for p in linked})
         total = counts["bluesky"] + counts["mastodon"] + archive
         if not total:
             continue
+        if span:
+            recent_archive = len({p["tid"] for p in linked if (p["posted_at"] or "") >= span["posted_from"]})
+            counts["recent_archive"] = recent_archive
+            for s, posts in (("bluesky", counts["bluesky"]), ("mastodon", counts["mastodon"]), ("archive", archive)):
+                counts["usual_" + s] = (posts - counts["recent_" + s]) * span["factor"][s]  # type: ignore[assignment]
+        archive_langs: dict[str, int] = {}
+        for p in {p["tid"]: p for p in linked}.values():
+            if lang := languages.normalize(p["language"]):
+                archive_langs[lang] = archive_langs.get(lang, 0) + 1
         direct: dict[int, int] = {}
         for p in linked:
             direct[p["article_id"]] = direct.get(p["article_id"], 0) + 1
         choices = [rows[aid] for aid in g["article_ids"] if aid in rows]
         if choices and all(a["status"] == "skipped" for a in choices):
             continue  # read, and not an article: a feed, a chat invite, too little text
-        top_key = max(g["keys"], key=lambda k: (sum(streamed.get(k, {}).values()), k)) if g["keys"] else None
+        top_key = max(g["keys"], key=lambda k: (_posted(streamed.get(k)), k)) if g["keys"] else None
         item: dict[str, Any]
         if choices:
             item = dict(max(choices, key=lambda a: (
@@ -494,8 +760,9 @@ def _rank(conn: Conn, since: str, archive_skips: tuple[str, ...]) -> list[dict[s
                     "site_name": None, "published": None, "word_count": None, "fetched_from": None,
                     "canonical_url": None, "first_seen_at": None, "fetched_at": None, "trending_at": None}
         latest = max(linked, key=lambda p: (p["posted_at"] or "", p["tid"])) if linked else None
+        item.update(counts)
         item.update(article_ids=sorted(g["article_ids"]), keys=sorted(g["keys"]), top_key=top_key,
-                    bluesky=counts["bluesky"], mastodon=counts["mastodon"], archive=archive, total=total,
+                    archive=archive, total=total, archive_langs=archive_langs,
                     post_count=archive, community_count=len({p["community_id"] for p in linked}),
                     latest_post=latest, latest_posted_at=latest["posted_at"] if latest else None)
         if not item["title"] and latest:
@@ -521,18 +788,22 @@ def _rank(conn: Conn, since: str, archive_skips: tuple[str, ...]) -> list[dict[s
     return items
 
 
+def _posted(counted: dict[str, Any] | None) -> int:
+    return (counted["bluesky"] + counted["mastodon"]) if counted else 0
+
+
 def _marks(values: list[Any]) -> str:
     return ",".join("?" * len(values))
 
 
 def store_ranking(db: Database, ranked: dict[str, list[dict[str, Any]]], now: str) -> None:
-    """Keep each window's ranking (its RANKED_KEPT most posted) for the page,
-    which reads it rather than ranking while you wait."""
+    """Keep each window's ranking (ranked_articles: the RANKED_KEPT at the top
+    on each network) for the page, which reads it rather than ranking while you wait."""
     with db.transaction(exclusive=False) as conn:
         for window, items in ranked.items():
             conn.execute("INSERT INTO app_settings(key, value) VALUES (?, ?) "
                          "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                         (RANKING + window, json.dumps({"at": now, "items": items[:RANKED_KEPT]}, default=str)))
+                         (RANKING + window, json.dumps({"at": now, "items": items}, default=str)))
 
 
 def stored_ranking(conn: Conn, window: str, now: str | None = None) -> list[dict[str, Any]] | None:
@@ -584,22 +855,75 @@ def trending_articles(conn: Conn, items: list[dict[str, Any]], page: int = 1,
 # --- ranking hashtags ------------------------------------------------------------
 
 def trending_tags(conn: Conn, window: str = "day", page: int = 1, per_page: int = 50,
-                  now: str | None = None, source: str | None = None) -> tuple[list[dict[str, Any]], bool]:
+                  now: str | None = None, source: str | None = None,
+                  codes: list[str] | tuple[str, ...] = ()) -> tuple[list[dict[str, Any]], bool]:
     """The hashtags used in the most posts in the window, on Bluesky and
     Mastodon (or ranked by one `source` alone: Bluesky's far bigger stream
-    would bury Mastodon's), with the hashtag's community here when it's followed."""
+    would bury Mastodon's), with the hashtag's community here when it's
+    followed. Only those used mostly in `codes` (in_languages), when given.
+    The window "rising" is rising_tags'."""
+    if window == "rising":
+        return rising_tags(conn, page, per_page, now, source, codes)
     since = _since(window, now)
     page = max(1, page)
     rank = f"SUM(CASE WHEN source='{source}' THEN posts ELSE 0 END)" if source in SOURCES else "SUM(posts)"
+    skip, want, batch, offset = (page - 1) * per_page, per_page + 1, max(per_page + 1, 500 if codes else 0), 0
+    shown: list[dict[str, Any]] = []
+    while len(shown) < skip + want:
+        rows = conn.execute(
+            "SELECT tag, SUM(CASE WHEN source='bluesky' THEN posts ELSE 0 END) AS bluesky, "
+            "SUM(CASE WHEN source='mastodon' THEN posts ELSE 0 END) AS mastodon, SUM(posts) AS total "
+            f"FROM tag_counts WHERE hour >= ? GROUP BY tag HAVING {rank} > 0 ORDER BY {rank} DESC, SUM(posts) DESC, tag "
+            "LIMIT ? OFFSET ?",
+            (since[:13], batch if codes else skip + want, offset)).fetchall()
+        offset += len(rows)
+        found = [{"tag": r["tag"], "bluesky": int(r["bluesky"] or 0), "mastodon": int(r["mastodon"] or 0),
+                  "total": int(r["total"] or 0)} for r in rows]
+        shown.extend(_in_languages(conn, found, codes))
+        if not codes or len(rows) < batch:
+            break
+    items = shown[skip:skip + per_page]
+    return _here(conn, items), len(shown) > skip + per_page
+
+
+def rising_tags(conn: Conn, page: int = 1, per_page: int = 50, now: str | None = None, source: str | None = None,
+                codes: list[str] | tuple[str, ...] = ()) -> tuple[list[dict[str, Any]], bool]:
+    """The hashtags used far more than usual in the past RISING_RECENT
+    (rising_span, rise), on Bluesky and Mastodon or on one `source`,
+    furthest above usual first: {"tag", "bluesky"/"mastodon"/"total" (posts
+    in the past RISING_RECENT), "usual", "score"}."""
+    span = rising_span(conn, now)
+    sources = (source,) if source in SOURCES else tuple(SOURCES)
+    recent = " + ".join(f"SUM(CASE WHEN source='{s}' AND hour >= ? THEN posts ELSE 0 END)" for s in sources)
     rows = conn.execute(
-        "SELECT tag, SUM(CASE WHEN source='bluesky' THEN posts ELSE 0 END) AS bluesky, "
-        "SUM(CASE WHEN source='mastodon' THEN posts ELSE 0 END) AS mastodon, SUM(posts) AS total "
-        f"FROM tag_counts WHERE hour >= ? GROUP BY tag HAVING {rank} > 0 ORDER BY {rank} DESC, SUM(posts) DESC, tag "
-        "LIMIT ? OFFSET ?",
-        (since[:13], per_page + 1, (page - 1) * per_page)).fetchall()
-    items = [{"tag": r["tag"], "bluesky": int(r["bluesky"] or 0), "mastodon": int(r["mastodon"] or 0),
-              "total": int(r["total"] or 0)} for r in rows[:per_page]]
-    return _here(conn, items), len(rows) > per_page
+        "SELECT tag, SUM(CASE WHEN source='bluesky' AND hour >= ? THEN posts ELSE 0 END) AS recent_bluesky, "
+        "SUM(CASE WHEN source='mastodon' AND hour >= ? THEN posts ELSE 0 END) AS recent_mastodon, "
+        "SUM(CASE WHEN source='bluesky' AND hour < ? THEN posts ELSE 0 END) AS before_bluesky, "
+        "SUM(CASE WHEN source='mastodon' AND hour < ? THEN posts ELSE 0 END) AS before_mastodon "
+        f"FROM tag_counts WHERE hour >= ? GROUP BY tag HAVING {recent} >= ?",
+        (*[span["recent_from"]] * 4, span["since"], *[span["recent_from"]] * len(sources), RISING_MIN)).fetchall()
+    scored = []
+    for r in rows:
+        posts = {s: int(r["recent_" + s] or 0) for s in SOURCES}
+        usual = sum(int(r["before_" + s] or 0) * span["factor"][s] for s in sources)
+        count = sum(posts[s] for s in sources)
+        score = rise(count, usual)
+        if score is not None:
+            scored.append({"tag": r["tag"], "bluesky": posts["bluesky"], "mastodon": posts["mastodon"],
+                           "total": count, "usual": usual, "score": score})
+    scored.sort(key=lambda t: (-t["score"], -t["total"], t["tag"]))
+    shown = _in_languages(conn, scored, codes)
+    page = max(1, page)
+    items = shown[(page - 1) * per_page:page * per_page]
+    return _here(conn, items), len(shown) > page * per_page
+
+
+def _in_languages(conn: Conn, tags: list[dict[str, Any]], codes: list[str] | tuple[str, ...]) -> list[dict[str, Any]]:
+    """Those of `tags` ({"tag": ...}) used mostly in `codes` (in_languages)."""
+    if not codes:
+        return tags
+    found = _langs_of(conn, "tag_langs", "tag", [t["tag"] for t in tags])
+    return [t for t in tags if in_languages(found.get(t["tag"]), codes)]
 
 
 def _here(conn: Conn, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -681,13 +1005,119 @@ def trending_on_servers(conn: Conn) -> list[dict[str, Any]]:
     return list(out.values())
 
 
+# --- history ------------------------------------------------------------------------
+
+def history_days(conn: Conn) -> tuple[str | None, str | None]:
+    """The first and last days kept in History (keep_day), if any."""
+    r = conn.execute("SELECT MIN(day) AS first, MAX(day) AS last FROM tag_history").fetchone()
+    s = conn.execute("SELECT MIN(day) AS first, MAX(day) AS last FROM link_history").fetchone()
+    firsts = [x for x in (r["first"], s["first"]) if x]
+    lasts = [x for x in (r["last"], s["last"]) if x]
+    return (min(firsts) if firsts else None), (max(lasts) if lasts else None)
+
+
+def counted_hours(conn: Conn, day: str) -> dict[str, int]:
+    """How many of a day's hours each network was counted (trend_hours)."""
+    out = {source: 0 for source in SOURCES}
+    for r in conn.execute("SELECT source, COUNT(*) AS n FROM trend_hours WHERE hour >= ? AND hour <= ? "
+                          "GROUP BY source", (f"{day}T00", f"{day}T23")):
+        if r["source"] in out:
+            out[r["source"]] = int(r["n"])
+    return out
+
+
+def _by_source(conn: Conn, history: str, key: str, day: str) -> dict[str, dict[str, int]]:
+    """{hashtag or link key: {source: posts}} as kept of a day."""
+    out: dict[str, dict[str, int]] = {}
+    for r in conn.execute(f"SELECT {key} AS name, source, posts FROM {history} WHERE day=?", (day,)):
+        out.setdefault(r["name"], {s: 0 for s in SOURCES})[r["source"]] = int(r["posts"])
+    return out
+
+
+def _kept_langs(value: Any) -> dict[str, int]:
+    try:
+        got = json.loads(value) if value else {}
+    except ValueError:
+        return {}
+    return got if isinstance(got, dict) else {}
+
+
+def tags_on(conn: Conn, day: str, source: str | None = None, page: int = 1, per_page: int = 50,
+            codes: list[str] | tuple[str, ...] = ()) -> tuple[list[dict[str, Any]], bool]:
+    """The hashtags used most on a day kept in History, as trending_tags lists them."""
+    counted = _by_source(conn, "tag_history", "tag", day)
+    langs = {}
+    for chunk in _chunks(sorted(counted)):
+        langs.update((r["tag"], _kept_langs(r["langs"])) for r in conn.execute(
+            f"SELECT tag, langs FROM tags_kept WHERE tag IN ({_marks(chunk)})", chunk))
+    sources = (source,) if source in SOURCES else tuple(SOURCES)
+    items = [{"tag": tag, "bluesky": n["bluesky"], "mastodon": n["mastodon"], "total": sum(n.values()),
+              "ranked": sum(n[s] for s in sources)} for tag, n in counted.items()
+             if in_languages(langs.get(tag), codes)]
+    items = [i for i in items if i["ranked"]]
+    items.sort(key=lambda i: (-i["ranked"], -i["total"], i["tag"]))
+    page = max(1, page)
+    return _here(conn, items[(page - 1) * per_page:page * per_page]), len(items) > page * per_page
+
+
+def links_on(conn: Conn, day: str, source: str | None = None,
+             codes: list[str] | tuple[str, ...] = ()) -> list[dict[str, Any]]:
+    """The links posted most on a day kept in History, as ranked articles
+    (for trending_articles): the page as first posted, or the article read
+    here from it while it's still here, with links to the same article counted together."""
+    counted = _by_source(conn, "link_history", "key", day)
+    keys = sorted(counted)
+    kept: dict[str, Any] = {}
+    article_of: dict[str, int] = {}
+    for chunk in _chunks(keys):
+        kept.update((r["key"], dict(r)) for r in conn.execute(
+            f"SELECT * FROM links_kept WHERE key IN ({_marks(chunk)})", chunk))
+        article_of.update((r["key"], r["article_id"]) for r in conn.execute(
+            f"SELECT key, MIN(article_id) AS article_id FROM article_keys WHERE key IN ({_marks(chunk)}) GROUP BY key",
+            chunk))
+    ids = sorted(set(article_of.values()))
+    found: dict[int, dict[str, Any]] = {}
+    for chunk in _chunks(ids):
+        found.update((r["id"], dict(r)) for r in conn.execute(
+            f"SELECT id, url, status, title, byline, site_name, published, word_count, fetched_from, canonical_url "
+            f"FROM articles WHERE id IN ({_marks(chunk)})", chunk))
+    groups: dict[Any, dict[str, Any]] = {}
+    for key in keys:
+        aid = article_of.get(key) if article_of.get(key) in found else None
+        g = groups.setdefault(("a", aid) if aid else ("k", key), {"keys": [], "counts": {s: 0 for s in SOURCES},
+                                                                  "langs": {}, "article": found.get(aid)})
+        g["keys"].append(key)
+        for s, n in counted[key].items():
+            g["counts"][s] += n
+        for lang, n in _kept_langs((kept.get(key) or {}).get("langs")).items():
+            g["langs"][lang] = g["langs"].get(lang, 0) + n
+    items = []
+    for g in groups.values():
+        top = max(g["keys"], key=lambda k: (sum(counted[k].values()), k))
+        first = kept.get(top) or {}
+        article = g["article"]
+        item = dict(article) if article else {
+            "id": None, "url": first.get("url") or top, "status": "pending", "title": first.get("title"),
+            "byline": None, "site_name": None, "published": None, "word_count": None, "fetched_from": None,
+            "canonical_url": None}
+        item["title"] = item.get("title") or first.get("title")
+        item.update(article_ids=[article["id"]] if article else [], keys=g["keys"], top_key=top,
+                    description=first.get("description"), bluesky=g["counts"]["bluesky"],
+                    mastodon=g["counts"]["mastodon"], archive=0, total=sum(g["counts"].values()),
+                    langs=g["langs"], latest_post=None, latest_posted_at=None, first_seen_at=None)
+        items.append(item)
+    items.sort(key=lambda i: (i["total"], i["top_key"]), reverse=True)
+    return order_articles(items, source, codes=codes)
+
+
 # --- ranking posts ------------------------------------------------------------
 
 def trending_posts(conn: Conn, window: str = "day", sort: str = "likes", source: str | None = None,
-                   page: int = 1, per_page: int = 25, now: str | None = None) -> tuple[list[dict[str, Any]], bool]:
+                   page: int = 1, per_page: int = 25, now: str | None = None,
+                   codes: list[str] | tuple[str, ...] = ()) -> tuple[list[dict[str, Any]], bool]:
     """The posts made in the window most liked (or most replied to) on Bluesky
     and Mastodon, of those whose totals have been read. A total not read yet
-    is what the stream counted."""
+    is what the stream counted. Only those in `codes`, or that don't say, when given."""
     moment = parse_ts(now or utcnow()) or datetime.now(timezone.utc)
     since = fmt_ts(moment - POST_WINDOWS.get(window, POST_WINDOWS["day"]))
     score = ("COALESCE(likes, likes_seen)" if sort == "likes"
@@ -695,6 +1125,8 @@ def trending_posts(conn: Conn, window: str = "day", sort: str = "likes", source:
     where, params = "", [since]
     if source in SOURCES:
         where, params = " AND source=?", [since, source]
+    shown_lang, lang_params = languages.shown_sql(list(codes), "lang")
+    where, params = f"{where} AND {shown_lang}", [*params, *lang_params]
     page = max(1, page)
     rows = conn.execute(
         f"SELECT *, {score} AS score FROM stream_posts WHERE view_json IS NOT NULL AND gone=0 "
@@ -790,12 +1222,12 @@ def record_totals(conn: Conn, source: str, found: dict[str, dict[str, Any]], ask
     for ref, t in found.items():
         conn.execute(
             "INSERT INTO stream_posts(source, ref, created_at, first_seen_at, likes, replies, reposts, checked_at, "
-            "view_json) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(source, ref) DO UPDATE SET likes=excluded.likes, "
-            "replies=excluded.replies, reposts=excluded.reposts, checked_at=excluded.checked_at, "
-            "view_json=excluded.view_json, gone=0, "
+            "view_json, lang) VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(source, ref) DO UPDATE SET "
+            "likes=excluded.likes, replies=excluded.replies, reposts=excluded.reposts, "
+            "checked_at=excluded.checked_at, view_json=excluded.view_json, lang=excluded.lang, gone=0, "
             "created_at=COALESCE(stream_posts.created_at, excluded.created_at)",
             (source, ref, t.get("created_at"), now, t.get("likes"), t.get("replies"), t.get("reposts"), now,
-             json.dumps(t["view"])))
+             json.dumps(t["view"]), languages.normalize(t["view"].get("lang"))))
     missing = [ref for ref in asked if ref not in found]
     for chunk in _chunks(missing):
         conn.execute(f"UPDATE stream_posts SET gone=1, checked_at=? WHERE source=? AND ref IN ({_marks(chunk)})",
@@ -813,8 +1245,14 @@ def bluesky_view(view: dict[str, Any]) -> dict[str, Any]:
             "handle": author.get("handle") or author.get("did"), "name": author.get("displayName") or None,
             "author_url": f"https://{BSKY_DOMAIN}/profile/{author.get('did') or author.get('handle')}",
             "link": content.link, "link_title": content.link_title, "pictures": len(content.pictures),
-            "video": content.video, "quote": content.quote is not None,
+            "video": content.video, "quote": content.quote is not None, "lang": record_lang(record),
             "images": (content.pictures or ([content.cover] if content.cover else []))[:PICTURES]}
+
+
+def record_lang(record: dict[str, Any]) -> str | None:
+    """A Bluesky post record's language: its first "langs"."""
+    langs = record.get("langs")
+    return languages.normalize(langs[0]) if isinstance(langs, list) and langs else None
 
 
 # --- upkeep -----------------------------------------------------------------------
@@ -906,9 +1344,10 @@ class Trends:
         wanted: dict[int, Any] = {}
         skips = tuple(self.archive_skips())
         with self.db.connect() as conn:
-            ranked = {window: ranked_articles(conn, window, now, archive_skips=skips) for window in WINDOWS}
+            ranked = {window: ranked_articles(conn, window, now, archive_skips=skips) for window in RANKINGS}
         store_ranking(self.db, ranked, stamp)
-        tops = [items[:TOP_CACHED] for items in ranked.values()]
+        tops = [order_articles(items, source, window == "rising", keep=TOP_CACHED)
+                for window, items in ranked.items() for source in (None, *ARTICLE_SOURCES)]
         with self.db.transaction() as conn:
             for top in tops:
                 for item in top:
