@@ -1084,6 +1084,17 @@ a.article-link.dived, a[data-dive].dived, a.video-link.dived, a.live-link.dived 
 .article-controls { justify-content: space-between; }
 .trend-posts { font-variant-numeric: tabular-nums; }
 .trending-article .pc-title { font-size: 1.12rem; }
+.articles-head.feed-head { justify-content: space-between; }
+.trend-settings-panel { min-width: min(400px, calc(100vw - 24px)); max-width: min(440px, calc(100vw - 24px)); }
+.trend-settings-panel fieldset { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
+.trend-settings-panel legend { font-weight: 600; padding: 0 4px; }
+.trend-settings-panel label { display: flex; gap: 6px; align-items: flex-start; }
+.trend-settings-panel select { max-width: 100%; }
+.trend-sources { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; margin: 0 0 8px; }
+.trend-text { white-space: pre-line; overflow-wrap: anywhere; margin: 4px 0; display: -webkit-box; -webkit-line-clamp: 8; line-clamp: 8; -webkit-box-orient: vertical; overflow: hidden; }
+.trend-counts { display: inline-flex; gap: 4px; align-items: center; font-variant-numeric: tabular-nums; margin-right: 4px; }
+.trend-counts .pill { display: inline-flex; align-items: center; gap: 3px; }
+.trending-page .feed-controls { flex-wrap: wrap; gap: 8px; }
 
 .pc-changes { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 4px 0 2px; padding: 2px 8px 2px 6px;
   border-radius: 8px; background: var(--bg); border: 1px solid var(--line); color: var(--muted); }

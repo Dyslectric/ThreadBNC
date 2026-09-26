@@ -12,6 +12,7 @@ import math
 import os
 import re
 import tempfile
+import threading
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -37,6 +38,7 @@ from . import media as media_mod
 from . import storage as storage_mod
 from . import thumbs as thumbs_mod
 from . import traffic as traffic_mod
+from . import trends as trends_mod
 from .actor import ActorEndpoints
 from .adapters import (BSKY_DOMAIN, RSS_PREFIX, CommunityRef, RemoteError, from_fediverse, host_of, is_bluesky,
                        is_fedi_account, is_reddit_host, is_rss, is_tag)
@@ -55,7 +57,9 @@ from .sso import CALLBACK_PATH, SingleSignOn, callback_url
 PROXY_SECRET_HEADER = "X-ThreadBNC-Proxy-Secret"
 from .config import Settings, load_settings
 from .federation import Federation, InboxRelay, summarize
-from .jetstream import BlueskyTags
+from .jetstream import BlueskyStream
+from .mastodon_stream import SCOPES as MASTODON_SCOPES, MastodonStream
+from .mastodon_stream import subscribe as mastodon_subscribe, subscription as mastodon_subscription
 from .tags import TagRelays
 from .db import fmt_ts, open_database, parse_ts, utcnow
 from .render import MediaInfo, looks_like_media, render_markdown
@@ -359,10 +363,19 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     bouncer.hooks.append(inbox.sweep)
     # Your own servers' inboxes, relayed through ThreadBNC so what they receive is pushed here too.
     federation = Federation(poster, settings.relay_inboxes) if settings.relay_inboxes else None
-    # ThreadBNC's own ActivityPub identity, following hashtags through a relay.
-    tags = TagRelays(bouncer, bouncer.actor, settings.tag_relay) if bouncer.actor else None
-    # ...and on Bluesky, picked out of its Jetstream.
-    bluesky_tags = BlueskyTags(bouncer, settings.jetstream_url, settings.user_agent) if settings.jetstream_url else None
+    # Your Mastodon server's public timeline, once subscribed to on the Trending page.
+    mastodon_stream = MastodonStream(bouncer, poster.vault, settings.user_agent)
+    # ThreadBNC's own ActivityPub identity, following hashtags through a relay (unless they come from that timeline).
+    tags = TagRelays(bouncer, bouncer.actor, settings.tag_relay, mastodon_stream.active) if bouncer.actor else None
+    # ...and on Bluesky, picked out of its Jetstream, which also counts what's posted there for Trending.
+    bluesky_stream = BlueskyStream(bouncer, settings.jetstream_url, settings.user_agent) if settings.jetstream_url else None
+
+    def archive_skips() -> tuple[str, ...]:
+        """The archive's posts that a stream counts already, for Trending."""
+        return trends_mod.archive_skips(bool(bluesky_stream) and trends_mod.settings(db)["bluesky"],
+                                        mastodon_stream.active())
+
+    trend_upkeep = trends_mod.Trends(bouncer, archive_skips)
 
     def lemmy_servers() -> list[str]:
         """Your own Lemmy and PieFed servers: the relayed ones, then the ones you have accounts on."""
@@ -378,14 +391,16 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             bouncer.start_thread()
             if federation:
                 federation.start_thread()
-            if bluesky_tags:
-                bluesky_tags.start_thread()
+            if bluesky_stream:
+                bluesky_stream.start_thread()
+            mastodon_stream.start_thread()
         yield
         bouncer.stop()
         if federation:
             federation.stop()
-        if bluesky_tags:
-            bluesky_tags.stop()
+        if bluesky_stream:
+            bluesky_stream.stop()
+        mastodon_stream.stop()
         traffic_mod.METER.flush()
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
@@ -571,7 +586,9 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         app.add_middleware(ActorEndpoints, actor=bouncer.actor, receive=tags.receive, expects=tags.expects)
     app.state.federation = federation
     app.state.tags = tags
-    app.state.bluesky_tags = bluesky_tags
+    app.state.bluesky_stream = bluesky_stream
+    app.state.mastodon_stream = mastodon_stream
+    app.state.trends = trend_upkeep
 
     def push_handle() -> str | None:
         account = federation.account() if federation else None
@@ -985,24 +1002,111 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             resp.delete_cookie("theme")
         return resp
 
-    # ---- trending articles ---------------------------------------------
-    ARTICLE_PAGE = 25
+    # ---- trending ---------------------------------------------------------
+    TRENDING_PAGE = 25
+    RANK_FOR = 60.0  # seconds a ranking of articles is reused for
+    ranked: dict[tuple[Any, ...], tuple[float, list[dict[str, Any]]]] = {}
 
-    @app.get("/articles", response_class=HTMLResponse)
-    def trending_articles(request: Request, t: str = "week", page: int = 1):
-        """The pages linked most often by passive captures still in the archive."""
-        window = t if t in feed_mod.WINDOWS else "week"
-        delta = feed_mod.WINDOWS[window]
-        now = parse_ts(utcnow()) or datetime.now(timezone.utc)
-        since = fmt_ts(now - delta) if delta is not None else None
+    def ranking(window: str) -> list[dict[str, Any]]:
+        key = (window, archive_skips())
+        hit = ranked.get(key)
+        if hit and time.monotonic() - hit[0] < RANK_FOR:
+            return hit[1]
+        with db.connect() as conn:
+            items = trends_mod.ranked_articles(conn, window, archive_skips=key[1])
+        ranked[key] = (time.monotonic(), items)
+        return items
+
+    def trending_status() -> dict[str, Any]:
+        """What the Trending page says of where its counts come from, and offers to change."""
+        chosen = trends_mod.settings(db)
+        return {"chosen": chosen, "bluesky": bluesky_stream, "embedded": settings.embedded_bouncer,
+                "mastodon": mastodon_stream, "mastodon_account": mastodon_stream.account(),
+                "mastodon_scope": (mastodon_subscription(db) or {}).get("scope"), "scopes": MASTODON_SCOPES,
+                "actor": bouncer.actor.handle if bouncer.actor else None}
+
+    @app.get("/trending", response_class=HTMLResponse)
+    def trending_posts(request: Request, sort: str = "likes", t: str = "day", src: str = "all", page: int = 1):
+        """The posts most liked, or most replied to, on Bluesky and Mastodon lately."""
+        sort = sort if sort in trends_mod.POST_SORTS else "likes"
+        window = t if t in trends_mod.POST_WINDOWS else "day"
+        source = src if src in trends_mod.SOURCES else "all"
         page = max(1, page)
         with db.connect() as conn:
-            items, has_more = articles.trending(conn, since, page, ARTICLE_PAGE)
+            items, has_more = trends_mod.trending_posts(conn, window, sort, None if source == "all" else source,
+                                                        page, TRENDING_PAGE)
+            ap_ids = [i["view"].get("uri") or i["view"].get("url") for i in items]
+            here = {r["canonical_ap_id"]: r["id"] for r in conn.execute(
+                f"SELECT o.canonical_ap_id, t.id FROM objects o JOIN archived_threads t ON t.root_object_id=o.id "
+                f"WHERE o.canonical_ap_id IN ({','.join('?' * len(ap_ids))})", ap_ids)} if ap_ids else {}
+        for i, ap_id in zip(items, ap_ids):
+            i["here"] = here.get(ap_id)  # opened (or captured) here already
+        return render(request, "trending.html", tab="posts", posts=items, sort=sort, window=window, source=source,
+                      page=page, has_more=has_more, status=trending_status())
+
+    @app.get("/trending/articles", response_class=HTMLResponse)
+    def trending_articles(request: Request, t: str = "week", page: int = 1):
+        """The pages posted most on Bluesky, on Mastodon and in the archive."""
+        window = t if t in trends_mod.WINDOWS else "week"
+        page = max(1, page)
+        with db.connect() as conn:
+            items, has_more = trends_mod.trending_articles(conn, ranking(window), page, TRENDING_PAGE)
         for a in items:
-            a["excerpt"] = feed_mod.excerpt(articles.excerpt(a.pop("content_html"), 400), 260)
+            a["excerpt"] = feed_mod.excerpt(articles.excerpt(a.pop("content_html", None), 400), 260) \
+                or (a.get("description") or "")
             a["minutes"] = max(1, round((a["word_count"] or 0) / 230)) if a["word_count"] else None
-        return render(request, "articles.html", articles=items, window=window, page=page,
-                      has_more=has_more)
+        return render(request, "trending.html", tab="articles", articles=items, window=window, page=page,
+                      has_more=has_more, status=trending_status(), cached=trends_mod.TOP_CACHED)
+
+    @app.post("/trending/open")
+    def trending_open(url: str = Form(...)):
+        """A trending Bluesky post, opened here: saved like a post opened from a
+        link (it expires unless you keep it), then shown."""
+        from .adapters import parse_thread_url
+        try:
+            ref = parse_thread_url(url)
+        except ValueError:
+            raise HTTPException(400)
+        if ref.domain != BSKY_DOMAIN:
+            raise HTTPException(400)
+        with db.connect() as conn:
+            here = conn.execute("SELECT t.id FROM objects o JOIN archived_threads t ON t.root_object_id=o.id "
+                                "WHERE o.canonical_ap_id=?", (url,)).fetchone()
+        if here is not None:
+            return RedirectResponse(f"/t/{here['id']}", status_code=303)
+        job = bouncer.enqueue("ingest", {"url": url, "retention": "auto"})
+        return RedirectResponse(f"/jobs/{job}/wait", status_code=303)
+
+    @app.get("/articles")
+    def old_articles_page(t: str = "week"):
+        """Where trending articles used to be."""
+        window = t if t in trends_mod.WINDOWS else "month" if t == "all" else "week"
+        return RedirectResponse(f"/trending/articles?t={window}", status_code=301)
+
+    @app.post("/trending/settings")
+    def trending_settings(request: Request, bluesky: str | None = Form(None), bluesky_likes: str = Form("appview"),
+                          mastodon_scope: str = Form("")):
+        """What's counted, and whether your Mastodon server's public timeline is subscribed to."""
+        before = mastodon_stream.active()
+        trends_mod.save_settings(db, bluesky=bool(bluesky),
+                                 bluesky_likes=bluesky_likes if bluesky_likes in trends_mod.LIKES_FROM else "appview")
+        scope = mastodon_scope if mastodon_scope in MASTODON_SCOPES else None
+        if scope and mastodon_stream.account() is None:
+            flash(request, "Sign in to your Mastodon account on the Accounts page first: Mastodon only streams its "
+                           "public timeline to someone signed in.", "error")
+            scope = None
+        mastodon_subscribe(db, scope)
+        if bluesky_stream:
+            bluesky_stream.wake.set()
+        mastodon_stream.wake.set()
+        ranked.clear()
+        if tags and mastodon_stream.active() != before:  # follow the relays again, or stop: not while you wait
+            threading.Thread(target=tags.housekeeping, kwargs={"now": True}, name="relays", daemon=True).start()
+        flash(request, "Saved." + (f" Listening to your Mastodon server's {'local' if scope == 'public:local' else 'federated'} "
+                                   "timeline; hashtags' posts come from there instead of the relays." if scope and not before
+                                   else " Stopped listening to your Mastodon server's timeline; hashtags' posts come "
+                                        "from the relays again." if before and not scope and tags else ""))
+        return RedirectResponse(back(request, "/trending"), status_code=303)
 
     # ---- kept (the archive) ---------------------------------------------
     KEPT_TABS = ("threads", "videos", "audio", "articles", "changed", "log")
@@ -1365,8 +1469,12 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         with db.connect() as conn:
             f = conn.execute("SELECT * FROM community_follows WHERE community_id=?", (cid,)).fetchone()
         if f["source_domain"] == TAG_DOMAIN:
-            tag, also = f["source_ref"], ", with those posted on Bluesky," if bluesky_tags else ""
-            if bouncer.actor is None:
+            tag, also = f["source_ref"], ", with those posted on Bluesky," if bluesky_stream else ""
+            timeline = mastodon_stream.account() if mastodon_stream.active() else None
+            if timeline:
+                flash(request, f"Following. Posts tagged #{tag} on your Mastodon server's public timeline "
+                               f"({timeline[2]}){also} arrive as they're made, from now on.")
+            elif bouncer.actor is None:
                 flash(request, f"Following. Posts tagged #{tag} on Bluesky arrive as they're made, from now on.")
             elif f["push_state"] == "pending":
                 flash(request, f"Following. {bouncer.actor.handle} asked the relay for posts tagged #{tag}; "
@@ -1374,7 +1482,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             else:
                 flash(request, f"Following, but the relay couldn't be asked for its posts yet: {f['push_error']}. "
                                "It's asked again every half hour."
-                               + (" Posts on Bluesky arrive meanwhile." if bluesky_tags else ""), "warn-flash")
+                               + (" Posts on Bluesky arrive meanwhile." if bluesky_stream else ""), "warn-flash")
         elif f["push_state"] == "subscribed":
             flash(request, f"Following. {push_handle()} subscribed, so posts arrive as they're made.")
         elif f["polling"]:
@@ -1599,7 +1707,9 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                       media_choices=media_mod.parse_choices(c["media_policy"]), media_kinds=media_mod.KINDS,
                       transcoded=media_mod.TRANSCODED, by_rate=media_mod.BY_RATE,
                       can_transcode=bouncer.media.can_transcode(),
-                      jetstream=bluesky_tags if settings.embedded_bouncer else None, bluesky_last=bluesky_last,
+                      jetstream=bluesky_stream if settings.embedded_bouncer else None, bluesky_last=bluesky_last,
+                      timeline=mastodon_stream.account() if mastodon_stream.active() else None,
+                      timeline_stream=mastodon_stream if settings.embedded_bouncer else None,
                       snapshot=snapshot)
 
     def media_choices(form: Any) -> tuple[dict[str, dict[str, Any]], str | None]:
@@ -1860,7 +1970,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         days = days if days in TRAFFIC_PERIODS else 1
         traffic_mod.METER.flush()  # this process's latest; a bouncer running on its own adds its own each minute
         return render(request, "traffic.html", r=traffic_mod.report(db, days), periods=TRAFFIC_PERIODS,
-                      jetstream=bluesky_tags, jetstream_host=urlparse(settings.jetstream_url or "").hostname)
+                      jetstream=bluesky_stream, jetstream_host=urlparse(settings.jetstream_url or "").hostname,
+                      timeline_stream=mastodon_stream if mastodon_subscription(db) else None)
 
     @app.get("/storage/integrity", response_class=HTMLResponse)
     def integrity_page(request: Request, deep: int = 0):

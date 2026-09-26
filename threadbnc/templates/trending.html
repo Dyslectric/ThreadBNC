@@ -1,0 +1,198 @@
+{% extends "base.html" %}
+{% from "_macros.html" import when, icon, pager as load_more %}
+{% block title %}Trending{% endblock %}
+{% block content %}
+{% set st = status %}
+<div class="articles-page trending-page">
+  <div class="feed-head articles-head">
+    <div>
+      <h1>{{ icon('trending', 'title-icon') }} Trending</h1>
+      <p class="muted small">
+        {%- if tab == 'posts' %} What's liked and talked about most on Bluesky and Mastodon, from their streams.
+        {%- else %} The pages posted most on Bluesky, on Mastodon and in your archive.{% endif %}</p>
+    </div>
+    <details class="menu trend-settings">
+      <summary class="button small secondary">{{ icon('settings') }} Sources</summary>
+      <div class="menu-panel trend-settings-panel">
+        <form method="post" action="/trending/settings" class="stack small">
+          <fieldset>
+            <legend>Bluesky</legend>
+            {% if st.bluesky %}
+            <label><input type="checkbox" name="bluesky" value="1" {{ 'checked' if st.chosen.bluesky }}>
+              Count what's posted on Bluesky (Jetstream stays connected: about 0.75 GB a day)</label>
+            <label><input type="radio" name="bluesky_likes" value="appview" {{ 'checked' if st.chosen.bluesky_likes == 'appview' }}>
+              Likes: read the totals of the posts most replied to from Bluesky's AppView, every few minutes</label>
+            <label><input type="radio" name="bluesky_likes" value="stream" {{ 'checked' if st.chosen.bluesky_likes == 'stream' }}>
+              Likes: count every like from the stream (exact, but about 3.4 GB a day more)</label>
+            {% else %}
+            <p class="muted">Jetstream is turned off (THREADBNC_JETSTREAM), so nothing on Bluesky is counted.</p>
+            <input type="hidden" name="bluesky_likes" value="{{ st.chosen.bluesky_likes }}">
+            {% endif %}
+          </fieldset>
+          <fieldset>
+            <legend>Mastodon</legend>
+            {% if st.mastodon_account %}
+            <label for="mastodon-scope">Your server's public timeline, as {{ st.mastodon_account[2] }}</label>
+            <select id="mastodon-scope" name="mastodon_scope">
+              <option value="" {{ 'selected' if not st.mastodon_scope }}>Not subscribed</option>
+              {% for key, label in st.scopes.items() %}
+              <option value="{{ key }}" {{ 'selected' if st.mastodon_scope == key }}>{{ label }}</option>
+              {% endfor %}
+            </select>
+            <p class="muted">While subscribed, hashtags you follow get their fediverse posts from it{% if st.actor %}
+              instead of the tag relays{% endif %}, and its posts' links and replies are counted here.</p>
+            {% else %}
+            <p class="muted">Mastodon only streams its public timeline to someone signed in: sign in to your Mastodon
+              account on the <a href="/accounts">Accounts</a> page to subscribe to it.</p>
+            {% endif %}
+          </fieldset>
+          <button class="small">Save</button>
+        </form>
+      </div>
+    </details>
+  </div>
+
+  <nav class="tabs" aria-label="Trending">
+    <a href="/trending" class="{{ 'on' if tab == 'posts' }}" {% if tab == 'posts' %}aria-current="page"{% endif %}>{{ icon('comment') }} Posts</a>
+    <a href="/trending/articles" class="{{ 'on' if tab == 'articles' }}" {% if tab == 'articles' %}aria-current="page"{% endif %}>{{ icon('article') }} Articles</a>
+  </nav>
+
+  <p class="small muted trend-sources">
+    {% if st.bluesky and st.chosen.bluesky %}
+      {% if not st.embedded %}<span class="pill">Bluesky</span> counted by the bouncer.
+      {% elif st.bluesky.connected_since %}<span class="pill good">Bluesky</span> counting since {{ when(st.bluesky.connected_since) }}.
+      {% elif st.bluesky.last_error %}<span class="pill bad">Bluesky</span> <span class="bad-text">{{ st.bluesky.last_error }}</span>
+      {% else %}<span class="pill warn">Bluesky</span> connecting.{% endif %}
+    {% else %}<span class="pill muted">Bluesky</span> not counted.{% endif %}
+    {% if st.mastodon_scope and st.mastodon_account %}
+      {% if not st.embedded %}<span class="pill">Mastodon</span> {{ st.mastodon_account[2] }}'s {{ 'local' if st.mastodon_scope == 'public:local' else 'federated' }} timeline.
+      {% elif st.mastodon.connected_since %}<span class="pill good">Mastodon</span> {{ st.mastodon_account[2] }}'s {{ 'local' if st.mastodon_scope == 'public:local' else 'federated' }} timeline since {{ when(st.mastodon.connected_since) }}.
+      {% elif st.mastodon.last_error %}<span class="pill bad">Mastodon</span> <span class="bad-text">{{ st.mastodon.last_error }}</span>
+      {% else %}<span class="pill warn">Mastodon</span> connecting.{% endif %}
+    {% else %}<span class="pill muted">Mastodon</span> not subscribed.{% endif %}
+  </p>
+
+{% if tab == 'posts' %}
+  {% set base = '/trending?sort=' ~ sort ~ '&t=' ~ window ~ '&src=' ~ source %}
+  <div class="feed-controls article-controls">
+    <nav class="seg" aria-label="Rank by">
+      {% for key, label in [('likes', 'Most liked'), ('replies', 'Most replies')] %}
+        <a href="/trending?sort={{ key }}&t={{ window }}&src={{ source }}" class="{{ 'on' if sort == key }}"
+           {% if sort == key %}aria-current="page"{% endif %}>{{ label }}</a>
+      {% endfor %}
+    </nav>
+    <nav class="seg" aria-label="Posted in the past">
+      {% for key, label in [('day', 'Day'), ('week', 'Week')] %}
+        <a href="/trending?sort={{ sort }}&t={{ key }}&src={{ source }}" class="{{ 'on' if window == key }}"
+           {% if window == key %}aria-current="page"{% endif %}>{{ label }}</a>
+      {% endfor %}
+    </nav>
+    <nav class="seg" aria-label="Where">
+      {% for key, label in [('all', 'Both'), ('bluesky', 'Bluesky'), ('mastodon', 'Mastodon')] %}
+        <a href="/trending?sort={{ sort }}&t={{ window }}&src={{ key }}" class="{{ 'on' if source == key }}"
+           {% if source == key %}aria-current="page"{% endif %}>{{ label }}</a>
+      {% endfor %}
+    </nav>
+  </div>
+
+  <div id="items" class="cards" data-items>
+  {% for p in posts %}
+    {% set v = p.view %}
+    <article class="post-card trending-post" id="p{{ loop.index0 + (page - 1) * 25 }}" data-entry>
+      <div class="pc-main">
+        <div class="pc-meta small">
+          <span class="pill {{ 'new' if p.source == 'bluesky' else '' }}">{{ 'Bluesky' if p.source == 'bluesky' else 'Mastodon' }}</span>
+          {% if v.author_url | safe_url %}<a class="pc-community" href="{{ v.author_url | safe_url }}" target="_blank" rel="noreferrer noopener nofollow">{{ v.name or v.handle }}</a>
+          {% else %}<span class="pc-community">{{ v.name or v.handle }}</span>{% endif %}
+          {% if v.name %}<span class="muted">@{{ v.handle }}</span>{% endif %}
+          {% if p.created_at %}· <span title="{{ p.created_at | absolute }}">{{ when(p.created_at) }}</span>{% endif %}
+        </div>
+        {% if v.warning %}<p class="small"><span class="pill warn">CW</span> {{ v.warning }}</p>{% endif %}
+        <p class="trend-text">{{ v.text or '(no text)' }}</p>
+        {% if v.link and v.link | safe_url %}
+          <p class="small"><a href="{{ v.link | safe_url }}" target="_blank" rel="noreferrer noopener nofollow">{{ icon('link') }} {{ v.link_title or (v.link | host) }}</a></p>
+        {% endif %}
+        {% if v.pictures or v.video or v.quote %}
+          <p class="small muted">{% if v.pictures %}{{ icon('picture') }} {{ v.pictures }} picture{{ 's' if v.pictures != 1 }}{% endif %}
+            {% if v.video %}{{ icon('video') }} a video{% endif %}{% if v.quote %} · quotes a post{% endif %}</p>
+        {% endif %}
+        <div class="pc-actions actions small">
+          <span class="trend-counts" title="{{ 'Totals as last read' if p.checked_at else 'As counted from the stream' }}">
+            <span class="pill {{ 'new' if sort == 'likes' }}">♥ {{ p.likes or 0 }}</span>
+            <span class="pill {{ 'new' if sort == 'replies' }}">{{ icon('comment') }} {{ p.replies or 0 }}</span>
+            {% if p.reposts %}<span class="pill">{{ icon('repost') }} {{ p.reposts }}</span>{% endif %}
+          </span>
+          {% if p.here %}<a class="act" href="/t/{{ p.here }}">{{ icon('comment') }}<span>Open</span></a>
+          {% elif p.source == 'bluesky' %}
+            <form method="post" action="/trending/open" class="inline"><input type="hidden" name="url" value="{{ v.url }}">
+              <button class="act">{{ icon('comment') }}<span>Open here</span></button></form>
+          {% endif %}
+          {% if v.url | safe_url %}<a class="act" href="{{ v.url | safe_url }}" target="_blank" rel="noreferrer noopener nofollow">{{ icon('external') }}<span>Original</span></a>{% endif %}
+        </div>
+      </div>
+    </article>
+  {% endfor %}
+  </div>
+  {% if not posts %}
+    <section class="card empty"><p class="muted">
+      {%- if not (st.bluesky and st.chosen.bluesky) and not st.mastodon_scope %}Nothing is counted: choose where from under Sources.
+      {%- else %}Nothing yet. Posts show here once their likes and replies have been read, a few minutes after
+      people start replying to them.{% endif %}</p></section>
+  {% endif %}
+  {{ load_more(base ~ '&page=' ~ (page + 1) if has_more else none, base if page > 1 else none, page) }}
+
+{% else %}
+  {% set base = '/trending/articles?t=' ~ window %}
+  <div class="feed-controls article-controls">
+    <nav class="seg" aria-label="Time range">
+      {% for key, label in [('day', 'Day'), ('week', 'Week'), ('month', 'Month')] %}
+        <a href="/trending/articles?t={{ key }}" class="{{ 'on' if window == key }}"
+           {% if window == key %}aria-current="page"{% endif %}>{{ label }}</a>
+      {% endfor %}
+    </nav>
+    <span class="muted small">The {{ cached }} most posted of each are read, and kept while they stay there.</span>
+  </div>
+
+  <div id="items" class="cards" data-items>
+  {% for a in articles %}
+    {% set original = a.canonical_url or a.fetched_from or a.url %}
+    <article class="post-card article-card trending-article" {% if a.id %}id="a{{ a.id }}" data-open="/a/{{ a.id }}"{% endif %} data-entry>
+      {% if a.picture %}
+        <a class="thumb" href="/a/{{ a.id }}" tabindex="-1" aria-hidden="true"><img src="{{ thumb(a.picture, 'list') }}" alt="" loading="lazy"></a>
+      {% endif %}
+      <div class="pc-main">
+        <div class="pc-meta small">
+          <span class="pill new trend-posts">{{ a.total }} post{{ 's' if a.total != 1 }}</span>
+          {% if a.bluesky %}<span title="Posted on Bluesky">Bluesky {{ a.bluesky }}</span>{% endif %}
+          {% if a.mastodon %}<span title="Posted on Mastodon">· Mastodon {{ a.mastodon }}</span>{% endif %}
+          {% if a.archive %}<span title="Linked by posts in your archive, in {{ a.community_count }} communit{{ 'ies' if a.community_count != 1 else 'y' }}">· Archive {{ a.archive }}</span>{% endif %}
+          · <span class="pc-community">{{ a.site_name or (original | host) }}</span>
+          {% if a.byline %}· <span>{{ a.byline }}</span>{% endif %}
+          {% if a.minutes %}· <span>{{ a.minutes }} min read</span>{% endif %}
+          {% if a.id and a.status == 'pending' %}<span class="pill warn">not read yet</span>
+          {% elif a.id and a.status != 'ok' %}<span class="pill warn">couldn't be read</span>{% endif %}
+        </div>
+        <h2 class="pc-title">{% if a.id %}<a href="/a/{{ a.id }}">{{ a.title or original }}</a>
+          {% elif original | safe_url %}<a href="{{ original | safe_url }}" target="_blank" rel="noreferrer noopener nofollow">{{ a.title or original }}</a>
+          {% else %}{{ a.title or original }}{% endif %}</h2>
+        {% if a.excerpt %}<p class="pc-excerpt">{{ a.excerpt }}</p>{% endif %}
+        <div class="pc-actions actions small">
+          {% if a.id %}<a class="act" href="/a/{{ a.id }}">{{ icon('article') }}<span>{{ 'Read' if a.status == 'ok' else 'Details' }}</span></a>{% endif %}
+          {% if original | safe_url %}<a class="act" href="{{ original | safe_url }}" target="_blank" rel="noreferrer noopener nofollow">{{ icon('external') }}<span>Original</span></a>{% endif %}
+          {% if a.latest_post %}
+          <a class="act" href="/t/{{ a.latest_post.tid }}">{{ icon('comment') }}<span>Latest in {{ chandle(a.latest_post.cname, a.latest_post.c_ap) }}</span></a>
+          <span class="muted" title="{{ a.latest_posted_at | absolute }}">latest {{ when(a.latest_posted_at) }}</span>
+          {% endif %}
+        </div>
+      </div>
+    </article>
+  {% endfor %}
+  </div>
+
+  {% if not articles %}
+    <section class="card empty"><p class="muted">No links posted in this time range yet.</p></section>
+  {% endif %}
+  {{ load_more(base ~ '&page=' ~ (page + 1) if has_more else none, base if page > 1 else none, page) }}
+{% endif %}
+</div>
+{% endblock %}

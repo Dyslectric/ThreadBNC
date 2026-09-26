@@ -105,7 +105,8 @@ def _plus(ts: str, **delta: float) -> str:
 # Why each kind of job asks what it does, for the Traffic page (traffic.PURPOSES).
 JOB_PURPOSES = {"ingest": "saving", "keep_youtube": "saving", "open": "opening", "sync": "opening",
                 "articles": "articles", "audio": "media", "previews": "previews", "poll": "polling",
-                "relayed": "hashtags", "bluesky_tagged": "hashtags", "discussions": "discussions"}
+                "relayed": "hashtags", "bluesky_tagged": "hashtags", "mastodon_tagged": "hashtags",
+                "discussions": "discussions"}
 
 
 def vote_minutes(created_at: str | None, now: str) -> int | None:

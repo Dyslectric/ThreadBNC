@@ -6,7 +6,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from threadbnc import articles, feed, media, storage
+from threadbnc import articles, feed, media, storage, trends
 from threadbnc.db import fmt_ts
 from threadbnc.render import MediaInfo
 from threadbnc.web import create_app
@@ -45,7 +45,7 @@ def fake_web(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=page("The other story"), headers=html)
     if path == "/moved":
         return httpx.Response(301, headers={"location": "/story"})
-    if path == "/teaser":
+    if path in ("/teaser", "/teaser/2026-story"):
         return httpx.Response(200, content=page(paragraphs=0), headers=html)
     if path == "/paywalled":
         return httpx.Response(403, content=b"no", headers=html)
@@ -148,7 +148,7 @@ def test_trending_articles_page_counts_current_posts_and_merges_aliases(server, 
         ("1", "Redirected link", "https://news.test/moved", fmt_ts(now)),
         ("2", "Canonical link", "https://news.test/story", fmt_ts(now - timedelta(hours=1))),
         ("3", "An older article", "https://news.test/2026/09/other-story-here",
-         fmt_ts(now - timedelta(days=40))),
+         fmt_ts(now - timedelta(days=20))),
     ]:
         server.add_post(local_id, title, "", created=created)
         server.edit_post(local_id, url=url)
@@ -160,24 +160,25 @@ def test_trending_articles_page_counts_current_posts_and_merges_aliases(server, 
     abouncer.articles.fetch_pending()
 
     with abouncer.db.connect() as conn:
-        recent, more = articles.trending(conn, fmt_ts(now - timedelta(days=7)))
-        all_time, _ = articles.trending(conn)
-    assert not more
-    assert [(a["title"], a["post_count"], a["community_count"]) for a in recent] == [
-        ("Harbour wall to be rebuilt", 2, 1),
+        recent = trends.ranked_articles(conn, "week")
+        month = trends.ranked_articles(conn, "month")
+    assert [(a["title"], a["archive"], a["total"], a["community_count"]) for a in recent] == [
+        ("Harbour wall to be rebuilt", 2, 2, 1),
     ]
-    assert [(a["title"], a["post_count"]) for a in all_time] == [
+    assert [(a["title"], a["total"]) for a in month] == [
         ("Harbour wall to be rebuilt", 2), ("The other story", 1),
     ]
 
     client = TestClient(create_app(settings, abouncer))
     client.post("/login", data={"password": "pw"})
-    page = client.get("/articles").text
-    assert "Trending articles" in page and "2 posts" in page
+    page = client.get("/trending/articles").text
+    assert "Trending" in page and "2 posts" in page and "Archive 2" in page
     assert page.count("Harbour wall to be rebuilt") == 1
     assert "The other story" not in page
-    assert 'href="/articles"' in page and 'aria-current="page"' in page
-    assert "The other story" in client.get("/articles?t=all").text
+    assert 'href="/trending"' in page and 'aria-current="page"' in page
+    assert "The other story" in client.get("/trending/articles?t=month").text
+    moved = client.get("/articles?t=all", follow_redirects=False)  # where it used to be
+    assert moved.status_code == 301 and moved.headers["location"] == "/trending/articles?t=month"
 
 
 def test_article_pictures_follow_the_posts_own(server, abouncer):

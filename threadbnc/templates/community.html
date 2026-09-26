@@ -24,7 +24,7 @@
         <details class="settings">
           {% set federated = not is_rss(c.canonical_ap_id) and not is_reddit(c.canonical_ap_id) and not is_tag(c.canonical_ap_id)
                              and not is_bluesky(c.canonical_ap_id) %}
-          <summary class="button secondary small" title="{{ ('From the relay and Bluesky' if follow.push_state == 'subscribed' else 'From Bluesky') if is_tag(c.canonical_ap_id) and jetstream else 'From the relay' if is_tag(c.canonical_ap_id) and follow.push_state == 'subscribed' else 'Pushed' if follow.push_state == 'subscribed' else ('Checked every ' ~ follow.poll_interval_minutes ~ ' min' if follow.polling else 'Not arriving') }} · unkept posts kept {{ (follow.retention_days ~ ' days') if follow.retention_days is not none else 'forever' }}">{{ icon('check') }} Following{{ icon('chevron-down', 'chev') }}</summary>
+          <summary class="button secondary small" title="{{ ('From your Mastodon server' ~ (' and Bluesky' if jetstream else '')) if is_tag(c.canonical_ap_id) and timeline else ('From the relay and Bluesky' if follow.push_state == 'subscribed' else 'From Bluesky') if is_tag(c.canonical_ap_id) and jetstream else 'From the relay' if is_tag(c.canonical_ap_id) and follow.push_state == 'subscribed' else 'Pushed' if follow.push_state == 'subscribed' else ('Checked every ' ~ follow.poll_interval_minutes ~ ' min' if follow.polling else 'Not arriving') }} · unkept posts kept {{ (follow.retention_days ~ ' days') if follow.retention_days is not none else 'forever' }}">{{ icon('check') }} Following{{ icon('chevron-down', 'chev') }}</summary>
           <div class="card settings-card">
             <form method="post" action="/c/{{ c.id }}/follow-settings" class="stack">
               {% if is_tag(c.canonical_ap_id) %}<input type="hidden" name="poll_interval_minutes" value="{{ follow.poll_interval_minutes }}">
@@ -71,7 +71,16 @@
             </div>
             {% elif is_tag(c.canonical_ap_id) %}
             <div class="push-status small">
-              {% if not actor_handle %}
+              {% if timeline %}
+                {% if timeline_stream and timeline_stream.last_error and not timeline_stream.connected_since %}
+                <p><span class="pill bad">Mastodon</span> Your server's public timeline can't be reached:
+                  <span class="bad-text">{{ timeline_stream.last_error }}</span>. It's tried again in a few minutes at most.</p>
+                {% else %}
+                <p><span class="pill good">{{ icon('refresh') }} From Mastodon</span> Public posts tagged #{{ c.name }} on your
+                  server's public timeline ({{ timeline[2] }}) are kept as they arrive, instead of through a relay
+                  (<a href="/trending">Trending</a>, Sources). Replies are read when you open a post.</p>
+                {% endif %}
+              {% elif not actor_handle %}
               {% elif follow.push_state == 'subscribed' %}
                 <p><span class="pill good">{{ icon('refresh') }} From the relay</span> {{ actor_handle }} follows
                   <a href="{{ follow.push_actor | safe_url }}" rel="noreferrer noopener nofollow" target="_blank">the relay's #{{ c.name }}</a>:

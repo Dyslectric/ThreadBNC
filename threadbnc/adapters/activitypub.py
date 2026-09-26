@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import html as htmllib
 import re
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 from urllib.parse import urlparse
 
 from .. import languages
@@ -33,6 +33,7 @@ from .base import (
     RemoteNotFound,
     ThreadiverseAdapter,
     ThreadRef,
+    UnsupportedSoftware,
     host_of,
 )
 from .rss import html_to_markdown
@@ -204,6 +205,9 @@ class ActivityPubAdapter(ThreadiverseAdapter):
         self.actor = actor
         self.http = actor.http if actor else http
         self.bluesky = bluesky
+        # () -> whether hashtags come from your Mastodon server's public
+        # timeline (mastodon_stream.py sets it), which needs no actor either.
+        self.mastodon: Callable[[], bool] = lambda: False
 
     def _need_actor(self) -> Actor:
         if self.actor is None:
@@ -213,9 +217,12 @@ class ActivityPubAdapter(ThreadiverseAdapter):
 
     # -- communities: a hashtag has nothing to list; its posts are passed on as they're made
     def fetch_community(self, ref: CommunityRef) -> NCommunity:
-        if not self.bluesky:
+        timeline = self.mastodon()
+        if not self.bluesky and not timeline:
             self._need_actor()
-        where = " and ".join(x for x in ("across the fediverse, as a relay passes them on" if self.actor else None,
+        fediverse = ("your Mastodon server's public timeline" if timeline
+                     else "across the fediverse, as a relay passes them on" if self.actor else None)
+        where = " and ".join(x for x in (fediverse,
                                          "Bluesky, picked out of everything posted there" if self.bluesky else None) if x)
         return tag_community(ref.name, f"Public posts tagged #{ref.name} from {where}.")
 
@@ -289,6 +296,12 @@ class ActivityPubAdapter(ThreadiverseAdapter):
             sid = status_id(ap_id)
             if sid is None or self.http is None:
                 raise RemoteNotFound(f"{ap_id} can't be read back")
+            return status_post(self.http.get_json(host_of(ap_id), f"/api/v1/statuses/{sid}"), key)
+        if self.actor is None:  # from your server's public timeline: read as its own server shows anyone
+            sid = status_id(ap_id)
+            if sid is None or self.http is None:
+                raise UnsupportedSoftware(f"{ap_id} can only be read again with ThreadBNC's own ActivityPub "
+                                          "identity (THREADBNC_ACTOR_DOMAIN)")
             return status_post(self.http.get_json(host_of(ap_id), f"/api/v1/statuses/{sid}"), key)
         return self.post_from(self.fetch_object(ap_id), key, ap_id)
 

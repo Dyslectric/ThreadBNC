@@ -18,7 +18,11 @@ So following #selfhosted here:
    Its replies are read when you open it (adapters/activitypub.py).
 
 Relays pass on new posts only: edits and deletions after that are seen when
-the post is opened, as for a subreddit."""
+the post is opened, as for a subreddit.
+
+While you're subscribed to your Mastodon server's public timeline
+(mastodon_stream.py), hashtags' posts come from there instead: the relays
+are unfollowed, and followed again when you unsubscribe."""
 
 from __future__ import annotations
 
@@ -27,7 +31,7 @@ import logging
 import time
 import uuid
 from datetime import timedelta
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import quote, urlparse
 
 from .actor import INBOX_PATH, Actor, is_public
@@ -53,9 +57,13 @@ def _id(value: Any) -> str | None:
 
 
 class TagRelays:
-    def __init__(self, bouncer: Bouncer, actor: Actor, relay_template: str):
+    def __init__(self, bouncer: Bouncer, actor: Actor, relay_template: str,
+                 timeline: Callable[[], bool] | None = None):
+        """`timeline`: () -> whether hashtags come from your Mastodon server's
+        public timeline instead, so the relays aren't followed."""
         self.bouncer, self.db, self.actor = bouncer, bouncer.db, actor
         self.template = relay_template
+        self.timeline = timeline or (lambda: False)
         self._housekept = 0.0
         bouncer.follow_hooks.append(self.subscribe)
         bouncer.unfollow_hooks.append(self.unsubscribe)
@@ -80,7 +88,7 @@ class TagRelays:
         """Follow a hashtag's relay actor (a follow hook). Returns 'pending'
         once the Follow is sent, or None when it couldn't be."""
         row = self._follow_row(community_id)
-        if row is None or not row["active"] or not is_tag(row["canonical_ap_id"]):
+        if row is None or not row["active"] or not is_tag(row["canonical_ap_id"]) or self.timeline():
             return None
         relay = self.relay_actor(row["name"])
         follow_id = f"{self.actor.id}#follows/{uuid.uuid4()}"
@@ -108,9 +116,16 @@ class TagRelays:
         return "pending"
 
     def unsubscribe(self, community_id: int) -> None:
-        """Stop following a hashtag's relay (an unfollow hook)."""
+        """Stop following a hashtag's relay (an unfollow hook, and while
+        hashtags come from your Mastodon server's public timeline)."""
         row = self._follow_row(community_id)
-        if row is None or not is_tag(row["canonical_ap_id"]) or not row["push_actor"]:
+        if row is None or not is_tag(row["canonical_ap_id"]):
+            return
+        if not row["push_actor"]:
+            if row["push_state"] or row["push_error"]:  # never followed: nothing to undo
+                with self.db.transaction() as conn:
+                    conn.execute("UPDATE community_follows SET push_domain=NULL, push_state=NULL, push_error=NULL, "
+                                 "push_changed_at=? WHERE community_id=?", (utcnow(), community_id))
             return
         undo = {"@context": "https://www.w3.org/ns/activitystreams",
                 "id": f"{self.actor.id}#undo/{uuid.uuid4()}", "type": "Undo", "actor": self.actor.id,
@@ -122,22 +137,28 @@ class TagRelays:
             log.warning("unfollowing %s failed: %s", row["push_actor"], exc)
         with self.db.transaction() as conn:
             conn.execute("UPDATE community_follows SET push_domain=NULL, push_state=NULL, push_error=NULL, "
-                         "push_changed_at=?, push_follow_id=NULL WHERE community_id=?", (utcnow(), community_id))
+                         "push_changed_at=?, push_actor=NULL, push_follow_id=NULL WHERE community_id=?",
+                         (utcnow(), community_id))
 
-    def housekeeping(self) -> None:
-        """Now and then (a bouncer hook): send again the Follows a relay hasn't
-        accepted, or that couldn't be sent, and tidy old deliveries."""
-        if time.monotonic() - self._housekept < HOUSEKEEPING_EVERY:
+    def housekeeping(self, now: bool = False) -> None:
+        """Now and then (a bouncer hook), or `now`: send again the Follows a
+        relay hasn't accepted, or that couldn't be sent, and tidy old
+        deliveries. While hashtags come from your Mastodon server's public
+        timeline, unfollow the relays instead."""
+        if not now and time.monotonic() - self._housekept < HOUSEKEEPING_EVERY:
             return
         self._housekept = time.monotonic()
         stale = fmt_ts(parse_ts(utcnow()) - RESEND_AFTER)  # type: ignore[operator]
+        timeline = self.timeline()
         with self.db.connect() as conn:
-            rows = conn.execute("SELECT f.community_id, f.push_state, f.push_changed_at, c.canonical_ap_id "
-                                "FROM community_follows f JOIN communities c ON c.id=f.community_id "
-                                "WHERE f.active=1 AND c.canonical_ap_id LIKE 'tag:%' "
-                                "AND (f.push_state IS NULL OR f.push_state='pending')").fetchall()
+            rows = conn.execute("SELECT f.community_id, f.push_state, f.push_changed_at, f.push_actor, f.push_error, "
+                                "c.canonical_ap_id FROM community_follows f JOIN communities c ON c.id=f.community_id "
+                                "WHERE f.active=1 AND c.canonical_ap_id LIKE 'tag:%'").fetchall()
         for r in rows:
-            if r["push_state"] is None or (r["push_changed_at"] or "") < stale:
+            if timeline:
+                if r["push_actor"] or r["push_state"] or r["push_error"]:
+                    self.unsubscribe(r["community_id"])
+            elif r["push_state"] is None or (r["push_state"] == "pending" and (r["push_changed_at"] or "") < stale):
                 self.subscribe(r["community_id"])
         old = fmt_ts(parse_ts(utcnow()) - KEEP_DELIVERIES)  # type: ignore[operator]
         with self.db.transaction() as conn:
