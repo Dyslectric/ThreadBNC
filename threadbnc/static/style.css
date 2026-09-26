@@ -1164,10 +1164,6 @@ a.article-link.dived, a[data-dive].dived, a.video-link.dived, a.live-link.dived 
 .trend-tags { list-style: none; padding: 4px 0; margin: 0; }
 .trend-tags-heading { font-size: 1.05rem; margin: 18px 0 2px; }
 .trend-tags-heading + p { margin: 0 0 8px; }
-.story-site { margin: 0 0 4px; }
-.story-articles { list-style: none; margin: 6px 0; padding: 0 0 0 10px; border-left: 2px solid var(--line); }
-.story-articles li { margin: 3px 0; overflow-wrap: anywhere; }
-.story-articles li a { font-weight: 600; margin-right: 6px; }
 .trend-look-back { display: inline-flex; align-items: center; gap: 6px; }
 .trend-look-back label { display: inline-flex; align-items: center; gap: 4px; margin: 0; color: var(--muted); }
 .trend-look-back input[type="date"] { width: auto; padding: 3px 6px; font-size: 0.9em; }

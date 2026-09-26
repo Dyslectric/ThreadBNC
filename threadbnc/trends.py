@@ -100,11 +100,6 @@ RISING_RATIO = 2.0  # and at least this many times as many as usual
 RISING_FLOOR = 10.0  # how little a small count is trusted: see rise()
 RISING_BASELINE = 12  # hours counted before RISING_RECENT, at least, for anything to be usual
 
-# Stories: what's posted together (Tally.pair, stories.py).
-PAIR_ITEMS = 6  # of a post's links and hashtags, at most: a post stuffed with hashtags says little
-PAIR_MIN = 2  # pairs posted together fewer times in a day are forgotten once it's over
-PAIRS_KEPT = 8  # days
-
 # History: each day's most used hashtags and most posted links, kept for good.
 KEEP_TOP = 1000  # of each network, each day
 KEEP_AFTER = timedelta(minutes=5)  # after the day ends, so its last counts are in
@@ -230,7 +225,6 @@ class Tally:
         self.posts: dict[str, list[Any]] = {}  # ref -> [replies, quotes, likes, created_at]
         self.langs: dict[tuple[str, str, str], int] = {}  # ("tag" | "link", hashtag or link key, language) -> posts
         self.looked: dict[str, int] = {}  # hour -> posts looked at
-        self.pairs: dict[tuple[str, str, str], int] = {}  # (a, b, day) -> posts with both
 
     def post_tags(self, tags: Iterable[str], author: str | None = None, lang: str | None = None) -> int:
         """Count one post's hashtags (named as followed ones are), each once,
@@ -285,38 +279,9 @@ class Tally:
 
     def post(self, found: Iterable[tuple[str, str | None, str | None]], tags: Iterable[str],
              author: str | None = None, lang: str | None = None) -> None:
-        """Count one post: its links (post_links) and hashtags (post_tags), and
-        each two of them it has together (pair), for stories."""
-        found, tags = list(found), list(tags)
+        """Count one post: its links (post_links) and hashtags (post_tags)."""
         self.post_links(found, author, lang)
         self.post_tags(tags, author, lang)
-        keys = [k for k in (countable(url) for url, _title, _description in found) if k]
-        self.pair([*keys, *("#" + t for t in tags if t)], author)
-
-    def pair(self, names: Iterable[str], author: str | None = None) -> int:
-        """Count each two of one post's links and hashtags (named as
-        pair_counts has them) as posted together: once, and once an hour for
-        each `author`. Only its first PAIR_ITEMS (links first). Returns how
-        many pairs were counted."""
-        names = sorted(list(dict.fromkeys(n for n in names if n))[:PAIR_ITEMS])
-        if len(names) < 2:
-            return 0
-        hour = time.strftime(HOUR, time.gmtime())
-        day = hour[:10]
-        counted = 0
-        with self._lock:
-            if self._hour != hour:
-                self._hour, self._posted = hour, set()
-            for i, a in enumerate(names):
-                for b in names[i + 1:]:
-                    mark = (a + "\n" + b, author)
-                    if author and mark in self._posted:
-                        continue
-                    if author:
-                        self._posted.add(mark)
-                    self.pairs[(a, b, day)] = self.pairs.get((a, b, day), 0) + 1
-                    counted += 1
-        return counted
 
     def _post(self, ref: str, created_at: str | None) -> list[Any]:
         entry = self.posts.get(ref)
@@ -341,9 +306,8 @@ class Tally:
     def flush(self, db: Database) -> None:
         with self._lock:
             found, tags, posts, langs, looked = self.links, self.tags, self.posts, self.langs, self.looked
-            pairs = self.pairs
             self._clear()
-        if not found and not tags and not posts and not looked and not pairs:
+        if not found and not tags and not posts and not looked:
             return
         now = utcnow()
         # Rows in the same order every time (by their key), so two streams
@@ -353,10 +317,6 @@ class Tally:
         posts = dict(sorted(posts.items()))
         langs = dict(sorted(langs.items()))
         with db.transaction(exclusive=False) as conn:
-            conn.executemany(
-                "INSERT INTO pair_counts(a, b, day, posts) VALUES (?,?,?,?) ON CONFLICT(a, b, day) "
-                "DO UPDATE SET posts=pair_counts.posts+excluded.posts",
-                [(a, b, day, n) for (a, b, day), n in sorted(pairs.items())])
             conn.executemany(
                 "INSERT INTO trend_hours(hour, source, posts) VALUES (?,?,?) ON CONFLICT(hour, source) "
                 "DO UPDATE SET posts=trend_hours.posts+excluded.posts",
@@ -415,32 +375,10 @@ def tidy(db: Database, now: str | None = None) -> int:
                 "OR last_seen_at < ?", (once, FEW_POSTS, few, fmt_ts(moment - KEEP_COUNTS)), also=(langs, counts))
         with db.transaction(exclusive=False) as conn:
             conn.execute(f"DELETE FROM {counts} WHERE hour < ?", ((moment - KEEP_COUNTS).strftime(HOUR),))
-    _forget_pairs(db, moment)
     return _forget(db, "stream_posts", ["source", "ref"],
                    "COALESCE(created_at, first_seen_at) < ? OR (replies_seen + quotes_seen + likes_seen < ? "
                    "AND first_seen_at < ? AND checked_at IS NULL)",
                    (fmt_ts(moment - KEEP_POSTS), QUIET_SEEN, fmt_ts(moment - QUIET_AFTER)), also=("stream_post_media",))
-
-
-def _forget_pairs(db: Database, moment: datetime) -> None:
-    """Forget what was posted together before PAIRS_KEPT days ago, and the
-    pairs of each day over that were posted together fewer than PAIR_MIN
-    times: most are. A lot at a time (by `a`), each in a transaction of its own."""
-    today = moment.date()
-    with db.transaction(exclusive=False) as conn:
-        conn.execute("DELETE FROM pair_counts WHERE day < ?", ((today - timedelta(days=PAIRS_KEPT)).isoformat(),))
-    with db.connect() as conn:
-        rare = [(r["day"], r["a"]) for r in conn.execute(
-            "SELECT DISTINCT day, a FROM pair_counts WHERE day < ? AND posts < ? ORDER BY day, a",
-            (today.isoformat(), PAIR_MIN))]
-    by_day: dict[str, list[str]] = {}
-    for day, a in rare:
-        by_day.setdefault(day, []).append(a)
-    for day, names in by_day.items():
-        for chunk in _chunks(names):
-            with db.transaction(exclusive=False) as conn:
-                conn.execute(f"DELETE FROM pair_counts WHERE day=? AND posts < ? AND a IN ({_marks(chunk)})",
-                             (day, PAIR_MIN, *chunk))
 
 
 def backfill_hours(db: Database, moment: datetime) -> None:
