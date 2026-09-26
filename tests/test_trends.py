@@ -11,6 +11,8 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from urllib.parse import quote
+
 from threadbnc import articles, jetstream, mastodon_stream, trends
 from threadbnc.db import fmt_ts
 from threadbnc.jetstream import BlueskyStream
@@ -18,7 +20,7 @@ from threadbnc.web import create_app
 
 from .conftest import DOMAIN
 from .test_articles import abouncer, fake_web  # noqa: F401
-from .test_bluesky import ALICE, bsky, post_view  # noqa: F401
+from .test_bluesky import ALICE, bsky, post_view, thread  # noqa: F401
 from .test_mastodon import HOME, TOKEN, WithHome, fedi, sign_in, web  # noqa: F401
 from .test_tags import client, follow, one, run_jobs, tagged  # noqa: F401
 
@@ -53,8 +55,10 @@ def event(collection: str, record: dict, rkey: str | None = None, did: str = "di
 
 
 def post(text: str = "", link: str | None = None, title: str | None = None, facet_links=(), reply_to=None,
-         quote=None) -> dict:
+         quote=None, tags=()) -> dict:
     record: dict = {"$type": POST, "text": text, "createdAt": stamp()}
+    if tags:
+        record["tags"] = list(tags)
     if link:
         record["embed"] = {"$type": "app.bsky.embed.external", "external": {"uri": link, "title": title or "",
                                                                             "description": "About it"}}
@@ -109,8 +113,8 @@ def test_jetstream_counts_links_replies_quotes_and_likes(bouncer, listening):  #
     old = at(tid(datetime.now(timezone.utc) - timedelta(days=9)))
     when = time.time_ns() // 1000
     events = [
-        event(POST, post("Read this", link="https://news.test/story?utm_source=bsky", title="Harbour wall"),
-              did="did:plc:ann", time_us=when),
+        event(POST, post("Read this #Harbours", link="https://news.test/story?utm_source=bsky", title="Harbour wall",
+                         tags=["Harbours", "news"]), did="did:plc:ann", time_us=when),
         # The same page twice in one post counts once; an AMP copy of it is the same page.
         event(POST, post("Again", link="https://news.test/story", facet_links=["https://news.test/story/amp"]),
               did="did:plc:ben", time_us=when + 1),
@@ -120,7 +124,9 @@ def test_jetstream_counts_links_replies_quotes_and_likes(bouncer, listening):  #
         event(POST, post("Too old to count", reply_to=old), time_us=when + 5),
         event(LIKE, like(rooted), time_us=when + 6),
         # One account posting it again within the hour isn't counted again.
-        event(POST, post("And again", link="https://news.test/story"), did="did:plc:ann", time_us=when + 7),
+        event(POST, post("And again #harbours", link="https://news.test/story", tags=["harbours"]), did="did:plc:ann",
+              time_us=when + 7),
+        event(POST, post("Me too", tags=["harbours"]), did="did:plc:ben", time_us=when + 8),
     ]
     for e in events:
         listening._take(e, set(), True)
@@ -131,6 +137,9 @@ def test_jetstream_counts_links_replies_quotes_and_likes(bouncer, listening):  #
         {"source": "bluesky", "posts": 2}]
     seen = rows(bouncer, "SELECT url, title, posts FROM links_seen WHERE key=?", key)[0]
     assert seen == {"url": "https://news.test/story?utm_source=bsky", "title": "Harbour wall", "posts": 2}
+    # Hashtags too, each account once an hour.
+    assert rows(bouncer, "SELECT tag, posts FROM tag_counts ORDER BY tag") == [
+        {"tag": "harbours", "posts": 2}, {"tag": "news", "posts": 1}]
     got = rows(bouncer, "SELECT ref, replies_seen, quotes_seen, likes_seen, created_at FROM stream_posts")
     assert [(r["ref"], r["replies_seen"], r["quotes_seen"], r["likes_seen"]) for r in got] == [(rooted, 2, 1, 1)]
     assert got[0]["created_at"] == trends.post_time(rooted)
@@ -236,6 +245,30 @@ def test_counts_are_tidied(bouncer):
     assert len(rows(bouncer, "SELECT * FROM link_counts WHERE key='https://a.test/today'")) == 3
 
 
+# --- ranking hashtags -------------------------------------------------------------------
+
+def test_hashtags_used_most_are_listed(settings, bouncer):
+    for source, tags in (("bluesky", ["cats"] * 5 + ["dogs"] * 2), ("mastodon", ["cats", "birds", "dogs"])):
+        tally = trends.Tally(source)
+        for tag in tags:
+            tally.post_tags([tag])
+        tally.flush(bouncer.db)
+    with bouncer.db.connect() as conn:
+        tags, more = trends.trending_tags(conn, "day", per_page=2)
+    assert not more or [t["tag"] for t in tags] == ["cats", "dogs"]
+    assert [(t["tag"], t["bluesky"], t["mastodon"], t["total"]) for t in tags] == [("cats", 5, 1, 6), ("dogs", 2, 1, 3)]
+    assert more
+    web_client = TestClient(create_app(settings, bouncer))
+    web_client.post("/login", data={"password": "pw"})
+    page = web_client.get("/trending/tags").text
+    assert "#cats" in page and "6 posts" in page and "Bluesky 5" in page and "#birds" in page
+    assert '<input type="hidden" name="community" value="#cats">' in page
+    cid = bouncer.follow_community("#cats", None, 30, False)
+    page = web_client.get("/trending/tags").text
+    assert f'<a href="/c/{cid}">#cats</a>' in page and "Following" in page
+    assert '<input type="hidden" name="community" value="#cats">' not in page
+
+
 # --- ranking posts ---------------------------------------------------------------------
 
 def test_bluesky_posts_talked_about_have_their_totals_read(bouncer, bsky):  # noqa: F811
@@ -278,14 +311,25 @@ def test_the_trending_page(settings, bouncer, bsky):  # noqa: F811
     web_client.post("/login", data={"password": "pw"})
     page = web_client.get("/trending").text
     assert "Big thread" in page and "♥ 40" in page and 'aria-current="page">Most liked' in page
-    assert 'action="/trending/open"' in page and "not subscribed." in page
+    assert "not subscribed." in page
+    # Its replies open under it, read from Bluesky (nothing saved); keeping it saves it.
+    peek = f"/trending/peek?source=bluesky&ref={quote(at(busy), safe='/')}"
+    assert f'class="act trend-peek" href="https://bsky.app/profile/{ALICE}/post/{busy}" data-peek="{peek}"' in page
+    assert 'action="/archive"' in page
+    view = bsky.author_feed[0]["post"]
+    bsky.threads[view["uri"]] = thread(view, thread(post_view("re1", "Cute!", did="did:plc:bob",
+                                                               handle="bob.bsky.social", reply_to=view["uri"])))
+    shown = web_client.get(peek).text
+    assert "data-peek-body" in shown and "Cute!" in shown and "1 reply" in shown and "<html" not in shown
+    assert rows(bouncer, "SELECT id FROM archived_threads") == []
+    assert web_client.get("/trending/peek", params={"source": "bluesky", "ref": "at://nobody"}).status_code == 404
+    # Articles are read here, where they're listed: saved ones from the archive, others on the way.
     articles_page = web_client.get("/trending/articles?t=day").text
     assert "Big news" in articles_page and "What happened" in articles_page and "Bluesky 1" in articles_page
-    # Opening a Bluesky post saves it like one opened from a link.
-    r = web_client.post("/trending/open", data={"url": f"https://bsky.app/profile/{ALICE}/post/{busy}"},
-                        follow_redirects=False)
-    assert r.status_code == 303 and r.headers["location"].startswith("/jobs/")
-    assert web_client.post("/trending/open", data={"url": "https://masto.test/@a/1"}).status_code == 400
+    reader = "/read?url=https%3A//other.test/2026/09/big-news"
+    assert f'<a class="act read-article" href="{reader}"' in articles_page
+    assert f'<a class="read-article" href="{reader}"' in articles_page and 'target="_blank"' not in \
+        articles_page.split("pc-title")[1].split("</h2>")[0]
     # Counting Bluesky's likes from the stream, or not counting it at all.
     web_client.post("/trending/settings", data={"bluesky": "1", "bluesky_likes": "stream"})
     assert trends.settings(bouncer.db) == {"bluesky": True, "bluesky_likes": "stream"}
@@ -384,6 +428,10 @@ def test_subscribing_to_your_mastodon_servers_public_timeline(web, tagged, fedi,
         if request.url.path == "/api/v1/statuses" and request.method == "GET":
             asked.append(request.url.params.get_list("id[]"))
             return httpx.Response(200, json=[masto_status("300", "A thread", replies_count=4, favourites_count=2)])
+        if request.url.path == "/api/v1/statuses/300/context":
+            assert request.headers["authorization"] == f"Bearer {TOKEN}"
+            return httpx.Response(200, json={"ancestors": [], "descendants": [
+                masto_status("302", "A reply here", reply_to="300")]})
         if request.url.path == "/api/v1/trends/statuses":
             return httpx.Response(200, json=[
                 masto_status("400", "Everyone liked this", favourites_count=80, replies_count=0),
@@ -402,6 +450,10 @@ def test_subscribing_to_your_mastodon_servers_public_timeline(web, tagged, fedi,
                                                                             ("A thread", 2, 4)]
     assert liked[0]["view"]["handle"] == "carol@home.test"
     assert parent  # (the thread's first post, as the server returns it)
+    page = web.get("/trending?src=mastodon").text
+    assert f"data-peek=\"/trending/peek?source=mastodon&ref={HOME}/300\"" in page and "Keep</span>" not in page
+    shown = web.get("/trending/peek", params={"source": "mastodon", "ref": f"{HOME}/300"}).text
+    assert "A reply here" in shown and "carol@home.test" in shown
 
     # Unsubscribing follows the relays again.
     web.post("/trending/settings", data={"bluesky": "1", "mastodon_scope": ""})

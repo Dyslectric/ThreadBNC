@@ -9,6 +9,7 @@
       <h1>{{ icon('trending', 'title-icon') }} Trending</h1>
       <p class="muted small">
         {%- if tab == 'posts' %} What's liked and talked about most on Bluesky and Mastodon, from their streams.
+        {%- elif tab == 'tags' %} The hashtags used in the most posts on Bluesky and Mastodon.
         {%- else %} The pages posted most on Bluesky, on Mastodon and in your archive.{% endif %}</p>
     </div>
     <details class="menu trend-settings">
@@ -55,6 +56,7 @@
   <nav class="tabs" aria-label="Trending">
     <a href="/trending" class="{{ 'on' if tab == 'posts' }}" {% if tab == 'posts' %}aria-current="page"{% endif %}>{{ icon('comment') }} Posts</a>
     <a href="/trending/articles" class="{{ 'on' if tab == 'articles' }}" {% if tab == 'articles' %}aria-current="page"{% endif %}>{{ icon('article') }} Articles</a>
+    <a href="/trending/tags" class="{{ 'on' if tab == 'tags' }}" {% if tab == 'tags' %}aria-current="page"{% endif %}>{{ icon('communities') }} Tags</a>
   </nav>
 
   <p class="small muted trend-sources">
@@ -98,7 +100,7 @@
   <div id="items" class="cards" data-items>
   {% for p in posts %}
     {% set v = p.view %}
-    <article class="post-card trending-post" id="p{{ loop.index0 + (page - 1) * 25 }}" data-entry>
+    <article class="post-card trending-post" id="tp{{ loop.index0 + (page - 1) * 25 }}" data-entry>
       <div class="pc-main">
         <div class="pc-meta small">
           <span class="pill {{ 'new' if p.source == 'bluesky' else '' }}">{{ 'Bluesky' if p.source == 'bluesky' else 'Mastodon' }}</span>
@@ -122,10 +124,15 @@
             <span class="pill {{ 'new' if sort == 'replies' }}">{{ icon('comment') }} {{ p.replies or 0 }}</span>
             {% if p.reposts %}<span class="pill">{{ icon('repost') }} {{ p.reposts }}</span>{% endif %}
           </span>
-          {% if p.here %}<a class="act" href="/t/{{ p.here }}">{{ icon('comment') }}<span>Open</span></a>
-          {% elif p.source == 'bluesky' %}
-            <form method="post" action="/trending/open" class="inline"><input type="hidden" name="url" value="{{ v.url }}">
-              <button class="act">{{ icon('comment') }}<span>Open here</span></button></form>
+          {% if p.here %}
+            <a class="act inline-comments" href="/t/{{ p.here }}#comments" aria-expanded="false" title="Show its comments here, as saved">{{ icon('comment') }}<span>Comments</span></a>
+          {% else %}
+            <a class="act trend-peek" href="{{ v.url | safe_url or '#' }}" data-peek="/trending/peek?source={{ p.source }}&ref={{ p.ref | urlencode }}"
+               aria-expanded="false" title="Show its text and replies here, read from {{ 'Bluesky' if p.source == 'bluesky' else 'Mastodon' }}">{{ icon('comment') }}<span>Replies</span></a>
+            {% if p.source == 'bluesky' %}
+            <form method="post" action="/archive" class="inline"><input type="hidden" name="url" value="{{ v.url }}">
+              <button class="act" title="Save it here with its replies, and keep it">{{ icon('star') }}<span>Keep</span></button></form>
+            {% endif %}
           {% endif %}
           {% if v.url | safe_url %}<a class="act" href="{{ v.url | safe_url }}" target="_blank" rel="noreferrer noopener nofollow">{{ icon('external') }}<span>Original</span></a>{% endif %}
         </div>
@@ -141,7 +148,7 @@
   {% endif %}
   {{ load_more(base ~ '&page=' ~ (page + 1) if has_more else none, base if page > 1 else none, page) }}
 
-{% else %}
+{% elif tab == 'articles' %}
   {% set base = '/trending/articles?t=' ~ window %}
   <div class="feed-controls article-controls">
     <nav class="seg" aria-label="Time range">
@@ -156,7 +163,8 @@
   <div id="items" class="cards" data-items>
   {% for a in articles %}
     {% set original = a.canonical_url or a.fetched_from or a.url %}
-    <article class="post-card article-card trending-article" {% if a.id %}id="a{{ a.id }}" data-open="/a/{{ a.id }}"{% endif %} data-entry>
+    {% set reader = ('/a/' ~ a.id) if a.id else ('/read?url=' ~ (a.url | urlencode)) %}
+    <article class="post-card article-card trending-article" id="{{ ('a' ~ a.id) if a.id else ('ta' ~ (loop.index0 + (page - 1) * 25)) }}" data-open="{{ reader }}" data-entry>
       {% if a.picture %}
         <a class="thumb" href="/a/{{ a.id }}" tabindex="-1" aria-hidden="true"><img src="{{ thumb(a.picture, 'list') }}" alt="" loading="lazy"></a>
       {% endif %}
@@ -172,15 +180,13 @@
           {% if a.id and a.status == 'pending' %}<span class="pill warn">not read yet</span>
           {% elif a.id and a.status != 'ok' %}<span class="pill warn">couldn't be read</span>{% endif %}
         </div>
-        <h2 class="pc-title">{% if a.id %}<a href="/a/{{ a.id }}">{{ a.title or original }}</a>
-          {% elif original | safe_url %}<a href="{{ original | safe_url }}" target="_blank" rel="noreferrer noopener nofollow">{{ a.title or original }}</a>
-          {% else %}{{ a.title or original }}{% endif %}</h2>
+        <h2 class="pc-title"><a class="read-article" href="{{ reader }}" aria-expanded="false">{{ a.title or original }}</a></h2>
         {% if a.excerpt %}<p class="pc-excerpt">{{ a.excerpt }}</p>{% endif %}
         <div class="pc-actions actions small">
-          {% if a.id %}<a class="act" href="/a/{{ a.id }}">{{ icon('article') }}<span>{{ 'Read' if a.status == 'ok' else 'Details' }}</span></a>{% endif %}
+          <a class="act read-article" href="{{ reader }}" aria-expanded="false" title="Read it here">{{ icon('article') }}<span>{{ 'Details' if a.id and a.status not in ('ok', 'pending') else 'Read' }}</span></a>
           {% if original | safe_url %}<a class="act" href="{{ original | safe_url }}" target="_blank" rel="noreferrer noopener nofollow">{{ icon('external') }}<span>Original</span></a>{% endif %}
           {% if a.latest_post %}
-          <a class="act" href="/t/{{ a.latest_post.tid }}">{{ icon('comment') }}<span>Latest in {{ chandle(a.latest_post.cname, a.latest_post.c_ap) }}</span></a>
+          <a class="act inline-comments" href="/t/{{ a.latest_post.tid }}#comments" aria-expanded="false" title="Show its comments here">{{ icon('comment') }}<span>Latest in {{ chandle(a.latest_post.cname, a.latest_post.c_ap) }}</span></a>
           <span class="muted" title="{{ a.latest_posted_at | absolute }}">latest {{ when(a.latest_posted_at) }}</span>
           {% endif %}
         </div>
@@ -191,6 +197,44 @@
 
   {% if not articles %}
     <section class="card empty"><p class="muted">No links posted in this time range yet.</p></section>
+  {% endif %}
+  {{ load_more(base ~ '&page=' ~ (page + 1) if has_more else none, base if page > 1 else none, page) }}
+
+{% else %}
+  {% set base = '/trending/tags?t=' ~ window %}
+  <div class="feed-controls article-controls">
+    <nav class="seg" aria-label="Time range">
+      {% for key, label in [('day', 'Day'), ('week', 'Week'), ('month', 'Month')] %}
+        <a href="/trending/tags?t={{ key }}" class="{{ 'on' if window == key }}"
+           {% if window == key %}aria-current="page"{% endif %}>{{ label }}</a>
+      {% endfor %}
+    </nav>
+    <span class="muted small">Each account counts once an hour for a hashtag.</span>
+  </div>
+
+  {% if tags %}
+  <ol class="card trend-tags" start="{{ (page - 1) * per_page + 1 }}" data-items>
+  {% for t in tags %}
+    <li class="trend-tag" data-entry>
+      <span class="trend-tag-name">{% if t.community_id %}<a href="/c/{{ t.community_id }}">#{{ t.tag }}</a>{% else %}#{{ t.tag }}{% endif %}</span>
+      <span class="trend-tag-counts small">
+        <span class="pill new">{{ t.total }} post{{ 's' if t.total != 1 }}</span>
+        {% if t.bluesky %}<span class="muted">Bluesky {{ t.bluesky }}</span>{% endif %}
+        {% if t.mastodon %}<span class="muted">Mastodon {{ t.mastodon }}</span>{% endif %}
+      </span>
+      <span class="trend-tag-actions small">
+        {% if t.following %}<a class="act" href="/c/{{ t.community_id }}">{{ icon('check') }}<span>Following</span></a>
+        {% else %}
+        <form method="post" action="/follow" class="inline"><input type="hidden" name="community" value="#{{ t.tag }}">
+          <button class="act" title="Follow #{{ t.tag }}: its posts arrive in your feed from now on">{{ icon('plus') }}<span>Follow</span></button></form>
+        {% endif %}
+        <a class="act" href="https://bsky.app/hashtag/{{ t.tag | urlencode }}" target="_blank" rel="noreferrer noopener nofollow" title="On Bluesky">{{ icon('external') }}<span class="sr-only">#{{ t.tag }} on Bluesky</span></a>
+      </span>
+    </li>
+  {% endfor %}
+  </ol>
+  {% else %}
+    <section class="card empty"><p class="muted">No hashtags counted in this time range yet.</p></section>
   {% endif %}
   {{ load_more(base ~ '&page=' ~ (page + 1) if has_more else none, base if page > 1 else none, page) }}
 {% endif %}

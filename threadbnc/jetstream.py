@@ -152,8 +152,8 @@ def _uri(value: Any) -> Any:
 
 def count(event: dict[str, Any], tally: trends.Tally) -> None:
     """Count what an event says for the Trending page (trends.py): a new
-    post's links, and the post it replies to (its thread's first) or quotes;
-    a like of a recent post."""
+    post's links and hashtags, and the post it replies to (its thread's
+    first) or quotes; a like of a recent post."""
     made = _created(event, POST)
     if made is not None:
         record = made[1]
@@ -164,6 +164,7 @@ def count(event: dict[str, Any], tally: trends.Tally) -> None:
         if (at := _recent(quoted)) is not None:
             tally.quote(quoted, at)  # type: ignore[arg-type]
         tally.post_links(trends.bluesky_links(record), event.get("did"))
+        tally.post_tags(record_tags(record), event.get("did"))
         return
     liked = _created(event, LIKE)
     if liked is not None:

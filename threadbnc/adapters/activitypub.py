@@ -311,46 +311,53 @@ class ActivityPubAdapter(ThreadiverseAdapter):
         It's never the complete tree (servers only know the replies that
         reached them), so nothing missing from it is taken for deleted."""
         _, _, ap_id = post_local_id.partition(" ")
-        out = CommentList()
-        out.complete = False
         status = status_id(ap_id)
         if status is None or self.http is None:
-            return out
+            return context_comments(None, "")
         try:
             context = self.http.get_json(host_of(ap_id), f"/api/v1/statuses/{status}/context")
         except RemoteNotFound:
-            return out
+            return context_comments(None, status)
         except RemoteAuthError:  # the server doesn't show replies to visitors
-            return out
-        replies = context.get("descendants") if isinstance(context, dict) else None
-        uris = {status: None}
-        for s in replies or []:
-            if isinstance(s, dict) and s.get("id") and s.get("uri"):
-                uris[str(s["id"])] = s["uri"]
-        for s in replies or []:
-            if not isinstance(s, dict) or not s.get("uri"):
-                continue
-            account = s.get("account") or {}
-            body = html_to_markdown(s.get("content"), s["uri"])
-            if s.get("spoiler_text"):
-                body = f"**CW: {s['spoiler_text']}**\n\n{body}"
-            for m in s.get("media_attachments") or []:
-                if isinstance(m, dict) and m.get("url"):
-                    alt = (m.get("description") or "").replace("]", "")
-                    body += f"\n\n![{alt}]({m['url']})" if m.get("type") == "image" else f"\n\n[{m['type']}]({m['url']})"
-            acct_uri = account.get("uri") or account.get("url") or ""
-            out.append(NComment(
-                ap_id=s["uri"],
-                local_id=s["uri"],
-                parent_local_id=uris.get(str(s.get("in_reply_to_id"))),
-                body=body or None,
-                created_at=s.get("created_at"),
-                updated_at=s.get("edited_at"),
-                deleted=False, removed=False,
-                author=NActor(acct_uri, account.get("username") or "?", host_of(acct_uri),
-                              account.get("display_name") or None),
-                score=s.get("favourites_count"),
-                upvotes=s.get("favourites_count"),
-                reply_count=s.get("replies_count"),
-            ))
-        return out
+            return context_comments(None, status)
+        return context_comments(context, status)
+
+
+def context_comments(context: Any, status: str) -> CommentList:
+    """The replies in a Mastodon API status context (/api/v1/statuses/<id>/context)
+    of the status `status`, as comments. Never the complete tree: a server
+    only knows the replies that reached it, so nothing missing is taken for deleted."""
+    out = CommentList()
+    out.complete = False
+    replies = context.get("descendants") if isinstance(context, dict) else None
+    uris: dict[str, str | None] = {status: None}
+    for s in replies or []:
+        if isinstance(s, dict) and s.get("id") and s.get("uri"):
+            uris[str(s["id"])] = s["uri"]
+    for s in replies or []:
+        if not isinstance(s, dict) or not s.get("uri"):
+            continue
+        account = s.get("account") or {}
+        body = html_to_markdown(s.get("content"), s["uri"])
+        if s.get("spoiler_text"):
+            body = f"**CW: {s['spoiler_text']}**\n\n{body}"
+        for m in s.get("media_attachments") or []:
+            if isinstance(m, dict) and m.get("url"):
+                alt = (m.get("description") or "").replace("]", "")
+                body += f"\n\n![{alt}]({m['url']})" if m.get("type") == "image" else f"\n\n[{m['type']}]({m['url']})"
+        acct_uri = account.get("uri") or account.get("url") or ""
+        out.append(NComment(
+            ap_id=s["uri"],
+            local_id=s["uri"],
+            parent_local_id=uris.get(str(s.get("in_reply_to_id"))),
+            body=body or None,
+            created_at=s.get("created_at"),
+            updated_at=s.get("edited_at"),
+            deleted=False, removed=False,
+            author=NActor(acct_uri, account.get("username") or "?", host_of(acct_uri),
+                          account.get("display_name") or None),
+            score=s.get("favourites_count"),
+            upvotes=s.get("favourites_count"),
+            reply_count=s.get("replies_count"),
+        ))
+    return out

@@ -575,6 +575,23 @@ CREATE TABLE IF NOT EXISTS links_seen (
     posts BIGINT NOT NULL DEFAULT 0    -- all counted, for tidying away the ones posted once
 );
 
+-- Hashtags used on Bluesky and Mastodon, counted like links (trends.py).
+CREATE TABLE IF NOT EXISTS tag_counts (
+    tag TEXT NOT NULL,                 -- as followed ones are named: lowercase, no #
+    hour TEXT NOT NULL,
+    source TEXT NOT NULL,
+    posts BIGINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (tag, hour, source)
+);
+CREATE INDEX IF NOT EXISTS tag_counts_hour ON tag_counts(hour);
+
+CREATE TABLE IF NOT EXISTS tags_seen (
+    tag TEXT PRIMARY KEY,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    posts BIGINT NOT NULL DEFAULT 0
+);
+
 -- Posts on Bluesky and Mastodon that the streams showed people replying to,
 -- quoting or liking (trends.py): what's counted as it arrives, and the totals
 -- as last read from Bluesky's AppView or your Mastodon server. Kept a week.

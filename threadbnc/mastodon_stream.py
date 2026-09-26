@@ -41,7 +41,7 @@ from websockets.sync.client import connect
 
 from . import trends
 from .adapters import TAG_DOMAIN, RemoteError, RemoteNotFound, normalize_tag
-from .adapters.activitypub import plain_text, status_post
+from .adapters.activitypub import context_comments, plain_text, status_post
 from .bouncer import Bouncer
 from .db import fmt_ts, parse_ts, utcnow
 from .traffic import record, tagged
@@ -144,6 +144,8 @@ class MastodonStream:
         self._stop = threading.Event()
         self._streaming: dict[str, str] = {}  # your server -> where its stream is
         self._checked = self._trending = 0.0
+        self._peek_lock = threading.Lock()
+        self._peeked: dict[str, tuple[float, dict[str, Any]]] = {}  # ref -> (when, what peek() read)
         # What the Trending and hashtag pages say of it.
         self.connected_since: str | None = None
         self.connected_to: str | None = None
@@ -279,7 +281,9 @@ class MastodonStream:
         if reply_to:
             self.tally.reply(f"{domain}/{reply_to}")
         account = status.get("account") if isinstance(status.get("account"), dict) else {}
-        self.tally.post_links(status_links(status), account.get("url") or account.get("acct"))
+        author = account.get("url") or account.get("acct")
+        self.tally.post_links(status_links(status), author)
+        self.tally.post_tags(status_tags(status), author)
         if not reply_to and status.get("visibility", "public") == "public":
             tag = next((t for t in status_tags(status) if t in tags), None)
             if tag and not self.bouncer._existing_thread(status["uri"]):
@@ -316,6 +320,38 @@ class MastodonStream:
         tid = self.bouncer._ingest_post(post, TAG_DOMAIN, post.local_id, adapter, capture=True,
                                         source_url=post.ap_id, retention="auto")
         return {"thread_id": tid}
+
+    # -- a post's replies, read when it's expanded on Trending ------------------------
+    def peek(self, ref: str, uri: str | None, text: str | None) -> dict[str, Any]:
+        """A Mastodon post from Trending, expanded: its text, then its replies,
+        read from your server (it's `ref` there) while you're subscribed to
+        it, else from the post's own server as it shows anyone. Nothing is
+        saved; what's read is shown again for PEEK_FRESH seconds without asking."""
+        from .discussions import PEEK_FRESH, reply_tree
+
+        with self._peek_lock:
+            hit = self._peeked.get(ref)
+        if hit and time.monotonic() - hit[0] < PEEK_FRESH:
+            return hit[1]
+        wanted = self.wanted()
+        domain, _, sid = ref.partition("/")
+        try:
+            if wanted and wanted[0] == domain:
+                context = self._get(wanted, f"/api/v1/statuses/{sid}/context")
+                comments = context_comments(context, sid)
+            elif uri:
+                comments = self.bouncer.tag_adapter.fetch_comments(f"peek {uri}")
+            else:
+                raise RemoteNotFound("It can't be read without your Mastodon server")
+        except RemoteError as exc:
+            return {"body": None, "text": text, "replies": None, "more": 0, "error": str(exc)}
+        replies, more = reply_tree(comments)
+        got = {"body": None, "text": text, "replies": replies, "count": len(comments), "more": more, "error": None}
+        with self._peek_lock:
+            now = time.monotonic()
+            self._peeked = {k: v for k, v in self._peeked.items() if now - v[0] < PEEK_FRESH}
+            self._peeked[ref] = (now, got)
+        return got
 
     # -- totals, for Trending --------------------------------------------------------
     def upkeep(self) -> None:
