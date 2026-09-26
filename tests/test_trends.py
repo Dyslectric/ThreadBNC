@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 
 from urllib.parse import quote
 
-from threadbnc import articles, jetstream, languages, mastodon_stream, trends
+from threadbnc import articles, jetstream, languages, mastodon_stream, stories, trends
 from threadbnc.db import fmt_ts
 from threadbnc.jetstream import BlueskyStream
 from threadbnc.web import create_app
@@ -966,3 +966,66 @@ def test_each_days_most_posted_are_kept_in_history(settings, bouncer, monkeypatc
     assert page.index("Big story") < page.index("Small story") and "30 posts" in page
     assert "src=archive" not in page  # the archive's links aren't kept by the day
     assert "Nothing was kept" in web_client.get("/trending/tags", params={"on": "2020-01-01"}).text
+
+
+# --- stories ------------------------------------------------------------------------------
+
+def test_what_is_posted_together_is_counted(bouncer, monkeypatch):
+    monkeypatch.setattr(trends, "PAIR_ITEMS", 3)
+    tally = trends.Tally("bluesky")
+    quake = "https://news.test/2026/09/quake"
+    tally.post([(quake, "Quake", None)], ["earthquake", "japan"], "did:plc:ann")
+    tally.post([(quake + "?utm_source=x", None, None)], ["earthquake"], "did:plc:ann")  # the same account, same hour
+    tally.post([(quake, None, None)], ["earthquake", "tsunami", "news"], "did:plc:ben")  # links first, then 3 at most
+    tally.post([], ["alone"], "did:plc:cat")
+    tally.flush(bouncer.db)
+    key = trends.countable(quake)
+    got = {(r["a"], r["b"]): r["posts"] for r in rows(bouncer, "SELECT a, b, posts FROM pair_counts")}
+    assert got == {("#earthquake", key): 2, ("#japan", key): 1, ("#earthquake", "#japan"): 1,
+                   ("#tsunami", key): 1, ("#earthquake", "#tsunami"): 1}
+    assert rows(bouncer, "SELECT posts FROM link_counts") == [{"posts": 2}]  # still counted as before
+    # Pairs posted together once in a day that's over, and any over a week old, are forgotten.
+    now = datetime.now(timezone.utc)
+    with bouncer.db.transaction() as conn:
+        conn.executemany("INSERT INTO pair_counts(a, b, day, posts) VALUES (?,?,?,?)",
+                         [("#a", "#b", (now - timedelta(days=2)).date().isoformat(), 1),
+                          ("#a", "#c", (now - timedelta(days=2)).date().isoformat(), 5),
+                          ("#a", "#d", (now - timedelta(days=9)).date().isoformat(), 50)])
+    trends.tidy(bouncer.db)
+    left = {(r["a"], r["b"]) for r in rows(bouncer, "SELECT a, b FROM pair_counts")}
+    assert ("#a", "#c") in left and ("#a", "#b") not in left and ("#a", "#d") not in left
+    assert ("#japan", key) in left  # today's aren't over yet
+
+
+def test_stories_group_what_is_posted_together(settings, bouncer):
+    counting(bouncer, "bluesky")
+    quake, quake2, cat = "https://news.test/2026/quake", "https://other.test/2026/quake-live", "https://pets.test/cat"
+    for key, posts in ((quake, 40), (quake2, 25), (cat, 30)):
+        counted(bouncer, "link_counts", key, "bluesky", [0], posts, url=key)
+    for tag, posts in (("news", 500), ("earthquake", 60), ("caturday", 50), ("tsunami", 20)):
+        counted(bouncer, "tag_counts", tag, "bluesky", [0], posts)
+    today = datetime.now(timezone.utc).date().isoformat()
+    together = [(quake, "#earthquake", 20), (quake2, "#earthquake", 12), (quake, quake2, 5),
+                ("#earthquake", "#tsunami", 10), (quake, "#news", 8), ("#earthquake", "#news", 10),
+                (cat, "#caturday", 15)]
+    with bouncer.db.transaction() as conn:
+        conn.executemany("INSERT INTO pair_counts(a, b, day, posts) VALUES (?,?,?,?)",
+                         [(min(a, b), max(a, b), today, n) for a, b, n in together])
+    with bouncer.db.connect() as conn:
+        articles_ = trends.order_articles(trends.ranked_articles(conn, "day"))
+        tags, _ = trends.trending_tags(conn, "day", 1, 60)
+        got = stories.stories(conn, articles_, tags, "day")
+    # #news is posted with the quake, but it's posted with far more besides: a story of its own.
+    assert [([a["url"] for a in s["articles"]], [t["tag"] for t in s["tags"]]) for s in got] == [
+        ([], ["news"]),
+        ([quake, quake2], ["earthquake", "tsunami"]),
+        ([cat], ["caturday"]),
+    ]
+    assert got[1]["lead"] == "tag" and got[1]["measure"] == 60 and got[1]["linked"] == 20 + 17 + 10
+    page = logged_in(settings, bouncer).get("/trending/stories").text
+    assert 'href="/trending/stories" class="on" aria-current="page"' in page
+    assert page.index("#news") < page.index(f"Page {quake}") < page.index(f"Page {quake2}") < page.index(f"Page {cat}")
+    assert "2 articles · 2 hashtags · posted together 47 times" in page
+    assert '<input type="hidden" name="community" value="#news">' in page  # a hashtag's story: follow it
+    rising = logged_in(settings, bouncer).get("/trending/stories", params={"t": "rising"}).text
+    assert "posts in 6 hours" in rising and "compared with the week before" in rising

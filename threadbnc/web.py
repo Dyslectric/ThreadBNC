@@ -38,6 +38,7 @@ from . import media as media_mod
 from . import storage as storage_mod
 from . import thumbs as thumbs_mod
 from . import traffic as traffic_mod
+from . import stories as stories_mod
 from . import trends as trends_mod
 from . import hidden as hidden_mod
 from . import sidebar as sidebar_mod
@@ -1232,6 +1233,37 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                       page=page, has_more=has_more, status=trending_status(), cached=trends_mod.TOP_CACHED,
                       langs=langs, history=history, span=span, **trend_consts,
                       params=trend_params(t=window, src=source, lang="all" if langs["all"] else None, on=day))
+
+    STORIES_PAGE = 15
+    told: dict[tuple[Any, ...], tuple[float, list[dict[str, Any]]]] = {}
+
+    @app.get("/trending/stories", response_class=HTMLResponse)
+    def trending_stories(request: Request, t: str = "day", src: str = "all", page: int = 1, lang: str = ""):
+        """The articles and hashtags at the top of Trending, grouped into
+        stories by what's posted together (stories.py)."""
+        window = t if t in stories_mod.WINDOWS else "day"
+        source = src if src in trends_mod.SOURCES else "all"
+        chosen = None if source == "all" else source
+        page = max(1, page)
+        langs = trend_languages(lang)
+        key = (window, chosen, tuple(langs["codes"]), archive_skips())
+        hit = told.get(key)
+        if hit and time.monotonic() - hit[0] < RANK_FOR:
+            found = hit[1]
+        else:
+            with db.connect() as conn:
+                ranked = trends_mod.order_articles(ranking(window), chosen, window == "rising", langs["codes"])
+                tags, _ = trends_mod.trending_tags(conn, window, 1, stories_mod.TAKEN, source=chosen,
+                                                   codes=langs["codes"])
+                found = stories_mod.stories(conn, ranked, tags, window, chosen)
+            told[key] = (time.monotonic(), found)
+        shown = found[(page - 1) * STORIES_PAGE:page * STORIES_PAGE]
+        with db.connect() as conn:
+            span = trends_mod.rising_span(conn) if window == "rising" else None
+        return render(request, "trending.html", tab="stories", stories=shown, window=window, source=source,
+                      page=page, has_more=len(found) > page * STORIES_PAGE, status=trending_status(), langs=langs,
+                      span=span, **trend_consts, first=(page - 1) * STORIES_PAGE,
+                      params=trend_params(t=window, src=source, lang="all" if langs["all"] else None))
 
     @app.get("/trending/tags", response_class=HTMLResponse)
     def trending_tags(request: Request, t: str = "day", src: str = "all", page: int = 1, lang: str = "",

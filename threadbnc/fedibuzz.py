@@ -161,8 +161,7 @@ class FediBuzzStream:
         account = status.get("account") if isinstance(status.get("account"), dict) else {}
         author = account.get("url") or account.get("uri") or account.get("acct")
         lang = languages.normalize(status.get("language"))
-        self.tally.post_links(status_links(status), author, lang)
-        self.tally.post_tags(status_tags(status), author, lang)
+        self.tally.post(status_links(status), status_tags(status), author, lang)
 
     def start_thread(self) -> threading.Thread:
         t = threading.Thread(target=self.run_forever, name="fedibuzz-stream", daemon=True)

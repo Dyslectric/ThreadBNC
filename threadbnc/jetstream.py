@@ -164,8 +164,7 @@ def count(event: dict[str, Any], tally: trends.Tally) -> None:
         if (at := _recent(quoted)) is not None:
             tally.quote(quoted, at)  # type: ignore[arg-type]
         lang = trends.record_lang(record)
-        tally.post_links(trends.bluesky_links(record), event.get("did"), lang)
-        tally.post_tags(record_tags(record), event.get("did"), lang)
+        tally.post(trends.bluesky_links(record), record_tags(record), event.get("did"), lang)
         return
     liked = _created(event, LIKE)
     if liked is not None:
