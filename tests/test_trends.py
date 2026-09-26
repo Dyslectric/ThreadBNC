@@ -856,6 +856,35 @@ def test_hashtags_rising_are_those_used_far_more_than_usual(settings, bouncer):
     assert "#birds" in page and "#quake" not in page and "Mastodon was counted for under 12 hours" in page
 
 
+def test_each_hashtag_shows_its_heat_over_the_time_shown(settings, bouncer):
+    counting(bouncer, "bluesky", hours=range(0, 24 * 5))
+    counted(bouncer, "tag_counts", "quake", "bluesky", [1], 30)
+    counted(bouncer, "tag_counts", "quake", "bluesky", [3], 10)
+    counted(bouncer, "tag_counts", "quake", "mastodon", [2], 8)  # Mastodon wasn't counting then: its posts still show
+    with bouncer.db.connect() as conn:
+        day = trends.tag_heat(conn, ["quake", "none"], "day")
+        rising = trends.tag_heat(conn, ["quake"], "rising")
+        bluesky = trends.tag_heat(conn, ["quake"], "day", "bluesky")
+        week = trends.tag_heat(conn, ["quake"], "week")
+    # The past day by the hour, as its counts are (25 hours, from the start of the first), now last.
+    assert day["hourly"] and len(day["cells"]) == 25 and day["cells"][-1]["at"] == hour_ago(0)
+    cells = day["tags"]["quake"]["cells"]
+    assert [c["posts"] for c in cells[-4:]] == [10, 8, 30, 0] and [c["level"] for c in cells[-4:]] == [2, 2, 4, 0]
+    assert day["tags"]["quake"]["busiest"] == 23 and day["tags"]["none"]["busiest"] is None
+    assert all(c["counted"] for c in day["cells"]) and not any(c["marked"] for c in day["cells"])
+    assert [c["posts"] for c in bluesky["tags"]["quake"]["cells"][-4:]] == [10, 0, 30, 0]
+    # Rising: the past 24 hours, those it compares marked; a week by the day.
+    assert len(rising["cells"]) == 24 and [c["marked"] for c in rising["cells"]].count(True) == 7
+    assert not week["hourly"] and [c["at"] for c in week["cells"]][-1] == datetime.now(timezone.utc).date().isoformat()
+    assert len(week["cells"]) == 7 and sum(c["posts"] for c in week["tags"]["quake"]["cells"]) == 48
+    page = logged_in(settings, bouncer).get("/trending/tags").text
+    assert 'class="trend-heat" role="img" aria-label="#quake: busiest ' in page and ", 30 posts\"" in page
+    assert f'title="{hour_ago(1)[:10]} {hour_ago(1)[11:13]}:00 UTC: 30 posts"' in page
+    assert "Each hashtag's posts in the past day, by the hour (UTC)." in page
+    assert "the past 6, which Rising compares, are underlined" in logged_in(settings, bouncer).get(
+        "/trending/tags", params={"t": "rising"}).text
+
+
 def test_articles_can_be_ranked_by_one_network_and_rising(settings, bouncer):
     counting(bouncer, "bluesky", "mastodon")
     for n, (source, hours, posts) in enumerate([("bluesky", range(0, 24 * 5), 20),  # posted a lot, always
@@ -960,6 +989,10 @@ def test_each_days_most_posted_are_kept_in_history(settings, bouncer, monkeypatc
     page = web_client.get("/trending/tags", params={"on": day}).text
     assert f"Hashtags on {day}" in page and page.index("#cats") < page.index("#dogs") < page.index("#birds")
     assert "Back to now" in page and "Bluesky was counted 24 of its 24 hours" in page
+    # Each hashtag's heat is the week around the day, by the day, as History kept it.
+    before = (now - timedelta(days=4)).date().isoformat()
+    assert "the day itself underlined" in page and 'class="hc h4 marked"' in page and f'title="{day}: 50 posts"' in page
+    assert f'title="{before}: not counted"' in page
     page = web_client.get("/trending/tags", params={"on": day, "src": "mastodon"}).text
     assert "#birds" in page and "#cats" not in page
     page = web_client.get("/trending/articles", params={"on": day}).text
@@ -1015,18 +1048,15 @@ def test_stories_group_what_is_posted_together(settings, bouncer):
         articles_ = trends.order_articles(trends.ranked_articles(conn, "day"))
         tags, _ = trends.trending_tags(conn, "day", 1, 60)
         got = stories.stories(conn, articles_, tags, "day")
-    # #news is posted with the quake, but it's posted with far more besides: a story of its own.
-    assert [([a["url"] for a in s["articles"]], [t["tag"] for t in s["tags"]]) for s in got] == [
-        ([], ["news"]),
-        ([quake, quake2], ["earthquake", "tsunami"]),
-        ([cat], ["caturday"]),
-    ]
-    assert got[1]["lead"] == "tag" and got[1]["measure"] == 60 and got[1]["linked"] == 20 + 17 + 10
+    # #news is posted with the quake, but it's posted with far more besides: it joins nothing. Hashtags
+    # only join articles together, so a story of hashtags alone isn't one.
+    assert [[a["url"] for a in s["articles"]] for s in got] == [[quake, quake2], [cat]]
+    assert got[0]["measure"] == 40 and got[0]["linked"] == 20 + 17 + 10 and "tags" not in got[0]
     page = logged_in(settings, bouncer).get("/trending/stories").text
     assert 'href="/trending/stories" class="on" aria-current="page"' in page
-    assert page.index("#news") < page.index(f"Page {quake}") < page.index(f"Page {quake2}") < page.index(f"Page {cat}")
-    assert "2 articles · 2 hashtags · posted together 47 times" in page
-    assert '<input type="hidden" name="community" value="#news">' in page  # a hashtag's story: follow it
+    assert page.index(f"Page {quake}") < page.index(f"Page {quake2}") < page.index(f"Page {cat}")
+    assert "2 articles · posted together 47 times" in page and "40 posts" in page
+    assert "#news" not in page and "#earthquake" not in page and 'name="community"' not in page
     rising = logged_in(settings, bouncer).get("/trending/stories", params={"t": "rising"}).text
     assert "posts in 6 hours" in rising and "compared with the week before" in rising
 

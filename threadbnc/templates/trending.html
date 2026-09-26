@@ -41,6 +41,10 @@
   <p class="small muted">The day in UTC, as kept in History: the {{ '{:,}'.format(keep_top) }} most posted on each network.
     {% for s, n in h.counted.items() %}{{ 'Bluesky' if s == 'bluesky' else 'Mastodon' }} was counted {{ n }} of its 24 hours{{ '; ' if not loop.last else '.' }}{% endfor %}</p>
 {% endmacro %}
+{#- When a heat strip's cell is: '2026-09-26 14:00 UTC', or the day. -#}
+{% macro heat_at(c) -%}
+  {%- if heat.hourly %}{{ c.at[:10] }} {{ c.at[11:13] }}:00 UTC{% else %}{{ c.at }}{% endif -%}
+{%- endmacro %}
 {% macro rising_note() %}
   {% if span %}
   <p class="small muted">Posted at least {{ 'twice' if ratio == '2' else ratio ~ ' times' }} as much as usual in the past {{ rising_hours }} hours, compared with the week before;
@@ -54,7 +58,7 @@
       <h1>{{ icon('trending', 'title-icon') }} Trending</h1>
       <p class="muted small">
         {%- if tab == 'posts' %} What's liked and talked about most on Bluesky and Mastodon, from their streams.
-        {%- elif tab == 'stories' %} What's being talked about: the articles and hashtags at the top of Trending, grouped by what's posted together.
+        {%- elif tab == 'stories' %} What's being talked about: the articles at the top of Trending, grouped by what's posted together.
         {%- elif tab == 'tags' %} The hashtags used in the most posts on Bluesky and Mastodon, and those rising.
         {%- else %} The pages posted most on Bluesky, on Mastodon and in your archive, and those rising.{% endif %}</p>
     </div>
@@ -272,61 +276,34 @@
 
   <div id="items" class="cards" data-items>
   {% for s in stories %}
-    {% set head = s.articles[0] if s.articles else none %}
+    {% set head = s.articles[0] %}
+    {% set reader = ('/a/' ~ head.id) if head.id else ('/read?url=' ~ (head.url | urlencode)) %}
     <article class="post-card story-card" id="story-{{ first + loop.index }}" data-entry>
       <div class="pc-main">
         <div class="pc-meta small">
-          {% set lead = (s.articles[0] if s.lead == 'article' else s.tags[0]) %}
           {% if window == 'rising' %}
-            <span class="pill new" title="The busiest of it, posted in the past {{ rising_hours }} hours">{{ lead.recent if s.lead == 'article' else lead.total }} posts in {{ rising_hours }} hours</span>
+            <span class="pill new" title="The busiest of it, posted in the past {{ rising_hours }} hours">{{ head.recent }} posts in {{ rising_hours }} hours</span>
           {% else %}
             <span class="pill new" title="The busiest of it">{{ s.measure | int }} post{{ 's' if s.measure != 1 }}</span>
           {% endif %}
-          {% set parts = [] %}
-          {% if s.articles | length > 1 %}{% set _ = parts.append(s.articles | length ~ ' articles') %}{% endif %}
-          {% if s.tags | length > 1 %}{% set _ = parts.append(s.tags | length ~ ' hashtags') %}{% endif %}
-          {% if s.linked %}{% set _ = parts.append('posted together ' ~ s.linked ~ (' times' if s.linked != 1 else ' time')) %}{% endif %}
-          {% if parts %}<span class="muted" title="Posts with two of these together: {{ s.linked }}">{{ parts | join(' · ') }}</span>{% endif %}
+          {% if s.articles | length > 1 %}<span class="muted" title="Posts with two of its articles, or of the hashtags joining them, together">{{ s.articles | length }} articles · posted together {{ s.linked }} time{{ 's' if s.linked != 1 }}</span>{% endif %}
         </div>
-        {% if head %}
-          {% set reader = ('/a/' ~ head.id) if head.id else ('/read?url=' ~ (head.url | urlencode)) %}
-          <h2 class="pc-title"><a class="read-article" href="{{ reader }}" aria-expanded="false">{{ head.title or head.url }}</a></h2>
-          <p class="small muted story-site">{{ head.site_name or ((head.canonical_url or head.url) | host) }}</p>
-        {% else %}
-          {% set t = s.tags[0] %}
-          <h2 class="pc-title">{% if t.community_id %}<a href="/c/{{ t.community_id }}">#{{ t.tag }}</a>{% else %}#{{ t.tag }}{% endif %}</h2>
-        {% endif %}
+        <h2 class="pc-title"><a class="read-article" href="{{ reader }}" aria-expanded="false">{{ head.title or head.url }}</a></h2>
+        <p class="small muted story-site">{{ head.site_name or ((head.canonical_url or head.url) | host) }}</p>
         {% if s.articles | length > 1 %}
         <ul class="story-articles small">
           {% for a in s.articles[1:6] %}
-            {% set reader = ('/a/' ~ a.id) if a.id else ('/read?url=' ~ (a.url | urlencode)) %}
-            <li><a class="read-article" href="{{ reader }}" aria-expanded="false">{{ a.title or a.url }}</a>
+            {% set other = ('/a/' ~ a.id) if a.id else ('/read?url=' ~ (a.url | urlencode)) %}
+            <li><a class="read-article" href="{{ other }}" aria-expanded="false">{{ a.title or a.url }}</a>
               <span class="muted">{{ a.site_name or ((a.canonical_url or a.url) | host) }}</span></li>
           {% endfor %}
           {% if s.articles | length > 6 %}<li class="muted">and {{ s.articles | length - 6 }} more</li>{% endif %}
         </ul>
         {% endif %}
-        {% set tags = s.tags if head else s.tags[1:] %}
-        {% if tags %}
-        <p class="story-tags small">
-          {% for t in tags[:10] %}<a class="pill" href="{{ ('/c/' ~ t.community_id) if t.community_id
-              else ('https://' ~ st.mastodon_account[0] ~ '/tags/' ~ (t.tag | urlencode)) if source == 'mastodon' and st.mastodon_account
-              else ('https://bsky.app/hashtag/' ~ (t.tag | urlencode)) }}"
-            {% if not t.community_id %}target="_blank" rel="noreferrer noopener nofollow"{% endif %}>#{{ t.tag }}</a>{% endfor %}
-          {% if tags | length > 10 %}<span class="muted">and {{ tags | length - 10 }} more</span>{% endif %}
-        </p>
-        {% endif %}
         <div class="pc-actions actions small">
-          {% if head %}
           <a class="act read-article" href="{{ reader }}" aria-expanded="false" title="Read it here">{{ icon('article') }}<span>Read</span></a>
           {% set original = head.canonical_url or head.fetched_from or head.url %}
           {% if original | safe_url %}<a class="act" href="{{ original | safe_url }}" target="_blank" rel="noreferrer noopener nofollow">{{ icon('external') }}<span>Original</span></a>{% endif %}
-          {% elif s.tags[0].following %}
-          <a class="act" href="/c/{{ s.tags[0].community_id }}">{{ icon('check') }}<span>Following</span></a>
-          {% else %}
-          <form method="post" action="/follow" class="inline"><input type="hidden" name="community" value="#{{ s.tags[0].tag }}">
-            <button class="act" title="Follow #{{ s.tags[0].tag }}: its posts arrive in your feed from now on">{{ icon('plus') }}<span>Follow</span></button></form>
-          {% endif %}
         </div>
       </div>
     </article>
@@ -468,6 +445,16 @@
   {% endif %}
 
   {% if tags %}
+  <p class="small muted trend-heat-key">
+    {%- if not live %} Each hashtag's posts in the week around {{ history.day }}, by the day (UTC), the day itself underlined, as kept in History:
+      a day it wasn't among the most used shows none.
+    {%- elif window == 'rising' %} Each hashtag's posts in the past {{ heat.cells | length }} hours, by the hour (UTC);
+      the past {{ rising_hours }}, which Rising compares, are underlined.
+    {%- elif heat.hourly %} Each hashtag's posts in the past day, by the hour (UTC).
+    {%- else %} Each hashtag's posts in the past {{ heat.cells | length }} days, by the day (UTC).{% endif %}
+    <span class="trend-heat-legend" aria-hidden="true">None
+      {% for level in range(5) %}<span class="hc h{{ level }}"></span>{% endfor %} its busiest
+      · <span class="hc off"></span> not counted</span></p>
   <ol class="card trend-tags" start="{{ (page - 1) * per_page + 1 }}" data-items>
   {% for t in tags %}
     <li class="trend-tag" data-entry>
@@ -490,6 +477,13 @@
         {% endif %}
         {% if source != 'mastodon' %}<a class="act" href="https://bsky.app/hashtag/{{ t.tag | urlencode }}" target="_blank" rel="noreferrer noopener nofollow" title="On Bluesky">{{ icon('external') }}<span class="sr-only">#{{ t.tag }} on Bluesky</span></a>{% endif %}
         {% if source != 'bluesky' and st.mastodon_account %}<a class="act" href="https://{{ st.mastodon_account[0] }}/tags/{{ t.tag | urlencode }}" target="_blank" rel="noreferrer noopener nofollow" title="On {{ st.mastodon_account[0] }}">{{ icon('external') }}<span class="sr-only">#{{ t.tag }} on {{ st.mastodon_account[0] }}</span></a>{% endif %}
+      </span>
+      {% set h = heat.tags[t.tag] %}
+      <span class="trend-heat" role="img" aria-label="#{{ t.tag }}{% if h.busiest is not none %}: busiest {{ heat_at(heat.cells[h.busiest]) }}, {{ h.cells[h.busiest].posts }} posts{% else %}: no posts{% endif %}">
+        {%- for c in heat.cells %}{% set n = h.cells[loop.index0].posts %}
+        <span class="hc h{{ h.cells[loop.index0].level }}{{ ' marked' if c.marked }}{{ ' off' if not n and not c.counted }}"
+              title="{{ heat_at(c) }}: {% if n or c.counted %}{{ n }} post{{ 's' if n != 1 }}{{ ' so far' if loop.last and live }}{% else %}not counted{% endif %}"></span>
+        {%- endfor %}
       </span>
     </li>
   {% endfor %}
