@@ -5,7 +5,7 @@ A private, feed-first reader for Lemmy, PieFed, Reddit, RSS/Atom feeds, podcasts
 **Following and reading:**
 - Follow communities. Lemmy and PieFed posts arrive as they're made, pushed through your own Lemmy server (see [Pushes from your own server](#pushes-from-your-own-server)); feeds and subreddits are checked on a schedule.
 - Follow **#hashtags**: public posts with them arrive from Mastodon and the rest of the fediverse through a tag relay (or your Mastodon server's public timeline, once you subscribe to it), and from Bluesky through its Jetstream (see [Hashtags](#hashtags)).
-- **Trending** shows the posts most liked and most replied to on Bluesky and Mastodon, and the articles posted most there and in your archive (see [Trending](#trending)).
+- **Trending** shows the posts most liked and most replied to on Bluesky and Mastodon, the articles posted most there and in your archive, and the hashtags used most (see [Trending](#trending)).
 - Your **feed** is built from the saved copy. Posts you haven't opened stand out, opened posts show "N new comments", and you can sort by New, Active, Top or Most comments.
 - **Opening a post** reads its comments and saves the article it links to, like a browser would. The page shows the saved copy at once and swaps in the fresh one.
 - The feed keeps working when an instance is down, and shows edits, removals and deletions as history instead of losing them.
@@ -81,7 +81,7 @@ ThreadBNC behaves like one more subscribed server, or like your own browser, nev
 | **Your own feeds** (`/f/{id}`, **New feed** in the sidebar) | A named mix of communities, each feed with its own default sort, time range, filter and view. Mark all read covers just its communities. The ✎ next to its name edits or deletes it; the communities and their posts are untouched. |
 | **Community** (`/c/{id}`) | The same feed for one community, plus ★ Kept, **Live on server** (browse its full history, fetched live), **Media** (what it archives, size limit, transcoding) and a log. Follow settings sit behind the "✓ Following" pill. |
 | **Communities** | Follow a community (starts with its current first page) and manage the check interval and retention for each one. |
-| **Trending** (`/trending`) | **Posts**: the posts most liked, or most replied to, on Bluesky and Mastodon over the past day or week. **Articles**: the pages posted most on Bluesky, on Mastodon and in the archive over the past day, week or month. **Sources** chooses what's counted. See [Trending](#trending). |
+| **Trending** (`/trending`) | **Posts**: the posts most liked, or most replied to, on Bluesky and Mastodon over the past day or week. **Articles**: the pages posted most on Bluesky, on Mastodon and in the archive over the past day, week or month. **Tags**: the hashtags used in the most posts. Posts' replies and articles open in place. **Sources** chooses what's counted. See [Trending](#trending). |
 | **★ Kept** | Keep a post by link, see kept threads grouped by community, recent changes and the bouncer queue. |
 | **Search** (`/search`, and the box in the header) | Every version of every archived post and comment. See [Search](#search). |
 | **Inbox** | Replies, mentions and private messages for all your accounts. See [Inbox](#inbox). |
@@ -340,8 +340,10 @@ subscribe to it. Apart from posts with a followed hashtag, nothing they bring is
   are read from your server now and then.
 
 **Posts** shows the posts made in the past day or week, most liked or most replied to, on Bluesky, Mastodon or
-both: their text, who posted them, their link and their totals. No pictures are loaded from other sites. A
-Bluesky post can be opened here (saved like one opened from a link, so it expires unless you keep it).
+both: their text, who posted them, their link and their totals. No pictures are loaded from other sites.
+**Replies** opens a post's whole text and its replies under it, read when you open them (from Bluesky, or from
+your Mastodon server while you're subscribed, else the post's own server) and not saved; a post already saved
+here shows its saved comments instead. A Bluesky post can be kept (saved with its replies, like **Keep a link**).
 Replies count for the post that started the thread, quotes for the post quoted. Posts go after a week.
 
 **Articles** ranks pages by how many posts linked them in the past day, week or month: on Bluesky, on Mastodon
@@ -352,7 +354,11 @@ hashtags' posts while the Mastodon timeline is subscribed to, aren't counted aga
 counts are kept: links posted once in their first day, or fewer than five times in their first week, are
 forgotten, and counts go after a month. The **12 most posted of each** of the day, week and month are read, so
 they can be read here, and kept while they stay among them; six hours after dropping out they go like any other
-article nothing links to.
+article nothing links to. **Read** opens an article under its listing, as in the feed; one that isn't among
+those is read when you open it. A post in the archive that links it opens its comments the same way.
+
+**Tags** lists the hashtags used in the most posts in the past day, week or month, on Bluesky and Mastodon,
+counted like links (each account once an hour for a hashtag), with **Follow** for each one you don't follow yet.
 
 ## Hashtags
 

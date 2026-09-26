@@ -21,7 +21,10 @@ bring is saved as a post. They're counted:
   server in mastodon_stream.py), which is also where what a post says and who
   posted it come from. Posts go after a week, and quiet ones sooner.
 
-The Trending page ranks both. Articles are ranked by how many posts linked
+- Hashtags, counted like links: by the hour, each account once an hour for
+  a hashtag, and forgotten the same way.
+
+The Trending page ranks them. Articles are ranked by how many posts linked
 them in the past day, week or month: on Bluesky, on Mastodon and in the
 archive (the passively captured posts, as the Articles page did before), with
 links to the same page counted together (their keys, and once an article is
@@ -43,7 +46,7 @@ from typing import Any, Iterable
 from urllib.parse import urlparse
 
 from . import articles, links as links_mod
-from .adapters import BSKY_DOMAIN, TAG_DOMAIN, RemoteError
+from .adapters import BSKY_DOMAIN, TAG_DOMAIN, TAG_PREFIX, RemoteError
 from .adapters.activitypub import status_id
 from .adapters.bluesky import GET_POSTS, POST
 from .db import Conn, Database, fmt_ts, parse_ts, utcnow
@@ -186,7 +189,26 @@ class Tally:
 
     def _clear(self) -> None:
         self.links: dict[tuple[str, str], list[Any]] = {}  # (key, hour) -> [posts, link, title, description]
+        self.tags: dict[tuple[str, str], int] = {}  # (hashtag, hour) -> posts
         self.posts: dict[str, list[Any]] = {}  # ref -> [replies, quotes, likes, created_at]
+
+    def post_tags(self, tags: Iterable[str], author: str | None = None) -> int:
+        """Count one post's hashtags (named as followed ones are), each once,
+        and once an hour for each `author`. Returns how many were counted."""
+        hour = time.strftime(HOUR, time.gmtime())
+        counted = 0
+        with self._lock:
+            if self._hour != hour:
+                self._hour, self._posted = hour, set()
+            for tag in dict.fromkeys(tags):
+                mark = ("#" + tag, author)
+                if not tag or (author and mark in self._posted):
+                    continue
+                if author:
+                    self._posted.add(mark)
+                self.tags[(tag, hour)] = self.tags.get((tag, hour), 0) + 1
+                counted += 1
+        return counted
 
     def post_links(self, found: Iterable[tuple[str, str | None, str | None]], author: str | None = None) -> int:
         """Count one post's links, each page once, and once an hour for each
@@ -233,12 +255,23 @@ class Tally:
 
     def flush(self, db: Database) -> None:
         with self._lock:
-            found, posts = self.links, self.posts
+            found, tags, posts = self.links, self.tags, self.posts
             self._clear()
-        if not found and not posts:
+        if not found and not tags and not posts:
             return
         now = utcnow()
         with db.transaction() as conn:
+            conn.executemany(
+                "INSERT INTO tag_counts(tag, hour, source, posts) VALUES (?,?,?,?) ON CONFLICT(tag, hour, source) "
+                "DO UPDATE SET posts=tag_counts.posts+excluded.posts",
+                [(tag, hour, self.source, n) for (tag, hour), n in tags.items()])
+            totals: dict[str, int] = {}
+            for (tag, _hour), n in tags.items():
+                totals[tag] = totals.get(tag, 0) + n
+            conn.executemany(
+                "INSERT INTO tags_seen(tag, first_seen_at, last_seen_at, posts) VALUES (?,?,?,?) ON CONFLICT(tag) "
+                "DO UPDATE SET last_seen_at=excluded.last_seen_at, posts=tags_seen.posts+excluded.posts",
+                [(tag, now, now, n) for tag, n in totals.items()])
             conn.executemany(
                 "INSERT INTO link_counts(key, hour, source, posts) VALUES (?,?,?,?) ON CONFLICT(key, hour, source) "
                 "DO UPDATE SET posts=link_counts.posts+excluded.posts",
@@ -261,28 +294,34 @@ class Tally:
 
 
 def tidy(conn: Conn, now: str | None = None) -> None:
-    """Add up old hourly counts by the day, forget links posted too rarely to
-    trend, and posts too old or too quiet."""
+    """Add up old hourly counts by the day, forget links and hashtags posted
+    too rarely to trend, and posts too old or too quiet."""
     moment = parse_ts(now or utcnow()) or datetime.now(timezone.utc)
-    daily = (moment - DAILY_AFTER).strftime(HOUR)
-    rows = conn.execute(
-        "SELECT key, substr(hour, 1, 10) AS day, source, SUM(posts) AS n FROM link_counts "
-        "WHERE hour < ? AND hour NOT LIKE '%T00' GROUP BY key, substr(hour, 1, 10), source", (daily,)).fetchall()
-    if rows:
-        conn.execute("DELETE FROM link_counts WHERE hour < ? AND hour NOT LIKE '%T00'", (daily,))
-        conn.executemany(
-            "INSERT INTO link_counts(key, hour, source, posts) VALUES (?,?,?,?) ON CONFLICT(key, hour, source) "
-            "DO UPDATE SET posts=link_counts.posts+excluded.posts",
-            [(r["key"], r["day"] + "T00", r["source"], r["n"]) for r in rows])
-    once, few = fmt_ts(moment - ONCE_AFTER), fmt_ts(moment - FEW_AFTER)
-    forgotten = ("(posts < 2 AND first_seen_at < ?) OR (posts < ? AND first_seen_at < ?) OR last_seen_at < ?")
-    params = (once, FEW_POSTS, few, fmt_ts(moment - KEEP_COUNTS))
-    conn.execute(f"DELETE FROM link_counts WHERE key IN (SELECT key FROM links_seen WHERE {forgotten})", params)
-    conn.execute(f"DELETE FROM links_seen WHERE {forgotten}", params)
-    conn.execute("DELETE FROM link_counts WHERE hour < ?", ((moment - KEEP_COUNTS).strftime(HOUR),))
+    for counts, seen, key in (("link_counts", "links_seen", "key"), ("tag_counts", "tags_seen", "tag")):
+        _tidy_counts(conn, moment, counts, seen, key)
     conn.execute("DELETE FROM stream_posts WHERE COALESCE(created_at, first_seen_at) < ? OR "
                  "(replies_seen + quotes_seen + likes_seen < ? AND first_seen_at < ? AND checked_at IS NULL)",
                  (fmt_ts(moment - KEEP_POSTS), QUIET_SEEN, fmt_ts(moment - QUIET_AFTER)))
+
+
+def _tidy_counts(conn: Conn, moment: datetime, counts: str, seen: str, key: str) -> None:
+    """tidy() for one kind of count: `counts` by the hour, `seen` their totals, both by `key`."""
+    daily = (moment - DAILY_AFTER).strftime(HOUR)
+    rows = conn.execute(
+        f"SELECT {key} AS k, substr(hour, 1, 10) AS day, source, SUM(posts) AS n FROM {counts} "
+        f"WHERE hour < ? AND hour NOT LIKE '%T00' GROUP BY {key}, substr(hour, 1, 10), source", (daily,)).fetchall()
+    if rows:
+        conn.execute(f"DELETE FROM {counts} WHERE hour < ? AND hour NOT LIKE '%T00'", (daily,))
+        conn.executemany(
+            f"INSERT INTO {counts}({key}, hour, source, posts) VALUES (?,?,?,?) ON CONFLICT({key}, hour, source) "
+            f"DO UPDATE SET posts={counts}.posts+excluded.posts",
+            [(r["k"], r["day"] + "T00", r["source"], r["n"]) for r in rows])
+    once, few = fmt_ts(moment - ONCE_AFTER), fmt_ts(moment - FEW_AFTER)
+    forgotten = "(posts < 2 AND first_seen_at < ?) OR (posts < ? AND first_seen_at < ?) OR last_seen_at < ?"
+    params = (once, FEW_POSTS, few, fmt_ts(moment - KEEP_COUNTS))
+    conn.execute(f"DELETE FROM {counts} WHERE {key} IN (SELECT {key} FROM {seen} WHERE {forgotten})", params)
+    conn.execute(f"DELETE FROM {seen} WHERE {forgotten}", params)
+    conn.execute(f"DELETE FROM {counts} WHERE hour < ?", ((moment - KEEP_COUNTS).strftime(HOUR),))
 
 
 # --- ranking articles ---------------------------------------------------------
@@ -457,6 +496,34 @@ def trending_articles(conn: Conn, items: list[dict[str, Any]], page: int = 1,
             item["picture"] = next((pictures[aid] for aid in [item["id"], *item["article_ids"]]
                                     if aid in pictures), None)
     return shown, len(items) > start + per_page
+
+
+# --- ranking hashtags ------------------------------------------------------------
+
+def trending_tags(conn: Conn, window: str = "day", page: int = 1, per_page: int = 50,
+                  now: str | None = None) -> tuple[list[dict[str, Any]], bool]:
+    """The hashtags used in the most posts in the window, on Bluesky and
+    Mastodon, with the hashtag's community here when it's followed."""
+    since = _since(window, now)
+    page = max(1, page)
+    rows = conn.execute(
+        "SELECT tag, SUM(CASE WHEN source='bluesky' THEN posts ELSE 0 END) AS bluesky, "
+        "SUM(CASE WHEN source='mastodon' THEN posts ELSE 0 END) AS mastodon, SUM(posts) AS total "
+        "FROM tag_counts WHERE hour >= ? GROUP BY tag ORDER BY SUM(posts) DESC, tag LIMIT ? OFFSET ?",
+        (since[:13], per_page + 1, (page - 1) * per_page)).fetchall()
+    items = [{"tag": r["tag"], "bluesky": int(r["bluesky"] or 0), "mastodon": int(r["mastodon"] or 0),
+              "total": int(r["total"] or 0), "community_id": None, "following": False} for r in rows[:per_page]]
+    if items:
+        names = [TAG_PREFIX + i["tag"] for i in items]
+        here = {r["canonical_ap_id"][len(TAG_PREFIX):]: r for r in conn.execute(
+            f"SELECT c.id, c.canonical_ap_id, f.active FROM communities c "
+            f"LEFT JOIN community_follows f ON f.community_id=c.id WHERE c.canonical_ap_id IN ({_marks(names)})",
+            names)}
+        for item in items:
+            r = here.get(item["tag"])
+            if r is not None:
+                item["community_id"], item["following"] = r["id"], bool(r["active"])
+    return items, len(rows) > per_page
 
 
 # --- ranking posts ------------------------------------------------------------

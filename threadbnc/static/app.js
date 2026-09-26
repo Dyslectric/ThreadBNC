@@ -813,7 +813,8 @@ document.documentElement.classList.add("js");
   }
 
   function inlineKey(kind, link) {
-    return `${kind}-${inlineThreadId(link) || new URL(link.href, location.href).pathname}`;
+    const url = new URL(link.href, location.href);
+    return `${kind}-${inlineThreadId(link) || url.pathname + url.search}`;  // (/read?url=... is a page per link)
   }
 
   const inlineSelector = (kind) => ({ article: "a.read-article", comments: "a.inline-comments", post: "a.read-post" })[kind];
@@ -1830,10 +1831,62 @@ document.documentElement.classList.add("js");
     const toggle = ev.target.closest(".discussion-toggle");
     const rail = !toggle && ev.target.closest(".discussion-panels > .inline-panel > .inline-panel-rail");
     if (!toggle && !rail) return;
-    ev.stopPropagation();
     const d = (toggle || rail).closest("details.discussion");
+    if (!d) return;  // (a trending post's, below)
+    ev.stopPropagation();
     if (toggle) showDiscussionPanel(d, toggle.dataset.show, toggle.getAttribute("aria-expanded") !== "true");
     else showDiscussionPanel(d, rail.closest(".inline-panel").dataset.kind, false);
+  }, true);
+
+  // ---- a trending post's text and replies, read where it was posted ----------------
+  // Replies opens them under the post, as a found discussion opens
+  // (discussion_peek.html); either rail, or Replies again, closes them.
+  function showTrendPeek(link, box, on) {
+    box.hidden = !on;
+    link.setAttribute("aria-expanded", String(on));
+    if (on) {
+      for (const panel of $$(":scope > .inline-panel", box)) panel.hidden = false;
+      joinPanels($$(":scope > .inline-panel", box));
+      reveal(box);
+    } else stopVideos(box);
+  }
+
+  document.addEventListener("click", async (ev) => {
+    const rail = ev.target.closest(".trend-peek-box > .inline-panel > .inline-panel-rail");
+    if (rail) {
+      ev.stopPropagation();
+      const box = rail.closest(".trend-peek-box");
+      if (box.opener) { showTrendPeek(box.opener, box, false); box.opener.focus({ preventScroll: true }); }
+      return;
+    }
+    const link = ev.target.closest("a.trend-peek");
+    if (!link || ev.button !== 0 || ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.altKey) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    const main = link.closest(".pc-main");
+    let box = main && $(":scope > .trend-peek-box", main);
+    if (box) { showTrendPeek(link, box, box.hidden); return; }
+    if (!main || link.getAttribute("aria-busy")) return;
+    link.setAttribute("aria-busy", "true");
+    const loading = document.createElement("p");
+    loading.className = "muted small trend-peek-box";
+    loading.textContent = "Reading its replies…";
+    main.append(loading);
+    try {
+      const fresh = $("[data-peek-body]", await fetchDoc(link.dataset.peek));
+      if (!fresh) throw new Error("nothing to show");
+      box = document.adoptNode(fresh);
+      box.classList.add("trend-peek-box");
+      box.opener = link;
+      loading.replaceWith(box);
+      showTrendPeek(link, box, true);
+    } catch (e) {
+      loading.textContent = "Couldn't read its replies. Try again in a moment.";
+      loading.classList.add("bad-text");
+      setTimeout(() => loading.remove(), 4000);
+    } finally {
+      link.removeAttribute("aria-busy");
+    }
   }, true);
 
   document.addEventListener("toggle", async (e) => {

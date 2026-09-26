@@ -1004,6 +1004,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
 
     # ---- trending ---------------------------------------------------------
     TRENDING_PAGE = 25
+    TAGS_PAGE = 50
     RANK_FOR = 60.0  # seconds a ranking of articles is reused for
     ranked: dict[tuple[Any, ...], tuple[float, list[dict[str, Any]]]] = {}
 
@@ -1058,24 +1059,32 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         return render(request, "trending.html", tab="articles", articles=items, window=window, page=page,
                       has_more=has_more, status=trending_status(), cached=trends_mod.TOP_CACHED)
 
-    @app.post("/trending/open")
-    def trending_open(url: str = Form(...)):
-        """A trending Bluesky post, opened here: saved like a post opened from a
-        link (it expires unless you keep it), then shown."""
-        from .adapters import parse_thread_url
-        try:
-            ref = parse_thread_url(url)
-        except ValueError:
-            raise HTTPException(400)
-        if ref.domain != BSKY_DOMAIN:
-            raise HTTPException(400)
+    @app.get("/trending/tags", response_class=HTMLResponse)
+    def trending_tags(request: Request, t: str = "day", page: int = 1):
+        """The hashtags used in the most posts on Bluesky and Mastodon."""
+        window = t if t in trends_mod.WINDOWS else "day"
+        page = max(1, page)
         with db.connect() as conn:
-            here = conn.execute("SELECT t.id FROM objects o JOIN archived_threads t ON t.root_object_id=o.id "
-                                "WHERE o.canonical_ap_id=?", (url,)).fetchone()
-        if here is not None:
-            return RedirectResponse(f"/t/{here['id']}", status_code=303)
-        job = bouncer.enqueue("ingest", {"url": url, "retention": "auto"})
-        return RedirectResponse(f"/jobs/{job}/wait", status_code=303)
+            items, has_more = trends_mod.trending_tags(conn, window, page, TAGS_PAGE)
+        return render(request, "trending.html", tab="tags", tags=items, window=window, page=page,
+                      has_more=has_more, status=trending_status(), per_page=TAGS_PAGE)
+
+    @app.get("/trending/peek", response_class=HTMLResponse)
+    def trending_peek(request: Request, source: str, ref: str):
+        """A trending post, expanded where it's listed (app.js asks for this):
+        its text, then its replies, read from where it was posted. Nothing is saved."""
+        with db.connect() as conn:
+            row = conn.execute("SELECT view_json FROM stream_posts WHERE source=? AND ref=?", (source, ref)).fetchone()
+        if row is None or not row["view_json"]:
+            raise HTTPException(404)
+        view = json.loads(row["view_json"])
+        if source == "bluesky":
+            peek = discussions.peek({"source": "bluesky", "url": view.get("url") or "", "content": view.get("text"),
+                                     "title": None})
+        else:
+            peek = mastodon_stream.peek(ref, view.get("uri"), view.get("text"))
+        return render(request, "discussion_peek.html", peek=peek,
+                      md=lambda text, titles=video_titles(): render_markdown(text, None, titles))
 
     @app.get("/articles")
     def old_articles_page(t: str = "week"):

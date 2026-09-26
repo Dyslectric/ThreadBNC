@@ -1095,6 +1095,19 @@ a.article-link.dived, a[data-dive].dived, a.video-link.dived, a.live-link.dived 
 .trend-counts { display: inline-flex; gap: 4px; align-items: center; font-variant-numeric: tabular-nums; margin-right: 4px; }
 .trend-counts .pill { display: inline-flex; align-items: center; gap: 3px; }
 .trending-page .feed-controls { flex-wrap: wrap; gap: 8px; }
+.trend-tags { list-style: none; padding: 4px 0; margin: 0; }
+.trend-tag { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 4px 12px;
+  padding: 7px 14px; border-bottom: 1px solid var(--line); }
+.trend-tag:last-child { border-bottom: none; }
+.trend-tag-name { font-weight: 600; overflow-wrap: anywhere; }
+.trend-tag-counts { display: inline-flex; gap: 8px; align-items: center; font-variant-numeric: tabular-nums; }
+.trend-tag-actions { display: inline-flex; gap: 2px; align-items: center; }
+@media (max-width: 600px) {
+  .trend-tag { grid-template-columns: minmax(0, 1fr) auto; }
+  .trend-tag-counts { grid-column: 1; grid-row: 2; }
+  .trend-tag-actions { grid-column: 2; grid-row: 1 / span 2; }
+}
+.trend-peek-box { margin-top: 8px; }
 
 .pc-changes { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 4px 0 2px; padding: 2px 8px 2px 6px;
   border-radius: 8px; background: var(--bg); border: 1px solid var(--line); color: var(--muted); }
