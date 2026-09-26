@@ -81,6 +81,8 @@ def check(db: Database, conn: Any, media_dir: Path, deep: bool = False) -> Repor
          "LEFT JOIN objects o ON o.id=r.object_id WHERE a.id IS NULL OR o.id IS NULL"),
         ("article media", "SELECT COUNT(*) FROM article_media r LEFT JOIN articles a ON a.id=r.article_id "
          "LEFT JOIN media m ON m.id=r.media_id WHERE a.id IS NULL OR m.id IS NULL"),
+        ("trending picture", "SELECT COUNT(*) FROM stream_post_media s LEFT JOIN media m ON m.id=s.media_id "
+         "WHERE m.id IS NULL"),
         ("custom feed", "SELECT COUNT(*) FROM custom_feed_communities x LEFT JOIN custom_feeds f ON f.id=x.feed_id "
          "LEFT JOIN communities c ON c.id=x.community_id WHERE f.id IS NULL OR c.id IS NULL"),
         ("revision counter", "SELECT COUNT(*) FROM objects o WHERE o.revision_count != COALESCE("

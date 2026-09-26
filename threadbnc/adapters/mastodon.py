@@ -164,6 +164,10 @@ class MastodonAdapter(ThreadiverseAdapter):
     def vote_post(self, token: str, local_id: str, score: int) -> None:
         self._favourite(token, local_id, score)
 
+    def reblog(self, token: str, local_id: str, on: bool = True) -> None:
+        """Boost a post to your followers, or undo it."""
+        self._call("POST", f"/api/v1/statuses/{local_id}/{'reblog' if on else 'unreblog'}", token)
+
     def vote_comment(self, token: str, local_id: str, score: int) -> None:
         self._favourite(token, local_id, score)
 

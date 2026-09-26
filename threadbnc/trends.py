@@ -11,16 +11,17 @@ bring is saved as a post. They're counted:
   addresses count as one, and each account counts once an hour for a page (so
   a bot posting one link over and over doesn't make it trend). The count is
   all that's kept: nothing is read from the pages. Links posted only once in
-  their first day, or fewer than
-  FEW_POSTS times in their first week, are forgotten; counts go after a month.
+  their first day, or fewer than FEW_POSTS times in their first week, are
+  forgotten; counts go after a month.
 - Replies and quotes. A reply counts for the post that started its thread, a
   quote for the post it quotes. On Bluesky, likes can be counted from the
   stream too (roughly five times the traffic: see jetstream.py); otherwise, and
   on Mastodon, which has no stream of likes, the totals for the posts most
   replied to are read now and then (Bluesky's AppView here; your Mastodon
   server in mastodon_stream.py), which is also where what a post says and who
-  posted it come from. Posts go after a week, and quiet ones sooner.
-
+  posted it come from. Posts go after a week, and quiet ones sooner. A post's
+  pictures (PICTURES of them, or its link card's or video's cover) are
+  downloaded once it's shown on the Trending page, and go with it.
 - Hashtags, counted like links: by the hour, each account once an hour for
   a hashtag, and forgotten the same way.
 
@@ -37,6 +38,7 @@ the ranking, and the next one is read instead."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import threading
@@ -46,6 +48,8 @@ from typing import Any, Iterable
 from urllib.parse import urlparse
 
 from . import articles, links as links_mod
+from . import media as media_mod
+from . import thumbs
 from .adapters import BSKY_DOMAIN, TAG_DOMAIN, TAG_PREFIX, RemoteError
 from .adapters.activitypub import status_id
 from .adapters.bluesky import GET_POSTS, POST
@@ -65,6 +69,7 @@ LIKES_FROM = ("appview", "stream")
 HOUR = "%Y-%m-%dT%H"
 
 TOP_CACHED = 12  # the most posted articles of each window read and kept for reading
+PICTURES = 4  # a trending post's pictures downloaded, at most
 CACHE_EVERY = 900.0  # seconds between choosing them
 RANK_KEYS = 3000  # the most posted links in a window looked at when ranking
 TIDY_EVERY = 3600.0
@@ -302,6 +307,8 @@ def tidy(conn: Conn, now: str | None = None) -> None:
     conn.execute("DELETE FROM stream_posts WHERE COALESCE(created_at, first_seen_at) < ? OR "
                  "(replies_seen + quotes_seen + likes_seen < ? AND first_seen_at < ? AND checked_at IS NULL)",
                  (fmt_ts(moment - KEEP_POSTS), QUIET_SEEN, fmt_ts(moment - QUIET_AFTER)))
+    conn.execute("DELETE FROM stream_post_media WHERE NOT EXISTS (SELECT 1 FROM stream_posts p "
+                 "WHERE p.source=stream_post_media.source AND p.ref=stream_post_media.ref)")
 
 
 def _tidy_counts(conn: Conn, moment: datetime, counts: str, seen: str, key: str) -> None:
@@ -554,8 +561,52 @@ def trending_posts(conn: Conn, window: str = "day", sort: str = "likes", source:
             continue
         item["likes"] = r["likes"] if r["likes"] is not None else r["likes_seen"]
         item["replies"] = r["replies"] if r["replies"] is not None else r["replies_seen"]
+        item["key"] = post_key(r["source"], r["ref"])
         out.append(item)
+    shown = pictures_of(conn, [(i["source"], i["ref"]) for i in out])
+    for item in out:
+        item["pictures"], item["pictures_waiting"] = shown.get((item["source"], item["ref"]), ([], False))
+        item["pictures_waiting"] = item["pictures_waiting"] or (bool(item["view"].get("images"))
+                                                                and not item["pictures"])
     return out, len(rows) > per_page
+
+
+def post_key(source: str, ref: str) -> str:
+    """A short name for a trending post, for the page to ask about it by."""
+    return hashlib.sha1(f"{source} {ref}".encode()).hexdigest()[:12]
+
+
+def want_pictures(conn: Conn, source: str, ref: str, now: str) -> bool:
+    """Register a trending post's pictures to be downloaded (it's being shown).
+    Returns whether it has any."""
+    row = conn.execute("SELECT view_json FROM stream_posts WHERE source=? AND ref=?", (source, ref)).fetchone()
+    try:
+        urls = json.loads(row["view_json"]).get("images") or [] if row and row["view_json"] else []
+    except ValueError:
+        urls = []
+    for position, url in enumerate(u for u in urls[:PICTURES] if isinstance(u, str) and u.startswith("https://")):
+        conn.execute("INSERT INTO stream_post_media(source, ref, media_id, position) VALUES (?,?,?,?) "
+                     "ON CONFLICT(source, ref, media_id) DO NOTHING",
+                     (source, ref, media_mod.media_id(conn, url, now), position))
+    return bool(urls)
+
+
+def pictures_of(conn: Conn, posts: list[tuple[str, str]]) -> dict[tuple[str, str], tuple[list[int], bool]]:
+    """Each trending post's downloaded pictures (media ids, in order), and
+    whether any are still to download."""
+    out: dict[tuple[str, str], tuple[list[int], bool]] = {}
+    for chunk in _chunks(posts, 200):
+        where = " OR ".join("(s.source=? AND s.ref=?)" for _ in chunk)
+        for r in conn.execute(
+                f"SELECT s.source, s.ref, m.id, m.status, m.content_type FROM stream_post_media s "
+                f"JOIN media m ON m.id=s.media_id WHERE {where} ORDER BY s.position",
+                [v for pair in chunk for v in pair]).fetchall():
+            ready, waiting = out.get((r["source"], r["ref"]), ([], False))
+            if r["status"] == "ok" and (r["content_type"] or "").startswith("image/"):
+                ready = [*ready, r["id"]]
+            waiting = waiting or r["status"] == "pending"
+            out[(r["source"], r["ref"])] = (ready, waiting)
+    return out
 
 
 def due_checks(conn: Conn, source: str, limit: int, now: str | None = None) -> list[Any]:
@@ -607,7 +658,8 @@ def bluesky_view(view: dict[str, Any]) -> dict[str, Any]:
             "handle": author.get("handle") or author.get("did"), "name": author.get("displayName") or None,
             "author_url": f"https://{BSKY_DOMAIN}/profile/{author.get('did') or author.get('handle')}",
             "link": content.link, "link_title": content.link_title, "pictures": len(content.pictures),
-            "video": content.video, "quote": content.quote is not None}
+            "video": content.video, "quote": content.quote is not None,
+            "images": (content.pictures or ([content.cover] if content.cover else []))[:PICTURES]}
 
 
 # --- upkeep -----------------------------------------------------------------------
@@ -630,6 +682,10 @@ class Trends:
             self._tidied = now
             with self.db.transaction() as conn:
                 tidy(conn)
+                files = media_mod.collect_orphans(conn, self.bouncer.media_dir)  # the pictures of posts gone
+            for f in files:  # only after that committed
+                f.unlink(missing_ok=True)
+                thumbs.remove_for(self.bouncer.media_dir, f.stem)
         if now - self._checked >= CHECK_EVERY:
             self._checked = now
             with tagged("trends"):

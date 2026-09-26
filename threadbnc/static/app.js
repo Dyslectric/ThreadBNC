@@ -310,6 +310,11 @@ document.documentElement.classList.add("js");
       vote(form);
       return;
     }
+    if (form.hasAttribute("data-trend-act")) {
+      ev.preventDefault();
+      trendAct(form);
+      return;
+    }
     // Commenting, replying or deleting in comments opened under a post: done
     // here, and the comments shown again, rather than leaving for the post's page.
     const panelComments = form.closest(".inline-panel .comments");
@@ -1838,6 +1843,130 @@ document.documentElement.classList.add("js");
     else showDiscussionPanel(d, rail.closest(".inline-panel").dataset.kind, false);
   }, true);
 
+  // ---- a trending post's like and repost buttons ----------------------------------
+  // Shown done at once, the count with them; put back if it didn't go through.
+  function showTrendAct(form, on) {
+    const button = $("button", form);
+    const n = $(".n", button);
+    if (button.classList.contains("on") !== on && n) n.textContent = Math.max(0, (+n.textContent || 0) + (on ? 1 : -1));
+    button.classList.toggle("on", on);
+    button.setAttribute("aria-pressed", String(on));
+    $("input[name=on]", form).value = on ? "0" : "1";  // what pressing it again does
+  }
+
+  async function trendAct(form) {
+    if (form.dataset.busy) return;
+    form.dataset.busy = "1";
+    const fields = new URLSearchParams(new FormData(form));
+    const on = fields.get("on") === "1";
+    const button = $("button", form);
+    button.setAttribute("aria-busy", "true");
+    showTrendAct(form, on);
+    try {
+      const data = await post(form.action, fields);
+      if (!data.ok) showTrendAct(form, !on);
+      for (const m of data.messages || []) toast(m);
+    } catch (e) {
+      showTrendAct(form, !on);
+      toast({ kind: "error", text: "That didn't go through (" + e.message + "). Try again." });
+    } finally {
+      delete form.dataset.busy;
+      button.removeAttribute("aria-busy");
+    }
+  }
+
+  // ---- trending posts' pictures, downloaded as they're scrolled to --------------------
+  // A post whose pictures aren't here yet asks for them once it's on screen,
+  // then checks back until they're downloaded, and shows them in its card.
+  // A picture pressed shows bigger, in place; pressed again, small.
+  const pictureQueue = new Set();
+  const pictureWaiting = new Set();
+  let pictureTimer = null;
+  let pictureCheck = null;
+  let pictureUntil = 0;
+  let pictureObserver = null;
+
+  function watchTrendPictures(root) {
+    if (!("IntersectionObserver" in window)) return;
+    pictureObserver = pictureObserver || new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        if (!e.isIntersecting || !e.target.dataset.post || !("pictures" in e.target.dataset)) continue;
+        pictureObserver.unobserve(e.target);
+        pictureQueue.add(e.target.dataset.post);
+      }
+      if (pictureQueue.size && !pictureTimer) pictureTimer = setTimeout(askTrendPictures, 300);
+    }, { rootMargin: "200px 0px" });
+    for (const card of $$(".trending-post[data-pictures]", root)) pictureObserver.observe(card);
+  }
+
+  function showTrendPictures(ready) {
+    for (const [key, pics] of Object.entries(ready || {})) {
+      const box = document.getElementById("pics-" + key);
+      if (!box || !pics.length || box.childElementCount) continue;
+      for (const pic of pics) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "trend-pic";
+        button.dataset.full = pic.full;
+        button.title = "Show it bigger";
+        button.setAttribute("aria-pressed", "false");
+        const img = document.createElement("img");
+        img.src = pic.src;
+        img.alt = "";
+        img.loading = "lazy";
+        button.append(img);
+        box.append(button);
+      }
+      steady(() => {
+        box.hidden = false;
+        const note = box.parentElement && $(".trend-media-note", box.parentElement);
+        if (note && !note.textContent.includes("video") && !note.textContent.includes("quotes")) note.remove();
+      });
+    }
+  }
+
+  async function askTrendPictures() {
+    pictureTimer = null;
+    const posts = [...pictureQueue];
+    pictureQueue.clear();
+    try {
+      const data = await post("/trending/pictures", { post: posts });
+      showTrendPictures(data.ready);
+      for (const p of posts) if (data.waiting.includes(keyOfPost(p))) pictureWaiting.add(p);
+    } catch (e) { return; }
+    pictureUntil = Date.now() + 90000;
+    if (pictureWaiting.size && !pictureCheck) pictureCheck = setTimeout(checkTrendPictures, 2500);
+  }
+
+  const keyOfPost = (p) => (($$(".trending-post").find((c) => c.dataset.post === p) || {}).id || "").slice(3);
+
+  async function checkTrendPictures() {
+    pictureCheck = null;
+    const posts = [...pictureWaiting];
+    if (!posts.length) return;
+    try {
+      const url = new URL("/trending/pictures", location.href);
+      for (const p of posts) url.searchParams.append("post", p);
+      const r = await fetch(url, { credentials: "same-origin" });
+      const data = await r.json();
+      showTrendPictures(data.ready);
+      for (const p of posts) if (!data.waiting.includes(keyOfPost(p))) pictureWaiting.delete(p);
+    } catch (e) { /* tried again below */ }
+    if (pictureWaiting.size && Date.now() < pictureUntil) pictureCheck = setTimeout(checkTrendPictures, 2500);
+  }
+
+  document.addEventListener("click", (ev) => {
+    const pic = ev.target.closest("button.trend-pic");
+    if (!pic) return;
+    const img = $("img", pic);
+    const big = !pic.classList.contains("big");
+    if (big && !pic.dataset.small) pic.dataset.small = img.src;
+    img.src = big ? pic.dataset.full : pic.dataset.small;
+    pic.classList.toggle("big", big);
+    pic.setAttribute("aria-pressed", String(big));
+    pic.title = big ? "Show it smaller" : "Show it bigger";
+  });
+
   // ---- a trending post's text and replies, read where it was posted ----------------
   // Replies opens them under the post, as a found discussion opens
   // (discussion_peek.html); either rail, or Replies again, closes them.
@@ -1915,8 +2044,12 @@ document.documentElement.classList.add("js");
     watchUnread(document);
     watchArticles(document);
     watchDiscussions(document);
+    watchTrendPictures(document);
     new MutationObserver((changes) => {
-      for (const c of changes) for (const el of c.addedNodes) if (el.nodeType === 1) watchDiscussions(el);
+      for (const c of changes) for (const el of c.addedNodes) if (el.nodeType === 1) {
+        watchDiscussions(el);
+        watchTrendPictures(el);
+      }
     }).observe(document.body, { childList: true, subtree: true });
     askTitles();
     watchSaving();

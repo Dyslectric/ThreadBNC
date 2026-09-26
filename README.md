@@ -65,6 +65,7 @@ ThreadBNC behaves like one more subscribed server, or like your own browser, nev
 - **Hashtags through a relay.** A followed hashtag is one Follow to its relay. Each post it passes on is read once from its own server, a signed request like any receiving server makes, and its votes aren't checked in the background at all; opening it reads it again with its replies.
 - **Hashtags on Bluesky, from its public stream.** Bluesky offers nothing to subscribe to for a hashtag, only one stream of everything posted there. While any hashtag is followed, or Bluesky is counted for Trending (on unless you turn it off), ThreadBNC listens to it (Jetstream, new posts only, compressed: about 25 a second, about 0.75 GB a day), keeps the posts with a followed hashtag, and asks Bluesky for those alone, up to 25 in one request.
 - **Your Mastodon server's public timeline, when you subscribe.** One streaming connection to your own server, as your account. Posts with a followed hashtag are kept from it (instead of through the relays); the rest are only counted.
+- **Trending's pictures when you scroll to them.** A trending post's pictures are downloaded once it's on your screen, like a feed post's article.
 - **Trending's totals, a few at a time.** Likes and replies of the posts replied to most are read from Bluesky's AppView (up to 100 posts every 5 minutes, 25 to a request) and from your Mastodon server (20 to a request, at most one a minute, and its trending posts every 15 minutes). Only the 12 most posted articles of the day, week and month are read.
 - **Reddit only while you're here,** spread out, one subreddit at a time (see [Checking, conservatively](#checking-conservatively)).
 - **Pictures at once, videos later.** Pictures and thumbnails are downloaded as posts arrive; full videos wait until you open or keep a post showing them.
@@ -340,8 +341,12 @@ subscribe to it. Apart from posts with a followed hashtag, nothing they bring is
   are read from your server now and then.
 
 **Posts** shows the posts made in the past day or week, most liked or most replied to, on Bluesky, Mastodon or
-both: their text, who posted them, their link and their totals. No pictures are loaded from other sites.
-**Replies** opens a post's whole text and its replies under it, read when you open them (from Bluesky, or from
+both: their text, who posted them, their link and their totals. A post's pictures (up to four, or its link
+card's or video's cover) are downloaded once it scrolls onto the screen, and show in it; pressing one shows it
+bigger. Nothing is loaded from other sites by your browser. They go when the post does.
+The totals are buttons: **♥** likes the post (or takes the like back) and the repost button reposts it on
+Bluesky or boosts it on Mastodon, as your account there (see [Accounts and posting](#accounts-and-posting)).
+**💬** opens the post's whole text and its replies under it, read when you open them (from Bluesky, or from
 your Mastodon server while you're subscribed, else the post's own server) and not saved; a post already saved
 here shows its saved comments instead. A Bluesky post can be kept (saved with its replies, like **Keep a link**).
 Replies count for the post that started the thread, quotes for the post quoted. Posts go after a week.
