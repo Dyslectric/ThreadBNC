@@ -62,7 +62,7 @@ from .mastodon_stream import SCOPES as MASTODON_SCOPES, MastodonStream
 from .mastodon_stream import subscribe as mastodon_subscribe, subscription as mastodon_subscription
 from .tags import TagRelays
 from .db import fmt_ts, open_database, parse_ts, utcnow
-from .render import MediaInfo, looks_like_media, render_markdown
+from .render import VIDEO_HREF, VIDEO_LINK_TITLE, MediaInfo, looks_like_media, render_markdown
 from .vault import TokenVault
 
 log = logging.getLogger("threadbnc.web")
@@ -410,6 +410,23 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                                  looks_like_media=looks_like_media, size=human_size, youtube_video=youtube.video_id,
                                  livestream=livestream.stream_of,
                                  running_time=running_time)
+    def link_box(url: Any) -> dict[str, str] | None:
+        """How a link opens here, as in posts and articles (app.js): a
+        livestream's player or a video's box, in place; None for neither."""
+        if not isinstance(url, str):
+            return None
+        stream = livestream.stream_of(url)
+        if stream:
+            return {"href": stream.href, "cls": "live-link", "title": stream.link_title}
+        vid = youtube.video_id(url)
+        if vid:
+            return {"href": VIDEO_HREF.format(vid), "cls": "video-link", "title": VIDEO_LINK_TITLE}
+        video = videos.video_of(url)
+        return {"href": video.href, "cls": "video-link", "title": video.link_title} if video else None
+
+    templates.env.globals["link_box"] = link_box
+    # A page that might be an article to read here (articles.candidate), not a video's or a post's.
+    templates.env.tests["readable"] = lambda url: bool(isinstance(url, str) and articles.candidate(url))
     # A Lemmy or PieFed community (not a subreddit, a feed or Bluesky): one that can be pushed.
     templates.env.tests["is_federated"] = lambda ap_id: (not is_rss(ap_id) and not from_fediverse(ap_id)
                                                          and not is_bluesky(ap_id)
@@ -1126,11 +1143,29 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
 
     @app.post("/trending/pictures")
     def trending_pictures_wanted(post: list[str] = Form([])):
-        """Trending posts shown on screen (app.js): their pictures are downloaded."""
+        """Trending posts shown on screen (app.js): their pictures are downloaded.
+        Ones last read before their pictures' addresses were kept are read again first."""
         now = utcnow()
+        asked = [(s_, r_) for s_, _, r_ in (p_.partition(" ") for p_ in post[:TRENDING_PICTURES_ASKED]) if r_]
+        with db.connect() as conn:
+            stale: dict[str, list[str]] = {}
+            for source, ref in asked:
+                row = conn.execute("SELECT view_json FROM stream_posts WHERE source=? AND ref=?",
+                                   (source, ref)).fetchone()
+                if row and row["view_json"] and trends_mod.unread_pictures(json.loads(row["view_json"])):
+                    stale.setdefault(source, []).append(ref)
+        try:
+            with traffic_mod.tagged("trends"):
+                if stale.get("bluesky"):
+                    trend_upkeep.read_bluesky(stale["bluesky"], now)
+                wanted = mastodon_stream.wanted() if stale.get("mastodon") else None
+                if wanted:
+                    mastodon_stream.read(wanted, stale["mastodon"], now)
+        except RemoteError as exc:  # those are shown without, this time
+            log.info("reading trending posts again for their pictures: %s", exc)
         with db.transaction() as conn:
-            for source, _, ref in (p_.partition(" ") for p_ in post[:TRENDING_PICTURES_ASKED]):
-                if source in trends_mod.SOURCES and ref:
+            for source, ref in asked:
+                if source in trends_mod.SOURCES:
                     trends_mod.want_pictures(conn, source, ref, now)
         bouncer.wake.set()
         return trending_pictures_answer(post)

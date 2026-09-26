@@ -375,6 +375,52 @@ def test_trending_posts_pictures_are_downloaded_once_shown(settings, abouncer, b
     assert rows(abouncer, "SELECT id FROM media") == [] and rows(abouncer, "SELECT * FROM stream_post_media") == []
 
 
+def test_trending_posts_links_open_here(settings, abouncer, bsky):  # noqa: F811
+    """A linked article is read, and a video played, where the post is listed."""
+    story, video, old = tid(clock=1), tid(clock=2), tid(clock=3)
+
+    def card(url, title):
+        return {"$type": "app.bsky.embed.external#view", "external": {"uri": url, "title": title, "description": "",
+                                                                        "thumb": "https://news.test/img/own.png"}}
+
+    bsky.author_feed = [
+        {"post": post_view(story, "Read this", likes=9, embed=card("https://news.test/story", "Harbour wall"),
+                           created=stamp(hours=-1))},
+        {"post": post_view(video, "Watch this", likes=8, embed=card("https://youtu.be/dQw4w9WgXcQ", "A video"),
+                           created=stamp(hours=-1))},
+        {"post": post_view(old, "Read before pictures were kept", likes=7,
+                           embed=card("https://news.test/2026/09/other-story-here", "The other story"),
+                           created=stamp(hours=-1))},
+    ]
+    tally = trends.Tally("bluesky")
+    for rkey in (story, video, old):
+        tally.reply(at(rkey), trends.post_time(at(rkey)))
+    tally.flush(abouncer.db)
+    trends.Trends(abouncer).check_bluesky()
+    with abouncer.db.transaction() as conn:  # as a post read before picture addresses were kept
+        view = json.loads(conn.execute("SELECT view_json FROM stream_posts WHERE ref=?", (at(old),)).fetchone()[0])
+        del view["images"]
+        conn.execute("UPDATE stream_posts SET view_json=? WHERE ref=?", (json.dumps(view), at(old)))
+    web_client = TestClient(create_app(settings, abouncer))
+    web_client.post("/login", data={"password": "pw"})
+    page = web_client.get("/trending").text
+    story_card = page.split(f'id="tp-{trends.post_key("bluesky", at(story))}"')[1].split("</article>")[0]
+    assert '<a class="act read-article" href="/read?url=https%3A//news.test/story"' in story_card
+    video_card = page.split(f'id="tp-{trends.post_key("bluesky", at(video))}"')[1].split("</article>")[0]
+    assert '<a class="video-link" href="/youtube/v/dQw4w9WgXcQ"' in video_card and "read-article" not in video_card
+    # One read before its pictures' addresses were kept asks for them all the same, and is read again for them.
+    old_key = trends.post_key("bluesky", at(old))
+    assert "data-pictures" in page.split(f'id="tp-{old_key}"')[1].split(">")[0]
+    bsky.requests.clear()
+    got = web_client.post("/trending/pictures", data={"post": f"bluesky {at(old)}"}).json()
+    assert got["waiting"] == [old_key] and bsky.requests[0][0] == "app.bsky.feed.getPosts"
+    abouncer.media.fetch_pending()
+    assert len(web_client.get("/trending/pictures", params={"post": f"bluesky {at(old)}"}).json()["ready"][old_key]) == 1
+    # The article, read where it's listed.
+    r = web_client.get("/read", params={"url": "https://news.test/story", "pane": "1"})
+    assert r.status_code == 200 and "Harbour wall to be rebuilt" in r.text
+
+
 def test_liking_and_reposting_trending_posts(settings, bouncer, bsky):  # noqa: F811
     busy = tid()
     bsky.author_feed = [{"post": post_view(busy, "Big thread", likes=40, replies=3, created=stamp(hours=-1))}]
