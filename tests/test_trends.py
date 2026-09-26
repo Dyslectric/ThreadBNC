@@ -1029,3 +1029,23 @@ def test_stories_group_what_is_posted_together(settings, bouncer):
     assert '<input type="hidden" name="community" value="#news">' in page  # a hashtag's story: follow it
     rising = logged_in(settings, bouncer).get("/trending/stories", params={"t": "rising"}).text
     assert "posts in 6 hours" in rising and "compared with the week before" in rising
+
+
+def test_hours_counted_before_are_filled_in_though_the_streams_start_first(bouncer):
+    # Counted for days before trend_hours was kept...
+    old = (datetime.now(timezone.utc) - timedelta(days=3)).strftime("%Y-%m-%d")
+    with bouncer.db.transaction() as conn:
+        conn.execute("INSERT INTO tag_counts(tag, hour, source, posts) VALUES ('cats', ?, 'bluesky', 40)",
+                     (old + "T00",))
+    # ...and the stream has written this hour's before the first tidy, as it does within seconds of starting.
+    tally = trends.Tally("bluesky")
+    tally.post([], ["cats"])
+    tally.flush(bouncer.db)
+    trends.tidy(bouncer.db)
+    assert rows(bouncer, "SELECT COUNT(*) AS n FROM trend_hours WHERE hour LIKE ?", old + "%") == [{"n": 24}]
+    assert rows(bouncer, "SELECT posts FROM trend_hours WHERE hour=?", hour_ago(0)) == [{"posts": 1}]  # kept as it was
+    # Once: hours missing later are the streams being off, not hours to fill in.
+    with bouncer.db.transaction() as conn:
+        conn.execute("DELETE FROM trend_hours WHERE hour LIKE ?", (old + "%",))
+    trends.tidy(bouncer.db)
+    assert rows(bouncer, "SELECT COUNT(*) AS n FROM trend_hours WHERE hour LIKE ?", old + "%") == [{"n": 0}]
