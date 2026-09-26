@@ -100,7 +100,9 @@
   <div id="items" class="cards" data-items>
   {% for p in posts %}
     {% set v = p.view %}
-    <article class="post-card trending-post" id="tp{{ loop.index0 + (page - 1) * 25 }}" data-entry>
+    {% set site = 'Bluesky' if p.source == 'bluesky' else 'Mastodon' %}
+    <article class="post-card trending-post" id="tp-{{ p.key }}" data-entry data-post="{{ p.source }} {{ p.ref }}"
+             {% if p.pictures_waiting %}data-pictures{% endif %}>
       <div class="pc-main">
         <div class="pc-meta small">
           <span class="pill {{ 'new' if p.source == 'bluesky' else '' }}">{{ 'Bluesky' if p.source == 'bluesky' else 'Mastodon' }}</span>
@@ -114,25 +116,40 @@
         {% if v.link and v.link | safe_url %}
           <p class="small"><a href="{{ v.link | safe_url }}" target="_blank" rel="noreferrer noopener nofollow">{{ icon('link') }} {{ v.link_title or (v.link | host) }}</a></p>
         {% endif %}
-        {% if v.pictures or v.video or v.quote %}
-          <p class="small muted">{% if v.pictures %}{{ icon('picture') }} {{ v.pictures }} picture{{ 's' if v.pictures != 1 }}{% endif %}
+        <div class="trend-pics" id="pics-{{ p.key }}" {% if not p.pictures %}hidden{% endif %}>
+          {% for mid in p.pictures %}<button type="button" class="trend-pic" data-full="/media/{{ mid }}" aria-pressed="false"
+            title="Show it bigger"><img src="{{ thumb(mid, 'tile') }}" alt="" loading="lazy"></button>{% endfor %}
+        </div>
+        {% if (v.pictures and not p.pictures) or v.video or v.quote %}
+          <p class="small muted trend-media-note">{% if v.pictures and not p.pictures %}{{ icon('picture') }} {{ v.pictures }} picture{{ 's' if v.pictures != 1 }}{% endif %}
             {% if v.video %}{{ icon('video') }} a video{% endif %}{% if v.quote %} · quotes a post{% endif %}</p>
         {% endif %}
         <div class="pc-actions actions small">
           <span class="trend-counts" title="{{ 'Totals as last read' if p.checked_at else 'As counted from the stream' }}">
-            <span class="pill {{ 'new' if sort == 'likes' }}">♥ {{ p.likes or 0 }}</span>
-            <span class="pill {{ 'new' if sort == 'replies' }}">{{ icon('comment') }} {{ p.replies or 0 }}</span>
-            {% if p.reposts %}<span class="pill">{{ icon('repost') }} {{ p.reposts }}</span>{% endif %}
-          </span>
-          {% if p.here %}
-            <a class="act inline-comments" href="/t/{{ p.here }}#comments" aria-expanded="false" title="Show its comments here, as saved">{{ icon('comment') }}<span>Comments</span></a>
-          {% else %}
-            <a class="act trend-peek" href="{{ v.url | safe_url or '#' }}" data-peek="/trending/peek?source={{ p.source }}&ref={{ p.ref | urlencode }}"
-               aria-expanded="false" title="Show its text and replies here, read from {{ 'Bluesky' if p.source == 'bluesky' else 'Mastodon' }}">{{ icon('comment') }}<span>Replies</span></a>
-            {% if p.source == 'bluesky' %}
-            <form method="post" action="/archive" class="inline"><input type="hidden" name="url" value="{{ v.url }}">
-              <button class="act" title="Save it here with its replies, and keep it">{{ icon('star') }}<span>Keep</span></button></form>
+            <form method="post" action="/trending/act" class="inline" data-trend-act>
+              <input type="hidden" name="source" value="{{ p.source }}"><input type="hidden" name="ref" value="{{ p.ref }}">
+              <input type="hidden" name="what" value="like"><input type="hidden" name="on" value="{{ '0' if p.liked else '1' }}">
+              <button class="trend-meter {{ 'sorted' if sort == 'likes' }} {{ 'on' if p.liked }}" aria-pressed="{{ 'true' if p.liked else 'false' }}"
+                      title="Like it as your {{ site }} account">♥ <span class="n">{{ p.likes or 0 }}</span></button>
+            </form>
+            {% if p.here %}
+            <a class="trend-meter inline-comments {{ 'sorted' if sort == 'replies' }}" href="/t/{{ p.here }}#comments" aria-expanded="false"
+               title="Show its comments here, as saved">{{ icon('comment') }} <span class="n">{{ p.replies or 0 }}</span></a>
+            {% else %}
+            <a class="trend-meter trend-peek {{ 'sorted' if sort == 'replies' }}" href="{{ v.url | safe_url or '#' }}"
+               data-peek="/trending/peek?source={{ p.source }}&ref={{ p.ref | urlencode }}" aria-expanded="false"
+               title="Show its text and replies here, read from {{ site }}">{{ icon('comment') }} <span class="n">{{ p.replies or 0 }}</span></a>
             {% endif %}
+            <form method="post" action="/trending/act" class="inline" data-trend-act>
+              <input type="hidden" name="source" value="{{ p.source }}"><input type="hidden" name="ref" value="{{ p.ref }}">
+              <input type="hidden" name="what" value="repost"><input type="hidden" name="on" value="{{ '0' if p.reposted else '1' }}">
+              <button class="trend-meter {{ 'on' if p.reposted }}" aria-pressed="{{ 'true' if p.reposted else 'false' }}"
+                      title="{{ 'Repost' if p.source == 'bluesky' else 'Boost' }} it as your {{ site }} account">{{ icon('repost') }} <span class="n">{{ p.reposts or 0 }}</span></button>
+            </form>
+          </span>
+          {% if not p.here and p.source == 'bluesky' %}
+            <form method="post" action="/archive" class="inline" data-inplace="tp-{{ p.key }}"><input type="hidden" name="url" value="{{ v.url }}">
+              <button class="act" title="Save it here with its replies, and keep it">{{ icon('star') }}<span>Keep</span></button></form>
           {% endif %}
           {% if v.url | safe_url %}<a class="act" href="{{ v.url | safe_url }}" target="_blank" rel="noreferrer noopener nofollow">{{ icon('external') }}<span>Original</span></a>{% endif %}
         </div>

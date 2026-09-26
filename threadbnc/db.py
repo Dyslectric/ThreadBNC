@@ -611,6 +611,16 @@ CREATE TABLE IF NOT EXISTS stream_posts (
 );
 CREATE INDEX IF NOT EXISTS stream_posts_created ON stream_posts(created_at);
 
+-- Those posts' pictures, downloaded once they're shown on Trending; they go with the post.
+CREATE TABLE IF NOT EXISTS stream_post_media (
+    source TEXT NOT NULL,
+    ref TEXT NOT NULL,
+    media_id INTEGER NOT NULL REFERENCES media(id),
+    position INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (source, ref, media_id)
+);
+CREATE INDEX IF NOT EXISTS stream_post_media_media ON stream_post_media(media_id);
+
 CREATE TABLE IF NOT EXISTS jobs (
     id INTEGER PRIMARY KEY,
     kind TEXT NOT NULL,

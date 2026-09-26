@@ -126,7 +126,10 @@ def status_view(status: dict[str, Any], domain: str) -> dict[str, Any]:
             "handle": acct if "@" in acct else f"{acct}@{domain}", "name": account.get("display_name") or None,
             "author_url": account.get("url"), "link": card.get("url"), "link_title": card.get("title") or None,
             "pictures": sum(1 for m in media if m.get("type") == "image"),
-            "video": any(m.get("type") in ("video", "gifv") for m in media), "quote": False}
+            "video": any(m.get("type") in ("video", "gifv") for m in media), "quote": False,
+            "images": [u for u in ([m.get("url") if m.get("type") == "image" else m.get("preview_url") for m in media
+                                    if m.get("type") in ("image", "video", "gifv")] or [card.get("image")])
+                       if isinstance(u, str) and u.startswith("https://")][:trends.PICTURES]}
 
 
 def totals(status: dict[str, Any], domain: str) -> dict[str, Any]:

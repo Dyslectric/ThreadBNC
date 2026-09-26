@@ -1057,6 +1057,7 @@ def collect_orphans(conn: Conn, media_dir: Path) -> list[Path]:
     orphans = conn.execute(
         "SELECT id, storage_path FROM media m WHERE NOT EXISTS (SELECT 1 FROM media_refs r WHERE r.media_id=m.id) "
         "AND NOT EXISTS (SELECT 1 FROM article_media a WHERE a.media_id=m.id) "
+        "AND NOT EXISTS (SELECT 1 FROM stream_post_media s WHERE s.media_id=m.id) "  # a trending post's (trends.py)
         "AND NOT (m.wanted_at IS NOT NULL AND m.episode=0)"  # a video saved from a link (want_youtube, want_video)
     ).fetchall()
     files: list[Path] = []

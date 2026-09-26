@@ -39,9 +39,10 @@ from urllib.parse import urlparse
 
 from . import store
 from .adapters import (
-    BSKY_DOMAIN, REDDIT_DOMAIN, TAG_DOMAIN, RemoteAuthError, RemoteError, RemoteRejected, ThreadiverseAdapter,
-    host_of, is_bluesky, is_reddit_host, is_rss,
+    BSKY_DOMAIN, REDDIT_DOMAIN, TAG_DOMAIN, RemoteAuthError, RemoteError, RemoteNotFound, RemoteRejected,
+    ThreadiverseAdapter, host_of, is_bluesky, is_reddit_host, is_rss,
 )
+from .adapters.bluesky import web_url
 from .bouncer import Bouncer
 from .db import parse_ts, utcnow
 from .vault import TokenVault, VaultError
@@ -800,6 +801,75 @@ class Poster:
             token, self._local_id(adapter, token, account.domain, object_id, kind), text)))
         return self.bouncer._ingest_post(post, account.domain, post.local_id, adapter, source_url=post.ap_id,
                                          retention="manual", capture=True)
+
+    # -- posts shown on Trending, not saved here ----------------------------------------
+    def stream_act(self, source: str, ref: str, uri: str, action: str, on: bool) -> None:
+        """Like or repost (`on`), or undo it, a post Trending shows (trends.py),
+        as your account on its site. `ref` is how Trending knows it (a Bluesky
+        post's at:// address; a Mastodon post's "<your server>/<its id there>"),
+        `uri` its at:// address or ActivityPub id. Its totals there go up (or
+        down) by one until they're next read."""
+        if action not in ("like", "repost"):
+            raise AccountError("Invalid action.")
+        if source == "bluesky":
+            account = self.bluesky_account()
+            if account is None:
+                raise AccountError("Sign in to Bluesky on the Accounts page to like and repost its posts.")
+            key = web_url(uri)
+
+            def act(adapter: ThreadiverseAdapter, token: str) -> None:
+                if action == "like":
+                    adapter.vote_post(token, uri, 1 if on else 0)
+                else:
+                    adapter.repost(token, uri, on)  # type: ignore[attr-defined]
+        else:
+            account = self.mastodon_account()
+            if account is None:
+                raise AccountError("Sign in to your Mastodon account on the Accounts page to like and boost posts.")
+            domain, _, sid = ref.partition("/")
+            key = uri
+
+            def act(adapter: ThreadiverseAdapter, token: str) -> None:
+                local = sid if domain == account.domain else adapter.resolve_as(token, uri).get("post")
+                if not local:
+                    raise RemoteNotFound(f"{account.domain} can't find that post")
+                if action == "like":
+                    adapter.vote_post(token, local, 1 if on else 0)
+                else:
+                    adapter.reblog(token, local, on)  # type: ignore[attr-defined]
+
+        self._run(account, act)
+        mark = key + (REPOSTED if action == "repost" else "")
+        column = "likes" if action == "like" else "reposts"
+        seen = "likes_seen" if action == "like" else "0"
+        with self.db.transaction() as conn:
+            before = conn.execute("SELECT 1 FROM my_votes WHERE account_id=? AND object_ap_id=?",
+                                  (account.id, mark)).fetchone() is not None
+            if on:
+                conn.execute("INSERT INTO my_votes(account_id, object_ap_id, score, voted_at) VALUES (?,?,1,?) "
+                             "ON CONFLICT(account_id, object_ap_id) DO UPDATE SET voted_at=excluded.voted_at",
+                             (account.id, mark, utcnow()))
+            else:
+                conn.execute("DELETE FROM my_votes WHERE account_id=? AND object_ap_id=?", (account.id, mark))
+            if on != before:
+                step = 1 if on else -1
+                conn.execute(f"UPDATE stream_posts SET {column}=CASE WHEN COALESCE({column}, {seen}) + ? < 0 THEN 0 "
+                             f"ELSE COALESCE({column}, {seen}) + ? END WHERE source=? AND ref=?",
+                             (step, step, source, ref))
+
+    def stream_mine(self, posts: list[tuple[str, str]]) -> dict[str, set[str]]:
+        """Of these trending posts ((source, key): a Bluesky post's bsky.app
+        address, a Mastodon post's ActivityPub id), which you've liked
+        ("like") and reposted ("repost") from here, by key."""
+        out: dict[str, set[str]] = {"like": set(), "repost": set()}
+        for source, account in (("bluesky", self.bluesky_account()), ("mastodon", self.mastodon_account())):
+            keys = [k for s, k in posts if s == source]
+            if account is None or not keys:
+                continue
+            votes = self.my_votes(account, keys + [k + REPOSTED for k in keys])
+            out["like"] |= {k for k in keys if k in votes}
+            out["repost"] |= {k for k in keys if k + REPOSTED in votes}
+        return out
 
     def my_reposts(self, account: Account | None, ap_ids: list[str]) -> set[str]:
         """Which of these Bluesky posts you've reposted from here."""

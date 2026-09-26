@@ -1042,6 +1042,11 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                 f"WHERE o.canonical_ap_id IN ({','.join('?' * len(ap_ids))})", ap_ids)} if ap_ids else {}
         for i, ap_id in zip(items, ap_ids):
             i["here"] = here.get(ap_id)  # opened (or captured) here already
+        mine = poster.stream_mine([(i["source"], i["view"].get("url") if i["source"] == "bluesky"
+                                    else i["view"].get("uri")) for i in items])
+        for i in items:
+            key = i["view"].get("url") if i["source"] == "bluesky" else i["view"].get("uri")
+            i["liked"], i["reposted"] = key in mine["like"], key in mine["repost"]
         return render(request, "trending.html", tab="posts", posts=items, sort=sort, window=window, source=source,
                       page=page, has_more=has_more, status=trending_status())
 
@@ -1085,6 +1090,54 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             peek = mastodon_stream.peek(ref, view.get("uri"), view.get("text"))
         return render(request, "discussion_peek.html", peek=peek,
                       md=lambda text, titles=video_titles(): render_markdown(text, None, titles))
+
+    @app.post("/trending/act")
+    def trending_act(request: Request, source: str = Form(...), ref: str = Form(...), what: str = Form(...),
+                     on: str = Form("1")):
+        """Like or repost (`what`) a trending post, or undo it, as your account on its site. (Not
+        "action": a form field by that name hides the form's own action from app.js.)"""
+        with db.connect() as conn:
+            row = conn.execute("SELECT view_json FROM stream_posts WHERE source=? AND ref=?", (source, ref)).fetchone()
+        if row is None or not row["view_json"]:
+            raise HTTPException(404)
+        uri = ref if source == "bluesky" else json.loads(row["view_json"]).get("uri") or ""
+        try:
+            poster.stream_act(source, ref, uri, what, on == "1")
+        except AccountError as exc:
+            flash(request, str(exc), "error")
+        return RedirectResponse(back(request, "/trending"), status_code=303)
+
+    TRENDING_PICTURES_ASKED = 50  # posts asked about at once, at most
+
+    def trending_pictures_answer(posts: list[str]) -> JSONResponse:
+        """What app.js is told of trending posts' pictures: those downloaded,
+        by post, and the posts with some still to come."""
+        pairs = [(s_, r_) for s_, _, r_ in (p_.partition(" ") for p_ in posts[:TRENDING_PICTURES_ASKED]) if r_]
+        with db.connect() as conn:
+            got = trends_mod.pictures_of(conn, pairs)
+        ready, waiting = {}, []
+        for source, ref in pairs:
+            ids, pending = got.get((source, ref), ([], False))
+            key = trends_mod.post_key(source, ref)
+            ready[key] = [{"id": mid, "src": thumb(mid, "tile"), "full": f"/media/{mid}"} for mid in ids]
+            if pending:
+                waiting.append(key)
+        return JSONResponse({"ready": ready, "waiting": waiting})
+
+    @app.post("/trending/pictures")
+    def trending_pictures_wanted(post: list[str] = Form([])):
+        """Trending posts shown on screen (app.js): their pictures are downloaded."""
+        now = utcnow()
+        with db.transaction() as conn:
+            for source, _, ref in (p_.partition(" ") for p_ in post[:TRENDING_PICTURES_ASKED]):
+                if source in trends_mod.SOURCES and ref:
+                    trends_mod.want_pictures(conn, source, ref, now)
+        bouncer.wake.set()
+        return trending_pictures_answer(post)
+
+    @app.get("/trending/pictures")
+    def trending_pictures(post: list[str] = Query([])):
+        return trending_pictures_answer(post)
 
     @app.get("/articles")
     def old_articles_page(t: str = "week"):

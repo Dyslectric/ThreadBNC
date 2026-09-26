@@ -20,7 +20,7 @@ from threadbnc.web import create_app
 
 from .conftest import DOMAIN
 from .test_articles import abouncer, fake_web  # noqa: F401
-from .test_bluesky import ALICE, bsky, post_view, thread  # noqa: F401
+from .test_bluesky import ALICE, bsky, post_view, signed_in, thread  # noqa: F401
 from .test_mastodon import HOME, TOKEN, WithHome, fedi, sign_in, web  # noqa: F401
 from .test_tags import client, follow, one, run_jobs, tagged  # noqa: F401
 
@@ -310,12 +310,12 @@ def test_the_trending_page(settings, bouncer, bsky):  # noqa: F811
     web_client = TestClient(create_app(settings, bouncer))
     web_client.post("/login", data={"password": "pw"})
     page = web_client.get("/trending").text
-    assert "Big thread" in page and "♥ 40" in page and 'aria-current="page">Most liked' in page
+    assert "Big thread" in page and '♥ <span class="n">40</span>' in page and 'aria-current="page">Most liked' in page
     assert "not subscribed." in page
     # Its replies open under it, read from Bluesky (nothing saved); keeping it saves it.
     peek = f"/trending/peek?source=bluesky&ref={quote(at(busy), safe='/')}"
-    assert f'class="act trend-peek" href="https://bsky.app/profile/{ALICE}/post/{busy}" data-peek="{peek}"' in page
-    assert 'action="/archive"' in page
+    assert f'data-peek="{peek}"' in page and 'class="trend-meter trend-peek' in page
+    assert 'action="/archive"' in page and 'action="/trending/act"' in page
     view = bsky.author_feed[0]["post"]
     bsky.threads[view["uri"]] = thread(view, thread(post_view("re1", "Cute!", did="did:plc:bob",
                                                                handle="bob.bsky.social", reply_to=view["uri"])))
@@ -338,6 +338,73 @@ def test_the_trending_page(settings, bouncer, bsky):  # noqa: F811
     # Without a Mastodon account, its timeline can't be subscribed to.
     page = web_client.post("/trending/settings", data={"bluesky": "1", "mastodon_scope": "public"}).text
     assert "Sign in to your Mastodon account" in page and mastodon_stream.subscription(bouncer.db) is None
+
+
+def test_trending_posts_pictures_are_downloaded_once_shown(settings, abouncer, bsky):  # noqa: F811
+    busy = tid()
+    images = {"$type": "app.bsky.embed.images#view", "images": [
+        {"thumb": "https://news.test/img/own.png", "fullsize": "https://news.test/img/wall.png", "alt": "A wall"}]}
+    bsky.author_feed = [{"post": post_view(busy, "Look", likes=5, embed=images, created=stamp(hours=-1))}]
+    tally = trends.Tally("bluesky")
+    tally.reply(at(busy), trends.post_time(at(busy)))
+    tally.flush(abouncer.db)
+    trends.Trends(abouncer).check_bluesky()
+    web_client = TestClient(create_app(settings, abouncer))
+    web_client.post("/login", data={"password": "pw"})
+    key = trends.post_key("bluesky", at(busy))
+    page = web_client.get("/trending").text
+    assert f'id="tp-{key}"' in page and "data-pictures" in page and "1 picture" in page
+    assert rows(abouncer, "SELECT id FROM media") == []  # nothing until it's shown
+    # Shown on screen, it asks for them; they're downloaded, then shown in it.
+    post_ = f"bluesky {at(busy)}"
+    got = web_client.post("/trending/pictures", data={"post": post_}).json()
+    assert got == {"ready": {key: []}, "waiting": [key]}
+    abouncer.media.fetch_pending()
+    got = web_client.get("/trending/pictures", params={"post": post_}).json()
+    (pic,) = got["ready"][key]
+    assert got["waiting"] == [] and pic["full"] == f"/media/{pic['id']}"
+    page = web_client.get("/trending").text
+    assert f'data-full="/media/{pic["id"]}"' in page and "data-pictures" not in page and "1 picture" not in page
+    assert web_client.get(pic["full"]).content.startswith(b"\x89PNG")
+    # They go with the post.
+    with abouncer.db.transaction() as conn:
+        trends.tidy(conn, stamp(days=9))
+    upkeep = trends.Trends(abouncer)
+    upkeep._checked = upkeep._cached = time.monotonic()
+    upkeep.upkeep()
+    assert rows(abouncer, "SELECT id FROM media") == [] and rows(abouncer, "SELECT * FROM stream_post_media") == []
+
+
+def test_liking_and_reposting_trending_posts(settings, bouncer, bsky):  # noqa: F811
+    busy = tid()
+    bsky.author_feed = [{"post": post_view(busy, "Big thread", likes=40, replies=3, created=stamp(hours=-1))}]
+    tally = trends.Tally("bluesky")
+    tally.reply(at(busy), trends.post_time(at(busy)))
+    tally.flush(bouncer.db)
+    trends.Trends(bouncer).check_bluesky()
+    anonymous = TestClient(create_app(settings, bouncer))
+    anonymous.post("/login", data={"password": "pw"})
+    act = {"source": "bluesky", "ref": at(busy), "what": "like", "on": "1"}
+    answer = anonymous.post("/trending/act", data=act, headers={"X-ThreadBNC-Fetch": "1"}).json()
+    assert not answer["ok"] and "Sign in to Bluesky" in answer["messages"][0]["text"]
+
+    client = signed_in(settings, bouncer, bsky)
+    assert client.post("/trending/act", data=act, headers={"X-ThreadBNC-Fetch": "1"}).json()["ok"]
+    (like,) = bsky.records.values()
+    assert like["collection"] == "app.bsky.feed.like"
+    assert like["record"]["subject"] == {"uri": at(busy), "cid": "c" + busy}
+    client.post("/trending/act", data=act | {"what": "repost"})
+    assert sorted(r["collection"] for r in bsky.records.values()) == ["app.bsky.feed.like", "app.bsky.feed.repost"]
+    post_ = rows(bouncer, "SELECT likes, reposts FROM stream_posts")[0]
+    assert (post_["likes"], post_["reposts"]) == (41, 1)
+    page = client.get("/trending").text
+    assert '<input type="hidden" name="on" value="0">' in page and 'aria-pressed="true"' in page and "41" in page
+    assert 'name="action"' not in page  # it would hide the forms' own action from app.js
+    # Undone.
+    client.post("/trending/act", data=act | {"on": "0"})
+    assert [r["collection"] for r in bsky.records.values()] == ["app.bsky.feed.repost"]
+    assert rows(bouncer, "SELECT likes FROM stream_posts")[0]["likes"] == 40
+    assert client.post("/trending/act", data=act | {"ref": "at://nobody"}).status_code == 404
 
 
 # --- your Mastodon server's public timeline ------------------------------------------------
@@ -421,13 +488,16 @@ def test_subscribing_to_your_mastodon_servers_public_timeline(web, tagged, fedi,
     assert rows(b, "SELECT ref, replies_seen FROM stream_posts") == [{"ref": f"{HOME}/300", "replies_seen": 1}]
 
     # Its totals, and the server's own trending posts, read from your server.
-    asked = []
+    asked, boosted = [], []
     handle = fedi.home.handle
 
     def home(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/v1/statuses" and request.method == "GET":
             asked.append(request.url.params.get_list("id[]"))
             return httpx.Response(200, json=[masto_status("300", "A thread", replies_count=4, favourites_count=2)])
+        if request.url.path in ("/api/v1/statuses/300/reblog", "/api/v1/statuses/300/unreblog"):
+            boosted.append(request.url.path.split("/", 4)[-1])
+            return httpx.Response(200, json=masto_status("300", "A thread"))
         if request.url.path == "/api/v1/statuses/300/context":
             assert request.headers["authorization"] == f"Bearer {TOKEN}"
             return httpx.Response(200, json={"ancestors": [], "descendants": [
@@ -454,6 +524,11 @@ def test_subscribing_to_your_mastodon_servers_public_timeline(web, tagged, fedi,
     assert f"data-peek=\"/trending/peek?source=mastodon&ref={HOME}/300\"" in page and "Keep</span>" not in page
     shown = web.get("/trending/peek", params={"source": "mastodon", "ref": f"{HOME}/300"}).text
     assert "A reply here" in shown and "carol@home.test" in shown
+    # Liked and boosted as your account, on your server.
+    fedi.home.statuses["300"] = masto_status("300", "A thread")
+    web.post("/trending/act", data={"source": "mastodon", "ref": f"{HOME}/300", "what": "like", "on": "1"})
+    web.post("/trending/act", data={"source": "mastodon", "ref": f"{HOME}/300", "what": "repost", "on": "1"})
+    assert fedi.home.favourites[-1] == "+300" and boosted == ["300/reblog"]
 
     # Unsubscribing follows the relays again.
     web.post("/trending/settings", data={"bluesky": "1", "mastodon_scope": ""})
