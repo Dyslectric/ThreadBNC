@@ -107,6 +107,7 @@ def _plus(ts: str, **delta: float) -> str:
 JOB_PURPOSES = {"ingest": "saving", "keep_youtube": "saving", "open": "opening", "sync": "opening",
                 "articles": "articles", "audio": "media", "previews": "previews", "poll": "polling",
                 "relayed": "hashtags", "bluesky_tagged": "hashtags", "mastodon_tagged": "hashtags",
+                "trending_article": "trends",
                 "discussions": "discussions"}
 
 

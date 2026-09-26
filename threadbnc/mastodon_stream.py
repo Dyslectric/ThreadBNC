@@ -411,7 +411,7 @@ class MastodonStream:
                 except RemoteNotFound:
                     continue
         found = {f"{domain}/{s['id']}": totals(s, domain) for s in got if isinstance(s, dict) and s.get("id")}
-        with self.db.transaction() as conn:
+        with self.db.transaction(exclusive=False) as conn:
             trends.record_totals(conn, "mastodon", found, due, now or utcnow())
 
     def check_trending(self, wanted: tuple[str, str, str, str], now: str | None = None) -> int:
@@ -430,7 +430,7 @@ class MastodonStream:
             if created is None or created < parse_ts(utcnow()) - trends.MAX_POST_AGE:  # type: ignore[operator]
                 continue
             found[f"{domain}/{s['id']}"] = totals(s, domain)
-        with self.db.transaction() as conn:
+        with self.db.transaction(exclusive=False) as conn:
             trends.record_totals(conn, "mastodon", found, [], now or utcnow())
         return len(found)
 

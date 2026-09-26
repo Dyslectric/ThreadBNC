@@ -188,7 +188,7 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
   {% set title = 'Hide ' ~ label ~ ': their posts leave your feeds, and new ones aren\'t saved' %}
 {% endif %}
 {% if key %}
-<form method="post" action="/hide" class="inline" data-confirm="{{ warn }}">
+<form method="post" action="/hide" class="inline" data-confirm="{{ warn }}" data-hide>
   <input type="hidden" name="key" value="{{ key }}"><input type="hidden" name="kind" value="{{ kind }}">
   <input type="hidden" name="label" value="{{ label }}">
   <button class="act hide-source" title="{{ title }}">{{ icon('hide') }}<span class="{{ 'sr-only' if short }}">Hide {{ 'channel' if channel else 'feed' if kind == 'community' else 'user' }}</span></button>

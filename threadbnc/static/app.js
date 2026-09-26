@@ -317,6 +317,11 @@ document.documentElement.classList.add("js");
       trendAct(form);
       return;
     }
+    if (form.hasAttribute("data-hide")) {
+      ev.preventDefault();
+      hideSource(form);
+      return;
+    }
     // Commenting, replying or deleting in comments opened under a post: done
     // here, and the comments shown again, rather than leaving for the post's page.
     const panelComments = form.closest(".inline-panel .comments");
@@ -1958,6 +1963,45 @@ document.documentElement.classList.add("js");
     unhideRow(row);
     renumberLayout(row.closest("form"));
   });
+
+  // ---- hiding someone, or a feed: gone at once, the server told meanwhile -------------
+  // Every post of theirs on the page (and anything opened under one) goes as
+  // soon as you've said yes; the page isn't reloaded. Undo, or the server
+  // saying no, brings them back.
+  async function hideSource(form) {
+    const key = form.elements.key.value;
+    const cards = [...new Set($$("form[data-hide]").filter((f) => f.elements.key.value === key)
+      .map((f) => f.closest("[data-entry]")).filter(Boolean))];
+    const panels = cards.flatMap((c) => panelsForOwner(c).filter((p) => !p.hidden));
+    const show = (on) => {
+      for (const c of cards) c.hidden = !on;
+      for (const p of panels) p.hidden = !on;
+    };
+    show(false);
+    try {
+      const data = await post(form.action, new URLSearchParams(new FormData(form)));
+      if (!data.ok) show(true);
+      for (const m of data.messages || []) toast(m, m.undo ? () => undoHide(m.undo, show) : null);
+    } catch (e) {
+      show(true);
+      toast({ kind: "error", text: "Couldn't hide them (" + e.message + "). Try again." });
+    } finally {
+      delete form.dataset.confirmed;  // asked again next time
+      const asked = form.querySelector("input[name=confirmed]");
+      if (asked) asked.remove();
+    }
+  }
+
+  async function undoHide(undo, show) {
+    show(true);
+    try {
+      const data = await post(undo.action, undo.fields);
+      for (const m of data.messages || []) toast(m);
+    } catch (e) {
+      show(false);
+      toast({ kind: "error", text: "Couldn't undo: " + e.message });
+    }
+  }
 
   // ---- a trending post's like and repost buttons ----------------------------------
   // Shown done at once, the count with them; put back if it didn't go through.

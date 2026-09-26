@@ -255,7 +255,7 @@ def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: lis
         scope += " AND t.retention='manual'"
     elif thread_ids is None:
         sql, params = languages.shown_sql(languages.load(conn), "o.language")
-        scope += " AND " + sql + " AND " + hidden.thread_sql(conn, "t.")
+        scope += " AND " + sql + " AND " + hidden.thread_sql(conn, "t.", "o.author_id")
         args += params
     if media in MEDIA_KINDS:
         sql, params = MEDIA_KINDS[media]

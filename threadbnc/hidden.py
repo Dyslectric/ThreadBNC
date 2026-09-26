@@ -41,15 +41,24 @@ def unhide(conn: Conn, key: str) -> None:
     conn.execute("DELETE FROM hidden_sources WHERE key=?", (key,))
 
 
-def thread_sql(conn: Conn, prefix: str = "") -> str:
+def thread_sql(conn: Conn, prefix: str = "", author_col: str | None = None) -> str:
     """SQL that's true for a thread (archived_threads, its columns prefixed
-    with `prefix`) that isn't by anyone hidden or in a hidden feed."""
-    if conn.execute("SELECT 1 FROM hidden_sources LIMIT 1").fetchone() is None:
-        return "1=1"
-    return ("NOT EXISTS (SELECT 1 FROM hidden_sources h WHERE h.key IN ("
-            f"(SELECT ha.canonical_ap_id FROM objects ho JOIN actors ha ON ha.id=ho.author_id "
-            f"WHERE ho.id={prefix}root_object_id), "
-            f"(SELECT hc.canonical_ap_id FROM communities hc WHERE hc.id={prefix}community_id)))")
+    with `prefix`) that isn't by anyone hidden or in a hidden feed. The ones
+    hidden are looked up first, by id, so each thread costs a comparison (and
+    without `author_col`, its root post's author: one lookup by key)."""
+    authors = [int(r[0]) for r in conn.execute(
+        "SELECT a.id FROM hidden_sources h JOIN actors a ON a.canonical_ap_id=h.key")]
+    communities = [int(r[0]) for r in conn.execute(
+        "SELECT c.id FROM hidden_sources h JOIN communities c ON c.canonical_ap_id=h.key")]
+    parts = []
+    if communities:
+        parts.append(f"{prefix}community_id NOT IN ({','.join(map(str, communities))})")
+    if authors:
+        ids = ",".join(map(str, authors))
+        parts.append(f"({author_col} IS NULL OR {author_col} NOT IN ({ids}))" if author_col else
+                     f"NOT EXISTS (SELECT 1 FROM objects ho WHERE ho.id={prefix}root_object_id "
+                     f"AND ho.author_id IN ({ids}))")
+    return " AND ".join(parts) or "1=1"
 
 
 def hides(conn: Conn, author: str | None, community: str | None) -> bool:
