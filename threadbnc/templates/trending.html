@@ -174,7 +174,7 @@
       {% endfor %}
     </nav>
     <nav class="seg" aria-label="Posted in the past">
-      {% for key, label in [('day', 'Day'), ('week', 'Week')] %}
+      {% for key, label in [('hour', 'Hour'), ('day', 'Day'), ('week', 'Week')] %}
         <a href="{{ q('/trending', {'t': key}) }}" class="{{ 'on' if window == key }}"
            {% if window == key %}aria-current="page"{% endif %}>{{ label }}</a>
       {% endfor %}

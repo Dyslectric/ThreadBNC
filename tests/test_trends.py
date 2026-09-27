@@ -339,6 +339,34 @@ def test_bluesky_posts_talked_about_have_their_totals_read(bouncer, bsky):  # no
     assert upkeep.check_bluesky() == 0 and bsky.requests == []
 
 
+def test_posts_of_the_past_hour(settings, bouncer, bsky, monkeypatch):  # noqa: F811
+    # The week's busiest would crowd a new post out of the totals read: the past hour's are looked at too.
+    monkeypatch.setattr(trends, "CHECK_LOOKED_AT", 1)
+    old, new = tid(datetime.now(timezone.utc) - timedelta(hours=3)), tid(clock=8)
+    bsky.author_feed = [{"post": post_view(old, "This morning", likes=90, replies=9, created=stamp(hours=-3))},
+                        {"post": post_view(new, "Just now", likes=20, replies=2, created=stamp(minutes=-20))}]
+    tally = trends.Tally("bluesky")
+    for _ in range(9):
+        tally.reply(at(old), trends.post_time(at(old)))
+    tally.reply(at(new), trends.post_time(at(new)))
+    tally.flush(bouncer.db)
+    with bouncer.db.connect() as conn:
+        assert [r["ref"] for r in trends.due_checks(conn, "bluesky", 1)] == [at(new)]
+        assert [r["ref"] for r in trends.due_checks(conn, "bluesky", 4)] == [at(new), at(old)]
+    assert trends.Trends(bouncer).check_bluesky() == 2
+    with bouncer.db.connect() as conn:
+        hour, _ = trends.trending_posts(conn, "hour", "likes")
+        day, _ = trends.trending_posts(conn, "day", "likes")
+    assert [p["view"]["text"] for p in hour] == ["Just now"]
+    assert [p["view"]["text"] for p in day] == ["This morning", "Just now"]
+    web_client = TestClient(create_app(settings, bouncer))
+    web_client.post("/login", data={"password": "pw"})
+    page = web_client.get("/trending", params={"t": "hour", "sort": "replies"}).text
+    assert "Just now" in page and "This morning" not in page
+    assert 'aria-current="page">Hour' in page and 'aria-current="page">Most replies' in page
+    assert 'href="/trending?sort=replies&t=day&' in page
+
+
 def test_the_trending_page(settings, bouncer, bsky):  # noqa: F811
     busy = tid()
     bsky.author_feed = [{"post": post_view(busy, "Big thread", likes=40, replies=12, created=stamp(hours=-1))}]
