@@ -18,8 +18,22 @@ SORTS = {  # NULLS LAST: Postgres otherwise puts NULLs first in DESC order
     "new": "created_at DESC NULLS LAST, id DESC",
     "active": "g_activity DESC NULLS LAST, id DESC",
     "top": "g_score DESC NULLS LAST, created_at DESC NULLS LAST, id DESC",
-    "comments": "g_comments DESC, created_at DESC NULLS LAST, id DESC",
+    "comments": "g_linked DESC, created_at DESC NULLS LAST, id DESC",
 }
+# What the comments sort counts: the comments on every saved post of the same
+# page, anywhere in the archive: the post itself, its copies (the same link,
+# dupes.py) and posts of the same article by another link (articles.py's keys:
+# tracking, AMP, short links, the page's own address). So a feed's article,
+# which has no comments of its own, sorts by the conversation about it here.
+# o and t are the post and its thread in _BASE.
+_LINKED = """(SELECT COALESCE(SUM((SELECT MAX(column1) FROM (VALUES ((SELECT COUNT(*) FROM objects x
+        WHERE x.thread_id=lt.id AND x.object_type='comment')), (COALESCE(lo.reply_count, 0))) AS v)), 0)
+      FROM archived_threads lt JOIN objects lo ON lo.id=lt.root_object_id
+      WHERE lt.trashed_at IS NULL AND lt.root_object_id IN (
+        SELECT o.id UNION SELECT d.id FROM objects d WHERE d.dupe_key=o.dupe_key
+        UNION SELECT ar2.object_id FROM article_refs ar1 JOIN article_keys k1 ON k1.article_id=ar1.article_id
+          JOIN article_keys k2 ON k2.key=k1.key JOIN article_refs ar2 ON ar2.article_id=k2.article_id
+        WHERE ar1.object_id=o.id))"""
 WINDOWS = {"day": timedelta(days=1), "week": timedelta(days=7), "month": timedelta(days=30), "all": None}
 # posts; pictures in one column; a grid of pictures; whole posts by who posted them, as on Mastodon
 VIEWS = ("list", "pictures", "tiles", "timeline")
@@ -82,7 +96,7 @@ SELECT * FROM (
   SELECT feed.*,
          ROW_NUMBER() OVER (PARTITION BY dkey ORDER BY created_at, id) AS g_rank,
          SUM(score) OVER (PARTITION BY dkey) AS g_score,
-         SUM(n_comments) OVER (PARTITION BY dkey) AS g_comments,
+         MAX(n_linked) OVER (PARTITION BY dkey) AS g_linked,
          SUM(n_new) OVER (PARTITION BY dkey) AS g_new,
          SUM(CASE WHEN last_viewed_at IS NULL THEN 1 ELSE 0 END) OVER (PARTITION BY dkey) AS g_unread,
          SUM(touched) OVER (PARTITION BY dkey) AS g_touched,
@@ -96,7 +110,7 @@ SELECT * FROM (
            r.title, r.body, r.url, r.metadata_json AS rmeta, a.username, a.instance AS a_instance, a.display_name AS a_name,
            a.canonical_ap_id AS author_ap, a.id AS author_id, a.avatar_url, a.avatar_checked_at,
            am.id AS avatar_mid, am.status AS avatar_status,
-           c.name AS cname, c.canonical_ap_id AS c_ap, {touched} AS touched,
+           c.name AS cname, c.canonical_ap_id AS c_ap, {touched} AS touched, {linked} AS n_linked,
            -- the comments saved, or as many as the server last said it has, if more (not read yet)
            (SELECT MAX(column1) FROM (VALUES ((SELECT COUNT(*) FROM objects x WHERE x.thread_id=t.id
                AND x.object_type='comment')), (COALESCE(o.reply_count, 0))) AS v) AS n_comments,
@@ -275,9 +289,10 @@ def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: lis
     group_filters = f" AND ({UNREAD[mode]} OR g_touched > 0)" if mode else ""
     touched = "CASE WHEN t.last_viewed_at > ? THEN 1 ELSE 0 END" if as_of else "0"
     order = SORTS.get(sort, SORTS["new"])
+    linked = _LINKED if order == SORTS["comments"] else "0"  # only worth counting to sort by
     page = max(1, page)
     rows = conn.execute(_BASE.format(scope=scope, filters=filters, group_filters=group_filters, order=order,
-                                     touched=touched),
+                                     touched=touched, linked=linked),
                         [*head, *args, per_page + 1, (page - 1) * per_page]).fetchall()
     items = [dict(r) for r in rows[:per_page]]
     thumbs = thumbnails(conn, [(i["oid"], i["url"], i["thumbnail_url"]) for i in items])
@@ -285,6 +300,7 @@ def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: lis
     readable = articles.readable(conn, [i["oid"] for i in items])
     waiting = articles.waiting(conn, [(i["oid"], i["url"]) for i in items])
     sounds = audio(conn, [(i["oid"], i["url"]) for i in items])
+    others = posted_elsewhere(conn, [i["oid"] for i in items])
     now = utcnow()
     for i in items:
         # When this post's text, pictures and votes are to be read once it's on
@@ -313,7 +329,31 @@ def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: lis
         if meta.get("untitled") and i["excerpt"]:  # a fediverse post has text, not a title: show the text once
             i["title"], i["excerpt"] = i["excerpt"], ""
         attach_group(i, copies.get(i["dupe_key"]) or [])
+        # Posts of the same article by another link: how many, and their comments (what the comments sort adds).
+        talk = {tid: n for tid, n in others.get(i["oid"], {}).items() if tid not in i["group_ids"]}
+        i["talk"] = {"posts": len(talk), "comments": sum(talk.values())} if talk else None
     return FeedPage(items, page, len(rows) > per_page, as_of)
+
+
+def posted_elsewhere(conn: Conn, object_ids: list[int]) -> dict[int, dict[int, int]]:
+    """The saved threads (not in the trash) whose post links to the same page
+    as each of these posts, by any of its addresses (articles.same_page), with
+    their comment counts: {object id: {thread id: comments}}. Its own thread
+    and copies are among them."""
+    if not object_ids:
+        return {}
+    out: dict[int, dict[int, int]] = {}
+    for r in conn.execute(
+            f"""SELECT DISTINCT ar1.object_id AS src, lt.id,
+                  (SELECT MAX(column1) FROM (VALUES ((SELECT COUNT(*) FROM objects x WHERE x.thread_id=lt.id
+                      AND x.object_type='comment')), (COALESCE(lo.reply_count, 0))) AS v) AS n
+                FROM article_refs ar1 JOIN article_keys k1 ON k1.article_id=ar1.article_id
+                JOIN article_keys k2 ON k2.key=k1.key JOIN article_refs ar2 ON ar2.article_id=k2.article_id
+                JOIN archived_threads lt ON lt.root_object_id=ar2.object_id AND lt.trashed_at IS NULL
+                JOIN objects lo ON lo.id=lt.root_object_id
+                WHERE ar1.object_id IN ({','.join('?' * len(object_ids))})""", object_ids):
+        out.setdefault(r["src"], {})[r["id"]] = r["n"]
+    return out
 
 
 def count_kept_media(conn: Conn, media: str) -> int:

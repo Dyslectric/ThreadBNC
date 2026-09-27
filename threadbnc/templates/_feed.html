@@ -163,6 +163,16 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
 {% if i.article %}<a class="act read-article" href="/t/{{ i.id }}/article" title="Read the linked article here" aria-expanded="false">{{ icon('article') }}<span{% if short %} class="sr-only"{% endif %}>Read article</span></a>{% endif %}
 {%- endmacro %}
 
+{# The posts here of the same article by another link (feed.posted_elsewhere),
+   listed under Discussions on the post's page. The Comments sort counts their
+   comments too, so a feed's article sorts by the conversation about it. #}
+{% macro talk_link(i, short=False) -%}
+{% if i.talk %}{% set p, c = i.talk.posts, i.talk.comments %}
+{% set words = c ~ ' comment' ~ ('s' if c != 1) ~ ' in ' ~ p ~ ' other post' ~ ('s' if p != 1) %}
+<a class="act talk-link" href="/t/{{ i.id }}#discussions" title="Also posted here by another link: {{ words }}">{{ icon('repost') }}{% if short %}<span class="sr-only">Also posted: {{ words }}</span>{{ c }}{% else %}<span>{{ words }}</span>{% endif %}</a>
+{% endif %}
+{%- endmacro %}
+
 {# The post's own Markdown, distinct from the linked article. A video's player
    (a YouTube video's, another site's, or a file's) comes with its description. #}
 {% macro post_content_link(i, short=False) -%}
@@ -300,6 +310,7 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
         {{ post_content_link(i, short=True) }}
         <a class="act inline-comments" href="/t/{{ i.id }}#comments" title="Show {{ i.n_comments }} comment{{ 's' if i.n_comments != 1 }} here" aria-expanded="false">{{ icon('comment') }}<span class="sr-only">Comments: </span>{{ i.n_comments }}</a>
         {% if i.n_new %}<a href="/t/{{ i.id }}#comments" class="pill new inline-comments" aria-expanded="false">{{ i.n_new }} new</a>{% endif %}
+        {{ talk_link(i, short=True) }}
         {{ article_link(i, short=True) }}
         <span class="grow"></span>
         {{ tile_votes(i) }}
@@ -351,6 +362,7 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
       {{ post_content_link(i) }}
       <a class="act inline-comments" href="/t/{{ i.id }}#comments" aria-expanded="false">{{ icon('comment') }}<span>{{ i.n_comments }} comment{{ 's' if i.n_comments != 1 }}</span></a>
       {% if i.n_new %}<a href="/t/{{ i.id }}#comments" class="pill new inline-comments" aria-expanded="false">{{ i.n_new }} new</a>{% endif %}
+      {{ talk_link(i) }}
       {{ article_link(i) }}
       {{ tile_votes(i, breakdown=True) }}
       {{ read_button(i.id, i.unread, i.group, anchor='p' ~ i.id, refresh='p' ~ i.id) }}
@@ -385,6 +397,7 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
     {{ post_content_link(i) }}
     <a class="act inline-comments" href="/t/{{ i.id }}#comments" aria-expanded="false">{{ icon('comment') }}<span>{{ i.n_comments }} comment{{ 's' if i.n_comments != 1 }}</span></a>
     {% if i.n_new %}<a href="/t/{{ i.id }}#comments" class="pill new inline-comments" aria-expanded="false">{{ i.n_new }} new</a>{% endif %}
+    {{ talk_link(i) }}
     {{ article_link(i) }}
     {{ tile_votes(i, breakdown=True) }}
     {{ read_button(i.id, i.unread, i.group, anchor='p' ~ i.id, refresh='p' ~ i.id) }}
@@ -434,6 +447,7 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
       <div class="pc-actions st-actions actions small">
         <a class="act inline-comments" href="/t/{{ i.id }}#comments" title="Show the replies here" aria-expanded="false">{{ icon('comment') }}<span>{{ i.n_comments }}<span class="sr-only"> repl{{ 'ies' if i.n_comments != 1 else 'y' }}</span></span></a>
         {% if i.n_new %}<a href="/t/{{ i.id }}#comments" class="pill new inline-comments" aria-expanded="false">{{ i.n_new }} new</a>{% endif %}
+        {{ talk_link(i, short=True) }}
         {{ tile_votes(i, breakdown=True) }}
         {% if i.video %}{{ post_content_link(i, short=True) }}{% endif %}
         {{ article_link(i, short=True) }}

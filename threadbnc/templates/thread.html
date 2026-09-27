@@ -301,7 +301,7 @@
     {% else %}<a class="act" href="/t/{{ t.id }}/repost" title="Post a copy in your communities">{{ icon('repost') }}<span>Repost</span></a>{% endif %}{% endif %}
   </div>
 </article>
-{% if talk %}{% include "_discussions.html" %}{% endif %}
+{% if talk %}<div id="discussions">{% include "_discussions.html" %}</div>{% endif %}
 
 {# Who comments on each copy: your Mastodon account on one from a hashtag,
    your Reddit and Bluesky accounts on theirs, else the acting one; nobody on
