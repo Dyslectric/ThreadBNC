@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from . import articles, dupes, hidden, languages, videos, youtube
-from .adapters.base import is_reddit_host
+from .adapters.base import BSKY_DOMAIN, RSS_DOMAIN, TAG_DOMAIN, is_reddit_host
 from .db import Conn, fmt_ts, parse_ts, utcnow
 from .render import AUDIO_EXTENSIONS, VIDEO_EXTENSIONS, looks_like_audio, sole_link
 
@@ -88,14 +88,16 @@ SELECT * FROM (
          MAX(last_activity) OVER (PARTITION BY dkey) AS g_activity
   FROM (
     SELECT t.id, t.retention, t.retained_at, t.promoted_at, t.expires_at, t.last_viewed_at, t.community_id,
-           t.source_domain, t.previewed_at, o.id AS oid, o.canonical_ap_id, o.created_at, o.score,
+           t.source_domain, t.previewed_at, t.last_full_fetch_at, o.id AS oid, o.canonical_ap_id, o.created_at, o.score,
            o.cur_deleted, o.cur_removed, o.cur_locked,
            o.cur_missing, o.revision_count, o.thumbnail_url, o.upvotes, o.downvotes, o.dupe_key,
            COALESCE(o.dupe_key, 'thread:' || t.id) AS dkey,
            r.title, r.body, r.url, r.metadata_json AS rmeta, a.username, a.instance AS a_instance,
            a.canonical_ap_id AS author_ap,
            c.name AS cname, c.canonical_ap_id AS c_ap, {touched} AS touched,
-           (SELECT COUNT(*) FROM objects x WHERE x.thread_id=t.id AND x.object_type='comment') AS n_comments,
+           -- the comments saved, or as many as the server last said it has, if more (not read yet)
+           (SELECT MAX(column1) FROM (VALUES ((SELECT COUNT(*) FROM objects x WHERE x.thread_id=t.id
+               AND x.object_type='comment')), (COALESCE(o.reply_count, 0))) AS v) AS n_comments,
            (SELECT COUNT(*) FROM objects x WHERE x.thread_id=t.id AND x.discovered_late=1
                AND t.last_viewed_at IS NOT NULL AND x.first_seen_at > t.last_viewed_at) AS n_new,
            (SELECT MAX(COALESCE(x.created_at, x.first_seen_at)) FROM objects x WHERE x.thread_id=t.id)
@@ -285,7 +287,8 @@ def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: lis
         # When this post's text, pictures and votes are to be read once it's on
         # screen: when they last were ("" never). None when they're fresh, or it has none.
         kind = preview_kind(i["source_domain"], i["c_ap"], i["url"])
-        i["preview"] = (i["previewed_at"] or "") if preview_due(kind, i["previewed_at"], now) else None
+        due = preview_due(kind, i["previewed_at"], now, i["last_full_fetch_at"])
+        i["preview"] = (i["previewed_at"] or "") if due else None
         i["excerpt"] = excerpt(i["body"])
         i["thumb"] = thumbs.get(i["oid"])
         i["article"] = i["oid"] in readable
@@ -421,21 +424,29 @@ def listened(conn: Conn, media_id: int, position: int, duration: int | None, fin
 # in a feed (Bouncer.fetch_previews), and how long what was read stays fresh:
 # a subreddit's posts (stored from its listing without their text) in one
 # request for all of them; a YouTube video's description and likes from its
-# page, a bigger ask, so less often.
-PREVIEW_FRESH = {"reddit": timedelta(minutes=5), "youtube": timedelta(hours=1)}
+# page, a bigger ask, so less often; a Lemmy or PieFed post's votes and
+# comments, as opening it would (the comments only when its counts changed),
+# so they're there when its comments are expanded.
+PREVIEW_FRESH = {"reddit": timedelta(minutes=5), "youtube": timedelta(hours=1), "comments": timedelta(minutes=5)}
 
 
 def preview_kind(source_domain: str | None, community_ap_id: str | None, url: str | None) -> str | None:
-    """"reddit" or "youtube" for posts that get previews, None for the rest."""
+    """"reddit", "youtube" or "comments" (Lemmy and PieFed) for posts that get
+    previews, None for the rest."""
     if is_reddit_host(source_domain):
         return "reddit"
     if youtube.is_youtube_feed(community_ap_id) and youtube.video_id(url):
         return "youtube"
+    if source_domain and source_domain not in (RSS_DOMAIN, TAG_DOMAIN, BSKY_DOMAIN):
+        return "comments"
     return None
 
 
-def preview_due(kind: str | None, previewed_at: str | None, now: str) -> bool:
-    last = parse_ts(previewed_at)
+def preview_due(kind: str | None, previewed_at: str | None, now: str, comments_read_at: str | None = None) -> bool:
+    """`comments_read_at`: when the post's comments were last read in full
+    (opening it, or capturing it), which counts as a "comments" preview too."""
+    stamps = [parse_ts(previewed_at), parse_ts(comments_read_at) if kind == "comments" else None]
+    last = max((s for s in stamps if s is not None), default=None)
     return kind is not None and (last is None or parse_ts(now) - last >= PREVIEW_FRESH[kind])  # type: ignore[operator]
 
 
@@ -445,7 +456,7 @@ def preview_rows(conn: Conn, thread_ids: list[int]) -> list[dict[str, Any]]:
         return []
     rows = conn.execute(
         f"SELECT t.id, t.root_object_id AS oid, t.community_id, t.source_domain, t.source_local_id, "
-        f"t.previewed_at, c.canonical_ap_id AS c_ap, r.url FROM archived_threads t "
+        f"t.previewed_at, t.last_full_fetch_at, c.canonical_ap_id AS c_ap, r.url FROM archived_threads t "
         f"JOIN objects o ON o.id=t.root_object_id JOIN revisions r ON r.object_id=o.id AND r.seq=o.revision_count "
         f"LEFT JOIN communities c ON c.id=t.community_id "
         f"WHERE t.trashed_at IS NULL AND t.id IN ({','.join('?' * len(thread_ids))})", thread_ids).fetchall()

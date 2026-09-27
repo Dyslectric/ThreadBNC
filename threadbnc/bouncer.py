@@ -8,7 +8,8 @@ always are, and subreddits only while you're using ThreadBNC. A post's comments,
 are fetched when it's opened or kept (open_threads), its article and the
 audio file it links to when it's scrolled into view in a feed too
 (fetch_articles, fetch_audio), as are a subreddit post's text, pictures and
-votes and a YouTube video's description and likes (fetch_previews), and its votes on a
+votes, a YouTube video's description and likes and a Lemmy or PieFed post's
+comments (fetch_previews), and its votes on a
 schedule that slows with age and stops after a week (check_votes), from one
 community listing where it can. A server that answers 429 is left alone for
 as long as it asks (adapters/http.py)."""
@@ -109,6 +110,9 @@ JOB_PURPOSES = {"ingest": "saving", "keep_youtube": "saving", "open": "opening",
                 "relayed": "hashtags", "bluesky_tagged": "hashtags", "mastodon_tagged": "hashtags",
                 "trending_article": "trends", "mastodon_open": "opening",
                 "discussions": "discussions"}
+# Jobs someone is waiting on (a post opened, its comments expanded): run before
+# the ones scrolling a feed queues up, and in between those ones' posts.
+URGENT_JOBS = ("open", "sync", "mastodon_open")
 
 
 def vote_minutes(created_at: str | None, now: str) -> int | None:
@@ -681,6 +685,7 @@ class Bouncer:
         for tid in thread_ids:
             if self._stop.is_set():
                 return
+            self.run_urgent_jobs()
             with self.db.connect() as conn:
                 t = conn.execute("SELECT root_object_id, trashed_at FROM archived_threads WHERE id=?",
                                  (tid,)).fetchone()
@@ -706,6 +711,7 @@ class Bouncer:
         for tid in thread_ids:
             if self._stop.is_set():
                 return
+            self.run_urgent_jobs()
             with self.db.connect() as conn:
                 t = conn.execute("SELECT root_object_id, trashed_at FROM archived_threads WHERE id=?",
                                  (tid,)).fetchone()
@@ -727,13 +733,16 @@ class Bouncer:
         would. A subreddit's listing is stored without the text (poll_follow)
         and a channel's page has no descriptions or likes. Subreddit posts are
         read in one request for all of them, a video's details from its page.
+        Lemmy and PieFed posts: their votes and comments, as opening them would
+        (sync_thread: the comments only when the post's counts changed), so
+        they're ready when the reader expands them.
         Ones read within feed.PREVIEW_FRESH aren't read again. Each is marked
         read (previewed_at, which the feed watches for) once its pictures are
         in too, so its entry is shown again only once, complete."""
         now = utcnow()
         with self.db.connect() as conn:
             rows = [r for r in feed_mod.preview_rows(conn, thread_ids)
-                    if feed_mod.preview_due(r["kind"], r["previewed_at"], now)]
+                    if feed_mod.preview_due(r["kind"], r["previewed_at"], now, r["last_full_fetch_at"])]
         reddit = [r for r in rows if r["kind"] == "reddit"]
         if reddit and self._reddit_previews(reddit):
             self._fetch_pictures([r["oid"] for r in reddit])
@@ -741,8 +750,11 @@ class Bouncer:
         for r in rows:
             if self._stop.is_set():
                 return
+            self.run_urgent_jobs()
             if r["kind"] == "youtube" and self._youtube_preview(r):
                 self._fetch_pictures([r["oid"]])
+                self._previewed([r["id"]])
+            elif r["kind"] == "comments" and self._comments_preview(r):
                 self._previewed([r["id"]])
 
     def _previewed(self, thread_ids: list[int]) -> None:
@@ -787,6 +799,21 @@ class Bouncer:
                 if watch.likes is not None:
                     conn.execute("UPDATE objects SET score=?, upvotes=?, downvotes=NULL, last_seen_at=? WHERE id=?",
                                  (watch.likes, watch.likes, now, r["oid"]))
+        return True
+
+    def _comments_preview(self, r: dict[str, Any]) -> bool:
+        """Read a Lemmy or PieFed post and, if its counts say they changed (or
+        they were never read), its comments. False if its server didn't answer."""
+        with self.db.connect() as conn:
+            t = conn.execute("SELECT last_full_fetch_at FROM archived_threads WHERE id=?", (r["id"],)).fetchone()
+        if t is None or not feed_mod.preview_due("comments", None, utcnow(), t["last_full_fetch_at"]):
+            return True  # opened while this job waited (run_urgent_jobs): read just now
+        try:
+            with traffic.tagged(community=r["community_id"]):
+                self.sync_thread(r["id"])
+        except RemoteError as exc:
+            log.warning("reading the comments of thread %s for the feed failed: %s", r["id"], exc)
+            return False
         return True
 
     def owncast_hosts(self, hosts: list[str]) -> list[str]:
@@ -1369,11 +1396,15 @@ class Bouncer:
         self.wake.set()
         return cur.lastrowid
 
-    def _claim_job(self) -> Any:
+    def _claim_job(self, urgent_only: bool = False) -> Any:
+        """The next job due: urgent ones (URGENT_JOBS) first, then oldest first."""
         now = utcnow()
+        urgent = "kind IN (" + ",".join("?" * len(URGENT_JOBS)) + ")"
+        only = f" AND {urgent}" if urgent_only else ""
         with self.db.transaction() as conn:
             job = conn.execute(
-                "SELECT * FROM jobs WHERE status='queued' AND run_after<=? ORDER BY id LIMIT 1", (now,)
+                f"SELECT * FROM jobs WHERE status='queued' AND run_after<=?{only} ORDER BY {urgent} DESC, id LIMIT 1",
+                (now, *(URGENT_JOBS if urgent_only else ()), *URGENT_JOBS),
             ).fetchone()
             if job:
                 conn.execute("UPDATE jobs SET status='running', attempts=attempts+1, updated_at=? WHERE id=?",
@@ -1393,14 +1424,20 @@ class Bouncer:
                 conn.execute("UPDATE jobs SET status=?, result_json=?, error=?, updated_at=? WHERE id=?",
                              (status, json.dumps(result), error, now, job_id))
 
-    def run_one_job(self) -> bool:
-        job = self._claim_job()
+    def run_one_job(self, urgent_only: bool = False) -> bool:
+        job = self._claim_job(urgent_only)
         if not job:
             return False
         payload = json.loads(job["payload_json"])
         with traffic.tagged(JOB_PURPOSES.get(job["kind"], ""), payload.get("community_id")):
             self._run_job(job, payload)
         return True
+
+    def run_urgent_jobs(self) -> None:
+        """Jobs someone is waiting on (URGENT_JOBS), run in between the posts of
+        a job that takes a while, such as reading a feed page's articles."""
+        while not self._stop.is_set() and self.run_one_job(urgent_only=True):
+            pass
 
     def _run_job(self, job: Any, payload: dict[str, Any]) -> None:
         try:
@@ -1487,7 +1524,8 @@ class Bouncer:
             except RemoteError as exc:
                 log.warning("poll of community %s failed: %s", cid, exc)
         # Comments are never checked in the background: they're read when a
-        # post is opened (open_threads, a job), like a browser would. Votes are
+        # post is opened (open_threads, a job), or a Lemmy or PieFed post is
+        # scrolled to in a feed (fetch_previews), like a browser would. Votes are
         # updated for a week, less often as posts age.
         if not self._stop.is_set():
             with traffic.tagged("votes"):

@@ -110,8 +110,8 @@
    and, while its linked article or the pictures in it aren't saved yet, to fetch
    them once it's scrolled to and show the pictures (data-pics: how many it shows now);
    the same for the audio file it links to (data-audio), to show its player, and for
-   a subreddit post's text, pictures and votes or a YouTube video's description and
-   likes (data-preview: when they were last read, "" never). #}
+   a subreddit post's text, pictures and votes, a YouTube video's description and
+   likes or a Lemmy or PieFed post's votes and comments (data-preview: when they were last read, "" never). #}
 {% macro entry_attrs(i) -%}
 id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids or [i.id]) | join(' ') }}"
 {%- if i.article_waiting and reading_articles %} data-article-waiting data-pics="{{ i.thumb.pics | length if i.thumb else 0 }}"{% endif %}

@@ -117,7 +117,8 @@ def load_copies(conn: Conn, keys: list[str]) -> dict[str, list[dict[str, Any]]]:
                    o.cur_deleted, o.cur_removed, o.cur_locked, o.cur_missing,
                    r.title, a.username, a.instance AS a_instance, a.canonical_ap_id AS a_ap,
                    c.name AS cname, c.canonical_ap_id AS c_ap,
-                   (SELECT COUNT(*) FROM objects x WHERE x.thread_id=t.id AND x.object_type='comment') AS n_comments,
+                   (SELECT MAX(column1) FROM (VALUES ((SELECT COUNT(*) FROM objects x WHERE x.thread_id=t.id
+                       AND x.object_type='comment')), (COALESCE(o.reply_count, 0))) AS v) AS n_comments,
                    (SELECT COUNT(*) FROM objects x WHERE x.thread_id=t.id AND x.discovered_late=1
                        AND t.last_viewed_at IS NOT NULL AND x.first_seen_at > t.last_viewed_at) AS n_new
             FROM archived_threads t JOIN objects o ON o.id=t.root_object_id

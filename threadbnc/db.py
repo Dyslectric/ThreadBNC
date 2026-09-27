@@ -118,7 +118,7 @@ CREATE TABLE IF NOT EXISTS archived_threads (
     remote_comment_count INTEGER,
     remote_newest_comment_at TEXT,
     opened_at TEXT,           -- last opened on its own page (not just marked read): comments and articles are fetched then
-    previewed_at TEXT         -- a subreddit post's or YouTube video's text, pictures and votes last read for the feed (Bouncer.fetch_previews)
+    previewed_at TEXT         -- a subreddit post's or YouTube video's text, pictures and votes, or a Lemmy or PieFed post's comments, last read for the feed (Bouncer.fetch_previews)
 );
 
 CREATE TABLE IF NOT EXISTS objects (
