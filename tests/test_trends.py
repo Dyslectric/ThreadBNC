@@ -243,7 +243,9 @@ def test_the_most_posted_are_read_and_kept_while_they_trend(bouncer, abouncer, m
 
 
 def test_counts_are_tidied(bouncer):
-    old, now = datetime.now(timezone.utc) - timedelta(days=3), datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc)
+    # late in the evening, so its hours run past midnight: whatever the time now
+    old = now.replace(hour=23, minute=0, second=0, microsecond=0) - timedelta(days=4)
     with bouncer.db.transaction() as conn:
         for key, posts, first in (("https://a.test/once", 1, old), ("https://a.test/often", 9, old),
                                   ("https://a.test/today", 1, now)):
@@ -256,9 +258,9 @@ def test_counts_are_tidied(bouncer):
     assert {r["key"] for r in rows(bouncer, "SELECT key FROM links_seen")} == {"https://a.test/often",
                                                                               "https://a.test/today"}
     often = rows(bouncer, "SELECT hour, posts FROM link_counts WHERE key='https://a.test/often' ORDER BY hour")
-    day = old.strftime("%Y-%m-%d")
-    assert sum(r["posts"] for r in often) == 9 and all(r["hour"].startswith(day) for r in often)
-    assert len(often) <= 2  # added up by the day (a count at midnight is already that day's)
+    day, next_day = old.strftime("%Y-%m-%d"), (old + timedelta(days=1)).strftime("%Y-%m-%d")
+    # added up by the day, each hour into its own (a count at midnight is already that day's)
+    assert [(r["hour"], r["posts"]) for r in often] == [(day + "T00", 3), (next_day + "T00", 6)]
     assert len(rows(bouncer, "SELECT * FROM link_counts WHERE key='https://a.test/today'")) == 3
 
 
