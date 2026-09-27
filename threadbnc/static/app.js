@@ -474,7 +474,7 @@ document.documentElement.classList.add("js");
   }, true);
   // In the pictures view a gallery takes the shape of its first picture, so paging doesn't resize it.
   function shapeGallery(img) {
-    const g = img.closest(".picture-media [data-gallery], .post-gallery [data-gallery]");
+    const g = img.closest(".picture-media [data-gallery], .post-gallery [data-gallery], .st-media [data-gallery]");
     if (!g || img.parentElement !== g.querySelector(".gallery-slide") || !img.naturalWidth) return;
     const ratio = Math.min(2.2, Math.max(0.6, img.naturalWidth / img.naturalHeight));
     g.style.setProperty("--ratio", ratio);
@@ -948,7 +948,7 @@ document.documentElement.classList.add("js");
       panel.classList.add("card-inline-panel");
       slot.append(panel);
     } else {
-      const host = owner.matches(".post-card") ? $(".pc-main", owner) : owner;
+      const host = owner.matches(".post-card, .status") ? $(".pc-main", owner) : owner;
       let slot = $(":scope > .inline-panels", host);
       if (!slot) {
         slot = document.createElement("div");
