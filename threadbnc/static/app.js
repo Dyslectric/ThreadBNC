@@ -2158,6 +2158,74 @@ document.documentElement.classList.add("js");
     pic.title = big ? "Show it smaller" : "Show it bigger";
   });
 
+  // ---- who posted what: their pictures (avatars.py) ------------------------------------
+  // A post whose author's picture isn't here yet asks for it once it's on screen
+  // (it may need looking up on their profile first), checks back until it's
+  // downloaded, and shows it in place of their initial.
+  const avatarQueue = new Set();
+  const avatarWaiting = new Set();
+  let avatarTimer = null;
+  let avatarCheck = null;
+  let avatarUntil = 0;
+  let avatarObserver = null;
+
+  function watchAvatars(root) {
+    if (!("IntersectionObserver" in window)) return;
+    avatarObserver = avatarObserver || new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        if (!e.isIntersecting || !e.target.dataset.avatar) continue;
+        avatarObserver.unobserve(e.target);
+        avatarQueue.add(e.target.dataset.avatar);
+      }
+      if (avatarQueue.size && !avatarTimer) avatarTimer = setTimeout(askAvatars, 300);
+    }, { rootMargin: "200px 0px" });
+    const spots = $$("[data-avatar]", root);
+    if (root.matches && root.matches("[data-avatar]")) spots.push(root);
+    for (const spot of spots) avatarObserver.observe(spot);
+  }
+
+  function showAvatars(ready) {
+    for (const [key, src] of Object.entries(ready || {})) {
+      avatarWaiting.delete(key);
+      for (const spot of $$("[data-avatar]").filter((el) => el.dataset.avatar === key)) {
+        const img = document.createElement("img");
+        img.src = src;
+        img.alt = "";
+        spot.replaceChildren(img);
+        spot.classList.add("has-picture");
+        delete spot.dataset.avatar;
+      }
+    }
+  }
+
+  async function askAvatars() {
+    avatarTimer = null;
+    const keys = [...avatarQueue];
+    avatarQueue.clear();
+    try {
+      const data = await post("/avatars", { a: keys });
+      showAvatars(data.ready);
+      for (const k of data.waiting) avatarWaiting.add(k);
+    } catch (e) { return; }
+    avatarUntil = Date.now() + 120000;
+    if (avatarWaiting.size && !avatarCheck) avatarCheck = setTimeout(checkAvatars, 2500);
+  }
+
+  async function checkAvatars() {
+    avatarCheck = null;
+    const keys = [...avatarWaiting];
+    if (!keys.length) return;
+    try {
+      const url = new URL("/avatars", location.href);
+      for (const k of keys) url.searchParams.append("a", k);
+      const r = await fetch(url, { credentials: "same-origin" });
+      const data = await r.json();
+      showAvatars(data.ready);
+      for (const k of keys) if (!data.waiting.includes(k)) avatarWaiting.delete(k);
+    } catch (e) { /* tried again below */ }
+    if (avatarWaiting.size && Date.now() < avatarUntil) avatarCheck = setTimeout(checkAvatars, 3000);
+  }
+
   // ---- a trending post's text and replies, read where it was posted ----------------
   // Replies opens them under the post, as a found discussion opens
   // (discussion_peek.html); either rail, or Replies again, closes them.
@@ -2261,10 +2329,12 @@ document.documentElement.classList.add("js");
     watchArticles(document);
     watchDiscussions(document);
     watchTrendPictures(document);
+    watchAvatars(document);
     new MutationObserver((changes) => {
       for (const c of changes) for (const el of c.addedNodes) if (el.nodeType === 1) {
         watchDiscussions(el);
         watchTrendPictures(el);
+        watchAvatars(el);
       }
     }).observe(document.body, { childList: true, subtree: true });
     askTitles();

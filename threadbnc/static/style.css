@@ -660,6 +660,11 @@ fieldset.media-kind p { margin: 0; }
 .st-avatar { flex: 0 0 auto; width: 44px; height: 44px; border-radius: 10px; display: grid; place-items: center;
   font-weight: 700; font-size: 1.2rem; color: #fff; background: var(--av); text-decoration: none; user-select: none; }
 .st-avatar:hover { text-decoration: none; filter: brightness(1.1); }
+.st-avatar { overflow: hidden; }
+.st-avatar.has-picture { background: var(--bg); }
+.st-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* Trending's posts in the timeline: whole, not cut after a few lines. */
+.status .trend-text { display: block; overflow: visible; -webkit-line-clamp: unset; line-clamp: none; }
 .av-0 { --av: #b4462d; } .av-1 { --av: #9a6a00; } .av-2 { --av: #3f7d3a; } .av-3 { --av: #1f7a78; }
 .av-4 { --av: #2f63b0; } .av-5 { --av: #6b4fb8; } .av-6 { --av: #a23f86; } .av-7 { --av: #5d6470; }
 .st-main { flex: 1; min-width: 0; }

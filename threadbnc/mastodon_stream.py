@@ -179,6 +179,7 @@ def status_view(status: dict[str, Any], domain: str) -> dict[str, Any]:
             "text": plain_text(status.get("content")).strip()[:3000], "warning": warning or None,
             "handle": acct if "@" in acct else f"{acct}@{domain}", "name": account.get("display_name") or None,
             "author_url": account.get("url"), "author_uri": account.get("uri"),
+            "avatar": account.get("avatar_static") or account.get("avatar") or None,
             "link": card.get("url"), "link_title": card.get("title") or None,
             "pictures": sum(1 for m in media if m.get("type") == "image"),
             "video": any(m.get("type") in ("video", "gifv") for m in media), "quote": False,

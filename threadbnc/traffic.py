@@ -50,6 +50,7 @@ PURPOSES = {
     "media": "Saving pictures, videos and audio",
     "articles": "Saving linked articles",
     "previews": "Link previews",
+    "avatars": "Looking up who posted what's on screen, for their picture",
     "discussions": "Looking for discussions of articles",
     "saving": "Saving posts you added",
     "hashtags": "Reading posts that hashtags bring",

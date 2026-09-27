@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import articles, dupes, media
+from . import articles, avatars, dupes, media
 from .adapters import NActor, NComment, NCommunity, NPost, host_of
 from .db import Conn, dumps
 
@@ -90,18 +90,23 @@ def record_instance_contact(conn: Conn, domain: str, now: str, ok: bool,
 def upsert_actor(conn: Conn, actor: NActor, now: str) -> int | None:
     if not actor.ap_id:
         return None
-    row = conn.execute("SELECT id FROM actors WHERE canonical_ap_id=?", (actor.ap_id,)).fetchone()
+    row = conn.execute("SELECT id, avatar_url, avatar_checked_at FROM actors WHERE canonical_ap_id=?",
+                       (actor.ap_id,)).fetchone()
     if row:
         conn.execute(
             "UPDATE actors SET last_seen_at=?, display_name=COALESCE(?, display_name) WHERE id=?",
             (now, actor.display_name, row["id"]),
         )
+        if actor.avatar is not None and ((row["avatar_url"] or "") != actor.avatar or not row["avatar_checked_at"]):
+            avatars.remember(conn, row["id"], actor.avatar, now)
         return row["id"]
     cur = conn.execute(
         "INSERT INTO actors(canonical_ap_id, username, instance, display_name, first_seen_at, last_seen_at) "
         "VALUES (?,?,?,?,?,?)",
         (actor.ap_id, actor.username, actor.domain, actor.display_name, now, now),
     )
+    if actor.avatar is not None:
+        avatars.remember(conn, cur.lastrowid, actor.avatar, now)
     return cur.lastrowid
 
 

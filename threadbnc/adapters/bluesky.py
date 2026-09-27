@@ -193,8 +193,9 @@ def _when(value: Any) -> str | None:
 
 def author_of(profile: dict[str, Any]) -> NActor:
     did = str(profile.get("did") or "")
+    avatar = profile.get("avatar")  # left out for someone without one, and from a bare {did, handle}
     return NActor(profile_url(did), str(profile.get("handle") or did or "?"), BSKY_DOMAIN,
-                  profile.get("displayName") or None)
+                  profile.get("displayName") or None, avatar if isinstance(avatar, str) else None)
 
 
 class _Content:

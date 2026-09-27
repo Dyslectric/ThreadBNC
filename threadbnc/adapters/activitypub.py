@@ -145,6 +145,14 @@ def hashtags(obj: dict[str, Any]) -> list[str]:
     return out
 
 
+def account_avatar(account: dict[str, Any]) -> str | None:
+    """A Mastodon API account's picture ("" for none; None when it's not an account)."""
+    if not account:
+        return None
+    url = account.get("avatar_static") or account.get("avatar")
+    return url if isinstance(url, str) else ""
+
+
 def author_of(obj: dict[str, Any]) -> NActor:
     ap_id = _id(obj.get("attributedTo")) or _id(obj.get("actor")) or ""
     page = obj.get("url") if isinstance(obj.get("url"), str) else ""
@@ -184,7 +192,8 @@ def status_post(s: dict[str, Any], key: str) -> NPost:
         updated_at=s.get("edited_at"),
         deleted=False, removed=False, locked=False,
         community=community_for(key),
-        author=NActor(actor, account.get("username") or "?", host_of(actor), account.get("display_name") or None),
+        author=NActor(actor, account.get("username") or "?", host_of(actor), account.get("display_name") or None,
+                      account_avatar(account)),
         metadata=meta,
         score=likes, upvotes=likes,
         comment_count=s.get("replies_count") if isinstance(s.get("replies_count"), int) else None,
@@ -356,7 +365,7 @@ def context_comments(context: Any, status: str) -> CommentList:
             updated_at=s.get("edited_at"),
             deleted=False, removed=False,
             author=NActor(acct_uri, account.get("username") or "?", host_of(acct_uri),
-                          account.get("display_name") or None),
+                          account.get("display_name") or None, account_avatar(account)),
             score=s.get("favourites_count"),
             upvotes=s.get("favourites_count"),
             reply_count=s.get("replies_count"),

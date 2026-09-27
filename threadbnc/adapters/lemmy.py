@@ -112,6 +112,7 @@ class LemmyAdapter(ThreadiverseAdapter):
             username=person.get("name") or person.get("user_name") or "?",
             domain=host_of(ap_id) or self.domain,
             display_name=person.get("display_name") or person.get("title"),
+            avatar=(person.get("avatar") or "") if person.get("name") else None,
         )
 
     def _community(self, c: dict[str, Any], moderators: list[str] | None = None) -> NCommunity:
