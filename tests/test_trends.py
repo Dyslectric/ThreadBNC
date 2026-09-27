@@ -25,7 +25,7 @@ from .test_jetstream import run_due_now
 from .test_mastodon import HOME, TOKEN, WithHome, fedi, sign_in, web  # noqa: F401
 from .test_tags import client, follow, one, run_jobs, tagged  # noqa: F401
 
-POST, LIKE = "app.bsky.feed.post", "app.bsky.feed.like"
+POST, LIKE, REPOST = "app.bsky.feed.post", "app.bsky.feed.like", "app.bsky.feed.repost"
 _TID = "234567abcdefghijklmnopqrstuvwxyz"
 
 
@@ -73,8 +73,8 @@ def post(text: str = "", link: str | None = None, title: str | None = None, face
     return record
 
 
-def like(uri: str) -> dict:
-    return {"$type": LIKE, "subject": {"uri": uri, "cid": "c"}, "createdAt": stamp()}
+def like(uri: str, kind: str = LIKE) -> dict:
+    return {"$type": kind, "subject": {"uri": uri, "cid": "c"}, "createdAt": stamp()}
 
 
 @pytest.fixture
@@ -109,7 +109,7 @@ def test_only_links_to_pages_are_counted():
 
 # --- counting from Jetstream -----------------------------------------------------------
 
-def test_jetstream_counts_links_replies_quotes_and_likes(bouncer, listening):  # noqa: F811
+def test_jetstream_counts_links_replies_quotes_likes_and_reposts(bouncer, listening):  # noqa: F811
     rooted = at(tid(datetime.now(timezone.utc) - timedelta(hours=1)))
     old = at(tid(datetime.now(timezone.utc) - timedelta(days=9)))
     when = time.time_ns() // 1000
@@ -128,6 +128,9 @@ def test_jetstream_counts_links_replies_quotes_and_likes(bouncer, listening):  #
         event(POST, post("And again #harbours", link="https://news.test/story", tags=["harbours"]), did="did:plc:ann",
               time_us=when + 7),
         event(POST, post("Me too", tags=["harbours"]), did="did:plc:ben", time_us=when + 8),
+        event(REPOST, like(rooted, REPOST), did="did:plc:ann", time_us=when + 9),
+        event(REPOST, like(rooted, REPOST), did="did:plc:ben", time_us=when + 10),
+        event(REPOST, like(old, REPOST), time_us=when + 11),  # too old to count
     ]
     for e in events:
         listening._take(e, set(), True)
@@ -141,8 +144,9 @@ def test_jetstream_counts_links_replies_quotes_and_likes(bouncer, listening):  #
     # Hashtags too, each account once an hour.
     assert rows(bouncer, "SELECT tag, posts FROM tag_counts ORDER BY tag") == [
         {"tag": "harbours", "posts": 2}, {"tag": "news", "posts": 1}]
-    got = rows(bouncer, "SELECT ref, replies_seen, quotes_seen, likes_seen, created_at FROM stream_posts")
-    assert [(r["ref"], r["replies_seen"], r["quotes_seen"], r["likes_seen"]) for r in got] == [(rooted, 2, 1, 1)]
+    got = rows(bouncer, "SELECT ref, replies_seen, quotes_seen, likes_seen, reposts_seen, created_at FROM stream_posts")
+    assert [(r["ref"], r["replies_seen"], r["quotes_seen"], r["likes_seen"], r["reposts_seen"]) for r in got] == [
+        (rooted, 2, 1, 1, 2)]
     assert got[0]["created_at"] == trends.post_time(rooted)
 
 
@@ -156,15 +160,18 @@ def test_likes_are_streamed_only_when_chosen(bouncer, listening, monkeypatch):  
         return FakeStream([], listening)
 
     monkeypatch.setattr(jetstream, "connect", connect)
-    listening.run_forever()  # no hashtag followed, but Bluesky is counted: it listens
+    listening.run_forever()  # no hashtag followed, but Bluesky is counted: it listens, reposts and all
     trends.save_settings(bouncer.db, bluesky_likes="stream")
     listening._stop.clear()
     listening.run_forever()
-    assert urls == ["wss://jetstream.test/subscribe?wantedCollections=app.bsky.feed.post",
-                    "wss://jetstream.test/subscribe?wantedCollections=app.bsky.feed.post"
-                    "&wantedCollections=app.bsky.feed.like"]
+    trends.save_settings(bouncer.db, bluesky_likes="appview", bluesky_reposts=False)
+    listening._stop.clear()
+    listening.run_forever()
+    posts = "wss://jetstream.test/subscribe?wantedCollections=app.bsky.feed.post"
+    assert urls == [posts + "&wantedCollections=app.bsky.feed.repost",
+                    posts + "&wantedCollections=app.bsky.feed.repost&wantedCollections=app.bsky.feed.like", posts]
     trends.save_settings(bouncer.db, bluesky=False)
-    assert not listening.listening() and listening.wanted() == (set(), False, False)
+    assert not listening.listening() and listening.wanted() == (set(), False, ())
 
 
 # --- ranking articles ------------------------------------------------------------------
@@ -375,7 +382,9 @@ def test_the_trending_page(settings, bouncer, bsky):  # noqa: F811
     # Counting Bluesky's likes from the stream, or not counting it at all.
     web_client.post("/trending/settings", data={"bluesky": "1", "bluesky_likes": "stream"})
     assert trends.settings(bouncer.db) == {"bluesky": True, "bluesky_likes": "stream", "mastodon_tags": True,
-                                            "fedibuzz": False}
+                                            "fedibuzz": False, "bluesky_reposts": False}
+    web_client.post("/trending/settings", data={"bluesky": "1", "bluesky_reposts": "1"})
+    assert trends.settings(bouncer.db)["bluesky_reposts"] is True
     web_client.post("/trending/settings", data={"bluesky_likes": "appview"})
     assert trends.settings(bouncer.db)["bluesky"] is False
     # Without a Mastodon account, its timeline can't be subscribed to.

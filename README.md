@@ -336,7 +336,9 @@ server's public timeline once you subscribe to it. Apart from posts with a follo
 
 - **Bluesky**, on by default. Jetstream stays connected for it (about 0.75 GB a day, compressed). Likes are
   either read from Bluesky's AppView for the posts replied to most (the default: a few requests every 5
-  minutes), or counted from the stream as they happen (exact, but about 3.4 GB a day more).
+  minutes), or counted from the stream as they happen (exact, but about 3.4 GB a day more). Reposts are counted
+  from the stream too, for **Most reposted** and to pick which posts' totals are read (about 45 a second, some 0.6
+  times as much again as the posts; a checkbox turns it off).
 - **Mastodon**: your server's public timeline, federated (everything public it hears of) or local (only what's
   posted on it). Mastodon only streams it to someone signed in, so this needs your Mastodon account (see
   [Hashtags](#hashtags)). While subscribed, it also takes the place of the tag relays for your hashtags, and
@@ -476,8 +478,9 @@ ActivityPub actor: without `THREADBNC_ACTOR_DOMAIN`, hashtags come from Bluesky 
 
 - **While any hashtag is followed, or Bluesky is counted for [Trending](#trending)**, one connection stays open
   and every post made on Bluesky passes through it: about 25 a second. Compressed, that's about 9 KB/s or 0.75 GB
-  a day, half what it is uncompressed (measured September 2026). Counting likes from the stream adds about 150
-  a second, 3.4 GB a day. With neither, it's closed.
+  a day, half what it is uncompressed (measured September 2026). Counting reposts, as it does unless turned
+  off, adds about 45 a second, some 0.6 times as much again; counting likes from the stream adds about 150 a
+  second, 3.4 GB a day. With neither hashtags nor counting, it's closed.
 - **Compression** is zstd, each event on its own, with a dictionary Jetstream publishes. ThreadBNC keeps a copy
   (`threadbnc/jetstream_zstd_dictionary`, from Bluesky's
   [jetstream-legacy](https://github.com/bluesky-social/jetstream-legacy) repository, MIT licensed; its licence is

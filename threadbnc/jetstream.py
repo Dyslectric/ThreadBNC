@@ -4,16 +4,18 @@ posted and talked about for the Trending page.
 Bluesky can't follow a hashtag either, and nothing on it can be subscribed to
 for one: everything posted anywhere on Bluesky goes out on one public stream
 instead. Jetstream (https://github.com/bluesky-social/jetstream) serves that
-stream as JSON over a WebSocket, and can be asked for new posts only (no
-follows or reposts), or posts and likes.
+stream as JSON over a WebSocket, and can be asked for just some of it: new
+posts, reposts and likes here (not follows, blocks or profiles).
 
 So while a hashtag is followed, or what's posted on Bluesky is counted for the
 Trending page (trends.py, on unless you turn it off there), ThreadBNC keeps one
 connection open to Jetstream and reads every post made on Bluesky as it's made
 (about 25 a second in September 2026: about 0.75 GB a day compressed). Every
 post's links are counted, and so are replies (for the post that started the
-thread) and quotes; with likes counted from the stream too (a choice on the
-Trending page), likes come as well: about 150 a second, another 3.4 GB a day.
+thread) and quotes, and reposts: about 45 a second, some 0.6 times as much
+again as the posts (a choice on the Trending page, on unless turned off);
+with likes counted from the stream too (another choice there), likes come as
+well: about 150 a second, another 3.4 GB a day.
 Of the posts themselves it keeps only those with a followed hashtag:
 
 1. A new post (not a reply: replies belong under their post) with a followed
@@ -57,7 +59,7 @@ from websockets.sync.client import connect
 
 from .adapters import BSKY_DOMAIN
 from . import trends
-from .adapters.bluesky import GET_POSTS, LIKE, POST, record_tags, web_url
+from .adapters.bluesky import GET_POSTS, LIKE, POST, REPOST, record_tags, web_url
 from .bouncer import Bouncer
 from .db import parse_ts, utcnow
 from .traffic import record
@@ -153,7 +155,7 @@ def _uri(value: Any) -> Any:
 def count(event: dict[str, Any], tally: trends.Tally) -> None:
     """Count what an event says for the Trending page (trends.py): a new
     post's links and hashtags, and the post it replies to (its thread's
-    first) or quotes; a like of a recent post."""
+    first) or quotes; a like or repost of a recent post."""
     made = _created(event, POST)
     if made is not None:
         record = made[1]
@@ -171,6 +173,12 @@ def count(event: dict[str, Any], tally: trends.Tally) -> None:
         subject = _uri(liked[1].get("subject"))
         if (at := _recent(subject)) is not None:
             tally.like(subject, at)
+        return
+    reposted = _created(event, REPOST)
+    if reposted is not None:
+        subject = _uri(reposted[1].get("subject"))
+        if (at := _recent(subject)) is not None:
+            tally.repost(subject, at)
 
 
 class BlueskyStream:
@@ -198,11 +206,13 @@ class BlueskyStream:
         with self.db.connect() as conn:
             return {r["name"] for r in conn.execute(FOLLOWED_SQL)}
 
-    def wanted(self) -> tuple[set[str], bool, bool]:
-        """(the hashtags followed, whether what's posted is counted, whether likes are too)."""
+    def wanted(self) -> tuple[set[str], bool, tuple[str, ...]]:
+        """(the hashtags followed, whether what's posted is counted, what else
+        is asked for to count: reposts, likes)."""
         chosen = trends.settings(self.db)
         counting = bool(chosen["bluesky"])
-        return self.followed(), counting, counting and chosen["bluesky_likes"] == "stream"
+        extra = [c for c, on in ((REPOST, chosen["bluesky_reposts"]), (LIKE, chosen["bluesky_likes"] == "stream")) if on]
+        return self.followed(), counting, tuple(extra) if counting else ()
 
     def listening(self) -> bool:
         """Whether the stream is wanted at all (for pages saying so)."""
@@ -213,13 +223,13 @@ class BlueskyStream:
     def run_forever(self) -> None:
         backoff = 1.0
         while not self._stop.is_set():
-            tags, counting, likes = self.wanted()
+            tags, counting, extra = self.wanted()
             if not tags and not counting:
                 self.wake.wait(TAGS_EVERY)
                 self.wake.clear()
                 continue
             try:
-                self._listen(tags, counting, likes)
+                self._listen(tags, counting, extra)
                 backoff = 1.0
                 continue
             except (OSError, WebSocketException) as exc:
@@ -234,10 +244,10 @@ class BlueskyStream:
     def _trouble(self, error: str) -> None:
         self.last_error, self.last_error_at = error[:300], utcnow()
 
-    def _listen(self, tags: set[str], counting: bool = False, likes: bool = False) -> None:
+    def _listen(self, tags: set[str], counting: bool = False, extra: tuple[str, ...] = ()) -> None:
         """Read the stream until it's no longer wanted, what's wanted of it
-        changes (likes, or not), or ThreadBNC stops."""
-        params = [("wantedCollections", POST)] + ([("wantedCollections", LIKE)] if likes else [])
+        changes (reposts or likes, or not), or ThreadBNC stops."""
+        params = [("wantedCollections", POST)] + [("wantedCollections", c) for c in extra]
         compressed = self.dictionary is not None
         if compressed:
             params.append(("compress", "true"))
@@ -248,8 +258,9 @@ class BlueskyStream:
         with connect(f"{self.url}?{urlencode(params)}", user_agent_header=self.user_agent, open_timeout=20,
                      max_size=2 ** 20) as ws:
             self.connected_since, self.last_error, self._bad = utcnow(), None, 0
-            log.info("Jetstream: listening for %d hashtags%s%s%s", len(tags), ", counting" if counting else "",
-                     " with likes" if likes else "", ", compressed" if compressed else "")
+            log.info("Jetstream: listening for %d hashtags%s%s%s%s", len(tags), ", counting" if counting else "",
+                     " with reposts" if REPOST in extra else "", " with likes" if LIKE in extra else "",
+                     ", compressed" if compressed else "")
             flushed = saved = refreshed = time.monotonic()
             host, messages, received = urlparse(self.url).hostname, 0, 0  # counted (traffic.py) at each flush
             try:
@@ -276,8 +287,8 @@ class BlueskyStream:
                         saved = now
                     if self.wake.is_set() or now - refreshed >= TAGS_EVERY:
                         self.wake.clear()
-                        (tags, counting, now_likes), refreshed = self.wanted(), now
-                        if (not tags and not counting) or now_likes != likes:
+                        (tags, counting, now_extra), refreshed = self.wanted(), now
+                        if (not tags and not counting) or now_extra != extra:
                             return
             finally:
                 self.connected_since = None

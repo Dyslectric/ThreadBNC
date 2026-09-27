@@ -74,6 +74,8 @@
             {% if st.bluesky %}
             <label><input type="checkbox" name="bluesky" value="1" {{ 'checked' if st.chosen.bluesky }}>
               Count what's posted on Bluesky (Jetstream stays connected: about 0.75 GB a day)</label>
+            <label><input type="checkbox" name="bluesky_reposts" value="1" {{ 'checked' if st.chosen.bluesky_reposts }}>
+              Count reposts from the stream too, to rank by (about 0.6 times as much again)</label>
             <label><input type="radio" name="bluesky_likes" value="appview" {{ 'checked' if st.chosen.bluesky_likes == 'appview' }}>
               Likes: read the totals of the posts most replied to from Bluesky's AppView, every few minutes</label>
             <label><input type="radio" name="bluesky_likes" value="stream" {{ 'checked' if st.chosen.bluesky_likes == 'stream' }}>
@@ -81,6 +83,7 @@
             {% else %}
             <p class="muted">Jetstream is turned off (THREADBNC_JETSTREAM), so nothing on Bluesky is counted.</p>
             <input type="hidden" name="bluesky_likes" value="{{ st.chosen.bluesky_likes }}">
+            {% if st.chosen.bluesky_reposts %}<input type="hidden" name="bluesky_reposts" value="1">{% endif %}
             {% endif %}
           </fieldset>
           <fieldset>
