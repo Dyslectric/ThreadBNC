@@ -63,6 +63,19 @@ def test_a_posts_pictures_are_a_carousel_on_its_page_and_in_its_text_opened(serv
     assert "post-gallery" not in client.get(f"/t/{other}").text
 
 
+def test_a_single_picture_is_a_carousel_too(server, abouncer, settings):  # noqa: F811
+    server.add_post("1", "One cat", "", created=utcnow())
+    server.edit_post("1", gallery=PICTURES[:1])
+    follow(server, abouncer)
+    abouncer.media.fetch_pending()
+    tid = one(abouncer, "SELECT id FROM archived_threads")["id"]
+    client = logged_in(settings, abouncer)
+    gallery = client.get(f"/t/{tid}").text.split('class="post-media post-gallery"')[1].split("</article>")[0]
+    assert gallery.count('class="gallery-slide"') == 1 and "data-gallery" not in gallery and "gallery-nav" not in gallery
+    listed = client.get("/?view=list").text
+    assert f'class="act read-post" href="/t/{tid}#post-text" title="Show the picture here"' in listed
+
+
 # --- hiding people and feeds -------------------------------------------------------------
 
 def test_hiding_someone_leaves_their_posts_out_and_unsaved(server, bouncer, settings):

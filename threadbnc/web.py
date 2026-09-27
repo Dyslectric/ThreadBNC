@@ -3528,12 +3528,11 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         md, media_for, preview = md_for(list(nodes))
         post_pics: list[dict[str, Any]] = []
         if root is not None:
-            # Its own pictures: not its link's preview (shown with the link) or its article's, nor those its text shows.
+            # The pictures it comes with, even just one or its link's preview: not its article's, nor those its text shows.
             o_ = root["o"]
             with db.connect() as conn:
                 found = feed_mod.thumbnails(conn, [(o_["id"], o_["url"], o_["thumbnail_url"])]).get(o_["id"])
-            post_pics = [p for p in (found or {}).get("pics", [])
-                         if p["rank"] in (0, 2) and p["url"] not in (o_["body"] or "")]
+            post_pics = [p for p in (found or {}).get("own", []) if p["url"] not in (o_["body"] or "")]
         me = acting(request)
         ap_ids = [o["canonical_ap_id"] for o in objs]
         my_votes = {**poster.my_votes(me, ap_ids), **poster.my_votes(poster.reddit_account(), ap_ids),

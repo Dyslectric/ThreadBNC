@@ -622,6 +622,8 @@ fieldset.media-kind p { margin: 0; }
   max-height: 80vh; object-fit: contain; }
 .post-gallery [data-gallery] .gallery-track { width: 100%; aspect-ratio: var(--ratio, 4 / 3); max-height: 80vh; }
 .post-gallery [data-gallery] img, .post-gallery [data-gallery] video { height: 100%; }
+/* A lone picture isn't blown up past its size (a link's preview is often small). */
+.post-gallery .gallery:not([data-gallery]) img { width: auto; max-width: 100%; margin-inline: auto; }
 .inline-panel .post-gallery { margin: 0 0 10px; }
 .picture-card .pc-excerpt { -webkit-line-clamp: 5; line-clamp: 5; }
 .tile-body { padding: 9px 11px 8px; display: flex; flex-direction: column; gap: 4px; flex: 1; }

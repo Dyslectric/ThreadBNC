@@ -167,8 +167,8 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
 {% macro post_content_link(i, short=False) -%}
 {% if i.video %}<a class="act read-post" href="/t/{{ i.id }}#post-text" title="Show the video{{ ' and its description' if i.body }} here" aria-expanded="false">{{ icon('play') }}<span{% if short %} class="sr-only"{% endif %}>Video</span></a>
 {% elif i.body_link %}<a class="act direct-link" href="{{ i.body_link }}" target="_blank" rel="noreferrer noopener nofollow" title="Open the link" aria-label="Open link">{{ icon('link') }}<span{% if short %} class="sr-only"{% endif %}>Open link</span></a>
-{% elif i.body %}<a class="act read-post" href="/t/{{ i.id }}#post-text" title="Show the post{{ "'s pictures and" if i.thumb and i.thumb.pics | length > 1 }} text here" aria-expanded="false">{{ icon('article') }}<span{% if short %} class="sr-only"{% endif %}>Post text</span></a>
-{% elif not short and i.thumb and i.thumb.pics | length > 1 %}<a class="act read-post" href="/t/{{ i.id }}#post-text" title="Show its {{ i.thumb.pics | length }} pictures here" aria-expanded="false">{{ icon('picture') }}<span>Pictures</span></a>{% endif %}
+{% elif i.body %}<a class="act read-post" href="/t/{{ i.id }}#post-text" title="Show the post{{ "'s pictures and" if i.thumb and i.thumb.own }} text here" aria-expanded="false">{{ icon('article') }}<span{% if short %} class="sr-only"{% endif %}>Post text</span></a>
+{% elif not short and i.thumb and i.thumb.own %}{% set n = i.thumb.own | length %}<a class="act read-post" href="/t/{{ i.id }}#post-text" title="Show {{ 'its ' ~ n ~ ' pictures' if n > 1 else 'the picture' }} here" aria-expanded="false">{{ icon('picture') }}<span>Picture{{ 's' if n > 1 }}</span></a>{% endif %}
 {%- endmacro %}
 
 {# Hide whoever posted it (hidden.py): their posts leave every feed and new ones

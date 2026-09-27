@@ -169,7 +169,10 @@ def test_article_preview_thumbnail(settings, server, mbouncer):
     assert f'<img src="/media/{mid}?w=320"' in feed_html and 'img.test<svg class="i"' in feed_html  # (list size)
     tid = client.get("/").text.split('href="/t/')[1].split('"')[0]
     thread_html = client.get(f"/t/{tid}").text
-    assert 'class="link-preview"' in thread_html and f'/media/{mid}' in thread_html
+    # On the post's page the preview is its picture, in the carousel like any other.
+    gallery = thread_html.split('class="post-media post-gallery"')[1].split("</article>")[0]
+    assert f'/media/{mid}' in gallery and "data-gallery" not in gallery
+    assert 'class="link-preview"' not in thread_html
 
 
 def test_media_downloads_are_spaced_per_host(server, mbouncer):

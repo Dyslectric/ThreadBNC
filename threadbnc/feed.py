@@ -339,6 +339,8 @@ def thumbnails(conn: Conn,
     "pics" is every picture to page through: the link, then embedded and gallery
     images in the order they were found, then the linked article's; the preview
     only when there's nothing else, as it is usually a smaller copy of one of them.
+    "own" is what the post itself comes with, for the carousel on its page: the
+    link and embedded images, else the preview; never the article's.
     A saved YouTube video isn't one of them: its thumbnail stays the picture,
     rather than the video's first frame."""
     if not roots:
@@ -365,7 +367,9 @@ def thumbnails(conn: Conn,
             out[oid] = dict(pic)
     for oid, thumb in out.items():
         pics = sorted((p for p in found[oid] if p["rank"] != 1), key=lambda p: p["rank"])
-        thumb["pics"] = pics or [p for p in found[oid] if p["rank"] == 1]
+        preview = [p for p in found[oid] if p["rank"] == 1]
+        thumb["pics"] = pics or preview
+        thumb["own"] = [p for p in pics if p["rank"] in (0, 2)] or preview
     return out
 
 
