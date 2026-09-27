@@ -84,7 +84,7 @@ ThreadBNC behaves like one more subscribed server, or like your own browser, nev
 | **Your own feeds** (`/f/{id}`, **New feed** in the sidebar) | A named mix of communities, each feed with its own default sort, time range, filter and view. Mark all read covers just its communities. The ✎ next to its name edits or deletes it; the communities and their posts are untouched. |
 | **Community** (`/c/{id}`) | The same feed for one community, plus ★ Kept, **Live on server** (browse its full history, fetched live), **Media** (what it archives, size limit, transcoding) and a log. Follow settings sit behind the "✓ Following" pill. |
 | **Communities** | Follow a community (starts with its current first page) and manage the check interval and retention for each one. |
-| **Trending** (`/trending`) | **Posts**: the posts most liked, replied to or boosted on Bluesky and Mastodon over the past day or week. **Articles**: the pages posted most on Bluesky, on Mastodon and in the archive over the past day, week or month. **Tags**: the hashtags used in the most posts. **Rising** shows what's posted far more than usual, **Look back** any day since it started keeping them, all in your feeds' languages. Posts' replies and articles open in place. **Sources** chooses what's counted. See [Trending](#trending). |
+| **Trending** (`/trending`) | **Posts**: the posts most liked, replied to or reposted on Bluesky and Mastodon over the past day or week. **Articles**: the pages posted most on Bluesky, on Mastodon and in the archive over the past day, week or month. **Tags**: the hashtags used in the most posts. **Rising** shows what's posted far more than usual, **Look back** any day since it started keeping them, all in your feeds' languages. Posts' replies and articles open in place. **Sources** chooses what's counted. See [Trending](#trending). |
 | **Post** (`/t/{id}`) | A post's pictures are a carousel at full width: swipe, or use the arrows. |
 | **★ Kept** | Keep a post by link, see kept threads grouped by community, recent changes and the bouncer queue. |
 | **Search** (`/search`, and the box in the header) | Every version of every archived post and comment. See [Search](#search). |
@@ -355,10 +355,10 @@ FediBuzz's firehose (20 every 5 minutes, those boosted at least 3 times, a searc
 become posts your server knows, to like, boost and reply to; and for the totals of the posts replied to and
 boosted most, 20 to a request.
 
-**Posts** shows the posts made in the past day or week, most liked, most replied to or most boosted (reposted, on
-Bluesky), on Bluesky, Mastodon or both: their text, who posted them, their link and their totals. A post's
-pictures (up to four, or its link card's or video's cover) are downloaded once it scrolls onto the screen, and
-show in it; pressing one shows it
+**Posts** shows the posts made in the past day or week, most liked, most replied to or most reposted (most
+boosted, with Mastodon alone shown), on Bluesky, Mastodon or both: their text, who posted them, their link and
+their totals. A post's pictures (up to four, or its link card's or video's cover) are downloaded once it scrolls
+onto the screen, and show in it; pressing one shows it
 bigger. Nothing is loaded from other sites by your browser. They go when the post does.
 The totals are buttons: **♥** likes the post (or takes the like back) and the repost button reposts it on
 Bluesky or boosts it on Mastodon, as your account there (see [Accounts and posting](#accounts-and-posting)).
