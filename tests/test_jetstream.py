@@ -157,7 +157,8 @@ def test_listening_notes_posts_and_carries_on_where_it_left_off(bouncer, bsky, l
 
     monkeypatch.setattr(jetstream, "connect", connect)
     listening.run_forever()
-    assert urls == ["wss://jetstream.test/subscribe?wantedCollections=app.bsky.feed.post"]
+    assert urls == ["wss://jetstream.test/subscribe?wantedCollections=app.bsky.feed.post"
+                    "&wantedCollections=app.bsky.feed.repost"]
     assert jobs(bouncer) == [{"posts": {at("x1"): "cats"}}]
     assert bouncer.db.get_setting(CURSOR) == str(seen_at)
     assert listening.connected_since is None and listening.last_error is None
@@ -196,7 +197,8 @@ def test_events_are_asked_for_compressed_and_decompressed(bouncer, bsky, listeni
 
     monkeypatch.setattr(jetstream, "connect", connect)
     listening.run_forever()
-    assert urls == ["wss://jetstream.test/subscribe?wantedCollections=app.bsky.feed.post&compress=true"]
+    assert urls == ["wss://jetstream.test/subscribe?wantedCollections=app.bsky.feed.post"
+                    "&wantedCollections=app.bsky.feed.repost&compress=true"]
     assert jobs(bouncer) == [{"posts": {at("z1"): "cats"}}]  # the garbled one is skipped
     assert bouncer.db.get_setting(CURSOR) == str(seen_at) and listening.dictionary is not None
 

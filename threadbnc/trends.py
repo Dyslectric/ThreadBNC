@@ -128,6 +128,7 @@ def settings(db: Database) -> dict[str, Any]:
     if got.get("bluesky_likes") not in LIKES_FROM:
         got["bluesky_likes"] = "appview"
     got["bluesky"] = got.get("bluesky") is not False
+    got["bluesky_reposts"] = got.get("bluesky_reposts") is not False  # count reposts from Jetstream (jetstream.py)
     got["mastodon_tags"] = got.get("mastodon_tags") is not False  # ask your servers what's trending on them
     got["fedibuzz"] = got.get("fedibuzz") is True  # count FediBuzz's firehose (fedibuzz.py): ~3 GB a day, so asked for
     return got

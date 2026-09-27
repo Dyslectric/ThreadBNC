@@ -1381,6 +1381,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
 
     @app.post("/trending/settings")
     def trending_settings(request: Request, bluesky: str | None = Form(None), bluesky_likes: str = Form("appview"),
+                          bluesky_reposts: str | None = Form(None),
                           mastodon_scope: str = Form(""), mastodon_account: str = Form(""),
                           mastodon_tags: str | None = Form(None), fedibuzz_on: str | None = Form(None, alias="fedibuzz")):
         """What's counted, and whether a Mastodon server's public timeline is subscribed to, as which account."""
@@ -1389,7 +1390,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         changes: dict[str, Any] = {}
         if signed_in:  # (the choice is only offered then)
             changes["mastodon_tags"] = bool(mastodon_tags)
-        trends_mod.save_settings(db, bluesky=bool(bluesky), fedibuzz=bool(fedibuzz_on), **changes,
+        trends_mod.save_settings(db, bluesky=bool(bluesky), bluesky_reposts=bool(bluesky_reposts),
+                                 fedibuzz=bool(fedibuzz_on), **changes,
                                  bluesky_likes=bluesky_likes if bluesky_likes in trends_mod.LIKES_FROM else "appview")
         scope = mastodon_scope if mastodon_scope in MASTODON_SCOPES else None
         which = next((a for a in signed_in if str(a["id"]) == mastodon_account), signed_in[0] if signed_in else None)
