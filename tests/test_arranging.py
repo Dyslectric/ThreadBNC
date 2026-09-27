@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 from fastapi.testclient import TestClient
+from markupsafe import Markup
 
 from threadbnc import feed, sidebar
 from threadbnc.adapters.base import NCommunity
@@ -98,7 +99,9 @@ def test_hiding_someone_leaves_their_posts_out_and_unsaved(server, bouncer, sett
 def test_hiding_a_feed_or_channel_says_it_hides_all_of_it(settings, bouncer):
     env = create_app(settings, bouncer).state.templates.env
     env.globals.update(is_youtube=lambda ap: ap.startswith("yt:"), is_rss=lambda ap: ap.startswith("rss:"),
-                       chandle=lambda name, ap: name)
+                       # Like web.chandle: markup unless plain, which mustn't reach the attributes unescaped
+                       chandle=lambda name, ap, plain=False: f"{name} (feed)" if plain else Markup(
+                           '{}<span class="muted"> · feed</span>').format(name))
     macro = env.get_template("_feed.html").module.hide_button
     channel = str(macro({"c_ap": "yt:UC123", "cname": "Some Channel", "canonical_ap_id": "yt:v1", "author_ap": None}))
     assert "This hides the whole YouTube channel Some Channel, not just this post" in channel
@@ -106,6 +109,7 @@ def test_hiding_a_feed_or_channel_says_it_hides_all_of_it(settings, bouncer):
     rss = str(macro({"c_ap": "rss:https://blog.test/feed", "cname": "A Blog", "canonical_ap_id": "rss:x",
                      "author_ap": "rss:https://blog.test/feed#author=Pat"}))
     assert "This hides the whole feed A Blog" in rss and "Hide feed" in rss
+    assert "<span" not in rss.split("<button")[0] and 'name="label" value="A Blog (feed)"' in rss
     person = str(macro({"c_ap": "https://bsky.app/profile/x", "cname": "x", "canonical_ap_id": "https://bsky.app/p",
                         "author_ap": "https://bsky.app/profile/did:plc:a", "username": "a.bsky.social",
                         "a_instance": "bsky.app"}))

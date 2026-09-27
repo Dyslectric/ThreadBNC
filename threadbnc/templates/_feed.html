@@ -178,8 +178,9 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
 {% set channel = is_youtube(i.c_ap) %}
 {% if channel or is_rss(i.c_ap) %}
   {% set what = 'YouTube channel' if channel else 'feed' %}
-  {% set key, kind, label = i.c_ap, 'community', chandle(i.cname, i.c_ap) %}
-  {% set warn = 'This hides the whole ' ~ what ~ ' ' ~ label ~ ', not just this post: every post from it leaves your feeds and new ones aren\'t saved, though you still follow it. You can show it again from Feed options → Hidden.' %}
+  {# plain: the styled handle is markup, which would go into the attributes below unescaped #}
+  {% set key, kind, label = i.c_ap, 'community', chandle(i.cname, i.c_ap, plain=True) %}
+  {% set warn = 'This hides the whole ' ~ what ~ ' ' ~ i.cname ~ ', not just this post: every post from it leaves your feeds and new ones aren\'t saved, though you still follow it. You can show it again from Feed options → Hidden.' %}
   {% set title = 'Hide this ' ~ what %}
 {% elif i.author_ap %}
   {% set key, kind = i.author_ap, 'author' %}
