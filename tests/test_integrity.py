@@ -17,7 +17,7 @@ def test_integrity_check_accepts_a_healthy_archive(server, tbouncer):
     community_with(server, tbouncer, "![a](https://img.test/cat.gif)")
     tbouncer.media.fetch_pending()
     checked = report(tbouncer, deep=True)
-    assert checked.ok and checked.database_check == "ok"
+    assert checked.ok and checked.database_check == ("connected" if tbouncer.db.is_postgres else "ok")
     assert checked.media_rows == checked.media_files == checked.checked_hashes == 1
     assert checked.issues == []
 

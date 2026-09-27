@@ -1097,7 +1097,9 @@ def test_stories_went_to_articles(settings, bouncer):
     assert web_client.get("/trending/stories", follow_redirects=False).headers["location"] == "/trending/articles?t=day"
     assert "/trending/stories" not in web_client.get("/trending/articles").text
     with bouncer.db.connect() as conn:  # what they were made of goes too
-        assert not conn.execute("SELECT name FROM sqlite_master WHERE name='pair_counts'").fetchall()
+        tables = ("information_schema.tables WHERE table_name='pair_counts'" if bouncer.db.is_postgres
+                  else "sqlite_master WHERE name='pair_counts'")
+        assert not conn.execute(f"SELECT 1 FROM {tables}").fetchall()
 
 
 def test_hours_counted_before_are_filled_in_though_the_streams_start_first(bouncer):
