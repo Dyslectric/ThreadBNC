@@ -774,6 +774,74 @@ def test_fedibuzz_hashtags_and_links_are_counted_once(settings, bouncer):
     assert trends.archive_skips(False, trends.settings(bouncer.db)["fedibuzz"]) == (trends.TAG_DOMAIN,)
 
 
+def test_mastodon_posts_are_read_without_listening_and_boosts_are_counted(web, tagged, fedi):  # noqa: F811
+    from threadbnc.fedibuzz import FediBuzzStream
+
+    b, _ = tagged
+    stream, relays = web.app.state.mastodon_stream, web.app.state.tags
+    web.get("/accounts/mastodon/callback", params={"state": sign_in(web, fedi), "code": "good"})
+    web.post("/login", data={"password": "pw"})
+    assert mastodon_stream.subscription(b.db) is None  # not listening to any timeline
+    buzz = FediBuzzStream(b, stream.tally, "test")
+
+    def post_on_else(sid: str, text: str, **more) -> dict:
+        status = masto_status(sid, text, **more)
+        status["uri"] = f"https://else.test/users/zed/statuses/{sid}"
+        status["account"] = {"acct": "zed@else.test", "username": "zed", "url": "https://else.test/@zed"}
+        return status
+
+    def boost(n: int, boosted: dict) -> dict:
+        return {**masto_status(f"9{n}", ""), "uri": f"https://b{n}.test/users/u/statuses/{n}/activity",
+                "reblog": boosted}
+
+    big, lost = post_on_else("77", "Boost me"), post_on_else("78", "Deleted since")
+    for n in (1, 2, 3):
+        buzz.take(json.dumps(boost(n, big)))
+        buzz.take(json.dumps(boost(10 + n, lost)))
+    buzz.take(json.dumps(boost(1, big)))  # the same boost again: counted once
+    buzz.take(json.dumps(boost(4, post_on_else("79", "Old", created=stamp(days=-10)))))  # too old to count
+    buzz.take(json.dumps(boost(5, post_on_else("80", "Once"))))  # boosted once: not asked about
+    # The same boost from your server's timeline, which names the post by its id there: counted once.
+    stream.take(update({**boost(1, {**big, "id": "300"})}), set(), HOME)
+    stream.tally.flush(b.db)
+    seen = {r["ref"]: r["reposts_seen"] for r in rows(b, "SELECT ref, reposts_seen FROM stream_posts")}
+    assert seen == {big["uri"]: 3, lost["uri"]: 3, "https://else.test/users/zed/statuses/80": 1}
+
+    # Your server, asked as your account: its trending posts, and the posts boosted most, looked up by id.
+    fedi.home.statuses["300"] = {**big, "id": "300", "favourites_count": 50, "replies_count": 7,
+                                 "reblogs_count": 40}
+    searched = []
+    handle = fedi.home.handle
+
+    def home(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/trends/statuses":
+            return httpx.Response(200, json=[masto_status("400", "Everyone liked this", favourites_count=80)])
+        if request.url.path == "/api/v2/search":
+            searched.append(request.url.params["q"])
+        return handle(request)
+
+    fedi.home.handle = home
+    b.hooks.remove(relays.housekeeping)
+    stream._checked = 0.0
+    b.tick()
+    assert sorted(searched) == [big["uri"], lost["uri"]]
+    got = {r["ref"]: r for r in rows(b, "SELECT * FROM stream_posts")}
+    assert got[f"{HOME}/300"]["reposts_seen"] == 3 and got[f"{HOME}/300"]["likes"] == 50
+    assert big["uri"] not in got and got[lost["uri"]]["gone"] == 1  # (not asked about again)
+    with b.db.connect() as conn:
+        liked, _ = trends.trending_posts(conn, "day", "likes", "mastodon")
+        replied, _ = trends.trending_posts(conn, "day", "replies", "mastodon")
+    assert [(p["view"]["text"], p["likes"]) for p in liked] == [("Everyone liked this", 80), ("Boost me", 50)]
+    assert replied[0]["view"]["text"] == "Boost me" and replied[0]["replies"] == 7
+    # Boosted again in FediBuzz: counted for its id on your server now.
+    buzz.take(json.dumps(boost(6, big)))
+    stream.tally.flush(b.db)
+    assert rows(b, "SELECT ref, reposts_seen FROM stream_posts WHERE ref LIKE '%/300' OR ref LIKE '%/77'") == [
+        {"ref": f"{HOME}/300", "reposts_seen": 4}]
+    page = web.get("/trending", params={"src": "mastodon"}).text
+    assert "Boost me" in page and "Nothing is counted" not in page
+
+
 def test_fedibuzz_is_turned_on_under_sources(settings, bouncer):
     client = TestClient(create_app(settings, bouncer))
     client.post("/login", data={"password": "pw"})

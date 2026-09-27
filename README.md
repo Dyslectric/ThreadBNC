@@ -66,7 +66,7 @@ ThreadBNC behaves like one more subscribed server, or like your own browser, nev
 - **Hashtags on Bluesky, from its public stream.** Bluesky offers nothing to subscribe to for a hashtag, only one stream of everything posted there. While any hashtag is followed, or Bluesky is counted for Trending (on unless you turn it off), ThreadBNC listens to it (Jetstream, new posts only, compressed: about 25 a second, about 0.75 GB a day), keeps the posts with a followed hashtag, and asks Bluesky for those alone, up to 25 in one request.
 - **Your Mastodon server's public timeline, when you subscribe.** One streaming connection to your own server, as your account. Posts with a followed hashtag are kept from it (instead of through the relays); the rest are only counted.
 - **Trending's pictures when you scroll to them.** A trending post's pictures are downloaded once it's on your screen, like a feed post's article.
-- **Trending's totals, a few at a time.** Likes and replies of the posts replied to most are read from Bluesky's AppView (up to 100 posts every 5 minutes, 25 to a request) and from your Mastodon server (20 to a request, at most one a minute, and its trending posts every 15 minutes). Only the 12 articles at the top of each ranking (day, week, month and rising, on each network) are read, each once.
+- **Trending's totals, a few at a time.** Likes and replies of the posts replied to most are read from Bluesky's AppView (up to 100 posts every 5 minutes, 25 to a request) and from your Mastodon server (20 to a request, at most one a minute; its trending posts every 15 minutes; and 20 searches every 5 minutes for the posts boosted most in FediBuzz's firehose, while it's counted). Only the 12 articles at the top of each ranking (day, week, month and rising, on each network) are read, each once.
 - **Reddit only while you're here,** spread out, one subreddit at a time (see [Checking, conservatively](#checking-conservatively)).
 - **Pictures at once, videos later.** Pictures and thumbnails are downloaded as posts arrive; full videos wait until you open or keep a post showing them.
 - **Video players are the sites' own.** A post that is a video's link, or a video link's box, loads the site's player in your browser (YouTube's from youtube-nocookie.com), or plays a video file from where it is. Nothing is downloaded for that. A video from a site is only downloaded when you press **Download and archive**, or keep a post that links to a YouTube video.
@@ -329,9 +329,9 @@ their own **Bluesky** group in the sidebar and in the feed editor. Everything is
 
 ## Trending
 
-The **Trending** page (`/trending`, `g r`) ranks what's posted and talked about, from two streams read as
-posts are made: Bluesky's [Jetstream](#on-bluesky), and your Mastodon server's public timeline once you
-subscribe to it. Apart from posts with a followed hashtag, nothing they bring is saved as a post; it's counted.
+The **Trending** page (`/trending`, `g r`) ranks what's posted and talked about, from streams read as
+posts are made: Bluesky's [Jetstream](#on-bluesky), FediBuzz's firehose of the fediverse, and your Mastodon
+server's public timeline once you subscribe to it. Apart from posts with a followed hashtag, nothing they bring is saved as a post; it's counted.
 **Sources**, at the top of the page, chooses what's counted:
 
 - **Bluesky**, on by default. Jetstream stays connected for it (about 0.75 GB a day, compressed). Likes are
@@ -339,9 +339,19 @@ subscribe to it. Apart from posts with a followed hashtag, nothing they bring is
   minutes), or counted from the stream as they happen (exact, but about 3.4 GB a day more).
 - **Mastodon**: your server's public timeline, federated (everything public it hears of) or local (only what's
   posted on it). Mastodon only streams it to someone signed in, so this needs your Mastodon account (see
-  [Hashtags](#hashtags)). While subscribed, it also takes the place of the tag relays for your hashtags.
-  Mastodon streams no likes: the totals of the posts replied to most, and your server's own trending posts,
-  are read from your server now and then.
+  [Hashtags](#hashtags)). While subscribed, it also takes the place of the tag relays for your hashtags, and
+  its replies and boosts are counted. Some servers (mastodon.social among them) have turned their live feeds off,
+  so nothing arrives from them.
+- **FediBuzz**, off until chosen: [FediBuzz](https://fedi.buzz)'s firehose of what's posted publicly across the
+  fediverse (no account needed; about 3 GB a day). Its hashtags, links and boosts are counted as Mastodon's; a
+  post that also arrives from your server's timeline counts once. Its replies can't be: each names the post it
+  answers only by an id on a server FediBuzz doesn't say.
+
+Mastodon streams no likes, so whether or not you subscribe, your Mastodon server (the first account signed in)
+is asked, as your account: which posts are trending on it, every 15 minutes; about the posts boosted most in
+FediBuzz's firehose (20 every 5 minutes, those boosted at least 3 times, a search each), which is how they
+become posts your server knows, to like, boost and reply to; and for the totals of the posts replied to and
+boosted most, 20 to a request.
 
 **Posts** shows the posts made in the past day or week, most liked or most replied to, on Bluesky, Mastodon or
 both: their text, who posted them, their link and their totals. A post's pictures (up to four, or its link

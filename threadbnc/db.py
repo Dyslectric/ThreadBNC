@@ -679,12 +679,14 @@ CREATE TABLE IF NOT EXISTS server_trending_tags (
 -- as last read from Bluesky's AppView or your Mastodon server. Kept a week.
 CREATE TABLE IF NOT EXISTS stream_posts (
     source TEXT NOT NULL,              -- bluesky | mastodon
-    ref TEXT NOT NULL,                 -- bluesky: its at:// address; mastodon: its id on your server
+    ref TEXT NOT NULL,                 -- bluesky: its at:// address; mastodon: "<your server>/<its id there>",
+                                       -- or its ActivityPub id until your server's been asked (stream_refs)
     created_at TEXT,                   -- when it was posted, as far as known
     first_seen_at TEXT NOT NULL,
     replies_seen BIGINT NOT NULL DEFAULT 0,
     quotes_seen BIGINT NOT NULL DEFAULT 0,
     likes_seen BIGINT NOT NULL DEFAULT 0,      -- Bluesky, while likes are read from the stream
+    reposts_seen BIGINT NOT NULL DEFAULT 0,    -- Mastodon: boosts, from FediBuzz and your server's timeline
     likes BIGINT, replies BIGINT, reposts BIGINT,
     checked_at TEXT,                   -- when those totals were read
     gone INTEGER NOT NULL DEFAULT 0,   -- deleted, or not shown any more
@@ -696,6 +698,15 @@ CREATE INDEX IF NOT EXISTS stream_posts_created ON stream_posts(created_at);
 CREATE INDEX IF NOT EXISTS stream_posts_first ON stream_posts(first_seen_at);
 -- The posts the Trending page can show: those whose totals have been read.
 CREATE INDEX IF NOT EXISTS stream_posts_shown ON stream_posts(source, created_at) WHERE view_json IS NOT NULL;
+
+-- Mastodon posts' refs on your server, by ActivityPub id: a boost FediBuzz
+-- carries names the post by that alone, and is counted under its ref once known.
+CREATE TABLE IF NOT EXISTS stream_refs (
+    source TEXT NOT NULL,
+    uri TEXT NOT NULL,
+    ref TEXT NOT NULL,
+    PRIMARY KEY (source, uri)
+);
 
 -- Those posts' pictures, downloaded once they're shown on Trending; they go with the post.
 CREATE TABLE IF NOT EXISTS stream_post_media (
@@ -806,6 +817,7 @@ COLUMN_MIGRATIONS = [
     ("community_follows", "in_home", "INTEGER NOT NULL DEFAULT 1"),
     ("articles", "trending_at", "TEXT"),
     ("stream_posts", "lang", "TEXT"),
+    ("stream_posts", "reposts_seen", "BIGINT NOT NULL DEFAULT 0"),
 ]
 
 # Tables with an integer `id` key: inserts into these get `RETURNING id` on
