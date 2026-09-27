@@ -16,11 +16,22 @@ What arrives is used for:
    again when you unsubscribe. A post is filed under the first followed
    hashtag it lists.
 2. Trending (trends.py): each post's links are counted, and so are the
-   replies each post gets (for the post it answers). Mastodon streams no
-   likes, so the totals (likes, replies, boosts) of the posts most replied to,
-   and of your server's own trending posts (/api/v1/trends/statuses, every
-   TRENDING_EVERY), are read from your server now and then, CHECK_POSTS at a
-   time in one request, CHECK_EVERY apart.
+   replies and boosts each post gets. Mastodon streams no likes, so the
+   totals (likes, replies, boosts) of the posts most replied to and boosted
+   are read from your server now and then, CHECK_POSTS at a time in one
+   request, CHECK_EVERY apart.
+
+Whether or not you listen, the server of the first Mastodon account signed in
+(the one that likes and replies) is asked:
+
+- which posts are trending on it (/api/v1/trends/statuses), every
+  TRENDING_EVERY: those it saw liked and boosted most, with their totals;
+- about the posts boosted most in FediBuzz's firehose (fedibuzz.py), which
+  names them by ActivityPub id alone: RESOLVE_EACH of those seen at least
+  RESOLVE_LEAST times, every RESOLVE_EVERY, one search each (/api/v2/search,
+  resolve), so their totals can be read like the rest, and they can be
+  liked and boosted. What was counted under the ActivityPub id is added to
+  what's counted under their id on your server (trends.remember_refs).
 
 A dropped connection is made again, waiting longer each time it fails. Unlike
 Jetstream, Mastodon's stream can't carry on from where it left off, so posts
@@ -35,11 +46,9 @@ can be signed in to more than one Mastodon account, so the timeline can be
 another server's than the one you like and reply from (accounts.py uses the
 first one signed in).
 
-Apart from the stream, the server of the first Mastodon account signed in
-(the one that likes and replies) is asked which hashtags are trending on it
-(/api/v1/trends/tags), every TRENDING_EVERY, for the Trending page's Tags tab
-(trends.record_server_tags). Trends spread across servers, so asking others
-too would mostly repeat it."""
+It's also asked which hashtags are trending on it (/api/v1/trends/tags), every
+TRENDING_EVERY, for the Trending page's Tags tab (trends.record_server_tags).
+Trends spread across servers, so asking others too would mostly repeat it."""
 
 from __future__ import annotations
 
@@ -84,6 +93,9 @@ CHECK_EVERY = 60.0  # seconds between reads of posts' totals
 CHECK_POSTS = 20  # posts read at once (the most Mastodon's /api/v1/statuses takes)
 ONE_BY_ONE = 5  # a server too old to read several at once: this many, one request each
 TRENDING_EVERY = 900.0
+RESOLVE_EVERY = 300.0  # seconds between rounds of looking up posts boosted in FediBuzz's firehose
+RESOLVE_EACH = 20  # of them, the most boosted, each round (one search each)
+RESOLVE_LEAST = trends.QUIET_SEEN  # boosts (or replies) seen, at least, before your server's asked
 FOLLOWED_SQL = ("SELECT c.name, f.capture_since FROM community_follows f JOIN communities c ON c.id=f.community_id "
                 "WHERE f.active=1 AND c.canonical_ap_id LIKE 'tag:%'")
 
@@ -176,6 +188,12 @@ def status_view(status: dict[str, Any], domain: str) -> dict[str, Any]:
                        if isinstance(u, str) and u.startswith("https://")][:trends.PICTURES]}
 
 
+def fmt_created(status: dict[str, Any]) -> str | None:
+    """When a status was posted, as the database has times."""
+    created = parse_ts(status.get("created_at"))
+    return fmt_ts(created) if created else None
+
+
 def totals(status: dict[str, Any], domain: str) -> dict[str, Any]:
     created = parse_ts(status.get("created_at"))
     return {"likes": status.get("favourites_count"), "replies": status.get("replies_count"),
@@ -191,7 +209,7 @@ class MastodonStream:
         self._stop = threading.Event()
         self._streaming: dict[str, str] = {}  # your server -> where its stream is
         self._access: dict[str, tuple[float, dict[str, Any] | None]] = {}  # server -> (when read, its live feeds)
-        self._checked = self._trending = self._tags_read = 0.0
+        self._checked = self._trending = self._tags_read = self._resolved = 0.0
         self.closed_hooks: list[Any] = []  # called when a live feed is found off, or on again
         self._peek_lock = threading.Lock()
         self._peeked: dict[str, tuple[float, dict[str, Any]]] = {}  # ref -> (when, what peek() read)
@@ -387,7 +405,14 @@ class MastodonStream:
             status = json.loads(message["payload"]) if message.get("event") == "update" else None
         except (ValueError, KeyError, TypeError, AttributeError):
             return
-        if not isinstance(status, dict) or status.get("reblog") or not status.get("uri"):
+        if not isinstance(status, dict) or not status.get("uri"):
+            return
+        boosted = status.get("reblog")
+        if isinstance(boosted, dict):
+            if boosted.get("id"):
+                self.tally.repost(f"{domain}/{boosted['id']}", fmt_created(boosted), status["uri"])
+            return
+        if boosted:
             return
         reply_to = status.get("in_reply_to_id")
         if reply_to:
@@ -464,8 +489,8 @@ class MastodonStream:
     # -- a post's replies, read when it's expanded on Trending ------------------------
     def peek(self, ref: str, uri: str | None, text: str | None) -> dict[str, Any]:
         """A Mastodon post from Trending, expanded: its text, then its replies,
-        read from your server (it's `ref` there) while you're subscribed to
-        it, else from the post's own server as it shows anyone. Nothing is
+        read from your server (it's `ref` there) when you're signed in to it
+        (readers), else from the post's own server as it shows anyone. Nothing is
         saved; what's read is shown again for PEEK_FRESH seconds without asking."""
         from .discussions import PEEK_FRESH, reply_tree
 
@@ -473,11 +498,11 @@ class MastodonStream:
             hit = self._peeked.get(ref)
         if hit and time.monotonic() - hit[0] < PEEK_FRESH:
             return hit[1]
-        wanted = self.wanted()
         domain, _, sid = ref.partition("/")
+        mine = next((server for server in self.readers() if server[0] == domain), None)
         try:
-            if wanted and wanted[0] == domain:
-                context = self._get(wanted, f"/api/v1/statuses/{sid}/context")
+            if mine:
+                context = self._get(mine, f"/api/v1/statuses/{sid}/context")
                 comments = context_comments(context, sid)
             elif uri:
                 comments = self.bouncer.tag_adapter.fetch_comments(f"peek {uri}")
@@ -494,10 +519,27 @@ class MastodonStream:
         return got
 
     # -- totals, for Trending --------------------------------------------------------
+    def readers(self) -> list[tuple[str, str, bool]]:
+        """The servers posts' totals are read from, as (server, access token,
+        whether only its own posts count): the first Mastodon account's
+        (the one that likes and replies), and the one whose timeline is
+        listened to, if that's another."""
+        with self.db.connect() as conn:
+            rows = conn.execute(ACCOUNTS_SQL).fetchall()
+        first = next(((r["domain"], token) for r in rows if (token := self._token(r))), None)
+        wanted = self.wanted()
+        out = []
+        if first:
+            out.append((first[0], first[1], bool(wanted and wanted[0] == first[0] and wanted[3] == "public:local")))
+        if wanted and (not first or wanted[0] != first[0]):
+            out.append((wanted[0], wanted[1], wanted[3] == "public:local"))
+        return out
+
     def upkeep(self) -> None:
-        """A bouncer hook: read the totals of the posts most replied to, and
-        your server's trending posts, while subscribed; and the hashtags
-        trending on each server you're signed in to, whether or not."""
+        """A bouncer hook: read the totals of the posts most replied to and
+        boosted, and your servers' trending posts, and look up the posts
+        boosted most in FediBuzz's firehose; and read the hashtags trending
+        on each server you're signed in to."""
         now = time.monotonic()
         if now - self._checked < CHECK_EVERY:
             return
@@ -506,64 +548,67 @@ class MastodonStream:
             self._tags_read = now
             with tagged("trends"):
                 self.read_trending_tags()
-        wanted = self.wanted()
-        if wanted is None:
-            return
+        trending = now - self._trending >= TRENDING_EVERY
+        resolving = now - self._resolved >= RESOLVE_EVERY
+        if trending:
+            self._trending = now
+        if resolving:
+            self._resolved = now
         with tagged("trends"):
-            try:
-                self.check(wanted)
-                if now - self._trending >= TRENDING_EVERY:
-                    self._trending = now
-                    self.check_trending(wanted)
-            except RemoteError as exc:
-                log.warning("reading Mastodon posts' totals failed: %s", exc)
+            for n, server in enumerate(self.readers()):
+                try:
+                    if resolving and n == 0:
+                        self.resolve(server)
+                    self.check(server)
+                    if trending:
+                        self.check_trending(server)
+                except RemoteError as exc:
+                    log.warning("reading Mastodon posts' totals from %s failed: %s", server[0], exc)
 
-    def _get(self, wanted: tuple[str, str, str, str], path: str, **params: Any) -> Any:
-        return self.bouncer.http.request_json("GET", wanted[0], path, params=params or None, token=wanted[1])
+    def _get(self, server: tuple[str, str, bool], path: str, **params: Any) -> Any:
+        return self.bouncer.http.request_json("GET", server[0], path, params=params or None, token=server[1])
 
-    def check(self, wanted: tuple[str, str, str, str], now: str | None = None) -> int:
-        """Read the totals of the posts most replied to lately that are due, from your server."""
-        domain = wanted[0]
+    def check(self, server: tuple[str, str, bool], now: str | None = None) -> int:
+        """Read the totals of the posts most talked about lately that are due, from a server."""
         with self.db.connect() as conn:
-            due = [r["ref"] for r in trends.due_checks(conn, "mastodon", CHECK_POSTS * 3, now)
-                   if r["ref"].startswith(f"{domain}/")][:CHECK_POSTS]
+            due = [r["ref"] for r in trends.due_checks(conn, "mastodon", CHECK_POSTS, now, prefix=f"{server[0]}/")]
         if not due:
             return 0
-        self.read(wanted, due, now)
+        self.read(server, due, now)
         return len(due)
 
-    def read(self, wanted: tuple[str, str, str, str], refs: list[str], now: str | None = None) -> None:
-        """Read these posts (refs on your server) from it: their totals, and
+    def read(self, server: tuple[str, str, bool], refs: list[str], now: str | None = None) -> None:
+        """Read these posts (refs on that server) from it: their totals, and
         who posted them and what they say and show."""
-        domain = wanted[0]
+        domain = server[0]
         due = [ref for ref in refs if ref.startswith(f"{domain}/")][:CHECK_POSTS]
         if not due:
             return
         ids = [ref.split("/", 1)[1] for ref in due]
         try:
-            got = self._get(wanted, "/api/v1/statuses", **{"id[]": ids})
+            got = self._get(server, "/api/v1/statuses", **{"id[]": ids})
         except RemoteNotFound:  # before Mastodon 4.3: one at a time, fewer
             got, due = [], due[:ONE_BY_ONE]
             for sid in ids[:ONE_BY_ONE]:
                 try:
-                    got.append(self._get(wanted, f"/api/v1/statuses/{sid}"))
+                    got.append(self._get(server, f"/api/v1/statuses/{sid}"))
                 except RemoteNotFound:
                     continue
         found = {f"{domain}/{s['id']}": totals(s, domain) for s in got if isinstance(s, dict) and s.get("id")}
         with self.db.transaction(exclusive=False) as conn:
             trends.record_totals(conn, "mastodon", found, due, now or utcnow())
 
-    def check_trending(self, wanted: tuple[str, str, str, str], now: str | None = None) -> int:
-        """Your server's own trending posts, with their totals: those it saw
-        liked and boosted most, which replies alone would miss. With the
-        local timeline, only those posted on your server."""
-        domain, scope = wanted[0], wanted[3]
-        got = self._get(wanted, "/api/v1/trends/statuses", limit=40)
+    def check_trending(self, server: tuple[str, str, bool], now: str | None = None) -> int:
+        """A server's own trending posts, with their totals: those it saw
+        liked and boosted most, which replies alone would miss. Listening to
+        its local timeline, only those posted on it."""
+        domain, _, local = server
+        got = self._get(server, "/api/v1/trends/statuses", limit=40)
         found = {}
         for s in got if isinstance(got, list) else []:
             if not isinstance(s, dict) or not s.get("id"):
                 continue
-            if scope == "public:local" and "@" in str((s.get("account") or {}).get("acct") or ""):
+            if local and "@" in str((s.get("account") or {}).get("acct") or ""):
                 continue
             created = parse_ts(s.get("created_at"))
             if created is None or created < parse_ts(utcnow()) - trends.MAX_POST_AGE:  # type: ignore[operator]
@@ -573,6 +618,37 @@ class MastodonStream:
             trends.record_totals(conn, "mastodon", found, [], now or utcnow())
         return len(found)
 
+    def resolve(self, server: tuple[str, str, bool], now: str | None = None) -> int:
+        """Look up on a server the posts boosted most that are counted by
+        their ActivityPub id alone (FediBuzz's): found, they're read like the
+        rest from then on; not found (deleted, or it won't show them), they
+        aren't asked about again. Returns how many were found."""
+        domain = server[0]
+        with self.db.connect() as conn:
+            uris = trends.unresolved(conn, "mastodon", RESOLVE_EACH, RESOLVE_LEAST, now)
+        found: dict[str, dict[str, Any]] = {}
+        missing: list[str] = []
+        try:
+            for uri in uris:
+                try:
+                    got = self._get(server, "/api/v2/search", q=uri, resolve="true", type="statuses", limit=1)
+                except RemoteNotFound:
+                    got = None
+                statuses = got.get("statuses") if isinstance(got, dict) else None
+                match = next((s for s in statuses or []
+                              if isinstance(s, dict) and s.get("uri") == uri and s.get("id")), None)
+                if match is None:
+                    missing.append(uri)
+                else:
+                    found[f"{domain}/{match['id']}"] = totals(match, domain)
+        finally:  # (what was found before the server said to slow down is kept)
+            stamp = now or utcnow()
+            with self.db.transaction(exclusive=False) as conn:
+                trends.record_totals(conn, "mastodon", found, [], stamp)
+                for chunk in trends._chunks(missing):
+                    conn.execute(f"UPDATE stream_posts SET gone=1, checked_at=? WHERE source='mastodon' "
+                                 f"AND ref IN ({trends._marks(chunk)})", (stamp, *chunk))
+        return len(found)
 
     # -- the hashtags trending on your servers, for Trending's Tags tab ---------------------
     def read_trending_tags(self, now: str | None = None) -> int:

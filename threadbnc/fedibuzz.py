@@ -11,10 +11,13 @@ it's only listened to once it's turned on on the Trending page.
 Each post's hashtags and links are counted as Mastodon's (trends.py), in the
 same Tally as your Mastodon server's public timeline: an author counts once
 an hour for each hashtag or link, so a post that arrives both ways counts
-once. Replies aren't counted: a post's id there is its own server's, not one
-your server can be asked about. Nothing is captured or kept, and posts made
-while it's down are missed (Mastodon's streams can't carry on from where
-they left off)."""
+once. Boosts are counted for the post boosted, named by its ActivityPub id
+(the same boost from your server's timeline counts once); your server is
+asked about the most boosted (mastodon_stream.MastodonStream.resolve) for
+their likes and replies. Replies aren't counted: the post one answers is
+named only by an id on whichever server FediBuzz heard it from, which it
+doesn't say. Nothing is captured or kept, and posts made while it's down are
+missed (Mastodon's streams can't carry on from where they left off)."""
 
 from __future__ import annotations
 
@@ -31,7 +34,7 @@ import httpx
 
 from . import languages, trends
 from .db import utcnow
-from .mastodon_stream import status_links, status_tags
+from .mastodon_stream import fmt_created, status_links, status_tags
 from .traffic import record
 
 log = logging.getLogger(__name__)
@@ -151,12 +154,19 @@ class FediBuzzStream:
                 record("in", host, requests=messages, bytes_in=received[0])
 
     def take(self, data: str) -> None:
-        """One post from the stream: its hashtags and links counted."""
+        """One post from the stream: its hashtags and links counted, or the
+        post it boosts."""
         try:
             status = json.loads(data)
         except ValueError:
             return
-        if not isinstance(status, dict) or status.get("reblog") or not status.get("uri"):
+        if not isinstance(status, dict) or not status.get("uri"):
+            return
+        boosted = status.get("reblog")
+        if boosted:
+            uri = boosted.get("uri") if isinstance(boosted, dict) else None
+            if isinstance(uri, str) and uri.startswith(("https://", "http://")):
+                self.tally.repost(uri, fmt_created(boosted), status["uri"])
             return
         account = status.get("account") if isinstance(status.get("account"), dict) else {}
         author = account.get("url") or account.get("uri") or account.get("acct")

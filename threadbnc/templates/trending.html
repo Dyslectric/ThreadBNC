@@ -86,10 +86,12 @@
           <fieldset>
             <legend>FediBuzz</legend>
             <label><input type="checkbox" name="fedibuzz" value="1" {{ 'checked' if st.chosen.fedibuzz }}>
-              Count hashtags and links from FediBuzz's firehose: what's posted publicly across the fediverse, as
-              fedi.buzz gathers it (no account needed; about 3 GB a day)</label>
+              Count hashtags, links and boosts from FediBuzz's firehose: what's posted publicly across the fediverse,
+              as fedi.buzz gathers it (no account needed; about 3 GB a day)</label>
             <p class="muted">Counted as Mastodon's, with your server's timeline if you listen to one too: a post that
-              arrives both ways counts once. Its replies aren't counted.</p>
+              arrives both ways counts once. Signed in to Mastodon, the posts boosted most are looked up on your
+              server (a search each, {{ st.resolve_each }} every 5 minutes) for their likes and replies. Its replies
+              aren't counted.</p>
           </fieldset>
           <fieldset>
             <legend>Mastodon</legend>
@@ -113,6 +115,8 @@
               instead of the tag relays{% endif %}, and its posts' links, hashtags and replies are counted here. Some servers
               (mastodon.social among them) have turned their live feeds off: nothing arrives from those, so sign in to an
               account on another server to listen to. A federated timeline is about 0.8 GB a day on a server of 10,000 people.</p>
+            <p class="muted">Subscribed or not, {{ st.mastodon_accounts[0].domain }} is asked which posts are trending on
+              it every 15 minutes, for the Posts tab.</p>
             <label><input type="checkbox" name="mastodon_tags" value="1" {{ 'checked' if st.chosen.mastodon_tags }}>
               Ask {{ st.mastodon_accounts[0].domain }} which hashtags are trending on it (one request every 15 minutes),
               for the Tags tab</label>
@@ -251,7 +255,7 @@
   </div>
   {% if not posts %}
     <section class="card empty"><p class="muted">
-      {%- if not (st.bluesky and st.chosen.bluesky) and not st.mastodon_scope %}Nothing is counted: choose where from under Sources.
+      {%- if not (st.bluesky and st.chosen.bluesky) and not st.mastodon_scope and not st.mastodon_account %}Nothing is counted: choose where from under Sources.
       {%- else %}Nothing yet. Posts show here once their likes and replies have been read, a few minutes after
       people start replying to them.{% endif %}</p></section>
   {% endif %}

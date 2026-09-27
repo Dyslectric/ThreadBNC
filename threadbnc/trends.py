@@ -222,7 +222,7 @@ class Tally:
     def _clear(self) -> None:
         self.links: dict[tuple[str, str], list[Any]] = {}  # (key, hour) -> [posts, link, title, description]
         self.tags: dict[tuple[str, str], int] = {}  # (hashtag, hour) -> posts
-        self.posts: dict[str, list[Any]] = {}  # ref -> [replies, quotes, likes, created_at]
+        self.posts: dict[str, list[Any]] = {}  # ref -> [replies, quotes, likes, created_at, reposts]
         self.langs: dict[tuple[str, str, str], int] = {}  # ("tag" | "link", hashtag or link key, language) -> posts
         self.looked: dict[str, int] = {}  # hour -> posts looked at
 
@@ -286,7 +286,7 @@ class Tally:
     def _post(self, ref: str, created_at: str | None) -> list[Any]:
         entry = self.posts.get(ref)
         if entry is None:
-            entry = self.posts[ref] = [0, 0, 0, created_at]
+            entry = self.posts[ref] = [0, 0, 0, created_at, 0]
         elif created_at and not entry[3]:
             entry[3] = created_at
         return entry
@@ -303,6 +303,27 @@ class Tally:
         with self._lock:
             self._post(ref, created_at)[2] += 1
 
+    def repost(self, ref: str, created_at: str | None = None, boost: str | None = None) -> bool:
+        """Count one repost (a Mastodon boost) of a post, unless it's over
+        MAX_POST_AGE old, or this `boost` (its own id) was counted this hour
+        already: the same boost can arrive from FediBuzz and your server's
+        timeline. A Mastodon post's `ref` is "<your server>/<its id there>"
+        when that's known, else its ActivityPub id (resolved later: see
+        remember_refs). Returns whether it was counted."""
+        posted = parse_ts(created_at)
+        if posted is not None and posted < parse_ts(utcnow()) - MAX_POST_AGE:  # type: ignore[operator]
+            return False
+        hour = time.strftime(HOUR, time.gmtime())
+        with self._lock:
+            if self._hour != hour:
+                self._hour, self._posted = hour, set()
+            if boost:
+                if ("boost", boost) in self._posted:
+                    return False
+                self._posted.add(("boost", boost))
+            self._post(ref, created_at)[4] += 1
+        return True
+
     def flush(self, db: Database) -> None:
         with self._lock:
             found, tags, posts, langs, looked = self.links, self.tags, self.posts, self.langs, self.looked
@@ -317,6 +338,8 @@ class Tally:
         posts = dict(sorted(posts.items()))
         langs = dict(sorted(langs.items()))
         with db.transaction(exclusive=False) as conn:
+            if posts:
+                posts = _known_refs(conn, self.source, posts)
             conn.executemany(
                 "INSERT INTO trend_hours(hour, source, posts) VALUES (?,?,?) ON CONFLICT(hour, source) "
                 "DO UPDATE SET posts=trend_hours.posts+excluded.posts",
@@ -350,12 +373,73 @@ class Tally:
                  for (key, _hour), e in found.items()])
             conn.executemany(
                 "INSERT INTO stream_posts(source, ref, created_at, first_seen_at, replies_seen, quotes_seen, "
-                "likes_seen) VALUES (?,?,?,?,?,?,?) ON CONFLICT(source, ref) DO UPDATE SET "
+                "likes_seen, reposts_seen) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(source, ref) DO UPDATE SET "
                 "replies_seen=stream_posts.replies_seen+excluded.replies_seen, "
                 "quotes_seen=stream_posts.quotes_seen+excluded.quotes_seen, "
                 "likes_seen=stream_posts.likes_seen+excluded.likes_seen, "
+                "reposts_seen=stream_posts.reposts_seen+excluded.reposts_seen, "
                 "created_at=COALESCE(stream_posts.created_at, excluded.created_at)",
-                [(self.source, ref, e[3], now, e[0], e[1], e[2]) for ref, e in posts.items()])
+                [(self.source, ref, e[3], now, e[0], e[1], e[2], e[4]) for ref, e in sorted(posts.items())])
+
+
+SEEN = "replies_seen + quotes_seen + likes_seen + reposts_seen"  # how much a stream saw of a post
+
+
+def _known_refs(conn: Conn, source: str, posts: dict[str, list[Any]]) -> dict[str, list[Any]]:
+    """The posts counted, those known by their ActivityPub id counted under
+    their ref on your server instead, once that's known (remember_refs)."""
+    uris = [ref for ref in posts if ref.startswith(("https://", "http://"))]
+    known: dict[str, str] = {}
+    for chunk in _chunks(uris):
+        known.update((r["uri"], r["ref"]) for r in conn.execute(
+            f"SELECT uri, ref FROM stream_refs WHERE source=? AND uri IN ({_marks(chunk)})", (source, *chunk)))
+    if not known:
+        return posts
+    out: dict[str, list[Any]] = {}
+    for ref, e in posts.items():
+        mine = out.setdefault(known.get(ref, ref), [0, 0, 0, None, 0])
+        for i in (0, 1, 2, 4):
+            mine[i] += e[i]
+        mine[3] = mine[3] or e[3]
+    return out
+
+
+def remember_refs(conn: Conn, source: str, found: dict[str, str]) -> None:
+    """Posts' refs on your server ({ActivityPub id: ref}), from what it
+    said of them: what was counted under the ActivityPub id is added to it."""
+    for uri, ref in found.items():
+        if not uri or uri == ref:
+            continue
+        conn.execute("INSERT INTO stream_refs(source, uri, ref) VALUES (?,?,?) ON CONFLICT(source, uri) "
+                     "DO UPDATE SET ref=excluded.ref", (source, uri, ref))
+        old = conn.execute("SELECT * FROM stream_posts WHERE source=? AND ref=?", (source, uri)).fetchone()
+        if old is None:
+            continue
+        conn.execute(
+            "INSERT INTO stream_posts(source, ref, created_at, first_seen_at, replies_seen, quotes_seen, likes_seen, "
+            "reposts_seen) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(source, ref) DO UPDATE SET "
+            "replies_seen=stream_posts.replies_seen+excluded.replies_seen, "
+            "quotes_seen=stream_posts.quotes_seen+excluded.quotes_seen, "
+            "likes_seen=stream_posts.likes_seen+excluded.likes_seen, "
+            "reposts_seen=stream_posts.reposts_seen+excluded.reposts_seen, "
+            "created_at=COALESCE(stream_posts.created_at, excluded.created_at), "
+            "first_seen_at=CASE WHEN excluded.first_seen_at < stream_posts.first_seen_at "
+            "THEN excluded.first_seen_at ELSE stream_posts.first_seen_at END",
+            (source, ref, old["created_at"], old["first_seen_at"], old["replies_seen"], old["quotes_seen"],
+             old["likes_seen"], old["reposts_seen"]))
+        conn.execute("DELETE FROM stream_posts WHERE source=? AND ref=?", (source, uri))
+
+
+def unresolved(conn: Conn, source: str, limit: int, least: int, now: str | None = None) -> list[str]:
+    """The posts counted by their ActivityPub id alone (boosts FediBuzz
+    carries, say) seen at least `least` times, most seen first: those to ask
+    your server for."""
+    moment = parse_ts(now or utcnow()) or datetime.now(timezone.utc)
+    return [r["ref"] for r in conn.execute(
+        f"SELECT ref FROM stream_posts WHERE source=? AND gone=0 AND checked_at IS NULL "
+        f"AND (ref LIKE 'https://%' OR ref LIKE 'http://%') AND COALESCE(created_at, first_seen_at) >= ? "
+        f"AND {SEEN} >= ? ORDER BY {SEEN} DESC, ref LIMIT ?",
+        (source, fmt_ts(moment - MAX_POST_AGE), least, limit))]
 
 
 def tidy(db: Database, now: str | None = None) -> int:
@@ -375,10 +459,14 @@ def tidy(db: Database, now: str | None = None) -> int:
                 "OR last_seen_at < ?", (once, FEW_POSTS, few, fmt_ts(moment - KEEP_COUNTS)), also=(langs, counts))
         with db.transaction(exclusive=False) as conn:
             conn.execute(f"DELETE FROM {counts} WHERE hour < ?", ((moment - KEEP_COUNTS).strftime(HOUR),))
-    return _forget(db, "stream_posts", ["source", "ref"],
-                   "COALESCE(created_at, first_seen_at) < ? OR (replies_seen + quotes_seen + likes_seen < ? "
+    gone = _forget(db, "stream_posts", ["source", "ref"],
+                   f"COALESCE(created_at, first_seen_at) < ? OR ({SEEN} < ? "
                    "AND first_seen_at < ? AND checked_at IS NULL)",
                    (fmt_ts(moment - KEEP_POSTS), QUIET_SEEN, fmt_ts(moment - QUIET_AFTER)), also=("stream_post_media",))
+    with db.transaction(exclusive=False) as conn:  # (a few hundred: the posts your server was asked about)
+        conn.execute("DELETE FROM stream_refs WHERE NOT EXISTS (SELECT 1 FROM stream_posts p "
+                     "WHERE p.source=stream_refs.source AND p.ref=stream_refs.ref)")
+    return gone
 
 
 def backfill_hours(db: Database, moment: datetime) -> None:
@@ -1273,14 +1361,15 @@ def pictures_of(conn: Conn, posts: list[tuple[str, str]]) -> dict[tuple[str, str
     return out
 
 
-def due_checks(conn: Conn, source: str, limit: int, now: str | None = None) -> list[Any]:
+def due_checks(conn: Conn, source: str, limit: int, now: str | None = None, prefix: str = "") -> list[Any]:
     """The posts, of those talked about most lately, whose totals are due to
-    be read (again): see RECHECK."""
+    be read (again): see RECHECK. Only those whose ref starts with `prefix`
+    (a Mastodon server's: "<server>/"), when given."""
     moment = parse_ts(now or utcnow()) or datetime.now(timezone.utc)
     rows = conn.execute(
         "SELECT * FROM stream_posts WHERE source=? AND gone=0 AND COALESCE(created_at, first_seen_at) >= ? "
-        "ORDER BY replies_seen + quotes_seen + likes_seen + COALESCE(likes, 0) DESC LIMIT ?",
-        (source, fmt_ts(moment - MAX_POST_AGE), CHECK_LOOKED_AT)).fetchall()
+        f"AND substr(ref, 1, ?) = ? ORDER BY {SEEN} + COALESCE(likes, 0) DESC LIMIT ?",
+        (source, fmt_ts(moment - MAX_POST_AGE), len(prefix), prefix, CHECK_LOOKED_AT)).fetchall()
     due = []
     for r in rows:
         age = moment - (parse_ts(r["created_at"] or r["first_seen_at"]) or moment)
@@ -1305,6 +1394,8 @@ def record_totals(conn: Conn, source: str, found: dict[str, dict[str, Any]], ask
             "created_at=COALESCE(stream_posts.created_at, excluded.created_at)",
             (source, ref, t.get("created_at"), now, t.get("likes"), t.get("replies"), t.get("reposts"), now,
              json.dumps(t["view"]), languages.normalize(t["view"].get("lang"))))
+    if source == "mastodon":
+        remember_refs(conn, source, {t["view"].get("uri"): ref for ref, t in found.items() if t["view"].get("uri")})
     missing = [ref for ref in asked if ref not in found]
     for chunk in _chunks(missing):
         conn.execute(f"UPDATE stream_posts SET gone=1, checked_at=? WHERE source=? AND ref IN ({_marks(chunk)})",
