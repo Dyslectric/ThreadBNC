@@ -106,12 +106,16 @@ def test_comments_read_in_the_last_five_minutes_are_not_read_again(server, bounc
     assert counted == []
 
 
-def test_expanding_comments_forces_a_check_unless_the_community_is_pushed(server, bouncer, web):
+def test_expanding_comments_forces_a_check_even_when_the_community_is_pushed(server, bouncer, web, counted):
     server.add_post("1", "hello", "b")
     tid = bouncer.ingest_url(f"https://{DOMAIN}/post/1")
     result = web.post(f"/t/{tid}/comments/check").json()
     assert result["thread_ids"] == [tid] and len(result["jobs"]) == 1
     assert len(jobs(bouncer, "sync")) == 1
+    # Expanded again before that read ran: it waits on the same one.
+    assert web.post(f"/t/{tid}/comments/check").json() == result
+    assert len(jobs(bouncer, "sync")) == 1
+    run_jobs(bouncer)
 
     cid = one(bouncer, "SELECT community_id FROM archived_threads WHERE id=?", tid)[0]
     now = utcnow()
@@ -121,9 +125,112 @@ def test_expanding_comments_forces_a_check_unless_the_community_is_pushed(server
             "retention_days, source_domain, source_ref, next_poll_at, polling, push_state) "
             "VALUES (?,?,?,?,?,?,?,?,?,?)",
             (cid, now, now, 10, 7, DOMAIN, f"math@{DOMAIN}", now, 0, "subscribed"))
+    # A comment your server was never sent (from before the post arrived, or a lost delivery).
+    server.add_comment("1", "10", "never pushed")
     pushed = web.post(f"/t/{tid}/comments/check").json()
-    assert pushed == {"jobs": [], "thread_ids": []}
-    assert len(jobs(bouncer, "sync")) == 1
+    assert pushed["thread_ids"] == [tid] and len(pushed["jobs"]) == 1
+    counted.clear()
+    run_jobs(bouncer)
+    assert counted == ["1"]
+    assert "never pushed" in web.get(f"/t/{tid}?refreshed=1").text
+
+
+def test_expanding_a_pushed_posts_comments_reads_them_when_stale(server, bouncer, web):
+    server.add_post("1", "hello", "b")
+    tid = bouncer.ingest_url(f"https://{DOMAIN}/post/1")
+    cid = one(bouncer, "SELECT community_id FROM archived_threads WHERE id=?", tid)[0]
+    now = utcnow()
+    with bouncer.db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO community_follows(community_id, followed_at, capture_since, poll_interval_minutes, "
+            "retention_days, source_domain, source_ref, next_poll_at, polling, push_state) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (cid, now, now, 10, 7, DOMAIN, f"math@{DOMAIN}", now, 0, "subscribed"))
+    age_comments(bouncer, tid, 6)
+    assert 'id="refreshing"' in web.get(f"/t/{tid}?inline=1").text
+    assert len(jobs(bouncer)) == 1
+
+
+def followed_polled(server, bouncer, n=2):
+    for k in range(n):
+        server.add_post(str(k + 1), f"post {k + 1}", "text", created=utcnow())
+    cid = bouncer.follow_community(f"!math@{DOMAIN}", 10, 7, backfill=True)
+    bouncer.poll_follow(cid)
+    with bouncer.db.connect() as conn:
+        return {r["local_id"]: r["id"] for r in conn.execute(
+            "SELECT t.id, t.source_local_id AS local_id FROM archived_threads t")}
+
+
+def test_a_lemmy_post_scrolled_to_reads_its_comments(server, bouncer, web, counted):
+    """Captured from its community's listing without its comments: once it's
+    on screen in a feed, they're read, as opening it would."""
+    tids = followed_polled(server, bouncer)
+    server.add_comment("1", "10", "first!")
+    server.add_comment("1", "11", "second", parent="10")
+    page = web.get("/").text
+    assert f'id="p{tids["1"]}"' in page and 'data-preview=""' in page
+    assert web.post("/feed/articles", data={"ids": [tids["1"]]}).json()["ok"]
+    [job] = jobs(bouncer, "previews")
+    status = web.get("/feed/articles", params={"ids": [tids["1"]]}).json()
+    assert tids["1"] in status["waiting"]
+    run_jobs(bouncer)
+    assert counted == ["1"]
+    assert one(bouncer, "SELECT COUNT(*) FROM objects WHERE thread_id=? AND object_type='comment'", tids["1"])[0] == 2
+    status = web.get("/feed/articles", params={"ids": [tids["1"]]}).json()
+    assert status["waiting"] == [] and status["previewed"][str(tids["1"])]
+    # Read just now: scrolling back to it doesn't read it again.
+    web.post("/feed/articles", data={"ids": [tids["1"]]})
+    assert len(jobs(bouncer, "previews")) == 1
+
+
+def test_a_post_whose_comments_were_just_read_isnt_previewed(server, bouncer, web):
+    server.add_post("1", "hello", "b")
+    tid = bouncer.ingest_url(f"https://{DOMAIN}/post/1")  # read in full
+    web.post("/feed/articles", data={"ids": [tid]})
+    assert jobs(bouncer, "previews") == []
+    age_comments(bouncer, tid, 6)
+    web.post("/feed/articles", data={"ids": [tid]})
+    assert len(jobs(bouncer, "previews")) == 1
+
+
+def test_the_feed_counts_the_comments_the_server_reports(server, bouncer):
+    """Before its comments are read, a post shows as many as its server says it has."""
+    server.add_post("1", "hello", "b", created=utcnow())
+    server.edit_post("1", comment_count=7)
+    cid = bouncer.follow_community(f"!math@{DOMAIN}", 10, 7, backfill=True)
+    bouncer.poll_follow(cid)
+    from threadbnc import feed
+    with bouncer.db.connect() as conn:
+        [item] = feed.load_feed(conn).items
+    assert item["n_comments"] == 7
+
+
+def test_opening_a_post_jumps_the_feeds_queue(server, bouncer, web):
+    tids = followed_polled(server, bouncer)
+    scrolled = bouncer.enqueue("articles", {"thread_ids": [tids["2"]]})
+    opened = bouncer.enqueue("open", {"thread_ids": [tids["1"]]})
+    assert bouncer.run_one_job()
+    status = {r["id"]: r["status"] for r in jobs(bouncer, "open") + jobs(bouncer, "articles")}
+    assert status == {opened: "done", scrolled: "queued"}
+
+
+def test_opening_a_post_runs_between_the_posts_being_previewed(server, bouncer, web, monkeypatch):
+    tids = followed_polled(server, bouncer)
+    order = []
+    real = bouncer.sync_thread
+
+    def sync(tid, *args, **kw):
+        order.append((tid, kw.get("force", False)))
+        if len(order) == 1:  # the other one opened while the first was being read
+            bouncer.enqueue("open", {"thread_ids": [other[tid]]})
+        return real(tid, *args, **kw)
+
+    other = {tids["1"]: tids["2"], tids["2"]: tids["1"]}
+    monkeypatch.setattr(bouncer, "sync_thread", sync)
+    bouncer.fetch_previews(list(tids.values()))
+    first = order[0][0]
+    assert order == [(first, False), (other[first], True)]  # opened, then not read again for the feed
+    assert [r["status"] for r in jobs(bouncer, "open")] == ["done"]
 
 
 def test_the_fresh_copy_is_not_another_visit(server, bouncer, web):

@@ -210,13 +210,13 @@ def test_feed_fetches_articles_scrolled_to(server, abouncer, settings):
     client.post("/login", data={"password": "pw"})
     assert 'data-article-waiting data-pics="0"' in client.get(f"/c/{cid}").text
     assert client.get("/feed/articles", params={"ids": [tid]}).json() == {"waiting": [tid], "pics": {str(tid): 0}, "audio": {},
-                                                                       "previewed": {}}
+                                                                       "previewed": {str(tid): ""}}
 
     assert client.post("/feed/articles", data={"ids": [tid]}).json()["ok"]
     assert abouncer.run_one_job()
     assert article_row(abouncer, "https://news.test/story")["status"] == "ok"
     assert client.get("/feed/articles", params={"ids": [tid]}).json() == {"waiting": [], "pics": {str(tid): 1}, "audio": {},
-                                                                       "previewed": {}}
+                                                                       "previewed": {str(tid): ""}}
     page_now = client.get(f"/c/{cid}").text
     assert "data-article-waiting" not in page_now and "data-gallery" not in page_now
     with abouncer.db.connect() as conn:

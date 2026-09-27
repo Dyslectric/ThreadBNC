@@ -946,7 +946,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         be read (feed.preview_due): when they last were ("" never)."""
         now = utcnow()
         return {r["id"]: r["previewed_at"] or "" for r in feed_mod.preview_rows(conn, ids)
-                if feed_mod.preview_due(r["kind"], r["previewed_at"], now)}
+                if feed_mod.preview_due(r["kind"], r["previewed_at"], now, r["last_full_fetch_at"])}
 
     @app.post("/feed/articles")
     def feed_articles(ids: list[int] = Form([])):
@@ -980,7 +980,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             thumbs = feed_mod.thumbnails(conn, [(r["oid"], r["url"], r["thumbnail_url"]) for r in rows])
             sounds = feed_mod.audio(conn, [(r["oid"], r["url"]) for r in rows])
             prows, now = feed_mod.preview_rows(conn, ids[:50]), utcnow()
-        due = {r["id"] for r in prows if feed_mod.preview_due(r["kind"], r["previewed_at"], now)}
+        due = {r["id"] for r in prows
+               if feed_mod.preview_due(r["kind"], r["previewed_at"], now, r["last_full_fetch_at"])}
         previewed = {r["id"]: r["previewed_at"] or "" for r in prows}
         return {"waiting": [r["id"] for r in rows if r["oid"] in waiting or r["id"] in due
                             or sounds.get(r["oid"], {}).get("status") == "pending"],
@@ -3373,24 +3374,39 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         flash(request, "Re-check queued.")
         return RedirectResponse(f"/t/{tid}", status_code=303)
 
+    def comment_reads_queued(conn: Any, ids: list[int]) -> dict[int, int]:
+        """Of these threads, the ones already waiting on a read of their
+        comments (an open or sync job not finished yet): the job, for each."""
+        found: dict[int, int] = {}
+        for j in conn.execute("SELECT id, kind, payload_json FROM jobs WHERE kind IN ('open', 'sync') "
+                              "AND status IN ('queued', 'running') ORDER BY id"):
+            payload = json.loads(j["payload_json"])
+            for i in payload.get("thread_ids") or [payload.get("thread_id")]:
+                if i in ids:
+                    found.setdefault(i, j["id"])
+        return found
+
     @app.post("/t/{tid}/comments/check")
     def check_comments(tid: int):
-        """Start a fresh comment read for copies that do not receive pushes.
+        """Start a fresh comment read for every copy of a post (not feed
+        articles, which have none).
 
-        Inline comment panels call this when they open.  Pushed communities
-        already deliver comments as they happen, so asking their server again
-        would only add traffic and latency.
+        Inline comment panels call this when they open. Pushed communities too:
+        pushes only bring what your server was sent, and a post's comments from
+        before it arrived, or a delivery that went astray, show up only once
+        they're read. A copy whose comments are already being read waits on
+        that read rather than starting another.
         """
         ids = group_of(tid, "1")
         marks = ",".join("?" * len(ids))
         with db.connect() as conn:
             rows = conn.execute(
-                "SELECT t.id, t.source_domain, f.push_state FROM archived_threads t "
-                "LEFT JOIN community_follows f ON f.community_id=t.community_id AND f.active=1 "
+                "SELECT t.id, t.source_domain FROM archived_threads t "
                 f"WHERE t.id IN ({marks}) AND t.trashed_at IS NULL", ids).fetchall()
-        searched = [r["id"] for r in rows
-                    if r["source_domain"] != RSS_DOMAIN and r["push_state"] != "subscribed"]
-        jobs = [bouncer.enqueue("sync", {"thread_id": thread_id}) for thread_id in searched]
+            searched = [r["id"] for r in rows if r["source_domain"] != RSS_DOMAIN]
+            queued = comment_reads_queued(conn, searched)
+        jobs = list(dict.fromkeys(queued[i] if i in queued else bouncer.enqueue("sync", {"thread_id": i})
+                                  for i in searched))
         return {"jobs": jobs, "thread_ids": searched}
 
     THREAD_SQL = ("SELECT t.*, c.name AS cname, c.canonical_ap_id AS c_ap, c.id AS cid, "
@@ -3398,8 +3414,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                   "LEFT JOIN community_follows f ON f.community_id=c.id WHERE t.id=?")
 
     @app.get("/t/{tid}", response_class=HTMLResponse)
-    def thread(request: Request, tid: int, sort: str | None = None, merge: int = 1, refreshed: int = 0,
-               inline: int = 0):
+    def thread(request: Request, tid: int, sort: str | None = None, merge: int = 1, refreshed: int = 0):
         """A thread, shown together with its stored duplicates (the same link or
         text posted elsewhere) unless merge=0: one post listing every copy,
         every copy's comments in one tree, repeated comments squashed.
@@ -3452,7 +3467,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         refresh_job = None
         if not refreshed:
             stale = [i for i, th in threads.items() if not th["trashed_at"] and (
-                (bouncer.comments_stale(th) and not (inline and th["push_state"] == "subscribed")) or
+                bouncer.comments_stale(th) or
                 (i == tid and article is not None and article["status"] == "pending"))]
             if stale:
                 refresh_job = bouncer.enqueue("open", {"thread_ids": stale})
