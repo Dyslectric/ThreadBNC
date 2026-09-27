@@ -186,6 +186,13 @@
   </details>
 {%- endmacro %}
 
+{# Under the post's linked file: that it's an archived copy, and what transcoding did to it. #}
+{% macro archived_note(m) -%}
+<div class="small muted">Archived copy{% if m.original_bytes %} · transcoded from {{ m.original_bytes | size }}
+  {{ (m.original_type or '').split('/')[-1] }} to {{ m.size_bytes | size }}{% endif %}
+  {%- if m.transcode_error %} · <span class="bad-text">{{ m.transcode_error }}</span>{% endif %}</div>
+{%- endmacro %}
+
 {% block content %}
 {% if not root %}
   <p class="muted">This thread has no stored root post.</p>
@@ -232,10 +239,9 @@
   {% elif n_copies > 1 %}
   <p class="small copies-note"><span class="pill new">×{{ n_copies }}</span> The same {{ 'link' if o.url else 'text' }} was posted {{ n_copies - 1 }} other time{{ 's' if n_copies > 2 }}. <a href="/t/{{ t.id }}">Show them together</a></p>
   {% endif %}
-  {# The post's pictures, in a carousel: not when it's just its link's picture (shown on its own below), nor
-     under a video's or audio's player. #}
-  {% set gallery_pics = post_pics if post_pics and not (post_pics | length == 1 and post_pics[0].is_link)
-       and not post_video and not (post_audio and post_audio.audio) else [] %}
+  {# The post's pictures, in a carousel even when there's just one (or just its link's preview): not under a
+     video's or audio's player. #}
+  {% set gallery_pics = post_pics if not post_video and not (post_audio and post_audio.audio) else [] %}
   {% if o.url | safe_url %}{% set episode = post_audio.episode if post_audio else none %}
     {% set page = (episode.page if episode and episode.page else o.url) | safe_url %}
     {% set vid = page | youtube_video if page else none %}
@@ -264,9 +270,7 @@
       {% if m.content_type.startswith('video/') %}<video class="media" src="/media/{{ m.id }}" controls loop muted playsinline preload="metadata"></video>
       {% elif m.content_type.startswith('audio/') %}<audio class="media" src="/media/{{ m.id }}" controls preload="metadata"></audio>
       {% else %}<a href="/media/{{ m.id }}" target="_blank"><img class="media" src="/media/{{ m.id }}" alt="" loading="lazy"></a>{% endif %}
-      <div class="small muted">Archived copy{% if m.original_bytes %} · transcoded from {{ m.original_bytes | size }}
-        {{ (m.original_type or '').split('/')[-1] }} to {{ m.size_bytes | size }}{% endif %}
-        {%- if m.transcode_error %} · <span class="bad-text">{{ m.transcode_error }}</span>{% endif %}</div>
+      {{ archived_note(m) }}
       </div>
     {% elif preview(o) and not gallery_pics %}{% set pm = preview(o) %}
       <a class="link-preview" href="{{ o.url | safe_url }}" rel="noreferrer noopener nofollow" target="_blank">
@@ -274,7 +278,8 @@
     {% elif m and m.status == 'pending' and o.url | looks_like_media %}<p class="small muted">Linked media is being archived…</p>
     {% elif m and m.status == 'failed' and not o.url | youtube_video %}<p class="small bad-text">Linked media could not be archived: {{ m.error }}</p>{% endif %}
   {% endif %}
-  {% if gallery_pics %}<div class="post-media post-gallery">{{ carousel(gallery_pics) }}</div>{% endif %}
+  {% if gallery_pics %}<div class="post-media post-gallery">{{ carousel(gallery_pics) }}</div>
+    {%- if m and gallery_pics | selectattr('is_link') | first %}{{ archived_note(m) }}{% endif %}{% endif %}
   {% if o.body %}<div class="md {{ 'faded' if o.cur_deleted or o.cur_removed }}">{{ md(o.body) }}</div>{% endif %}
   {{ event_list(root.events) }}
   {{ actions(root, is_post=True) }}

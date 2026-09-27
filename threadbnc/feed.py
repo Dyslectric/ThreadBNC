@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import zlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -21,7 +22,8 @@ SORTS = {  # NULLS LAST: Postgres otherwise puts NULLs first in DESC order
     "comments": "g_comments DESC, created_at DESC NULLS LAST, id DESC",
 }
 WINDOWS = {"day": timedelta(days=1), "week": timedelta(days=7), "month": timedelta(days=30), "all": None}
-VIEWS = ("list", "pictures", "tiles")  # posts; pictures in one column; a grid of pictures
+# posts; pictures in one column; a grid of pictures; whole posts by who posted them, as on Mastodon
+VIEWS = ("list", "pictures", "tiles", "timeline")
 # "Auto" shows tiles when at least this share of recent posts have an image or video.
 TILES_WHEN = 0.6
 MEDIA_SAMPLE = 40  # recent posts looked at to decide
@@ -92,7 +94,7 @@ SELECT * FROM (
            o.cur_deleted, o.cur_removed, o.cur_locked,
            o.cur_missing, o.revision_count, o.thumbnail_url, o.upvotes, o.downvotes, o.dupe_key,
            COALESCE(o.dupe_key, 'thread:' || t.id) AS dkey,
-           r.title, r.body, r.url, r.metadata_json AS rmeta, a.username, a.instance AS a_instance,
+           r.title, r.body, r.url, r.metadata_json AS rmeta, a.username, a.instance AS a_instance, a.display_name AS a_name,
            a.canonical_ap_id AS author_ap,
            c.name AS cname, c.canonical_ap_id AS c_ap, {touched} AS touched,
            -- the comments saved, or as many as the server last said it has, if more (not read yet)
@@ -300,6 +302,12 @@ def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: lis
         i["nsfw"], i["spoiler"] = bool(meta.get("nsfw")), bool(meta.get("spoiler"))
         i["reposted_by"] = meta.get("reposted_by")
         i["episode"] = meta.get("episode")  # a podcast episode: its page and running time
+        # For the timeline view: a post with no title of its own (shown as its text), its content
+        # warning, the pictures it came with that its text doesn't show, and a colour for its author.
+        i["untitled"] = bool(meta.get("untitled"))
+        i["warning"] = meta.get("content_warning")
+        i["attached"] = [p for p in (i["thumb"] or {}).get("own", []) if p["url"] not in (i["body"] or "")]
+        i["hue"] = zlib.crc32((i["author_ap"] or i["username"] or "").encode()) % 8
         if meta.get("untitled") and i["excerpt"]:  # a fediverse post has text, not a title: show the text once
             i["title"], i["excerpt"] = i["excerpt"], ""
         attach_group(i, copies.get(i["dupe_key"]) or [])
@@ -339,6 +347,8 @@ def thumbnails(conn: Conn,
     "pics" is every picture to page through: the link, then embedded and gallery
     images in the order they were found, then the linked article's; the preview
     only when there's nothing else, as it is usually a smaller copy of one of them.
+    "own" is what the post itself comes with, for the carousel on its page: the
+    link and embedded images, else the preview; never the article's.
     A saved YouTube video isn't one of them: its thumbnail stays the picture,
     rather than the video's first frame."""
     if not roots:
@@ -365,7 +375,9 @@ def thumbnails(conn: Conn,
             out[oid] = dict(pic)
     for oid, thumb in out.items():
         pics = sorted((p for p in found[oid] if p["rank"] != 1), key=lambda p: p["rank"])
-        thumb["pics"] = pics or [p for p in found[oid] if p["rank"] == 1]
+        preview = [p for p in found[oid] if p["rank"] == 1]
+        thumb["pics"] = pics or preview
+        thumb["own"] = [p for p in pics if p["rank"] in (0, 2)] or preview
     return out
 
 
@@ -551,8 +563,11 @@ def media_share(conn: Conn, community_id: int) -> tuple[int, int]:
     return row["visual"] or 0, row["n"]
 
 
-def pick_view(chosen: str | None, visual: int, total: int) -> str:
-    """The view to show: the one you chose, else tiles for media-heavy feeds."""
+def pick_view(chosen: str | None, visual: int, total: int, microblog: bool = False) -> str:
+    """The view to show: the one you chose, else the timeline for a microblog
+    feed (a hashtag's), else tiles for media-heavy feeds."""
     if chosen in VIEWS:
         return chosen
+    if microblog:
+        return "timeline"
     return "tiles" if total >= TILES_MIN_POSTS and visual >= TILES_WHEN * total else "list"

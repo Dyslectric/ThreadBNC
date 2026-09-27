@@ -1971,7 +1971,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             if tab in ("feed", "kept"):
                 fp = feed_mod.load_feed(conn, community_id=cid, sort=sort, window=t, unread=unread,
                                         kept_only=tab == "kept", page=page, as_of=as_of)
-                shown = feed_mod.pick_view(c["view_mode"], *feed_mod.media_share(conn, cid))
+                shown = feed_mod.pick_view(c["view_mode"], *feed_mod.media_share(conn, cid),
+                                           microblog=is_tag(c["canonical_ap_id"]))
             counts = {r["k"]: r["n"] for r in conn.execute(
                 "SELECT CASE WHEN trashed_at IS NOT NULL THEN 'trash' ELSE retention END AS k, COUNT(*) n "
                 "FROM archived_threads WHERE community_id=? GROUP BY 1", (cid,))}
@@ -2140,6 +2141,13 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             return m if ok and m.content_type != "image/svg+xml" else None
 
         return md, media_for, preview
+
+    def feed_md(items: list[dict[str, Any]]) -> Callable[[str | None], Markup]:
+        """Markdown for a page of feed posts shown whole (the timeline view),
+        their pictures as archived here."""
+        return md_for([i["oid"] for i in items])[0]
+
+    templates.env.globals["feed_md"] = feed_md
 
     # ---- threads --------------------------------------------------------
     def group_of(tid: int, group: str | None) -> list[int]:
@@ -3528,12 +3536,11 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         md, media_for, preview = md_for(list(nodes))
         post_pics: list[dict[str, Any]] = []
         if root is not None:
-            # Its own pictures: not its link's preview (shown with the link) or its article's, nor those its text shows.
+            # The pictures it comes with, even just one or its link's preview: not its article's, nor those its text shows.
             o_ = root["o"]
             with db.connect() as conn:
                 found = feed_mod.thumbnails(conn, [(o_["id"], o_["url"], o_["thumbnail_url"])]).get(o_["id"])
-            post_pics = [p for p in (found or {}).get("pics", [])
-                         if p["rank"] in (0, 2) and p["url"] not in (o_["body"] or "")]
+            post_pics = [p for p in (found or {}).get("own", []) if p["url"] not in (o_["body"] or "")]
         me = acting(request)
         ap_ids = [o["canonical_ap_id"] for o in objs]
         my_votes = {**poster.my_votes(me, ap_ids), **poster.my_votes(poster.reddit_account(), ap_ids),

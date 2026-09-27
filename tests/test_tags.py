@@ -331,6 +331,33 @@ def test_a_post_is_filed_under_the_first_followed_hashtag_it_lists(client, tagge
     assert t["community_id"] == homelab
 
 
+def test_a_hashtags_feed_is_a_timeline_of_whole_posts(client, tagged, fedi):
+    b, _ = tagged
+    cid = follow(b, client.app.state.tags)
+    warned = "https://masto.test/users/bob/statuses/222"
+    fedi.objects[warned] = (200, note(id=warned, attributedTo="https://masto.test/users/bob",
+                                      url="https://masto.test/@bob/222", summary="Food", sensitive=True,
+                                      content="<p>Pineapple on pizza is fine.</p>"))
+    for n, ap_id in enumerate((NOTE, warned)):
+        deliver(client, fedi, {"id": f"https://relay.test/announce/t{n}", "type": "Announce", "actor": RELAY,
+                               "object": ap_id})
+    run_jobs(b)
+    auth = {"authorization": "Bearer tok"}
+    page = client.get(f"/c/{cid}", headers=auth).text
+    items = page.split('id="items" class="timeline"')[1]
+    # Who posted it, and then all of it, with no title made from its start.
+    assert items.count('<article class="status') == 2 and 'class="pc-title"' not in items
+    assert 'href="https://masto.test/users/alice"' in items and "alice@masto.test" in items
+    assert "New homelab! Reading" in items and 'href="https://blog.test/rack' in items
+    # A content warning is shown, with the post behind it.
+    cw = items.split('<details class="st-cw">')[1].split("</details>")[0]
+    assert "Food" in cw and "Pineapple on pizza is fine." in cw
+    # Liking and replying are there, and the view can still be changed, and is then kept.
+    assert 'class="act inline-comments"' in items and "▲ 7" in items
+    assert 'id="items" class="cards"' in client.get(f"/c/{cid}?view=list", headers=auth).text
+    assert 'id="items" class="cards"' in client.get(f"/c/{cid}", headers=auth).text
+
+
 def test_opening_reads_replies_from_the_posts_server(client, tagged, fedi):
     b, _ = tagged
     follow(b, client.app.state.tags)
