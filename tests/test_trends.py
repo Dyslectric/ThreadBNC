@@ -419,6 +419,7 @@ def test_trending_posts_pictures_are_downloaded_once_shown(settings, abouncer, b
     assert got["waiting"] == [] and pic["full"] == f"/media/{pic['id']}"
     page = web_client.get("/trending").text
     assert f'data-full="/media/{pic["id"]}"' in page and "data-pictures" not in page and "1 picture" not in page
+    assert 'class="trend-pic" data-full' in page and 'title="Show it whole"' in page  # shown full size, at once
     assert web_client.get(pic["full"]).content.startswith(b"\x89PNG")
     # They go with the post.
     with abouncer.db.transaction() as conn:

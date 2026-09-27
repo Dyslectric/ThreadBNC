@@ -40,6 +40,7 @@ from . import thumbs as thumbs_mod
 from . import traffic as traffic_mod
 from . import trends as trends_mod
 from . import hidden as hidden_mod
+from . import avatars as avatars_mod
 from . import sidebar as sidebar_mod
 from .actor import ActorEndpoints
 from .adapters import (BSKY_DOMAIN, RSS_PREFIX, CommunityRef, RemoteError, from_fediverse, host_of, is_bluesky,
@@ -1215,6 +1216,10 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             here = {r["canonical_ap_id"]: r["id"] for r in conn.execute(
                 f"SELECT o.canonical_ap_id, t.id FROM objects o JOIN archived_threads t ON t.root_object_id=o.id "
                 f"WHERE o.canonical_ap_id IN ({','.join('?' * len(ap_ids))})", ap_ids)} if ap_ids else {}
+            pictured = avatars_mod.trend_avatars(conn, [(i["source"], i["ref"]) for i in items])
+        for i in items:
+            i["avatar"] = pictured.get((i["source"], i["ref"]))
+            i["hue"] = avatars_mod.hue(i["view"].get("author_uri") or i["view"].get("author_url") or i["view"].get("handle"))
         with db.connect() as conn:
             hidden_keys = hidden_mod.keys(conn)
         if hidden_keys:
@@ -1341,7 +1346,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         for source, ref in pairs:
             ids, pending = got.get((source, ref), ([], False))
             key = trends_mod.post_key(source, ref)
-            ready[key] = [{"id": mid, "src": thumb(mid, "tile"), "full": f"/media/{mid}"} for mid in ids]
+            ready[key] = [{"id": mid, "src": thumb(mid, "picture"), "full": f"/media/{mid}"} for mid in ids]
             if pending:
                 waiting.append(key)
         return JSONResponse({"ready": ready, "waiting": waiting})
@@ -1378,6 +1383,31 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     @app.get("/trending/pictures")
     def trending_pictures(post: list[str] = Query([])):
         return trending_pictures_answer(post)
+
+    # ---- who posted what: their pictures, once a post of theirs is on screen (avatars.py) ----
+    def avatars_answer(keys: list[str]) -> JSONResponse:
+        """What app.js is told of the pictures asked for: those downloaded, by
+        key, and the keys with theirs still to come."""
+        with db.connect() as conn:
+            got, pending = avatars_mod.ready(conn, keys)
+        return JSONResponse({"ready": {k: thumb(mid, "list") for k, mid in got.items()}, "waiting": pending})
+
+    @app.post("/avatars")
+    def avatars_wanted(a: list[str] = Form([])):
+        """Posts shown on screen (app.js): their authors' pictures are downloaded,
+        after looking them up on their profiles if need be."""
+        with db.transaction() as conn:
+            lookups = avatars_mod.want(conn, a, utcnow(), bouncer.actor is not None)
+        for actor_id in lookups:
+            bouncer.enqueue(avatars_mod.JOB, avatars_mod.job_payload(actor_id))
+        bouncer.wake.set()
+        return avatars_answer(a)
+
+    @app.get("/avatars")
+    def avatars_check(a: list[str] = Query([])):
+        return avatars_answer(a)
+
+    templates.env.globals["avatar_wait"] = lambda i: avatars_mod.waiting(i, utcnow(), bouncer.actor is not None)
 
     @app.post("/trending/open")
     def trending_open(request: Request, source: str = Form(...), ref: str = Form(...)):

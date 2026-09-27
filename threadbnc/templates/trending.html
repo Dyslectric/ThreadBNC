@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import when, icon, pager as load_more %}
+{% from "_macros.html" import when, icon, avatar, pager as load_more %}
 {% block title %}Trending{% endblock %}
 {% block content %}
 {% set st = status %}
@@ -188,22 +188,26 @@
     {{ language_seg('/trending') }}
   </div>
 
-  <div id="items" class="cards" data-items>
+  {# Each post as on Mastodon or Bluesky (the feed's timeline view): who posted it, then all of it. #}
+  <div id="items" class="{{ 'timeline' if posts else 'cards' }}" data-items>
   {% for p in posts %}
     {% set v = p.view %}
     {% set site = 'Bluesky' if p.source == 'bluesky' else 'Mastodon' %}
-    <article class="post-card trending-post" id="tp-{{ p.key }}" data-entry data-post="{{ p.source }} {{ p.ref }}"
+    {% set profile = v.author_url | safe_url %}
+    <article class="status trending-post" id="tp-{{ p.key }}" data-entry data-post="{{ p.source }} {{ p.ref }}"
              {% if p.pictures_waiting %}data-pictures{% endif %}>
-      <div class="pc-main">
-        <div class="pc-meta small">
-          <span class="pill {{ 'new' if p.source == 'bluesky' else '' }}">{{ 'Bluesky' if p.source == 'bluesky' else 'Mastodon' }}</span>
-          {% if v.author_url | safe_url %}<a class="pc-community" href="{{ v.author_url | safe_url }}" target="_blank" rel="noreferrer noopener nofollow">{{ v.name or v.handle }}</a>
-          {% else %}<span class="pc-community">{{ v.name or v.handle }}</span>{% endif %}
-          {% if v.name %}<span class="muted">@{{ v.handle }}</span>{% endif %}
-          {% if p.created_at %}· <span title="{{ p.created_at | absolute }}">{{ when(p.created_at) }}</span>{% endif %}
+      <div class="st-row">
+      {{ avatar(p.avatar, v.name or v.handle, p.hue, ('trend:' ~ p.source ~ ' ' ~ p.ref) if v.avatar else none, profile) }}
+      <div class="pc-main st-main">
+        <div class="st-head">
+          <span class="st-who">{% if profile %}<a class="st-name" href="{{ profile }}" target="_blank" rel="noreferrer noopener nofollow">{{ v.name or v.handle }}</a>
+            {%- else %}<span class="st-name">{{ v.name or v.handle }}</span>{% endif %}
+            <span class="st-handle muted small">@{{ v.handle }}</span></span>
+          <span class="st-when small muted"><span class="pill {{ 'new' if p.source == 'bluesky' else '' }}">{{ site }}</span>
+            {% if p.created_at %}<span title="{{ p.created_at | absolute }}">{{ when(p.created_at) }}</span>{% endif %}</span>
         </div>
-        {% if v.warning %}<p class="small"><span class="pill warn">CW</span> {{ v.warning }}</p>{% endif %}
-        <p class="trend-text">{{ v.text or '(no text)' }}</p>
+        {% set content %}
+        <p class="trend-text st-text">{{ v.text or '(no text)' }}</p>
         {% if v.link and v.link | safe_url %}
           {% set box = link_box(v.link) %}
           <p class="small trend-link">
@@ -211,15 +215,21 @@
           {%- else %}<a href="{{ v.link | safe_url }}" target="_blank" rel="noreferrer noopener nofollow">{{ icon('link') }} {{ v.link_title or (v.link | host) }}</a>{% endif %}
           </p>
         {% endif %}
+        {# Its pictures at the column's width, as on Mastodon: one shown whole, several two to a row.
+           Pressed, one is shown whole, from its full-size file (app.js). #}
         <div class="trend-pics" id="pics-{{ p.key }}" {% if not p.pictures %}hidden{% endif %}>
           {% for mid in p.pictures %}<button type="button" class="trend-pic" data-full="/media/{{ mid }}" aria-pressed="false"
-            title="Show it bigger"><img src="{{ thumb(mid, 'tile') }}" alt="" loading="lazy"></button>{% endfor %}
+            title="Show it whole"><img src="{{ thumb(mid, 'picture') }}" alt="" loading="lazy"></button>{% endfor %}
         </div>
         {% if (v.pictures and not p.pictures) or v.video or v.quote %}
           <p class="small muted trend-media-note">{% if v.pictures and not p.pictures %}{{ icon('picture') }} {{ v.pictures }} picture{{ 's' if v.pictures != 1 }}{% endif %}
             {% if v.video %}{{ icon('video') }} a video{% endif %}{% if v.quote %} · quotes a post{% endif %}</p>
         {% endif %}
-        <div class="pc-actions actions small">
+        {% endset %}
+        {% if v.warning %}
+        <details class="st-cw"><summary><span class="pill warn">CW</span> <span class="st-cw-text">{{ v.warning }}</span> <span class="st-cw-more small muted">Show</span></summary>{{ content }}</details>
+        {% else %}{{ content }}{% endif %}
+        <div class="pc-actions st-actions actions small">
           <span class="trend-counts" title="{{ 'Totals as last read' if p.checked_at else 'As counted from the stream' }}">
             <form method="post" action="/trending/act" class="inline" data-trend-act>
               <input type="hidden" name="source" value="{{ p.source }}"><input type="hidden" name="ref" value="{{ p.ref }}">
@@ -253,6 +263,7 @@
           {% endif %}
           {% if v.url | safe_url %}<a class="act" href="{{ v.url | safe_url }}" target="_blank" rel="noreferrer noopener nofollow">{{ icon('external') }}<span>Original</span></a>{% endif %}
         </div>
+      </div>
       </div>
     </article>
   {% endfor %}

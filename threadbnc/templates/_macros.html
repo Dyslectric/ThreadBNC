@@ -63,6 +63,16 @@
 {% if instance == 'bsky.app' %}@{{ username }}{% elif ap_id and is_rss(ap_id) %}{{ username }}{% else %}{{ username }}@{{ instance }}{% endif %}
 {%- endmacro %}
 
+{# Who posted a post, as a picture: theirs once it's downloaded (avatars.py), else their
+   initial on a colour of their own (`hue`). `key`: what app.js asks for their picture
+   by once the post is on screen, while one may still come. `href`: their profile. #}
+{% macro avatar(mid, name, hue, key=none, href=none) -%}
+{% set tag = 'a' if href else 'span' %}
+<{{ tag }} class="st-avatar av-{{ hue }}{{ ' has-picture' if mid }}"{% if href %} href="{{ href }}" target="_blank" rel="noreferrer noopener nofollow" tabindex="-1"{% endif %} aria-hidden="true"{% if key and not mid %} data-avatar="{{ key }}"{% endif %}>
+  {%- if mid %}<img src="{{ thumb(mid, 'list') }}" alt="" loading="lazy">{% else %}{{ ((name or '?') | trim)[:1] | upper }}{% endif -%}
+</{{ tag }}>
+{%- endmacro %}
+
 {# Where a duplicated post was posted: community and poster for each copy. #}
 {% macro copy_where(c) -%}
 <a href="/t/{{ c.id }}" class="copy-where"><span class="pc-community">{{ chandle(c.cname, c.c_ap) }}</span></a>

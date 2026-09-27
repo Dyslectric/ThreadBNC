@@ -660,6 +660,11 @@ fieldset.media-kind p { margin: 0; }
 .st-avatar { flex: 0 0 auto; width: 44px; height: 44px; border-radius: 10px; display: grid; place-items: center;
   font-weight: 700; font-size: 1.2rem; color: #fff; background: var(--av); text-decoration: none; user-select: none; }
 .st-avatar:hover { text-decoration: none; filter: brightness(1.1); }
+.st-avatar { overflow: hidden; }
+.st-avatar.has-picture { background: var(--bg); }
+.st-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* Trending's posts in the timeline: whole, not cut after a few lines. */
+.status .trend-text { display: block; overflow: visible; -webkit-line-clamp: unset; line-clamp: none; }
 .av-0 { --av: #b4462d; } .av-1 { --av: #9a6a00; } .av-2 { --av: #3f7d3a; } .av-3 { --av: #1f7a78; }
 .av-4 { --av: #2f63b0; } .av-5 { --av: #6b4fb8; } .av-6 { --av: #a23f86; } .av-7 { --av: #5d6470; }
 .st-main { flex: 1; min-width: 0; }
@@ -1222,13 +1227,18 @@ a.article-link.dived, a[data-dive].dived, a.video-link.dived, a.live-link.dived 
 .trend-meter.on { color: var(--kept); border-color: var(--kept); }
 .trend-meter[aria-expanded="true"] { color: var(--text); border-color: var(--accent); }
 .trend-meter[aria-busy="true"] { opacity: .6; }
-.trend-pics { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 6px; margin: 6px 0; max-width: 560px; }
+/* A trending post's pictures, full size as on Mastodon: one shown whole across the column, several
+   two to a row (an odd one out across both, as tall), each shown whole once pressed. */
+.trend-pics { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; margin: 8px 0 2px; }
 .trend-pics[hidden] { display: none; }
-.trend-pic { padding: 0; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--bg);
-  cursor: zoom-in; aspect-ratio: 1; }
+.trend-pic { padding: 0; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--bg);
+  cursor: zoom-in; aspect-ratio: 4 / 3; }
+.trend-pic:last-child:nth-child(odd) { grid-column: 1 / -1; aspect-ratio: 8 / 3; }
 .trend-pic img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.trend-pic.big { grid-column: 1 / -1; aspect-ratio: auto; cursor: zoom-out; }
-.trend-pic.big img { height: auto; max-height: 80vh; object-fit: contain; }
+.trend-pic:only-child, .trend-pic.big { grid-column: 1 / -1; aspect-ratio: auto; }
+.trend-pic:only-child img, .trend-pic.big img { height: auto; max-height: min(70vh, 520px); object-fit: contain; }
+.trend-pic.big { cursor: zoom-out; }
+.trend-pic.big img { max-height: 85vh; }
 .trending-page .feed-controls { flex-wrap: wrap; gap: 8px; }
 .trend-tags { list-style: none; padding: 4px 0; margin: 0; }
 .trend-tags-heading { font-size: 1.05rem; margin: 18px 0 2px; }

@@ -100,6 +100,11 @@ WANTED_SQL = ("EXISTS (SELECT 1 FROM media_refs wr JOIN objects wo ON wo.id=wr.o
 KEPT_SQL = ("EXISTS (SELECT 1 FROM media_refs kr JOIN objects ko ON ko.id=kr.object_id "
             "JOIN archived_threads kt ON kt.id=ko.thread_id WHERE kr.media_id=media.id "
             "AND kt.retention='manual' AND kt.trashed_at IS NULL)")
+# Someone's picture (avatars.py) is asked for only once a post of theirs is on screen, and is
+# small: it's downloaded before the rest waiting.
+AVATAR_FIRST = ("CASE WHEN EXISTS (SELECT 1 FROM actors a WHERE a.avatar_media_id=media.id) "
+                "OR EXISTS (SELECT 1 FROM stream_post_media s WHERE s.media_id=media.id AND s.position < 0) "
+                "THEN 0 ELSE 1 END")
 
 
 def looks_like_video(url: str) -> bool:
@@ -482,6 +487,10 @@ def skip_unprobed_links(conn: Conn) -> int:
     wanted.update(r[0] for r in conn.execute("SELECT thumbnail_url FROM objects WHERE thumbnail_url IS NOT NULL"))
     for r in conn.execute("SELECT images_json FROM articles WHERE images_json IS NOT NULL"):
         wanted.update(json.loads(r[0]))  # pictures in linked articles (articles.py)
+    # Trending posts' pictures (trends.py) and people's (avatars.py), asked for as they're shown.
+    wanted.update(r[0] for r in conn.execute(
+        "SELECT m.url FROM media m WHERE EXISTS (SELECT 1 FROM stream_post_media s WHERE s.media_id=m.id) "
+        "OR EXISTS (SELECT 1 FROM actors a WHERE a.avatar_media_id=m.id)"))
     n = 0
     for r in conn.execute("SELECT id, url FROM media WHERE status='pending'").fetchall():
         if r["url"] not in wanted and not looks_like_media(r["url"]) and not youtube.video_id(r["url"]):
@@ -932,7 +941,7 @@ class MediaFetcher:
                 "SELECT * FROM media WHERE status='pending' AND (next_attempt_at IS NULL OR next_attempt_at<=?) "
                 f"AND (held=0 OR (kept_only=0 AND episode=0 AND {WANTED_SQL}) "
                 f"OR ((kept_only=1 OR episode=1) AND {KEPT_SQL}) OR wanted_at IS NOT NULL) "
-                "ORDER BY id LIMIT ?", (now, limit)).fetchall()
+                f"ORDER BY {AVATAR_FIRST}, id LIMIT ?", (now, limit)).fetchall()
         for row in rows:
             self.fetch_one(row)
         return len(rows)
@@ -1058,6 +1067,7 @@ def collect_orphans(conn: Conn, media_dir: Path) -> list[Path]:
         "SELECT id, storage_path FROM media m WHERE NOT EXISTS (SELECT 1 FROM media_refs r WHERE r.media_id=m.id) "
         "AND NOT EXISTS (SELECT 1 FROM article_media a WHERE a.media_id=m.id) "
         "AND NOT EXISTS (SELECT 1 FROM stream_post_media s WHERE s.media_id=m.id) "  # a trending post's (trends.py)
+        "AND NOT EXISTS (SELECT 1 FROM actors a WHERE a.avatar_media_id=m.id) "  # someone's picture (avatars.py)
         "AND NOT (m.wanted_at IS NOT NULL AND m.episode=0)"  # a video saved from a link (want_youtube, want_video)
     ).fetchall()
     files: list[Path] = []
