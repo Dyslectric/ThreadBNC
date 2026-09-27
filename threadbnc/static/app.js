@@ -2066,7 +2066,7 @@ document.documentElement.classList.add("js");
   // ---- trending posts' pictures, downloaded as they're scrolled to --------------------
   // A post whose pictures aren't here yet asks for them once it's on screen,
   // then checks back until they're downloaded, and shows them in its card.
-  // A picture pressed shows bigger, in place; pressed again, small.
+  // A picture pressed shows whole, at full size, in place; pressed again, as it was.
   const pictureQueue = new Set();
   const pictureWaiting = new Set();
   let pictureTimer = null;
@@ -2098,7 +2098,7 @@ document.documentElement.classList.add("js");
         button.type = "button";
         button.className = "trend-pic";
         button.dataset.full = pic.full;
-        button.title = "Show it bigger";
+        button.title = "Show it whole";
         button.setAttribute("aria-pressed", "false");
         const img = document.createElement("img");
         img.src = pic.src;
@@ -2155,7 +2155,7 @@ document.documentElement.classList.add("js");
     img.src = big ? pic.dataset.full : pic.dataset.small;
     pic.classList.toggle("big", big);
     pic.setAttribute("aria-pressed", String(big));
-    pic.title = big ? "Show it smaller" : "Show it bigger";
+    pic.title = big ? "Show it as before" : "Show it whole";
   });
 
   // ---- who posted what: their pictures (avatars.py) ------------------------------------

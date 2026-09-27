@@ -215,9 +215,11 @@
           {%- else %}<a href="{{ v.link | safe_url }}" target="_blank" rel="noreferrer noopener nofollow">{{ icon('link') }} {{ v.link_title or (v.link | host) }}</a>{% endif %}
           </p>
         {% endif %}
+        {# Its pictures at the column's width, as on Mastodon: one shown whole, several two to a row.
+           Pressed, one is shown whole, from its full-size file (app.js). #}
         <div class="trend-pics" id="pics-{{ p.key }}" {% if not p.pictures %}hidden{% endif %}>
           {% for mid in p.pictures %}<button type="button" class="trend-pic" data-full="/media/{{ mid }}" aria-pressed="false"
-            title="Show it bigger"><img src="{{ thumb(mid, 'tile') }}" alt="" loading="lazy"></button>{% endfor %}
+            title="Show it whole"><img src="{{ thumb(mid, 'picture') }}" alt="" loading="lazy"></button>{% endfor %}
         </div>
         {% if (v.pictures and not p.pictures) or v.video or v.quote %}
           <p class="small muted trend-media-note">{% if v.pictures and not p.pictures %}{{ icon('picture') }} {{ v.pictures }} picture{{ 's' if v.pictures != 1 }}{% endif %}
