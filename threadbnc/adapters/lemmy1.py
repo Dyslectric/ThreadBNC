@@ -35,6 +35,7 @@ from .base import (
     host_of,
     parse_thread_url,
 )
+from .http import HttpClient
 from .lemmy import COMMENT_PAGE_LIMIT, MAX_COMMENT_PAGES, LemmyAdapter, _ts
 
 # Old (v3) sort names used around ThreadBNC -> (v4 sort, time range in seconds).
@@ -55,6 +56,10 @@ REGISTRATION_FROM_V4 = {v: k for k, v in REGISTRATION_TO_V4.items()}
 MOD_KINDS = {"mod_remove_post": ("remove_post", "post"), "mod_lock_post": ("lock_post", "post"),
              "mod_remove_comment": ("remove_comment", "comment")}
 MAX_CURSOR_PAGES = 50  # safety net for cursor walks (pending requests, blocklists)
+# How long a listing's next_page cursor is reused. Pollers ask for pages 1, 2, 3...
+# back to back, so each page can start from the last one's cursor instead of
+# walking from page 1 again; an old cursor would skip posts that arrived since.
+CURSOR_TTL = 300
 
 
 @dataclass
@@ -85,6 +90,11 @@ class Lemmy1Adapter(LemmyAdapter):
     software = "lemmy"
     api_base = "/api/v4"
     supports_private_communities = True
+
+    def __init__(self, domain: str, http: HttpClient):
+        super().__init__(domain, http)
+        # (community, sort, limit, page) -> (fetched at, cursor for that page; None: no such page)
+        self._cursors: dict[tuple[str, str, int, int], tuple[float, str | None]] = {}
 
     # -- normalizers -------------------------------------------------------
     def _community(self, c: dict[str, Any], moderators: list[str] | None = None) -> NCommunity:
@@ -233,13 +243,27 @@ class Lemmy1Adapter(LemmyAdapter):
 
     def list_community_posts(self, ref: CommunityRef, sort: str = "New", page: int = 1,
                              limit: int = 20) -> list[NPost]:
+        """Pages go by cursor, not number: page N starts from page N-1's
+        next_page, which is remembered briefly, else walked to from page 1."""
+        page = max(1, page)
+        key = (ref.qualified.lower(), sort, limit)
+        now = time.monotonic()
+        cursor = None
+        if page > 1:
+            known = self._cursors.get((*key, page))
+            if not known or now - known[0] > CURSOR_TTL:
+                self.list_community_posts(ref, sort, page - 1, limit)
+                known = self._cursors.get((*key, page))
+            cursor = known[1] if known else None
+            if cursor is None:
+                return []  # the listing ended before this page
         v4_sort, time_range = POST_SORTS.get(sort, (sort.lower(), None))
-        for n, batch in enumerate(self._pages("/post/list", None, max(1, page), community_name=ref.qualified,
-                                              sort=v4_sort, time_range_seconds=time_range, limit=limit,
-                                              type_="all"), start=1):
-            if n == page:
-                return [self._post(pv) for pv in batch]
-        return []  # ran out of pages before reaching `page`
+        data = self._call("GET", "/post/list", None, page_cursor=cursor, community_name=ref.qualified,
+                          sort=v4_sort, time_range_seconds=time_range, limit=limit, type_="all") or {}
+        if len(self._cursors) > 1000:
+            self._cursors.clear()  # in place: reading_as() copies share it
+        self._cursors[(*key, page + 1)] = (now, data.get("next_page") or None)
+        return [self._post(pv) for pv in data.get("items") or []]
 
     # -- acting as an account -------------------------------------------------
     def login(self, username: str, password: str, totp: str | None = None) -> str:

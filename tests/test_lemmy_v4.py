@@ -25,6 +25,7 @@ from threadbnc.adapters import (
     adapter_class,
 )
 from threadbnc import store
+from threadbnc.adapters import lemmy1
 from threadbnc.bouncer import Bouncer
 from threadbnc.db import fmt_ts, open_database, parse_ts, utcnow
 
@@ -181,6 +182,22 @@ def test_list_community_posts_maps_sorts_and_walks_to_the_page():
     assert first["community_name"] == "main@remote1.test" and first["type_"] == "all"
     assert a.list_community_posts(ref, sort="New", page=9) == []  # past the last page
     assert http.called("GET", "/post/list")[-1][0]["sort"] == "new"
+
+
+def test_paging_through_community_posts_fetches_each_page_once(monkeypatch):
+    """Pollers ask for pages 1, 2, 3 in turn; each should start from the last
+    one's cursor, not walk from page 1 again (1+2+3 = 6 requests)."""
+    template = fixture("post_list")["items"][0]
+    items = [{**template, "post": {**template["post"], "id": n, "ap_id": None}} for n in range(1, 5)]
+    a, http = adapter({("GET", "/post/list"): paged(*([i] for i in items))})
+    ref = CommunityRef(DOMAIN, "main", "remote1.test")
+    got = [[p.local_id for p in a.list_community_posts(ref, page=n, limit=1)] for n in (1, 2, 3)]
+    assert got == [[str(i["post"]["id"])] for i in items[:3]]
+    assert [p.get("page_cursor") for p, _ in http.called("GET", "/post/list")] == [None, "1", "2"]
+    # A remembered cursor goes stale: new posts would slip past it, so walk again.
+    monkeypatch.setattr(lemmy1.time, "monotonic", lambda: 1e12)
+    a.list_community_posts(ref, page=2, limit=1)
+    assert [p.get("page_cursor") for p, _ in http.called("GET", "/post/list")][3:] == [None, "1"]
 
 
 def test_fetch_community_reads_sidebar_and_visibility():
