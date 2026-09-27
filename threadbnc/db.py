@@ -36,7 +36,10 @@ CREATE TABLE IF NOT EXISTS actors (
     instance TEXT,
     display_name TEXT,
     first_seen_at TEXT NOT NULL,
-    last_seen_at TEXT NOT NULL
+    last_seen_at TEXT NOT NULL,
+    avatar_url TEXT,          -- their picture's address, as last known (avatars.py)
+    avatar_checked_at TEXT,   -- when that was last known (or looked for)
+    avatar_media_id INTEGER   -- the picture, once downloaded (a post of theirs was shown)
 );
 
 CREATE TABLE IF NOT EXISTS communities (
@@ -818,6 +821,9 @@ COLUMN_MIGRATIONS = [
     ("articles", "trending_at", "TEXT"),
     ("stream_posts", "lang", "TEXT"),
     ("stream_posts", "reposts_seen", "BIGINT NOT NULL DEFAULT 0"),
+    ("actors", "avatar_url", "TEXT"),
+    ("actors", "avatar_checked_at", "TEXT"),
+    ("actors", "avatar_media_id", "INTEGER"),
 ]
 
 # Tables with an integer `id` key: inserts into these get `RETURNING id` on

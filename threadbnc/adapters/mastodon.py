@@ -26,7 +26,7 @@ import re
 from typing import Any
 from urllib.parse import urlencode
 
-from .activitypub import status_post
+from .activitypub import account_avatar, status_post
 from .base import (NActor, NComment, NPost, RemoteNotFound, RemoteRejected, ThreadiverseAdapter,
                    UnsupportedSoftware, host_of)
 from .rss import html_to_markdown
@@ -119,7 +119,7 @@ class MastodonAdapter(ThreadiverseAdapter):
         return NComment(ap_id=s["uri"], local_id=str(s["id"]), parent_local_id=parent, body=body or None,
                         created_at=s.get("created_at"), updated_at=s.get("edited_at"), deleted=False, removed=False,
                         author=NActor(uri, account.get("username") or "?", host_of(uri) or self.domain,
-                                      account.get("display_name") or None),
+                                      account.get("display_name") or None, account_avatar(account)),
                         score=s.get("favourites_count") or 0, upvotes=s.get("favourites_count") or 0,
                         reply_count=s.get("replies_count") or 0)
 

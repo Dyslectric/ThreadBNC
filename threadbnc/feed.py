@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import json
 import re
-import zlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from . import articles, dupes, hidden, languages, videos, youtube
+from . import articles, avatars, dupes, hidden, languages, videos, youtube
 from .adapters.base import BSKY_DOMAIN, RSS_DOMAIN, TAG_DOMAIN, is_reddit_host
 from .db import Conn, fmt_ts, parse_ts, utcnow
 from .render import AUDIO_EXTENSIONS, VIDEO_EXTENSIONS, looks_like_audio, sole_link
@@ -95,7 +94,8 @@ SELECT * FROM (
            o.cur_missing, o.revision_count, o.thumbnail_url, o.upvotes, o.downvotes, o.dupe_key,
            COALESCE(o.dupe_key, 'thread:' || t.id) AS dkey,
            r.title, r.body, r.url, r.metadata_json AS rmeta, a.username, a.instance AS a_instance, a.display_name AS a_name,
-           a.canonical_ap_id AS author_ap,
+           a.canonical_ap_id AS author_ap, a.id AS author_id, a.avatar_url, a.avatar_checked_at,
+           am.id AS avatar_mid, am.status AS avatar_status,
            c.name AS cname, c.canonical_ap_id AS c_ap, {touched} AS touched,
            -- the comments saved, or as many as the server last said it has, if more (not read yet)
            (SELECT MAX(column1) FROM (VALUES ((SELECT COUNT(*) FROM objects x WHERE x.thread_id=t.id
@@ -109,6 +109,7 @@ SELECT * FROM (
     JOIN revisions r ON r.object_id=o.id AND r.seq=o.revision_count
     JOIN communities c ON c.id=t.community_id
     LEFT JOIN actors a ON a.id=o.author_id
+    LEFT JOIN media am ON am.id=a.avatar_media_id
     WHERE t.trashed_at IS NULL {scope}
   ) AS feed WHERE 1=1 {filters}
 ) AS grouped WHERE g_rank=1 {group_filters}
@@ -307,7 +308,8 @@ def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: lis
         i["untitled"] = bool(meta.get("untitled"))
         i["warning"] = meta.get("content_warning")
         i["attached"] = [p for p in (i["thumb"] or {}).get("own", []) if p["url"] not in (i["body"] or "")]
-        i["hue"] = zlib.crc32((i["author_ap"] or i["username"] or "").encode()) % 8
+        i["hue"] = avatars.hue(i["author_ap"] or i["username"])
+        i["avatar"] = i["avatar_mid"] if i["avatar_status"] == "ok" else None  # their picture (avatars.py)
         if meta.get("untitled") and i["excerpt"]:  # a fediverse post has text, not a title: show the text once
             i["title"], i["excerpt"] = i["excerpt"], ""
         attach_group(i, copies.get(i["dupe_key"]) or [])

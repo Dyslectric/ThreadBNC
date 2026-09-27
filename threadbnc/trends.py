@@ -1353,7 +1353,7 @@ def pictures_of(conn: Conn, posts: list[tuple[str, str]]) -> dict[tuple[str, str
         where = " OR ".join("(s.source=? AND s.ref=?)" for _ in chunk)
         for r in conn.execute(
                 f"SELECT s.source, s.ref, m.id, m.status, m.content_type FROM stream_post_media s "
-                f"JOIN media m ON m.id=s.media_id WHERE {where} ORDER BY s.position",
+                f"JOIN media m ON m.id=s.media_id WHERE ({where}) AND s.position >= 0 ORDER BY s.position",
                 [v for pair in chunk for v in pair]).fetchall():
             ready, waiting = out.get((r["source"], r["ref"]), ([], False))
             if r["status"] == "ok" and (r["content_type"] or "").startswith("image/"):
@@ -1414,6 +1414,7 @@ def bluesky_view(view: dict[str, Any]) -> dict[str, Any]:
     return {"url": web_url(view["uri"]), "text": content.text[:3000],
             "handle": author.get("handle") or author.get("did"), "name": author.get("displayName") or None,
             "author_url": f"https://{BSKY_DOMAIN}/profile/{author.get('did') or author.get('handle')}",
+            "avatar": author.get("avatar") if isinstance(author.get("avatar"), str) else None,
             "link": content.link, "link_title": content.link_title, "pictures": len(content.pictures),
             "video": content.video, "quote": content.quote is not None, "lang": record_lang(record),
             "images": (content.pictures or ([content.cover] if content.cover else []))[:PICTURES]}

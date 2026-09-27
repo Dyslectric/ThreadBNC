@@ -65,6 +65,9 @@ class NActor:
     username: str
     domain: str
     display_name: str | None = None
+    # Their picture's address, when where the post came from says it: "" for
+    # none, None when it doesn't say (avatars.py looks it up).
+    avatar: str | None = None
 
 
 @dataclass

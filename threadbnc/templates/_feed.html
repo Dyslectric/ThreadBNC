@@ -1,4 +1,4 @@
-{% from "_macros.html" import when, state_badges, votes, vote_breakdown, copy_where, byname, icon, keep_button, read_button, trash_button %}
+{% from "_macros.html" import when, state_badges, votes, vote_breakdown, copy_where, byname, icon, keep_button, read_button, trash_button, avatar %}
 {% from "_macros.html" import pager as load_more %}
 
 {# base: URL prefix ending in "?" or "&" that keeps any fixed params (e.g. tab).
@@ -407,8 +407,7 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
 <article class="status {{ 'unread' if i.unread }} {{ 'kept' if i.all_kept }} {{ 'veiled' if veiled }}" {{ entry_attrs(i) }}>
   {% if i.reposted_by %}<div class="st-repost small muted">{{ reposted_by(i) }}</div>{% endif %}
   <div class="st-row">
-    {% if profile %}<a class="st-avatar av-{{ i.hue }}" href="{{ profile }}" target="_blank" rel="noreferrer noopener nofollow" tabindex="-1" aria-hidden="true">{{ name[:1] | upper }}</a>
-    {% else %}<span class="st-avatar av-{{ i.hue }}" aria-hidden="true">{{ name[:1] | upper }}</span>{% endif %}
+    {{ avatar(i.avatar, name, i.hue, ('actor:' ~ i.author_id) if i.author_id and avatar_wait(i) else none, profile) }}
     <div class="pc-main st-main">
       <div class="st-head">
         <span class="st-who">{% if profile %}<a class="st-name" href="{{ profile }}" target="_blank" rel="noreferrer noopener nofollow">{{ name }}</a>{% else %}<span class="st-name">{{ name }}</span>{% endif %}
