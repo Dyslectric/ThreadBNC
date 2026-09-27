@@ -1346,7 +1346,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         for source, ref in pairs:
             ids, pending = got.get((source, ref), ([], False))
             key = trends_mod.post_key(source, ref)
-            ready[key] = [{"id": mid, "src": thumb(mid, "tile"), "full": f"/media/{mid}"} for mid in ids]
+            ready[key] = [{"id": mid, "src": thumb(mid, "picture"), "full": f"/media/{mid}"} for mid in ids]
             if pending:
                 waiting.append(key)
         return JSONResponse({"ready": ready, "waiting": waiting})
