@@ -168,7 +168,7 @@
   <div class="feed-controls article-controls">
     <nav class="seg" aria-label="Rank by">
       {% for key, label in [('likes', 'Most liked'), ('replies', 'Most replies'),
-                            ('reposts', 'Most reposted' if source == 'bluesky' else 'Most boosted')] %}
+                            ('reposts', 'Most boosted' if source == 'mastodon' else 'Most reposted')] %}
         <a href="{{ q('/trending', {'sort': key}) }}" class="{{ 'on' if sort == key }}"
            {% if sort == key %}aria-current="page"{% endif %}>{{ label }}</a>
       {% endfor %}
