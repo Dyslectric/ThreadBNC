@@ -6,6 +6,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from threadbnc import feed
 from threadbnc.accounts import AccountError, Poster
 from threadbnc.adapters import parse_community_ref
 from threadbnc.adapters import rss
@@ -241,3 +242,39 @@ def test_feed_articles_take_no_comments_or_votes(settings, bouncer, web, poster)
     page = logged_in(settings, bouncer).get(f"/t/{row['tid']}").text
     assert "article from a feed" in page and "Add a comment" not in page and "Upvote" not in page
     assert 'href="https://blog.example/posts/1" rel="noreferrer noopener nofollow" target="_blank">Original' in page
+
+
+def test_feed_articles_sort_by_the_comments_on_posts_of_them(settings, bouncer, web, server):
+    """A feed's articles have no comments of their own: sorted by comments, they
+    go by the comments on the posts here that link to them, by the same link or
+    another one to the same page (an AMP copy)."""
+    cid = bouncer.follow_community(FEED, None, 30, backfill=True)
+    bouncer.poll_follow(cid)
+    first, second = post_row(bouncer, "post-1")["tid"], post_row(bouncer, "post-2")["tid"]
+
+    def lemmy_post(local_id, url, comments):
+        server.add_post(local_id, f"Discussing {url}", "")
+        server.edit_post(local_id, url=url)
+        for n in range(comments):
+            server.add_comment(local_id, f"{local_id}{n}", f"Comment {n}")
+        return bouncer.ingest_url(f"https://{DOMAIN}/post/{local_id}")
+
+    def order():
+        with bouncer.db.connect() as conn:
+            return [i["id"] for i in feed.load_feed(conn, community_id=cid, sort="comments").items]
+
+    assert order() == [second, first]  # no comments anywhere: newest first
+    amp = lemmy_post("1", "https://blog.example/posts/1/amp", 2)
+    assert order() == [first, second]
+    copy = lemmy_post("2", "https://blog.example/posts/2?utm_source=lemmy", 3)  # the same link: a copy
+    assert order() == [second, first]
+    client = logged_in(settings, bouncer)
+    page = client.get(f"/c/{cid}?sort=comments").text
+    assert f'href="/t/{first}#discussions"' in page and "2 comments in 1 other post" in page
+    assert f'href="/t/{second}#discussions"' not in page  # its copy is on its card already, comments and all
+    assert "3 comments" in page
+    thread = client.get(f"/t/{first}").text
+    assert 'id="discussions"' in thread and f'href="/t/{amp}"' in thread
+
+    bouncer.move_to_trash(copy)  # trashed posts don't count
+    assert order() == [first, second]
