@@ -63,7 +63,7 @@ log = logging.getLogger(__name__)
 SOURCES = {"bluesky": "Bluesky", "mastodon": "Mastodon"}
 ARTICLE_SOURCES = {**SOURCES, "archive": "Archive"}  # articles are also counted from the archive
 WINDOWS = {"day": timedelta(days=1), "week": timedelta(days=7), "month": timedelta(days=30)}
-POST_WINDOWS = {"day": timedelta(days=1), "week": timedelta(days=7)}
+POST_WINDOWS = {"hour": timedelta(hours=1), "day": timedelta(days=1), "week": timedelta(days=7)}
 RANKINGS = ("rising", *WINDOWS)  # the articles' rankings, and the hashtags'
 POST_SORTS = ("likes", "replies", "reposts")  # reposts: boosts, on Mastodon
 # App setting (JSON): {"bluesky": count what's posted on Bluesky (Jetstream stays connected),
@@ -110,6 +110,7 @@ HOURS_FILLED = "trend_hours_filled"  # app setting: when backfill_hours filled i
 CHECK_EVERY = 300.0  # seconds between rounds
 CHECK_POSTS = 100  # at most this many posts a round (GET_POSTS to a request)
 CHECK_LOOKED_AT = 400  # of the posts most talked about lately
+CHECK_FRESH = 50  # and of those made in the past hour, which the week's busiest would crowd out
 # A post's totals are read again after this long, by its age.
 RECHECK = ((timedelta(hours=6), timedelta(minutes=10)), (timedelta(days=1), timedelta(minutes=30)),
            (timedelta(days=3), timedelta(hours=2)), (MAX_POST_AGE, timedelta(hours=12)))
@@ -1366,22 +1367,29 @@ def pictures_of(conn: Conn, posts: list[tuple[str, str]]) -> dict[tuple[str, str
 def due_checks(conn: Conn, source: str, limit: int, now: str | None = None, prefix: str = "") -> list[Any]:
     """The posts, of those talked about most lately, whose totals are due to
     be read (again): see RECHECK. Only those whose ref starts with `prefix`
-    (a Mastodon server's: "<server>/"), when given."""
+    (a Mastodon server's: "<server>/"), when given. The past hour's most
+    talked about (CHECK_FRESH) are looked at too, for Trending's Hour, and
+    have up to a quarter of the `limit` first."""
     moment = parse_ts(now or utcnow()) or datetime.now(timezone.utc)
-    rows = conn.execute(
-        "SELECT * FROM stream_posts WHERE source=? AND gone=0 AND COALESCE(created_at, first_seen_at) >= ? "
-        f"AND substr(ref, 1, ?) = ? ORDER BY {SEEN} + COALESCE(likes, 0) DESC LIMIT ?",
-        (source, fmt_ts(moment - MAX_POST_AGE), len(prefix), prefix, CHECK_LOOKED_AT)).fetchall()
-    due = []
-    for r in rows:
+
+    def busiest(since: timedelta, most: int) -> list[Any]:
+        return conn.execute(
+            "SELECT * FROM stream_posts WHERE source=? AND gone=0 AND COALESCE(created_at, first_seen_at) >= ? "
+            f"AND substr(ref, 1, ?) = ? ORDER BY {SEEN} + COALESCE(likes, 0) DESC LIMIT ?",
+            (source, fmt_ts(moment - since), len(prefix), prefix, most)).fetchall()
+
+    def is_due(r: Any) -> bool:
         age = moment - (parse_ts(r["created_at"] or r["first_seen_at"]) or moment)
         every = next((e for limit_age, e in RECHECK if age < limit_age), RECHECK[-1][1])
         checked = parse_ts(r["checked_at"])
-        if checked is None or moment - checked >= every:
-            due.append(r)
-        if len(due) >= limit:
-            break
-    return due
+        return checked is None or moment - checked >= every
+
+    rows = busiest(MAX_POST_AGE, CHECK_LOOKED_AT)
+    looked = {r["ref"] for r in rows}
+    fresh = [r for r in busiest(POST_WINDOWS["hour"], CHECK_FRESH) if r["ref"] not in looked and is_due(r)]
+    first = fresh[:max(1, limit // 4)]
+    due = [*first, *(r for r in rows if is_due(r)), *fresh[len(first):]]
+    return due[:limit]
 
 
 def record_totals(conn: Conn, source: str, found: dict[str, dict[str, Any]], asked: list[str], now: str) -> None:
