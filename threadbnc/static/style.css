@@ -1227,16 +1227,18 @@ a.article-link.dived, a[data-dive].dived, a.video-link.dived, a.live-link.dived 
 .trend-meter.on { color: var(--kept); border-color: var(--kept); }
 .trend-meter[aria-expanded="true"] { color: var(--text); border-color: var(--accent); }
 .trend-meter[aria-busy="true"] { opacity: .6; }
-/* A trending post's pictures, full size as on Mastodon: one shown whole across the column, several
-   two to a row (an odd one out across both, as tall), each shown whole once pressed. */
+/* A trending post's pictures, full size as on Mastodon: one shown whole, its frame the picture's own
+   size (no wider than the column), several two to a row (an odd one out across both, as tall), each
+   shown whole once pressed. */
 .trend-pics { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; margin: 8px 0 2px; }
 .trend-pics[hidden] { display: none; }
 .trend-pic { padding: 0; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--bg);
   cursor: zoom-in; aspect-ratio: 4 / 3; }
-.trend-pic:last-child:nth-child(odd) { grid-column: 1 / -1; aspect-ratio: 8 / 3; }
+/* :where() keeps it below the rules after it, so an only picture, or a pressed one, keeps its own shape. */
+.trend-pic:where(:last-child:nth-child(odd)) { grid-column: 1 / -1; aspect-ratio: 8 / 3; }
 .trend-pic img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.trend-pic:only-child, .trend-pic.big { grid-column: 1 / -1; aspect-ratio: auto; }
-.trend-pic:only-child img, .trend-pic.big img { height: auto; max-height: min(70vh, 520px); object-fit: contain; }
+.trend-pic:only-child, .trend-pic.big { grid-column: 1 / -1; justify-self: start; max-width: 100%; aspect-ratio: auto; }
+.trend-pic:only-child img, .trend-pic.big img { width: auto; max-width: 100%; height: auto; max-height: min(70vh, 520px); }
 .trend-pic.big { cursor: zoom-out; }
 .trend-pic.big img { max-height: 85vh; }
 .trending-page .feed-controls { flex-wrap: wrap; gap: 8px; }
