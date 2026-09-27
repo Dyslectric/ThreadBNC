@@ -164,7 +164,8 @@
   {% set base = q('/trending', {}) %}
   <div class="feed-controls article-controls">
     <nav class="seg" aria-label="Rank by">
-      {% for key, label in [('likes', 'Most liked'), ('replies', 'Most replies')] %}
+      {% for key, label in [('likes', 'Most liked'), ('replies', 'Most replies'),
+                            ('reposts', 'Most reposted' if source == 'bluesky' else 'Most boosted')] %}
         <a href="{{ q('/trending', {'sort': key}) }}" class="{{ 'on' if sort == key }}"
            {% if sort == key %}aria-current="page"{% endif %}>{{ label }}</a>
       {% endfor %}
@@ -235,7 +236,7 @@
             <form method="post" action="/trending/act" class="inline" data-trend-act>
               <input type="hidden" name="source" value="{{ p.source }}"><input type="hidden" name="ref" value="{{ p.ref }}">
               <input type="hidden" name="what" value="repost"><input type="hidden" name="on" value="{{ '0' if p.reposted else '1' }}">
-              <button class="trend-meter {{ 'on' if p.reposted }}" aria-pressed="{{ 'true' if p.reposted else 'false' }}"
+              <button class="trend-meter {{ 'sorted' if sort == 'reposts' }} {{ 'on' if p.reposted }}" aria-pressed="{{ 'true' if p.reposted else 'false' }}"
                       title="{{ 'Repost' if p.source == 'bluesky' else 'Boost' }} it as your {{ site }} account">{{ icon('repost') }} <span class="n">{{ p.reposts or 0 }}</span></button>
             </form>
           </span>

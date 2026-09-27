@@ -833,6 +833,11 @@ def test_mastodon_posts_are_read_without_listening_and_boosts_are_counted(web, t
         replied, _ = trends.trending_posts(conn, "day", "replies", "mastodon")
     assert [(p["view"]["text"], p["likes"]) for p in liked] == [("Everyone liked this", 80), ("Boost me", 50)]
     assert replied[0]["view"]["text"] == "Boost me" and replied[0]["replies"] == 7
+    with b.db.connect() as conn:
+        boosted, _ = trends.trending_posts(conn, "day", "reposts", "mastodon")
+    assert [(p["view"]["text"], p["reposts"]) for p in boosted] == [("Boost me", 40), ("Everyone liked this", 0)]
+    page = web.get("/trending", params={"sort": "reposts", "src": "mastodon"}).text
+    assert 'aria-current="page">Most boosted' in page and page.index("Boost me") < page.index("Everyone liked this")
     # Boosted again in FediBuzz: counted for its id on your server now.
     buzz.take(json.dumps(boost(6, big)))
     stream.tally.flush(b.db)

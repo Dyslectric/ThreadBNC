@@ -65,7 +65,7 @@ ARTICLE_SOURCES = {**SOURCES, "archive": "Archive"}  # articles are also counted
 WINDOWS = {"day": timedelta(days=1), "week": timedelta(days=7), "month": timedelta(days=30)}
 POST_WINDOWS = {"day": timedelta(days=1), "week": timedelta(days=7)}
 RANKINGS = ("rising", *WINDOWS)  # the articles' rankings, and the hashtags'
-POST_SORTS = ("likes", "replies")
+POST_SORTS = ("likes", "replies", "reposts")  # reposts: boosts, on Mastodon
 # App setting (JSON): {"bluesky": count what's posted on Bluesky (Jetstream stays connected),
 # "bluesky_likes": "appview" (read the totals of the posts most replied to) | "stream" (count every like)}
 SETTINGS = "trends"
@@ -1280,13 +1280,13 @@ def links_on(conn: Conn, day: str, source: str | None = None,
 def trending_posts(conn: Conn, window: str = "day", sort: str = "likes", source: str | None = None,
                    page: int = 1, per_page: int = 25, now: str | None = None,
                    codes: list[str] | tuple[str, ...] = ()) -> tuple[list[dict[str, Any]], bool]:
-    """The posts made in the window most liked (or most replied to) on Bluesky
-    and Mastodon, of those whose totals have been read. A total not read yet
-    is what the stream counted. Only those in `codes`, or that don't say, when given."""
+    """The posts made in the window most liked (or most replied to, or most
+    reposted: boosted, on Mastodon) on Bluesky and Mastodon, of those whose
+    totals have been read. A total not read yet is what the stream counted. Only those in `codes`, or that don't say, when given."""
     moment = parse_ts(now or utcnow()) or datetime.now(timezone.utc)
     since = fmt_ts(moment - POST_WINDOWS.get(window, POST_WINDOWS["day"]))
-    score = ("COALESCE(likes, likes_seen)" if sort == "likes"
-             else "COALESCE(replies, replies_seen)")
+    score = {"likes": "COALESCE(likes, likes_seen)", "reposts": "COALESCE(reposts, reposts_seen)"}.get(
+        sort, "COALESCE(replies, replies_seen)")
     where, params = "", [since]
     if source in SOURCES:
         where, params = " AND source=?", [since, source]
@@ -1306,6 +1306,7 @@ def trending_posts(conn: Conn, window: str = "day", sort: str = "likes", source:
             continue
         item["likes"] = r["likes"] if r["likes"] is not None else r["likes_seen"]
         item["replies"] = r["replies"] if r["replies"] is not None else r["replies_seen"]
+        item["reposts"] = r["reposts"] if r["reposts"] is not None else r["reposts_seen"]
         item["key"] = post_key(r["source"], r["ref"])
         out.append(item)
     shown = pictures_of(conn, [(i["source"], i["ref"]) for i in out])
