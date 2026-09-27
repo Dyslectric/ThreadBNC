@@ -384,6 +384,13 @@ document.documentElement.classList.add("js");
 
   // Filters that apply as soon as they change (search filters, inbox account).
   document.addEventListener("change", (ev) => {
+    // How unread posts are marked (Settings): shown at once, saved in the background.
+    const marker = ev.target.closest("form[data-unread-form]");
+    if (marker && ev.target.name === "marker") {
+      document.documentElement.dataset.unread = ev.target.value;
+      post(marker.action, { marker: ev.target.value }).catch((e) => toast({ kind: "error", text: "Couldn't save that (" + e.message + "). Try again." }));
+      return;
+    }
     const form = ev.target.closest("form[data-autosubmit]");
     if (form && ev.target.matches("select, input[type=checkbox]")) form.requestSubmit();
   });

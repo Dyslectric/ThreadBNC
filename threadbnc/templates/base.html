@@ -1,7 +1,7 @@
 {%- from "_macros.html" import icon -%}
 {%- set theme = request.cookies.get('theme') if request.cookies.get('theme') in themes else '' -%}
 <!doctype html>
-<html lang="en"{% if theme %} data-theme="{{ theme }}"{% endif %}>
+<html lang="en"{% if theme %} data-theme="{{ theme }}"{% endif %}{% if request.session.get('auth') %} data-unread="{{ unread_marker() }}"{% endif %}>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -63,6 +63,7 @@
           <a class="menu-item {{ 'on' if path.startswith('/storage') }}" href="/storage">{{ icon('storage') }}<span class="grow">Storage</span></a>
           <a class="menu-item {{ 'on' if path.startswith('/traffic') }}" href="/traffic">{{ icon('activity') }}<span class="grow">Traffic</span></a>
           <a class="menu-item {{ 'on' if path.startswith('/trash') }}" href="/trash">{{ icon('trash') }}<span class="grow">Trash</span>{% if tc %}<span class="count muted" aria-label="{{ tc }} in the trash">{{ tc }}</span>{% endif %}</a>
+          <a class="menu-item {{ 'on' if path.startswith('/settings') }}" href="/settings">{{ icon('settings') }}<span class="grow">Settings</span></a>
         </div>
         <form method="post" action="/theme" class="menu-section" data-theme-form>
           <div class="menu-label">Theme</div>

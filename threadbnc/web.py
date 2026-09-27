@@ -302,6 +302,12 @@ def chandle(name: str, ap_id: str | None, plain: bool = False) -> Markup | str:
 
 FETCH_HEADER = "X-ThreadBNC-Fetch"  # app.js sends this with forms it submits in the background
 THEMES = ("light", "dark")
+# How unread posts stand out (the Settings page), the first being the default. Every one also
+# sets unread titles in bold.
+UNREAD_MARKERS = {"dot": ("Dot", "A dot beside the title of each post you haven't read."),
+                  "edge": ("Edge", "An accent edge down the left of each post you haven't read."),
+                  "fade": ("Fade what's read", "Posts you've read turn grey, so what's left stands out."),
+                  "bold": ("Bold titles only", "Nothing else: unread titles are bold, read ones aren't.")}
 _ANCHOR = re.compile(r"[A-Za-z][\w-]{0,40}")
 
 
@@ -458,6 +464,11 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     def mark_on_scroll() -> bool:
         return db.get_setting("mark_read_on_scroll") == "1"
 
+    def unread_marker() -> str:
+        """How unread posts are marked (UNREAD_MARKERS), the same on every device."""
+        value = db.get_setting("unread_marker")
+        return value if value in UNREAD_MARKERS else next(iter(UNREAD_MARKERS))
+
     def feed_languages() -> list[str]:
         with db.connect() as conn:
             return languages.load(conn)
@@ -504,7 +515,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     templates.env.globals.update(event_label=event_label, tone=lambda e: TONE.get(e["event_type"], ""),
                                  thumb=thumb, video_title=video_title,
                                  static_url=static_url, trash_count=trash_count, inbox_count=inbox.unread_count,
-                                 mark_on_scroll=mark_on_scroll, feed_languages=feed_languages,
+                                 mark_on_scroll=mark_on_scroll, unread_marker=unread_marker, feed_languages=feed_languages,
                                  language_name=languages.name, audio_rate=audio_rate, themes=THEMES, custom_feeds=custom_feeds,
                                  following_collapsed=following_collapsed, feed_sorts=FEED_SORTS,
                                  feed_windows=FEED_WINDOWS, feed_shows=FEED_SHOWS,
@@ -1095,6 +1106,22 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         flash(request, f"Feeds show posts in {', '.join(languages.name(c) for c in codes)}, and ones that don't say "
                        "what language they're in." if codes else "Feeds show posts in every language.")
         return RedirectResponse(back(request, "/"), status_code=303)
+
+    @app.get("/settings", response_class=HTMLResponse)
+    def settings_page(request: Request):
+        return render(request, "settings.html", markers=UNREAD_MARKERS)
+
+    @app.post("/settings/unread-marker")
+    def set_unread_marker(request: Request, marker: str = Form("")):
+        if marker not in UNREAD_MARKERS:
+            raise HTTPException(400, "Not a way to mark unread posts")
+        with db.transaction() as conn:
+            conn.execute("INSERT INTO app_settings(key, value) VALUES ('unread_marker', ?) "
+                         "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (marker,))
+        if is_fetch(request):
+            return {"ok": True}
+        flash(request, f"Unread posts are marked with: {UNREAD_MARKERS[marker][0].lower()}.")
+        return RedirectResponse(back(request, "/settings"), status_code=303)
 
     @app.post("/theme")
     def set_theme(request: Request, theme: str = Form("")):

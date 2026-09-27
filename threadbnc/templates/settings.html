@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+<div class="narrow-page">
+  <div class="feed-head">
+    <div>
+      <h1>{{ icon('settings', 'title-icon') }} Settings</h1>
+      <p class="muted small">How ThreadBNC looks.</p>
+    </div>
+  </div>
+
+  <section class="card settings-section">
+    <h2>Unread posts</h2>
+    <p class="muted small">How posts you haven't read stand out in feeds, on the timeline and in the inbox. The same on every device.</p>
+    {% set current = unread_marker() %}
+    <form method="post" action="/settings/unread-marker" class="marker-choices" data-unread-form>
+      {% for key, (label, about) in markers.items() %}
+      <label class="marker-choice">
+        <span class="marker-choice-head">
+          <input type="radio" name="marker" value="{{ key }}" {{ 'checked' if key == current }}>
+          <strong>{{ label }}</strong>
+        </span>
+        <span class="muted small">{{ about }}</span>
+        {# A read and an unread post as they'd look, each preview marked its own way. #}
+        <span class="marker-preview" data-unread="{{ key }}" aria-hidden="true">
+          {% for unread, title in [(True, "A post you haven't read yet"), (False, "One you've already read")] %}
+          <span class="post-card {{ 'unread' if unread }}">
+            <span class="pc-main">
+              <span class="pc-meta small"><span class="pc-community">!example</span> · 2h</span>
+              <span class="pc-title"><a>{{ title }}</a></span>
+            </span>
+          </span>
+          {% endfor %}
+        </span>
+      </label>
+      {% endfor %}
+      <p class="no-js"><button>Save</button></p>
+    </form>
+  </section>
+
+  <section class="card settings-section">
+    <h2>Theme</h2>
+    <p class="muted small">Kept for this browser only, so each device can have its own.</p>
+    {% set theme = request.cookies.get('theme') if request.cookies.get('theme') in themes else '' %}
+    <form method="post" action="/theme" data-theme-form>
+      <div class="seg theme-seg" role="group" aria-label="Theme">
+        {% for key, label, ico in [('light', 'Light', 'sun'), ('dark', 'Dark', 'moon'), ('', 'Device', 'monitor')] %}
+          <button name="theme" value="{{ key or 'system' }}" class="{{ 'on' if theme == key }}" aria-pressed="{{ 'true' if theme == key else 'false' }}">{{ icon(ico) }} {{ label }}</button>
+        {% endfor %}
+      </div>
+    </form>
+  </section>
+</div>
+{% endblock %}

@@ -376,10 +376,33 @@ button.danger:hover { background: color-mix(in srgb, var(--bad) 85%, var(--text)
 .post-card { display: flex; gap: 16px; background: var(--card); border: 1px solid var(--line); border-radius: 12px;
   padding: 14px 16px 10px; margin-bottom: 10px; box-shadow: var(--shadow); transition: border-color .15s, box-shadow .15s; }
 .post-card:hover { border-color: color-mix(in srgb, var(--muted) 40%, var(--line)); box-shadow: var(--shadow-lift); }
-/* Unread: an accent edge on the left, the same on cards, tiles, search hits and inbox items. */
-.post-card.unread, .inbox-item.unread { box-shadow: inset 3px 0 0 var(--accent), var(--shadow); }
-.post-card.unread:hover { box-shadow: inset 3px 0 0 var(--accent), var(--shadow-lift); }
-.post-card.seen, .tile.seen, .picture-card.seen { transition: box-shadow .6s; }
+/* How unread posts stand out, chosen on the Settings page: data-unread on <html> (and on each
+   preview there) sets these properties, so the nearest one wins. Unread titles are bold in every
+   way; "bold" is that alone. The fading rule is further down, after the titles' own colours. */
+:root, [data-unread] { --unread-dot: block; --unread-dot-inline: inline-block; --unread-edge: transparent;
+  --read-text: var(--text); }
+[data-unread]:not([data-unread=dot]) { --unread-dot: none; --unread-dot-inline: none; }
+[data-unread=edge] { --unread-edge: var(--accent); }
+[data-unread=fade] { --read-text: var(--muted); }
+/* dot: just left of the title's first line, as mail and feed readers do. It hangs in the padding so
+   nothing moves once it's read; on timeline posts and inbox items, which start with an avatar or a
+   label rather than a title, it sits in the card's margin by the first line. Tiles have no margin
+   to spare, so there it leads the title. */
+.pc-title, .status, .inbox-item { position: relative; }
+.post-card.unread .pc-title::before, .picture-card.unread .pc-title::before, .status.unread .st-head::before,
+.inbox-item.unread .hit-head::before, .tile.unread .tile-title a::before {
+  content: ""; display: var(--unread-dot); position: absolute; left: -12px; top: calc(0.66em - 4px);
+  width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+/* Left at the card's edge, down where the first line would put it (top: auto), centred on it. */
+.status.unread .st-head::before, .inbox-item.unread .hit-head::before { left: 4px; top: auto; margin-top: calc(0.75em - 4px); }
+.tile.unread .tile-title a::before { display: var(--unread-dot-inline); position: static; vertical-align: 0.1em;
+  margin-right: 6px; }
+/* edge: an accent edge down the left. */
+.post-card.unread, .picture-card.unread, .tile.unread, .inbox-item.unread {
+  box-shadow: inset 3px 0 0 var(--unread-edge), var(--shadow); }
+.post-card.unread:hover, .picture-card.unread:hover, .tile.unread:hover {
+  box-shadow: inset 3px 0 0 var(--unread-edge), var(--shadow-lift); }
+.status.unread { box-shadow: inset 3px 0 0 var(--unread-edge); }
 .kb-current.post-card, .kb-current.tile, .kb-current.picture-card, .kb-current.inbox-item, .kb-current.hit {
   outline: 2px solid var(--ring); outline-offset: 2px; }
 .post-card .thumb { position: relative; flex: 0 0 auto; width: 116px; height: 87px; border-radius: 8px; overflow: hidden;
@@ -555,7 +578,6 @@ fieldset.media-kind p { margin: 0; }
 .tile { display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 12px;
   box-shadow: var(--shadow); transition: border-color .15s, box-shadow .15s, transform .15s; min-width: 0; }
 .tile:hover { border-color: color-mix(in srgb, var(--muted) 40%, var(--line)); box-shadow: var(--shadow-lift); }
-.tile.unread { box-shadow: inset 3px 0 0 var(--accent), var(--shadow); }
 /* The media rounds its own corners rather than the tile clipping, so the votes breakdown can overflow the tile. */
 .tile-media { position: relative; display: block; aspect-ratio: 1 / 1; background: var(--bg); overflow: hidden;
   border-radius: 11px 11px 0 0; }
@@ -608,7 +630,6 @@ fieldset.media-kind p { margin: 0; }
 .picture-card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 16px 8px;
   margin-bottom: 12px; box-shadow: var(--shadow); transition: border-color .15s, box-shadow .15s; }
 .picture-card:hover { border-color: color-mix(in srgb, var(--muted) 40%, var(--line)); box-shadow: var(--shadow-lift); }
-.picture-card.unread { box-shadow: inset 3px 0 0 var(--accent), var(--shadow); }
 .picture-card:not(.unread) .pc-title a { font-weight: 500; }
 .picture-card.unread .pc-title a { font-weight: 700; }
 .picture-media { margin: 8px -16px 2px; background: var(--bg); border-block: 1px solid var(--line); }
@@ -631,10 +652,8 @@ fieldset.media-kind p { margin: 0; }
 .timeline { background: var(--card); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow);
   overflow: hidden; }
 .timeline > .gone { margin: 0; border-radius: 0; border-width: 0 0 1px; }
-.status { padding: 12px 16px 6px; border-bottom: 1px solid var(--line); transition: box-shadow .15s; }
+.status { padding: 12px 16px 6px; border-bottom: 1px solid var(--line); }
 .status:last-child { border-bottom: 0; }
-.status.unread { box-shadow: inset 3px 0 0 var(--accent); }
-.status.seen { transition: box-shadow .6s; }
 .kb-current.status { outline: 2px solid var(--ring); outline-offset: -2px; }
 .st-repost { margin: 0 0 4px 56px; }
 .st-row { display: flex; gap: 12px; }
@@ -677,6 +696,10 @@ fieldset.media-kind p { margin: 0; }
 .tile:not(.unread) .tile-title a { font-weight: 500; }
 .tile.unread .tile-title a { font-weight: 700; }
 .tile-title a:visited { color: var(--muted); }
+/* fade: what's been read turns grey. Only as specific as the titles' own colours, so visited links stay grey. */
+:where(.post-card:not(.unread), .picture-card:not(.unread)) .pc-title a, :where(.tile:not(.unread)) .tile-title a,
+:where(.status:not(.unread)) :is(.st-name, .st-title a, .st-text), :where(.inbox-item:not(.unread)) .md {
+  color: var(--read-text); }
 .tile-meta { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tile-actions { margin: auto -6px -2px; display: grid; gap: 2px; }
 .tile-action-row { display: flex; align-items: center; min-width: 0; gap: 2px; }
@@ -1274,3 +1297,20 @@ a.article-link.dived, a[data-dive].dived, a.video-link.dived, a.live-link.dived 
   .log-row { grid-template-columns: 2.8em 12px minmax(0, 1fr); gap: 0 8px; }
 }
 .log-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+
+/* ---- settings ---- */
+.settings-section > h2 { margin-bottom: 4px; }
+.settings-section > p { margin: 0 0 12px; }
+.marker-choices { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
+.marker-choices > p { margin: 0; }
+.marker-choice { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px 12px; border: 1px solid var(--line);
+  border-radius: 10px; cursor: pointer; }
+.marker-choice:hover { background: var(--hover); }
+.marker-choice:has(input:checked) { border-color: var(--accent); background: var(--new-bg); }
+.marker-choice-head { display: flex; align-items: center; gap: 8px; }
+.marker-choice-head input { margin: 0; accent-color: var(--accent); }
+.marker-preview { display: block; margin-top: 8px; }
+.marker-preview .post-card { padding: 8px 12px 8px 16px; margin-bottom: 6px; }
+.marker-preview .post-card:last-child { margin-bottom: 0; }
+.marker-preview .pc-main, .marker-preview .pc-title { display: block; }
+.marker-preview .pc-title { font-size: 0.95rem; margin: 1px 0 0; }

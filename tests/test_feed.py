@@ -194,9 +194,24 @@ def test_theme_is_remembered_per_browser(settings, bouncer):
     client.post("/login", data={"password": "pw"})
     assert "data-theme" not in client.get("/").text.split("<head>")[0]
     client.post("/theme", data={"theme": "dark"}, headers={"X-ThreadBNC-Fetch": "1"})
-    assert '<html lang="en" data-theme="dark">' in client.get("/").text
+    assert '<html lang="en" data-theme="dark"' in client.get("/").text
     client.post("/theme", data={"theme": "system"})
     assert "data-theme" not in client.get("/").text.split("<head>")[0]
+
+
+def test_unread_marker_is_chosen_on_the_settings_page(settings, bouncer):
+    client = TestClient(create_app(settings, bouncer))
+    client.post("/login", data={"password": "pw"})
+    assert 'data-unread="dot"' in client.get("/").text.split("<head>")[0]
+    page = client.get("/settings").text
+    assert 'name="marker" value="dot" checked' in page and 'data-unread="fade"' in page  # each one's preview
+    assert client.post("/settings/unread-marker", data={"marker": "fade"},
+                       headers={"X-ThreadBNC-Fetch": "1"}).json() == {"ok": True}
+    assert 'data-unread="fade"' in client.get("/").text.split("<head>")[0]
+    assert 'name="marker" value="fade" checked' in client.get("/settings").text
+    assert client.post("/settings/unread-marker", data={"marker": "sparkles"}).status_code == 400
+    r = client.post("/settings/unread-marker", data={"marker": "edge"}, follow_redirects=False)
+    assert r.status_code == 303 and 'data-unread="edge"' in client.get("/").text.split("<head>")[0]
 
 
 def test_empty_feed_prompts_follow(settings, bouncer):
