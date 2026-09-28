@@ -1168,3 +1168,44 @@ def test_hours_counted_before_are_filled_in_though_the_streams_start_first(bounc
         conn.execute("DELETE FROM trend_hours WHERE hour LIKE ?", (old + "%",))
     trends.tidy(bouncer.db)
     assert rows(bouncer, "SELECT COUNT(*) AS n FROM trend_hours WHERE hour LIKE ?", old + "%") == [{"n": 0}]
+
+
+def test_trending_videos_play_on_the_page_and_in_loops(settings, bouncer):  # noqa: F811
+    cid = "bafkreiabcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrs"
+    bluesky_record = {"text": "Look", "createdAt": stamp(hours=-1),
+                      "embed": {"$type": "app.bsky.embed.video", "video": {"$type": "blob", "ref": {"$link": cid}}}}
+    bluesky = trends.bluesky_view({"uri": at("3kvideo"), "author": {"did": ALICE, "handle": "alice.test"},
+                                   "record": bluesky_record,
+                                   "embed": {"$type": "app.bsky.embed.video#view", "thumbnail": "https://cdn.test/t.jpg"}})
+    assert bluesky["video"] and bluesky["video_src"] == f"/trending/video?did={ALICE}&cid={cid}"
+    masto = mastodon_stream.status_view(
+        {"content": "Clip", "media_attachments": [{"type": "gifv", "url": "https://files.test/clip.mp4"}]}, "masto.test")
+    assert masto["video_src"] == "https://files.test/clip.mp4" and masto["video_loops"]
+    assert mastodon_stream.status_view({"content": "Hi"}, "masto.test")["video_src"] is None
+    plain = {**bluesky, "text": "Words only", "video": False, "video_src": None}
+    now = fmt_ts(datetime.now(timezone.utc))
+    with bouncer.db.transaction(exclusive=False) as conn:
+        trends.record_totals(conn, "bluesky", {
+            at("3kvideo"): {"likes": 5, "replies": 1, "reposts": 0, "created_at": stamp(hours=-1), "view": bluesky},
+            at("3kplain"): {"likes": 9, "replies": 1, "reposts": 0, "created_at": stamp(hours=-1), "view": plain}},
+            [], now)
+        trends.record_totals(conn, "mastodon", {
+            "https://masto.test/users/a/statuses/1": {"likes": 3, "replies": 0, "reposts": 0,
+                                                       "created_at": stamp(hours=-1), "view": masto}}, [], now)
+    web_client = TestClient(create_app(settings, bouncer))
+    web_client.post("/login", data={"password": "pw"})
+    page = web_client.get("/trending").text
+    assert f'src="/trending/video?did={ALICE}&amp;cid={cid}"' in page and 'src="https://files.test/clip.mp4"' in page
+    loops = web_client.get("/trending/loops").text
+    assert 'aria-current="page">' in loops and "Words only" not in loops
+    assert loops.count('class="loop trending-loop"') == 2 and 'id="items" class="loops"' in loops
+    assert "data-short" in loops
+    only = web_client.get("/trending/loops", params={"src": "mastodon"}).text
+    assert only.count('class="loop trending-loop"') == 1
+    # A Bluesky video's file is served from its author's server, when a post seen here has it.
+    bouncer.bluesky_adapter._pds_of = lambda did: "https://pds.test"
+    got = web_client.get("/trending/video", params={"did": ALICE, "cid": cid}, follow_redirects=False)
+    assert got.status_code == 302 and got.headers["location"].startswith("https://pds.test/xrpc/com.atproto.sync.getBlob?")
+    assert web_client.get("/trending/video", params={"did": ALICE, "cid": "bafkreiotherotherother"},
+                          follow_redirects=False).status_code == 404
+    assert web_client.get("/trending/video", params={"did": "did:web:evil.test", "cid": cid}).status_code == 404

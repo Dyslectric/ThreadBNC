@@ -597,7 +597,7 @@ fieldset.media-kind p { margin: 0; }
 [data-veil] { position: relative; }
 [data-veil]:not(.revealed) :is(img, video) { filter: blur(22px) saturate(.7); clip-path: inset(0 round 6px); cursor: pointer; }
 /* Where their box clips them, a little larger, so the blur's faded edges don't show. */
-:is(.gallery, .thumb, .trend-pics)[data-veil]:not(.revealed) :is(img, video),
+:is(.gallery, .thumb, .trend-pics, .trend-video)[data-veil]:not(.revealed) :is(img, video),
 .tile:hover .gallery[data-veil]:not(.revealed) :is(img, video) { transform: scale(1.1); clip-path: none; }
 [data-veil]:not(.revealed)::after { content: attr(data-veil) "\A" "Click to show"; white-space: pre; position: absolute; inset: 0;
   display: flex; align-items: center; justify-content: center; text-align: center; color: #fff; font-weight: 700;
@@ -653,13 +653,18 @@ fieldset.media-kind p { margin: 0; }
 /* Only while among the posts (app.js), so what's above the first (the view's buttons) and
    below the last (Load more) isn't snapped away from, back to a post. The page's top and end
    are snap points too, or Chrome's wheel wouldn't leave the first post or the last. */
-html.loops-snap { scroll-snap-type: y proximity; }
+html.loops-snap { scroll-snap-type: y mandatory; }
 html.loops-snap body::before, html.loops-snap body::after { content: ""; display: block; }
 html.loops-snap body::before { scroll-snap-align: start; }
 html.loops-snap body::after { scroll-snap-align: end; }
-.loop { height: calc(100dvh - var(--header-h) - 24px); min-height: 22rem; margin-bottom: 12px;
-  display: grid; grid-template-rows: minmax(0, 1fr) auto; scroll-snap-align: start;
-  background: var(--card); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; box-shadow: var(--shadow); }
+/* One post is the whole screen under the header (no gap between, no card), so a swipe or a wheel
+   click lands on the next, and stops there (scroll-snap-stop) however hard it was flicked. */
+html:has(#items.loops) { scroll-padding-top: var(--header-h); }
+html:has(#items.loops) .toolbar { position: static; }
+.loop { height: calc(100dvh - var(--header-h)); min-height: 22rem; margin: 0;
+  display: grid; grid-template-rows: minmax(0, 1fr) auto; scroll-snap-align: start; scroll-snap-stop: always;
+  background: var(--card); border-top: 1px solid var(--line); overflow: hidden; contain: layout paint; }
+#items.loops { overscroll-behavior-y: contain; }
 .loop-stage { min-height: 0; background: #000; }
 .loop-slot { position: relative; height: 100%; display: flex; flex-direction: column; }
 .loop-poster { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
@@ -678,6 +683,21 @@ html.loops-snap body::after { scroll-snap-align: end; }
 .loop .pc-title { overflow-wrap: anywhere; }
 .loop.unread .pc-title a { font-weight: 700; }
 .loop .pc-excerpt { -webkit-line-clamp: 2; line-clamp: 2; }
+/* Trending's Loops: the video fills the screen, with who posted it and what it says over its foot. */
+.trending-loop { display: block; position: relative; background: #000; color: #fff; }
+.trending-loop .loop-stage, .trending-loop .loop-slot { position: absolute; inset: 0; height: auto; }
+.loop-video { width: 100%; height: 100%; object-fit: contain; background: #000; cursor: pointer; }
+.trending-loop .loop-info { position: absolute; inset: auto 0 0; padding: 48px 72px 14px 16px; pointer-events: none;
+  background: linear-gradient(transparent, rgba(0, 0, 0, .78)); text-shadow: 0 1px 3px rgba(0, 0, 0, .6); }
+.trending-loop .loop-info :is(a, button, form) { pointer-events: auto; }
+.trending-loop .loop-info, .trending-loop .loop-info :is(a, .muted, .trend-meter, .act) { color: #fff; }
+.trending-loop .pc-excerpt { -webkit-line-clamp: 3; line-clamp: 3; margin: 4px 0 6px; }
+.trending-loop .trend-meter { background: rgba(255, 255, 255, .14); border-color: transparent; }
+.loop-sound { position: absolute; right: 12px; bottom: 76px; z-index: 1; width: 44px; height: 44px; padding: 10px;
+  display: grid; place-items: center; color: #fff; background: rgba(0, 0, 0, .55); border: 0; border-radius: 999px; cursor: pointer; }
+.loop-sound .i { width: 24px; height: 24px; }
+.loop-sound .sound-on, .loop-sound[aria-pressed="true"] .sound-off { display: none; }
+.loop-sound[aria-pressed="true"] .sound-on { display: block; }
 .kb-current.loop { outline: 2px solid var(--ring); outline-offset: -2px; }
 
 /* ---- timeline: whole posts by who posted them, as on Mastodon (a hashtag's feed) ---- */
@@ -1272,7 +1292,9 @@ a.article-link.dived, a[data-dive].dived, a.video-link.dived, a.live-link.dived 
    size (no wider than the column), several two to a row (an odd one out across both, as tall), each
    shown whole once pressed. */
 .trend-pics { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; margin: 8px 0 2px; }
-.trend-pics[hidden] { display: none; }
+.trend-pics[hidden], .trend-pics[data-cover] { display: none; }
+.trend-video { position: relative; margin: 8px 0 2px; border-radius: 10px; overflow: hidden; background: #000; }
+.trend-video video { display: block; width: 100%; max-height: min(75vh, 560px); object-fit: contain; }
 .trend-pic { padding: 0; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--bg);
   cursor: zoom-in; aspect-ratio: 4 / 3; }
 /* :where() keeps it below the rules after it, so an only picture, or a pressed one, keeps its own shape. */

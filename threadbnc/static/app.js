@@ -1604,6 +1604,7 @@ document.documentElement.classList.add("js");
   // and a file's plays and pauses. A veiled post's player waits for the veil's click.
   let loopNear = null;
   let loopShown = null;
+  let loopMuted = true;  // sound, once asked for, stays on for the next (the sound button)
   const loopVeiled = (el) => !!$(".loop-stage[data-veil]:not(.revealed)", el);
   const loopOnScreen = (el) => el.hasAttribute("data-on-screen");
 
@@ -1625,7 +1626,8 @@ document.documentElement.classList.add("js");
         if (e.target.dataset.loaded === "1") playLoop(e.target, on);
       }
     }, { threshold: [0, 0.6] });
-    const els = root.matches && root.matches("article.loop[data-loop]") ? [root] : $$("article.loop[data-loop]", root);
+    const sel = "article.loop[data-loop], article.loop[data-video]";
+    const els = root.matches && root.matches(sel) ? [root] : $$(sel, root);
     for (const el of els) {
       loopNear.observe(el);
       loopShown.observe(el);
@@ -1654,6 +1656,14 @@ document.documentElement.classList.add("js");
 
   async function loadLoop(el, play = false) {
     if (!el || loopVeiled(el)) return;
+    if (el.dataset.video) {  // a video file (Trending's Loops): its own player, no box to fetch
+      const video = $(".loop-video", el);
+      if (!video) return;
+      if (!video.getAttribute("src")) { video.preload = "auto"; video.src = el.dataset.video; }
+      el.dataset.loaded = "1";
+      if (play || loopOnScreen(el)) playLoop(el, true);
+      return;
+    }
     if (el.dataset.loaded) {
       if (play && el.dataset.loaded === "1") playLoop(el, true);
       return;
@@ -1681,6 +1691,12 @@ document.documentElement.classList.add("js");
 
   function unloadLoop(el) {
     delete el.loopRequest;
+    if (el.dataset.video) {  // let go of the file, so only the ones near are held
+      const video = $(".loop-video", el);
+      if (video && video.getAttribute("src")) { video.pause(); video.removeAttribute("src"); video.load(); }
+      delete el.dataset.loaded;
+      return;
+    }
     if (el.dataset.loaded !== "1") { delete el.dataset.loaded; return; }
     stopVideos(el);
     for (const player of $$(".video-player", el)) fitLoops.unobserve(player);
@@ -1694,7 +1710,8 @@ document.documentElement.classList.add("js");
     if (on) startPlayers(slot);
     for (const v of $$("video", slot)) {
       v.loop = true;
-      if (!v.dataset.loopReady) { v.muted = true; v.dataset.loopReady = "1"; }
+      if (el.dataset.video) v.muted = loopMuted;
+      else if (!v.dataset.loopReady) { v.muted = true; v.dataset.loopReady = "1"; }
       if (on) v.play().catch(() => {});  // the browser may want a click first
       else v.pause();
     }
@@ -1725,6 +1742,57 @@ document.documentElement.classList.add("js");
     frame.contentWindow.postMessage({ context: "loops-embed", action: "seek", time: 0 }, origin);
     frame.contentWindow.postMessage({ context: "loops-embed", action: "play" }, origin);
   });
+
+  // A Trending video: tapped, it pauses or plays; the sound button turns sound on for it and the next.
+  document.addEventListener("click", (ev) => {
+    const loop = ev.target.closest("article.loop[data-video]");
+    if (!loop || ev.target.closest("[data-veil]:not(.revealed)")) return;
+    const video = $(".loop-video", loop);
+    if (ev.target.closest(".loop-sound")) {
+      loopMuted = !loopMuted;
+      for (const b of $$(".loop-sound")) b.setAttribute("aria-pressed", String(!loopMuted));
+      for (const v of $$(".loop-video")) v.muted = loopMuted;
+    } else if (video && ev.target.closest(".loop-stage")) {
+      if (video.paused) video.play().catch(() => {}); else video.pause();
+    }
+  });
+
+  // One step, one video: the arrow and Page keys and a wheel or trackpad flick each go to the
+  // next (or back to the last) while among the posts, as a swipe does on a phone; the page's
+  // snapping (queueLoopSnap) is left for touch. Past the first or last the page goes on as usual.
+  // Returns whether it stepped.
+  function stepLoop(down) {
+    const loops = $$("#items.loops article.loop");
+    const pad = parseFloat(getComputedStyle(document.documentElement).scrollPaddingTop) || 0;
+    const tops = loops.map((l) => Math.abs(l.getBoundingClientRect().top - pad));
+    const now = tops.indexOf(Math.min(...tops));  // the one at the top
+    const to = loops[Math.max(0, Math.min(loops.length - 1, now + (down ? 1 : -1)))];
+    if (!to || to === loops[now]) return false;
+    to.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
+    return true;
+  }
+  const loopsAmong = () => document.documentElement.classList.contains("loops-snap");
+
+  document.addEventListener("keydown", (ev) => {
+    if (ev.ctrlKey || ev.metaKey || ev.altKey || ev.shiftKey || ev.defaultPrevented || !loopsAmong()) return;
+    const down = ev.key === "ArrowDown" || ev.key === "PageDown", up = ev.key === "ArrowUp" || ev.key === "PageUp";
+    if (!(down || up) || ev.target.closest("input, textarea, select, [contenteditable]")) return;
+    if (stepLoop(down)) ev.preventDefault();
+  });
+
+  // A flick sends a run of wheel events, its momentum trailing on: the first steps, and the
+  // rest are ignored until they've stopped (and the scroll to the next has had time to finish).
+  let loopWheelUntil = 0;
+  addEventListener("wheel", (ev) => {
+    if (ev.ctrlKey || ev.defaultPrevented || !loopsAmong() || Math.abs(ev.deltaY) <= Math.abs(ev.deltaX)) return;
+    if (ev.target.closest(".panel-owner-open, .inline-panel, .menu-panel, textarea, select")) return;
+    const now = performance.now();
+    const busy = now < loopWheelUntil;
+    if (busy) { loopWheelUntil = Math.max(loopWheelUntil, now + 140); ev.preventDefault(); return; }
+    if (Math.abs(ev.deltaY) < 4 || !stepLoop(ev.deltaY > 0)) return;
+    ev.preventDefault();
+    loopWheelUntil = now + 650;
+  }, { passive: false });
 
   // Play before its player has come: fetch it now, and play it.
   document.addEventListener("click", (ev) => {

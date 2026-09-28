@@ -43,6 +43,7 @@ import heapq
 import json
 import logging
 import math
+import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -1281,10 +1282,11 @@ def links_on(conn: Conn, day: str, source: str | None = None,
 
 def trending_posts(conn: Conn, window: str = "day", sort: str = "likes", source: str | None = None,
                    page: int = 1, per_page: int = 25, now: str | None = None,
-                   codes: list[str] | tuple[str, ...] = ()) -> tuple[list[dict[str, Any]], bool]:
+                   codes: list[str] | tuple[str, ...] = (), videos: bool = False) -> tuple[list[dict[str, Any]], bool]:
     """The posts made in the window most liked (or most replied to, or most
     reposted: boosted, on Mastodon) on Bluesky and Mastodon, of those whose
-    totals have been read. A total not read yet is what the stream counted. Only those in `codes`, or that don't say, when given."""
+    totals have been read. A total not read yet is what the stream counted. Only those in `codes`, or that don't say, when given.
+    `videos`: only those with a video that can play here (the Loops page)."""
     moment = parse_ts(now or utcnow()) or datetime.now(timezone.utc)
     since = fmt_ts(moment - POST_WINDOWS.get(window, POST_WINDOWS["day"]))
     score = {"likes": "COALESCE(likes, likes_seen)", "reposts": "COALESCE(reposts, reposts_seen)"}.get(
@@ -1294,6 +1296,8 @@ def trending_posts(conn: Conn, window: str = "day", sort: str = "likes", source:
         where, params = " AND source=?", [since, source]
     shown_lang, lang_params = languages.shown_sql(list(codes), "lang")
     where, params = f"{where} AND {shown_lang}", [*params, *lang_params]
+    if videos:
+        where, params = where + " AND view_json LIKE ?", [*params, '%"video_src": "%']
     page = max(1, page)
     rows = conn.execute(
         f"SELECT *, {score} AS score FROM stream_posts WHERE view_json IS NOT NULL AND gone=0 "
@@ -1412,6 +1416,10 @@ def record_totals(conn: Conn, source: str, found: dict[str, dict[str, Any]], ask
                      (now, source, *chunk))
 
 
+VIDEO_CID = re.compile(r"[A-Za-z0-9]{10,120}")
+VIDEO_DID = re.compile(r"did:(?:plc:[a-z0-9]{5,40}|web:[A-Za-z0-9.-]{1,253})")
+
+
 def bluesky_view(view: dict[str, Any]) -> dict[str, Any]:
     """What the Trending page shows of a Bluesky post, from its AppView view."""
     from .adapters.bluesky import NSFW_LABELS, _Content, web_url
@@ -1425,8 +1433,22 @@ def bluesky_view(view: dict[str, Any]) -> dict[str, Any]:
             "author_url": f"https://{BSKY_DOMAIN}/profile/{author.get('did') or author.get('handle')}",
             "avatar": author.get("avatar") if isinstance(author.get("avatar"), str) else None,
             "link": content.link, "link_title": content.link_title, "pictures": len(content.pictures),
-            "video": content.video, "quote": content.quote is not None, "lang": record_lang(record),
+            "video": content.video, "video_src": bluesky_video_src(view, record) if content.video else None,
+            "quote": content.quote is not None, "lang": record_lang(record),
             "images": (content.pictures or ([content.cover] if content.cover else []))[:PICTURES]}
+
+
+def bluesky_video_src(view: dict[str, Any], record: dict[str, Any]) -> str | None:
+    """Where a Bluesky post's video plays from: /trending/video, which sends the browser to the file on its
+    author's server (the AppView only gives an HLS playlist, which most browsers can't play on their own)."""
+    embed = record.get("embed") if isinstance(record.get("embed"), dict) else {}
+    media = embed.get("media") if isinstance(embed.get("media"), dict) else embed
+    blob = media.get("video") if isinstance(media.get("video"), dict) else {}
+    ref = blob.get("ref") if isinstance(blob.get("ref"), dict) else {}
+    cid, did = ref.get("$link"), (view.get("author") or {}).get("did")
+    if isinstance(cid, str) and isinstance(did, str) and VIDEO_CID.fullmatch(cid) and VIDEO_DID.fullmatch(did):
+        return f"/trending/video?did={did}&cid={cid}"
+    return None
 
 
 def record_lang(record: dict[str, Any]) -> str | None:

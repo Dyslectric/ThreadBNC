@@ -1289,6 +1289,37 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     def trending_posts(request: Request, sort: str = "likes", t: str = "day", src: str = "all", page: int = 1,
                        lang: str = ""):
         """The posts most liked, or most replied to, on Bluesky and Mastodon lately."""
+        return trending_page(request, "posts", sort, t, src, page, lang)
+
+    @app.get("/trending/loops", response_class=HTMLResponse)
+    def trending_loops(request: Request, sort: str = "likes", t: str = "day", src: str = "all", page: int = 1,
+                       lang: str = ""):
+        """The same, only those with a video, to scroll through one at a time (the Loops view)."""
+        return trending_page(request, "loops", sort, t, src, page, lang)
+
+    video_pds: dict[str, str] = {}
+
+    @app.get("/trending/video")
+    def trending_video(did: str, cid: str):
+        """A Bluesky video's file, from its author's server (its post's video_src says where to look:
+        only videos of posts seen here are sent on)."""
+        if not (trends_mod.VIDEO_DID.fullmatch(did) and trends_mod.VIDEO_CID.fullmatch(cid)):
+            raise HTTPException(404)
+        src = f"/trending/video?did={did}&cid={cid}"
+        with db.connect() as conn:
+            known = conn.execute("SELECT 1 FROM stream_posts WHERE source='bluesky' AND view_json LIKE ? LIMIT 1",
+                                 (f'%"video_src": "{src}"%',)).fetchone()
+        if not known:
+            raise HTTPException(404)
+        if did not in video_pds:
+            try:
+                video_pds[did] = bouncer.bluesky_adapter._pds_of(did)
+            except RemoteError as exc:
+                raise HTTPException(404, str(exc)) from exc
+        return RedirectResponse(f"{video_pds[did]}/xrpc/com.atproto.sync.getBlob?" + urlencode({"did": did, "cid": cid}),
+                                status_code=302)
+
+    def trending_page(request: Request, tab: str, sort: str, t: str, src: str, page: int, lang: str):
         sort = sort if sort in trends_mod.POST_SORTS else "likes"
         window = t if t in trends_mod.POST_WINDOWS else "day"
         source = src if src in trends_mod.SOURCES else "all"
@@ -1296,7 +1327,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         langs = trend_languages(lang)
         with db.connect() as conn:
             items, has_more = trends_mod.trending_posts(conn, window, sort, None if source == "all" else source,
-                                                        page, TRENDING_PAGE, codes=langs["codes"])
+                                                        page, TRENDING_PAGE, codes=langs["codes"],
+                                                        videos=tab == "loops")
             ap_ids = [i["view"].get("uri") or i["view"].get("url") for i in items]
             here = {r["canonical_ap_id"]: r["id"] for r in conn.execute(
                 f"SELECT o.canonical_ap_id, t.id FROM objects o JOIN archived_threads t ON t.root_object_id=o.id "
@@ -1318,7 +1350,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         for i in items:
             key = i["view"].get("url") if i["source"] == "bluesky" else i["view"].get("uri")
             i["liked"], i["reposted"] = key in mine["like"], key in mine["repost"]
-        return render(request, "trending.html", tab="posts", posts=items, sort=sort, window=window, source=source,
+        return render(request, "trending.html", tab=tab, posts=items, sort=sort, window=window, source=source,
                       page=page, has_more=has_more, status=trending_status(), langs=langs,
                       params=trend_params(sort=sort, t=window, src=source, lang="all" if langs["all"] else None))
 

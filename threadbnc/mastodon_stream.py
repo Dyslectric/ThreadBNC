@@ -168,6 +168,15 @@ def status_links(status: dict[str, Any]) -> list[tuple[str, str | None, str | No
     return out
 
 
+def video_src(media: list[dict[str, Any]]) -> str | None:
+    """The address of a status's first video (or animation) file, to play from where it is."""
+    for m in media:
+        url = m.get("url")
+        if m.get("type") in ("video", "gifv") and isinstance(url, str) and url.startswith("https://"):
+            return url
+    return None
+
+
 def status_view(status: dict[str, Any], domain: str) -> dict[str, Any]:
     """What the Trending page shows of a status."""
     account = status.get("account") or {}
@@ -183,7 +192,8 @@ def status_view(status: dict[str, Any], domain: str) -> dict[str, Any]:
             "avatar": account.get("avatar_static") or account.get("avatar") or None,
             "link": card.get("url"), "link_title": card.get("title") or None,
             "pictures": sum(1 for m in media if m.get("type") == "image"),
-            "video": any(m.get("type") in ("video", "gifv") for m in media), "quote": False,
+            "video": any(m.get("type") in ("video", "gifv") for m in media), "video_src": video_src(media),
+            "video_loops": any(m.get("type") == "gifv" for m in media), "quote": False,
             "lang": languages.normalize(status.get("language")),
             "images": [u for u in ([m.get("url") if m.get("type") == "image" else m.get("preview_url") for m in media
                                     if m.get("type") in ("image", "video", "gifv")] or [card.get("image")])

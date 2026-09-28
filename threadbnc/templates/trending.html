@@ -61,7 +61,8 @@
     <div>
       <h1>{{ icon('trending', 'title-icon') }} Trending</h1>
       <p class="muted small">
-        {%- if tab == 'posts' %} What's liked and talked about most on Bluesky and Mastodon, from their streams.
+        {%- if tab == 'loops' %} The videos posted on Bluesky and Mastodon that are liked and talked about most, one to a screen: scroll up to the next.
+        {%- elif tab == 'posts' %} What's liked and talked about most on Bluesky and Mastodon, from their streams.
         {%- elif tab == 'tags' %} The hashtags used in the most posts on Bluesky and Mastodon, and those rising.
         {%- else %} The pages posted most on Bluesky, on Mastodon and in your archive, and those rising.{% endif %}</p>
     </div>
@@ -136,6 +137,7 @@
 
   <nav class="tabs" aria-label="Trending">
     <a href="/trending" class="{{ 'on' if tab == 'posts' }}" {% if tab == 'posts' %}aria-current="page"{% endif %}>{{ icon('comment') }} Posts</a>
+    <a href="/trending/loops" class="{{ 'on' if tab == 'loops' }}" {% if tab == 'loops' %}aria-current="page"{% endif %}>{{ icon('loops') }} Loops</a>
     <a href="/trending/articles" class="{{ 'on' if tab == 'articles' }}" {% if tab == 'articles' %}aria-current="page"{% endif %}>{{ icon('article') }} Articles</a>
     <a href="/trending/tags" class="{{ 'on' if tab == 'tags' }}" {% if tab == 'tags' %}aria-current="page"{% endif %}>{{ icon('communities') }} Tags</a>
   </nav>
@@ -163,32 +165,73 @@
     {% else %}<span class="pill muted">Mastodon</span> not subscribed.{% endif %}
   </p>
 
-{% if tab == 'posts' %}
-  {% set base = q('/trending', {}) %}
+{% if tab in ('posts', 'loops') %}
+  {% set here = '/trending/loops' if tab == 'loops' else '/trending' %}
+  {% set base = q(here, {}) %}
   <div class="feed-controls article-controls">
     <nav class="seg" aria-label="Rank by">
       {% for key, label in [('likes', 'Most liked'), ('replies', 'Most replies'),
                             ('reposts', 'Most boosted' if source == 'mastodon' else 'Most reposted')] %}
-        <a href="{{ q('/trending', {'sort': key}) }}" class="{{ 'on' if sort == key }}"
+        <a href="{{ q(here, {'sort': key}) }}" class="{{ 'on' if sort == key }}"
            {% if sort == key %}aria-current="page"{% endif %}>{{ label }}</a>
       {% endfor %}
     </nav>
     <nav class="seg" aria-label="Posted in the past">
       {% for key, label in [('hour', 'Hour'), ('day', 'Day'), ('week', 'Week')] %}
-        <a href="{{ q('/trending', {'t': key}) }}" class="{{ 'on' if window == key }}"
+        <a href="{{ q(here, {'t': key}) }}" class="{{ 'on' if window == key }}"
            {% if window == key %}aria-current="page"{% endif %}>{{ label }}</a>
       {% endfor %}
     </nav>
     <nav class="seg" aria-label="Where">
       {% for key, label in [('all', 'Both'), ('bluesky', 'Bluesky'), ('mastodon', 'Mastodon')] %}
-        <a href="{{ q('/trending', {'src': key}) }}" class="{{ 'on' if source == key }}"
+        <a href="{{ q(here, {'src': key}) }}" class="{{ 'on' if source == key }}"
            {% if source == key %}aria-current="page"{% endif %}>{{ label }}</a>
       {% endfor %}
     </nav>
-    {{ language_seg('/trending') }}
+    {{ language_seg(here) }}
   </div>
 
   {# Each post as on Mastodon or Bluesky (the feed's timeline view): who posted it, then all of it. #}
+  {% if tab == 'loops' and posts %}
+  {# The Loops view (style.css, app.js watchLoops): a video to a screen, each one playing while it's the one shown. #}
+  <div id="items" class="loops" data-items>
+  {% for p in posts %}
+    {% set v = p.view %}
+    {% set site = 'Bluesky' if p.source == 'bluesky' else 'Mastodon' %}
+    {% set profile = v.author_url | safe_url %}
+    <article class="loop trending-loop" id="tp-{{ p.key }}" data-entry data-post="{{ p.source }} {{ p.ref }}" data-video="{{ v.video_src }}"{% if v.video_loops %} data-short{% endif %}>
+      <div class="loop-stage"{{ veil(('Spoiler' if v.warning else 'NSFW') if v.sensitive) }}>
+        <div class="loop-slot">
+          <video class="loop-video" preload="none" playsinline loop muted></video>
+          <button type="button" class="loop-sound" aria-pressed="false" title="Sound on or off">{{ icon('speaker-off', 'sound-off') }}{{ icon('speaker', 'sound-on') }}<span class="sr-only">Sound</span></button>
+        </div>
+      </div>
+      <div class="loop-info">
+        <div class="pc-meta small">
+          <span class="pill {{ 'new' if p.source == 'bluesky' else '' }}">{{ site }}</span>
+          {% if profile %}<a class="st-name" href="{{ profile }}" target="_blank" rel="noreferrer noopener nofollow">{{ v.name or v.handle }}</a>
+          {%- else %}<span class="st-name">{{ v.name or v.handle }}</span>{% endif %}
+          <span class="muted">@{{ v.handle }}</span>{% if p.created_at %} · <span title="{{ p.created_at | absolute }}">{{ when(p.created_at) }}</span>{% endif %}
+        </div>
+        {% if v.warning %}<p class="pc-excerpt"><span class="pill warn">CW</span> {{ v.warning }}</p>{% endif %}
+        <p class="pc-excerpt">{{ v.text or '' }}</p>
+        <div class="pc-actions actions small">
+          <form method="post" action="/trending/act" class="inline" data-trend-act>
+            <input type="hidden" name="source" value="{{ p.source }}"><input type="hidden" name="ref" value="{{ p.ref }}">
+            <input type="hidden" name="what" value="like"><input type="hidden" name="on" value="{{ '0' if p.liked else '1' }}">
+            <button class="trend-meter {{ 'sorted' if sort == 'likes' }} {{ 'on' if p.liked }}" aria-pressed="{{ 'true' if p.liked else 'false' }}"
+                    title="Like it as your {{ site }} account">♥ <span class="n">{{ p.likes or 0 }}</span></button>
+          </form>
+          <span class="trend-meter {{ 'sorted' if sort == 'replies' }}" title="Replies">{{ icon('comment') }} <span class="n">{{ p.replies or 0 }}</span></span>
+          <span class="trend-meter {{ 'sorted' if sort == 'reposts' }}" title="{{ 'Reposts' if p.source == 'bluesky' else 'Boosts' }}">{{ icon('repost') }} <span class="n">{{ p.reposts or 0 }}</span></span>
+          {% if p.here %}<a class="act" href="/t/{{ p.here }}#comments">{{ icon('comment') }}<span>Comments</span></a>{% endif %}
+          {% if v.url | safe_url %}<a class="act" href="{{ v.url | safe_url }}" target="_blank" rel="noreferrer noopener nofollow">{{ icon('external') }}<span>Original</span></a>{% endif %}
+        </div>
+      </div>
+    </article>
+  {% endfor %}
+  </div>
+  {% else %}
   <div id="items" class="{{ 'timeline' if posts else 'cards' }}" data-items>
   {% for p in posts %}
     {% set v = p.view %}
@@ -218,12 +261,17 @@
         {# Its pictures at the column's width, as on Mastodon: one shown whole, several two to a row.
            Pressed, one is shown whole, from its full-size file (app.js). Blurred until then when
            it's marked sensitive (on Bluesky, labelled as adult content). #}
-        <div class="trend-pics" id="pics-{{ p.key }}" {% if not p.pictures %}hidden{% endif %}
+        {% if v.video_src %}
+        <div class="trend-video"{{ veil(('Spoiler' if v.warning else 'NSFW') if v.sensitive) }}>
+          <video src="{{ v.video_src }}" controls preload="metadata" playsinline{% if v.video_loops %} loop muted{% endif %}></video>
+        </div>
+        {% endif %}
+        <div class="trend-pics" id="pics-{{ p.key }}"{% if v.video_src %} data-cover{% endif %} {% if not p.pictures or v.video_src %}hidden{% endif %}
              {{- veil(('Spoiler' if v.warning else 'NSFW') if v.sensitive) }}>
           {% for mid in p.pictures %}<button type="button" class="trend-pic" data-full="/media/{{ mid }}" aria-pressed="false"
             title="Show it whole"><img src="{{ thumb(mid, 'picture') }}" alt="" loading="lazy"></button>{% endfor %}
         </div>
-        {% if (v.pictures and not p.pictures) or v.video or v.quote %}
+        {% if (v.pictures and not p.pictures) or (v.video and not v.video_src) or v.quote %}
           <p class="small muted trend-media-note">{% if v.pictures and not p.pictures %}{{ icon('picture') }} {{ v.pictures }} picture{{ 's' if v.pictures != 1 }}{% endif %}
             {% if v.video %}{{ icon('video') }} a video{% endif %}{% if v.quote %} · quotes a post{% endif %}</p>
         {% endif %}
@@ -270,6 +318,7 @@
     </article>
   {% endfor %}
   </div>
+  {% endif %}
   {% if not posts %}
     <section class="card empty"><p class="muted">
       {%- if not (st.bluesky and st.chosen.bluesky) and not st.mastodon_scope and not st.mastodon_account %}Nothing is counted: choose where from under Sources.
