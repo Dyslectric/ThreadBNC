@@ -159,6 +159,15 @@ def test_a_peertube_video_is_asked_of_its_server(settings, vbouncer):
     assert [u for u, _ in vbouncer.downloads] == [f"peertube:tube.example:{SHORT}"]
 
 
+def test_a_loops_video_is_downloaded_from_its_html_player(settings, vbouncer):
+    client = logged_in(settings, vbouncer)
+    client.post("/video/save", data={"url": "https://loops.video/v/example"})
+    vbouncer.media.fetch_pending()
+    assert [u for u, _ in vbouncer.downloads] == ["https://loops.video/embed/example"]
+    box = client.get("/video", params={"url": "https://loops.video/v/example", "bare": "1"}).text
+    assert 'src="/media/' in box and "data-embed" not in box and "Saved here" in box
+
+
 def test_youtubes_session_is_only_sent_to_youtube(vbouncer):
     vbouncer.youtube.save_session("SID=abc; HSID=def", "")
     assert "cookiefile" in youtube._options(vbouncer.youtube, "https://www.youtube.com/watch?v=dQw4w9WgXcQ")

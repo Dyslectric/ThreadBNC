@@ -79,6 +79,8 @@
   {% endif %}
   {% if b.saved %}
     <video class="media" src="/media/{{ b.m.id }}" controls playsinline preload="metadata"{% if v.is_file %} loop muted{% endif %}></video>
+  {% elif b.no_embed %}
+    <p class="small muted">Whoever posted it doesn't let it play on other sites. Use Watch on {{ v.site }} below.</p>
   {% elif v.embed %}
     <div class="video-player" data-embed="{{ v.embed }}" data-label="{{ v.site }} player">
       <p class="small">The player needs JavaScript.</p></div>

@@ -105,6 +105,9 @@ class Video:
             return f"peertube:{self.host}:{self.key}"
         if self.kind == "vimeo":
             return f"https://player.vimeo.com/video/{self.key}" + (f"?h={self.secret}" if self.secret else "")
+        if self.kind == "loops":
+            # The embed has an HTML video source; the public page is a JavaScript app.
+            return f"https://{self.host}/embed/{self.key}"
         return self.url
 
     @property

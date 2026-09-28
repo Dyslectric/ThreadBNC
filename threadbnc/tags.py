@@ -166,11 +166,13 @@ class TagRelays:
 
     # -- the inbox -----------------------------------------------------------------
     def _relays(self) -> dict[str, int]:
-        """Relay actors listened to -> their hashtag community."""
+        """Relay actors listened to -> their hashtag community (people followed
+        by the same actor are people.py's)."""
         with self.db.connect() as conn:
             return {r["push_actor"]: r["community_id"] for r in conn.execute(
-                "SELECT community_id, push_actor FROM community_follows WHERE active=1 AND push_actor IS NOT NULL "
-                "AND push_domain=?", (TAG_DOMAIN,))}
+                "SELECT f.community_id, f.push_actor FROM community_follows f JOIN communities c "
+                "ON c.id=f.community_id WHERE f.active=1 AND f.push_actor IS NOT NULL AND f.push_domain=? "
+                "AND c.canonical_ap_id LIKE 'tag:%'", (TAG_DOMAIN,))}
 
     def expects(self, activity: dict[str, Any]) -> bool:
         """Whether a delivery comes from a relay followed here (checked before

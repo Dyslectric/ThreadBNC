@@ -668,6 +668,8 @@ html:has(#items.loops) { scroll-snap-type: y proximity; }
 .loop .video-save { margin: 0; padding: 6px 12px 8px; background: var(--card); border-bottom: 1px solid var(--line); }
 .loop .video-save .row { margin-top: 4px; }
 .loop-info { padding: 8px 16px 6px; }
+.loop.panel-owner-open { height: auto; grid-template-rows: minmax(22rem, 65dvh) auto auto; }
+.loop .pc-title { overflow-wrap: anywhere; }
 .loop.unread .pc-title a { font-weight: 700; }
 .loop .pc-excerpt { -webkit-line-clamp: 2; line-clamp: 2; }
 .kb-current.loop { outline: 2px solid var(--ring); outline-offset: -2px; }

@@ -216,6 +216,7 @@ _HASHTAG = re.compile(r"^\w+$")
 # are filed, and the Pixelfed and Loops accounts you follow. Lemmy and PieFed
 # never put a community there (theirs are /c/name, and their people /u/name).
 _FEDI_ACCOUNT = re.compile(r"^/(?:users/[^/]+|@[^/]+|ap/users/[^/]+)/?$")
+_FEDI_HANDLE = re.compile(r"^@([\w.-]+)@((?:[a-z0-9-]+\.)+[a-z0-9-]+)$", re.I)
 
 # Pixelfed (pictures) and Loops (short videos): fediverse servers whose
 # accounts are followed like communities (adapters/pixelfed.py, loops.py). A
@@ -246,6 +247,22 @@ def is_tag(ap_id: str | None) -> bool:
 def is_fedi_account(ap_id: str | None) -> bool:
     parsed = urlparse(ap_id or "")
     return parsed.scheme == "https" and bool(_FEDI_ACCOUNT.match(parsed.path)) and not is_bluesky(ap_id)
+
+
+def fedi_account_ref(text: str) -> CommunityRef | None:
+    """Someone on Mastodon (or GoToSocial, Akkoma, Misskey...) to follow:
+    @name@server, or their profile's address (https://server/@name or
+    https://server/users/name)."""
+    m = _FEDI_HANDLE.match(text)
+    if m:
+        return CommunityRef(TAG_DOMAIN, f"@{m.group(1)}@{m.group(2).lower()}", TAG_DOMAIN)
+    if text.lower().startswith("https://") and is_fedi_account(text.split("?")[0].split("#")[0]):
+        return CommunityRef(TAG_DOMAIN, text.split("?")[0].split("#")[0].rstrip("/"), TAG_DOMAIN)
+    return None
+
+
+def is_fedi_account_ref(ref: CommunityRef) -> bool:
+    return ref.domain == TAG_DOMAIN and ref.name.startswith(("@", "https://"))
 
 
 def from_fediverse(community_ap_id: str | None) -> bool:
@@ -371,15 +388,12 @@ def parse_community_ref(text: str) -> CommunityRef:
     YouTube channel or playlist link, or any other web address (a feed, or a
     page that links to one), hashtags: #name or tag:name, Bluesky accounts
     and feeds: @handle.bsky.social or a bsky.app/profile link, and fediverse
-    accounts: @name@host (Pixelfed's and Loops's; their profile links are
+    accounts: @name@host (Mastodon, Pixelfed and Loops; their profile links are
     told apart from feeds by asking the server, bouncer.resolve_community)."""
     text = text.strip()
     bluesky = _bluesky_ref(text)
     if bluesky:
         return bluesky
-    m = re.match(r"^@([\w.-]+)@([a-z0-9.-]+\.[a-z]{2,}(?::\d+)?)$", text, re.I)
-    if m:
-        return CommunityRef(m.group(2).lower(), m.group(1), m.group(2).lower())
     if text.startswith("#") or text.lower().startswith(TAG_PREFIX):
         tag = normalize_tag(text[len(TAG_PREFIX):] if text.lower().startswith(TAG_PREFIX) else text)
         return CommunityRef(TAG_DOMAIN, tag, TAG_DOMAIN)
@@ -400,6 +414,11 @@ def parse_community_ref(text: str) -> CommunityRef:
     if re.match(r"^(?:https?://)?(?:[\w-]+\.)*(?:youtube\.com|youtu\.be)/", text, re.I):
         # A YouTube channel or playlist (youtube.com/@name has an "@" in it too)
         return CommunityRef(RSS_DOMAIN, text if "://" in text else "https://" + text, RSS_DOMAIN)
+    if re.match(r"^(?:[\w-]+\.)+[a-z]{2,}/", text, re.I):
+        text = "https://" + text
+    account = fedi_account_ref(text)
+    if account:  # a profile's address that turns out not to be one is tried as a feed (Bouncer.resolve_community)
+        return account
     if "://" in text or text.startswith(("/", "www.")) or ("/c/" in text):
         u = text if "://" in text else "https://" + text
         parsed = urlparse(u)

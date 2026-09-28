@@ -108,8 +108,11 @@ class PixelfedAdapter(ThreadiverseAdapter):
         got = self.http.get_json(self.domain, f"/api/pixelfed/v1/accounts/{self._id_of(ref.name)}/statuses",
                                  params=params)
         statuses = [s for s in got if _real(s)] if isinstance(got, list) else []
-        if statuses:
-            self._older[ref.name.lower()] = str(statuses[-1]["id"])
+        # The bouncer must count the server's page, before replies/reposts are filtered out.
+        raw = [s for s in got if isinstance(s, dict) and s.get("id")] if isinstance(got, list) else []
+        self.posts_have_more = len(raw) >= params["limit"]
+        if raw:
+            self._older[ref.name.lower()] = str(raw[-1]["id"])
         else:
             self._older.pop(ref.name.lower(), None)
         return [self._post(s) for s in statuses
@@ -120,7 +123,7 @@ class PixelfedAdapter(ThreadiverseAdapter):
         username, _, sid = local_id.partition("/")
         got = self.http.get_json(self.domain, f"/api/v2/profile/{username}/status/{sid}")
         s = got.get("status") if isinstance(got, dict) else None
-        if not isinstance(s, dict) or not s.get("uri"):
+        if not _real(s):
             raise RemoteNotFound(f"https://{self.domain}/p/{local_id} isn't there")
         return self._post(s)
 
@@ -164,6 +167,7 @@ class PixelfedAdapter(ThreadiverseAdapter):
             try:
                 batch, more = self._comments_of(str((c.get("account") or {}).get("id") or ""), str(c["id"]))
             except RemoteNotFound:
+                truncated = True  # unavailable replies must not mark earlier copies deleted
                 continue
             found += batch
             truncated = truncated or more or any((r.get("reply_count") or 0) > 0 for r in batch)

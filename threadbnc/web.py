@@ -65,6 +65,7 @@ from .mastodon_stream import OPEN_JOB as MASTODON_OPEN_JOB, RESOLVE_EACH, SCOPES
 from .fedibuzz import FediBuzzStream
 from .mastodon_stream import feed_closed as mastodon_feed_closed
 from .mastodon_stream import subscribe as mastodon_subscribe, subscription as mastodon_subscription
+from .people import PeopleFollows
 from .tags import TagRelays
 from .db import fmt_ts, open_database, parse_ts, utcnow
 from .render import VIDEO_HREF, VIDEO_LINK_TITLE, MediaInfo, looks_like_media, render_markdown
@@ -379,6 +380,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     mastodon_stream = MastodonStream(bouncer, poster.vault, settings.user_agent)
     # ThreadBNC's own ActivityPub identity, following hashtags through a relay (unless they come from that timeline).
     tags = TagRelays(bouncer, bouncer.actor, settings.tag_relay, mastodon_stream.active) if bouncer.actor else None
+    # ...and following people on Mastodon and the like, whose servers send it their posts.
+    people = PeopleFollows(bouncer, bouncer.actor) if bouncer.actor else None
     # ...and on Bluesky, picked out of its Jetstream, which also counts what's posted there for Trending.
     bluesky_stream = BlueskyStream(bouncer, settings.jetstream_url, settings.user_agent) if settings.jetstream_url else None
     # ...and FediBuzz's firehose of the fediverse, counted with that timeline once turned on on the Trending page.
@@ -644,10 +647,15 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     if federation:  # outermost: deliveries to your servers' inboxes never reach sessions or sign-in
         app.add_middleware(InboxRelay, relays=settings.relay_inboxes, accept=federation.queue,
                            refuse=federation.refused)
-    if tags:  # outermost too: other servers reach the actor and its inbox without signing in
-        app.add_middleware(ActorEndpoints, actor=bouncer.actor, receive=tags.receive, expects=tags.expects)
+    if tags and people:  # outermost too: other servers reach the actor and its inbox without signing in
+        followed_by_actor = (people, tags)
+        app.add_middleware(ActorEndpoints, actor=bouncer.actor,
+                           receive=lambda activity, signer: next(
+                               (f for f in followed_by_actor if f.expects(activity)), tags).receive(activity, signer),
+                           expects=lambda activity: any(f.expects(activity) for f in followed_by_actor))
     app.state.federation = federation
     app.state.tags = tags
+    app.state.people = people
     app.state.bluesky_stream = bluesky_stream
     app.state.mastodon_stream = mastodon_stream
     app.state.fedibuzz = fedibuzz
@@ -1911,8 +1919,21 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             flash(request, f"Could not follow {community}: {exc}", "error")
             return RedirectResponse(back(request, "/communities"), status_code=303)
         with db.connect() as conn:
-            f = conn.execute("SELECT * FROM community_follows WHERE community_id=?", (cid,)).fetchone()
-        if f["source_domain"] == TAG_DOMAIN:
+            f = conn.execute("SELECT f.*, c.name, c.canonical_ap_id FROM community_follows f "
+                             "JOIN communities c ON c.id=f.community_id WHERE f.community_id=?", (cid,)).fetchone()
+        if is_fedi_account(f["canonical_ap_id"]):
+            who = chandle(f["name"], f["canonical_ap_id"], True).removesuffix(" (Mastodon)")
+            start = " Their latest posts are being read now." if backfill and not f["last_polled_at"] else ""
+            if f["push_state"] == "pending":
+                flash(request, f"Following. {bouncer.actor.handle if bouncer.actor else 'ThreadBNC'} asked to follow "
+                               f"{who}; their public posts arrive as they're made once their server accepts (or they "
+                               f"do, if they approve their followers).{start}")
+            elif f["push_state"] == "subscribed" or f["polling"]:
+                flash(request, f"Following {who}.{start}")
+            else:
+                flash(request, f"Following, but {who} couldn't be asked for their posts yet: {f['push_error']}. "
+                               "They're asked again every half hour.", "warn-flash")
+        elif f["source_domain"] == TAG_DOMAIN:
             tag, also = f["source_ref"], ", with those posted on Bluesky," if bluesky_stream else ""
             timeline = mastodon_stream.account() if mastodon_stream.active() else None
             if timeline:
@@ -2102,7 +2123,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             fp, shown = None, "list"
             if tab in ("feed", "kept"):
                 shown = feed_mod.pick_view(c["view_mode"], *feed_mod.media_share(conn, cid),
-                                           microblog=is_tag(c["canonical_ap_id"]),
+                                           microblog=from_fediverse(c["canonical_ap_id"]) and not media_software(c["canonical_ap_id"]),
                                            videos=media_software(c["canonical_ap_id"]) == "loops")
                 fp = feed_mod.load_feed(conn, community_id=cid, sort=sort, window=t, unread=unread,
                                         kept_only=tab == "kept", **view_filters(shown), page=page, as_of=as_of)
@@ -2148,6 +2169,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             hidden_here = c["canonical_ap_id"] in hidden_mod.keys(conn)
         return render(request, "community.html", c=c, follow=follow_row, tab=tab, feed=fp, counts=counts,
                       hidden_here=hidden_here,
+                      own_account=c["canonical_ap_id"] in {a.actor_ap_id for a in poster.list()},
                       push_handle=push_handle(), pushed_poll=PUSHED_POLL_MINUTES,
                       events=cevents, live=live, live_error=live_error, sort=sort, window=t, unread=unread,
                       page=page, live_sort=live_sort, follows=follows, base_url=f"/c/{cid}",
@@ -3357,8 +3379,12 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         the button to download and archive it."""
         with db.connect() as conn:
             m = media_mod.linked_video(conn, video)
+            no_embed = video.kind == "loops" and any(
+                json.loads(r[0] or "{}").get("no_embed") for r in conn.execute(
+                    "SELECT r.metadata_json FROM objects o JOIN revisions r ON r.object_id=o.id AND r.seq=o.revision_count "
+                    "WHERE r.url=?", (video.url,)).fetchall())
         saved = m is not None and m["status"] == "ok" and (m["content_type"] or "").startswith("video/")
-        return {"video": video, "m": m, "saved": saved, "yt": bouncer.youtube.status(),
+        return {"video": video, "m": m, "saved": saved, "no_embed": no_embed, "yt": bouncer.youtube.status(),
                 "saving": m is not None and m["status"] == "pending" and bool(m["wanted_at"] or not m["held"]),
                 "archived": m is not None and bool(m["wanted_at"])}
 

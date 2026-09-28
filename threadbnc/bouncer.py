@@ -41,6 +41,7 @@ from .adapters import (
     NComment,
     NCommunity,
     NPost,
+    RemoteAuthError,
     RemoteError,
     RemoteNotFound,
     RemotePaused,
@@ -49,8 +50,11 @@ from .adapters import (
     UnsupportedSoftware,
     adapter_class,
     detect_software,
+    fedi_account_ref,
     from_fediverse,
     host_of,
+    is_fedi_account,
+    is_fedi_account_ref,
     is_reddit_host,
     is_rss,
     media_software,
@@ -1018,14 +1022,31 @@ class Bouncer:
     # -- communities -------------------------------------------------------
     def resolve_community(self, text: str) -> tuple[CommunityRef, NCommunity]:
         ref = parse_community_ref(text)
-        if ref.domain == RSS_DOMAIN:
+        if (ref.domain == RSS_DOMAIN or is_fedi_account_ref(ref)) and not text.strip().lower().startswith(RSS_PREFIX):
             ref = self._media_account(ref.name) or ref
-        adapter = self.adapter_for(ref.domain)
-        community = adapter.fetch_community(ref)
+        try:
+            community = self.adapter_for(ref.domain).fetch_community(ref)
+        except UnsupportedSoftware as exc:
+            # name@server on Mastodon and the like: a person to follow, not a community
+            person = fedi_account_ref("@" + text.strip().lstrip("@"))
+            if person is None or text.strip().startswith("!") or ref.domain in (RSS_DOMAIN, TAG_DOMAIN):
+                raise
+            try:
+                ref, community = person, self.tag_adapter.fetch_community(person)
+            except RemoteError:
+                raise exc from None
+        except (RemoteNotFound, RemoteAuthError):
+            if not (is_fedi_account_ref(ref) and ref.name.startswith("https://")):
+                raise
+            # A profile-like address (https://site/@name) that isn't anyone on the fediverse: perhaps a feed
+            ref = CommunityRef(RSS_DOMAIN, ref.name, RSS_DOMAIN)
+            community = self.rss_adapter.fetch_community(ref)
         if ref.domain == RSS_DOMAIN:  # the feed's own URL (a page may have led to it)
             return CommunityRef(RSS_DOMAIN, community.local_id or ref.name, RSS_DOMAIN), community
         if ref.domain == BSKY_DOMAIN:  # by DID, which stays the same when a handle changes
             return CommunityRef(BSKY_DOMAIN, community.local_id or ref.name, BSKY_DOMAIN), community
+        if is_fedi_account_ref(ref):  # by their actor's address, whichever way they were named
+            return CommunityRef(TAG_DOMAIN, community.local_id or ref.name, TAG_DOMAIN), community
         home = community.domain
         if home and home != ref.domain:
             try:  # poll the community's home instance when it speaks a supported API
@@ -1039,7 +1060,11 @@ class Bouncer:
     def _media_account(self, url: str) -> CommunityRef | None:
         """A Pixelfed or Loops account's profile link (followed as the account,
         not as a feed): its server is asked what it runs, once."""
-        ref = profile_ref(url)
+        if url.startswith("@"):
+            name, _, domain = url[1:].partition("@")
+            ref = CommunityRef(domain.lower(), name, domain.lower()) if domain else None
+        else:
+            ref = profile_ref(url)
         if ref is None or is_reddit_host(ref.domain) or youtube.is_youtube_host(ref.domain):
             return None
         if media_software(ref.domain) is None:
@@ -1177,6 +1202,10 @@ class Bouncer:
                              (community_id,)).fetchone()
         if f and f["source_domain"] == RSS_DOMAIN:  # the feed URL, which may contain "@"
             return CommunityRef(RSS_DOMAIN, f["source_ref"], RSS_DOMAIN)
+        if f and f["source_domain"] == TAG_DOMAIN:  # a hashtag, or someone's address (people.py)
+            return CommunityRef(TAG_DOMAIN, f["source_ref"], TAG_DOMAIN)
+        if is_fedi_account(c["canonical_ap_id"]) and not media_software(c["canonical_ap_id"]):
+            return CommunityRef(TAG_DOMAIN, c["canonical_ap_id"], TAG_DOMAIN)
         if f:
             name, _, home = f["source_ref"].partition("@")
             return CommunityRef(f["source_domain"], name, home or f["source_domain"])
@@ -1218,7 +1247,7 @@ class Bouncer:
                 # Pinned posts sit at the top of "New" whatever their age, so they
                 # say nothing about how far back this page reaches.
                 reached_known = any(self._already_seen(p, since) for p in batch if not p.featured)
-                if reached_known or len(batch) < size:
+                if reached_known or not getattr(adapter, "posts_have_more", len(batch) >= size):
                     break
         except RemotePaused as exc:  # not a failure: the server asked us to wait, so we do
             with self.db.transaction() as conn:
@@ -1532,11 +1561,13 @@ class Bouncer:
         now = utcnow()
         with self.db.connect() as conn:
             # Checked: those with polling on, and pushed ones now and then (on
-            # your own server). Anything else waits for pushes.
+            # your own server). Anything else waits for pushes, as do hashtags and
+            # people followed by ThreadBNC's own actor: there's no copy of theirs
+            # to look over but their own servers'.
             checked = conn.execute(
                 "SELECT community_id, source_domain, source_ref, poll_interval_minutes, next_poll_at "
-                "FROM community_follows "
-                "WHERE active=1 AND (polling=1 OR push_state='subscribed') ORDER BY next_poll_at").fetchall()
+                "FROM community_follows WHERE active=1 AND (polling=1 OR push_state='subscribed' "
+                "AND COALESCE(push_domain, '')<>?) ORDER BY next_poll_at", (TAG_DOMAIN,)).fetchall()
         due = [r for r in checked if not r["next_poll_at"] or r["next_poll_at"] <= now]
         follows = [r["community_id"] for r in due if not self.paced_kind(r)]
         for kind in ("reddit", "youtube"):

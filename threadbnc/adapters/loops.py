@@ -151,6 +151,7 @@ class LoopsAdapter(ThreadiverseAdapter):
         videos = [v for v in (got.get("data") if isinstance(got, dict) else None) or []
                   if isinstance(v, dict) and v.get("id")]
         cursor = ((got.get("meta") or {}).get("next_cursor")) if isinstance(got, dict) else None
+        self.posts_have_more = bool(cursor)
         if cursor:
             self._cursors[ref.name.lower()] = cursor
         else:
@@ -166,8 +167,6 @@ class LoopsAdapter(ThreadiverseAdapter):
 
     def resolve_url(self, ref: ThreadRef) -> str:
         """A video's id from its page's shortcode: its ActivityPub object says it."""
-        if ref.local_id.isdigit():
-            return ref.local_id
         resp = self.http.send("GET", f"https://{self.domain}/v/{ref.local_id}",
                               headers={"Accept": "application/activity+json"})
         if resp.status_code in (404, 410):

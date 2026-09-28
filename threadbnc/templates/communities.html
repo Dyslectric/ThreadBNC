@@ -10,7 +10,7 @@
 <section class="card" id="follow">
   <h2>Follow a community</h2>
   <form method="post" action="/follow" class="stack">
-    <input name="community" placeholder="!technology@lemmy.world  ·  https://lemmy.world/c/technology  ·  r/technology  ·  #hashtag  ·  @someone.bsky.social  ·  @someone@pixelfed.social  ·  youtube.com/@channel  ·  a feed or website URL" required>
+    <input name="community" placeholder="!technology@lemmy.world  ·  https://lemmy.world/c/technology  ·  r/technology  ·  #hashtag  ·  @someone.bsky.social  ·  @someone@mastodon.social  ·  youtube.com/@channel  ·  a feed or website URL" required>
     <div class="row">
       <label>Check every <input type="number" name="poll_interval_minutes" placeholder="{{ default_poll }}" min="1" class="num"
         title="Blank: every {{ default_poll }} minutes, {{ reddit_poll }} for a subreddit, {{ bluesky_poll }} for Bluesky, or {{ media_poll }} for Pixelfed and Loops"> min</label>
@@ -34,6 +34,8 @@
     <code>bsky.app/profile/…/feed/…</code> link. It's read without an account, so replies and likes can't be made from here.
     Follow a Pixelfed or Loops account by its <code>@name@server</code> or profile link; you like and reply as your
     Mastodon account.
+    {% if actor_handle %}For Mastodon (and GoToSocial, Akkoma, Misskey…), follow someone by their <code>@name@server</code>
+    or profile link: {{ actor_handle }} follows them, and their public posts arrive as they're made.{% endif %}
     {% if not reddit %}To follow subreddits, <a href="/reddit">connect Reddit</a> first.{% else %}<a href="/reddit">Reddit settings</a>{% endif %}
     · <a href="/youtube">YouTube settings</a></p>
 </section>

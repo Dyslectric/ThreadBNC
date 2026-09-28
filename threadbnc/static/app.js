@@ -1633,40 +1633,52 @@ document.documentElement.classList.add("js");
   }
 
   async function loadLoop(el, play = false) {
-    if (!el || el.dataset.loaded || loopVeiled(el)) return;
+    if (!el || loopVeiled(el)) return;
+    if (el.dataset.loaded) {
+      if (play && el.dataset.loaded === "1") playLoop(el, true);
+      return;
+    }
     const slot = $(".loop-slot", el);
+    const request = {};
+    el.loopRequest = request;
     el.dataset.loaded = "loading";
     try {
       const box = $("article.video-box", await fetchDoc(el.dataset.loop));
-      if (!box || el.dataset.loaded !== "loading" || !el.isConnected) return;  // let go meanwhile
+      if (el.loopRequest !== request || !el.isConnected) return;
+      if (!box) throw new Error("No video player returned");
       el.loopPlaceholder = slot.innerHTML;
+      const prompt = $(".video-player > p", box);
+      const playLink = $(".loop-start", slot);
+      if (prompt && playLink) prompt.replaceWith(playLink.cloneNode(true));
       slot.replaceChildren(document.adoptNode(box));
       el.dataset.loaded = "1";
-      startPlayers();
-      // A site's player only listens once its page has loaded.
-      for (const frame of $$("iframe", slot)) {
-        frame.addEventListener("load", () => { if (loopOnScreen(el)) playLoop(el, true); }, { once: true });
-      }
+      watchSaving();
       if (play || loopOnScreen(el)) playLoop(el, true);
     } catch (e) {
-      delete el.dataset.loaded;
+      if (el.loopRequest === request) delete el.dataset.loaded;
     }
   }
 
   function unloadLoop(el) {
+    delete el.loopRequest;
     if (el.dataset.loaded !== "1") { delete el.dataset.loaded; return; }
     stopVideos(el);
+    for (const player of $$(".video-player", el)) fitLoops.unobserve(player);
     $(".loop-slot", el).innerHTML = el.loopPlaceholder || "";
     delete el.dataset.loaded;
   }
 
   function playLoop(el, on) {
-    for (const v of $$("video", el)) {
+    const slot = $(".loop-slot", el);
+    if (!slot) return;
+    if (on) startPlayers(slot);
+    for (const v of $$("video", slot)) {
       v.loop = true;
+      if (!v.dataset.loopReady) { v.muted = true; v.dataset.loopReady = "1"; }
       if (on) v.play().catch(() => {});  // the browser may want a click first
       else v.pause();
     }
-    const box = $("article.video-box", el);
+    const box = $("article.video-box", slot);
     if (!box) return;
     if (box.id.startsWith("video-loops-")) {
       for (const frame of $$("iframe", box)) {
@@ -1688,7 +1700,7 @@ document.documentElement.classList.add("js");
     if (!d || d.context !== "loops-embed" || d.event !== "ended") return;
     const frame = $$("article.loop iframe").find((f) => f.contentWindow === ev.source);
     const el = frame && frame.closest("article.loop");
-    if (!el || !loopOnScreen(el)) return;
+    if (!el || !loopOnScreen(el) || ev.origin !== new URL(frame.src).origin) return;
     const origin = new URL(frame.src).origin;
     frame.contentWindow.postMessage({ context: "loops-embed", action: "seek", time: 0 }, origin);
     frame.contentWindow.postMessage({ context: "loops-embed", action: "play" }, origin);
@@ -1697,7 +1709,7 @@ document.documentElement.classList.add("js");
   // Play before its player has come: fetch it now, and play it.
   document.addEventListener("click", (ev) => {
     const start = ev.target.closest("article.loop[data-loop] .loop-start");
-    if (!start) return;
+    if (!start || ev.button !== 0 || ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.altKey) return;
     ev.preventDefault();
     loadLoop(start.closest("article.loop"), true);
   });
@@ -1716,8 +1728,10 @@ document.documentElement.classList.add("js");
     }
   });
 
-  function startPlayers() {
-    for (const el of $$("article.live-box:not([data-started]), .video-player[data-embed]:not([data-started])")) {
+  function startPlayers(root = document) {
+    for (const el of $$("article.live-box:not([data-started]), .video-player[data-embed]:not([data-started])", root)) {
+      const loop = el.closest("article.loop");
+      if (loop && (loopVeiled(loop) || (root === document && !loopOnScreen(loop)))) continue;
       el.dataset.started = "1";
       const frame = document.createElement("iframe");
       let src = el.dataset.embed;
@@ -1729,6 +1743,11 @@ document.documentElement.classList.add("js");
         if (theme === "dark" || (!theme && matchMedia("(prefers-color-scheme: dark)").matches)) src += "?theme=dark";
         frame.setAttribute("scrolling", "no");
         fitLoops.observe(el);
+        if (loop) frame.addEventListener("load", () => {
+          if (!loopOnScreen(loop) || !frame.isConnected) return;
+          frame.contentWindow.postMessage({ context: "loops-embed", action: "mute" }, new URL(frame.src).origin);
+          playLoop(loop, true);
+        }, { once: true });
       }
       frame.src = src;
       frame.title = el.dataset.label || "Player";
@@ -2528,6 +2547,16 @@ document.documentElement.classList.add("js");
     watchAvatars(document);
     watchLoops(document);
     new MutationObserver((changes) => {
+      for (const c of changes) for (const el of c.removedNodes) if (el.nodeType === 1 && !el.isConnected) {
+        const loops = el.matches("article.loop") ? [el] : $$("article.loop", el);
+        for (const loop of loops) {
+          if (loopNear) loopNear.unobserve(loop);
+          if (loopShown) loopShown.unobserve(loop);
+          unloadLoop(loop);
+        }
+        const players = el.matches(".video-player") ? [el] : $$(".video-player", el);
+        for (const player of players) fitLoops.unobserve(player);
+      }
       for (const c of changes) for (const el of c.addedNodes) if (el.nodeType === 1) {
         watchLoops(el);
         watchDiscussions(el);

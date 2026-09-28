@@ -7,7 +7,7 @@ import html
 import httpx
 import pytest
 
-from threadbnc.adapters import (RemoteNotFound, media_software, parse_community_ref, parse_thread_url,
+from threadbnc.adapters import (TAG_DOMAIN, RemoteNotFound, media_software, note_software, parse_community_ref, parse_thread_url,
                                 profile_ref)
 from threadbnc.adapters.loops import LoopsAdapter
 from threadbnc.adapters.pixelfed import PixelfedAdapter
@@ -110,6 +110,11 @@ class WithMedia(WithHome):
                 return httpx.Response(200, json={"data": data, "meta": {"pagination": {"total_pages": 1}}})
         if host == LOOPS:
             self.asked.append(str(request.url))
+            if path == "/.well-known/nodeinfo":
+                return httpx.Response(200, json={"links": [{"rel": "http://nodeinfo.diaspora.software/ns/schema/2.0",
+                                                          "href": f"https://{LOOPS}/nodeinfo/2.0"}]})
+            if path == "/nodeinfo/2.0":
+                return httpx.Response(200, json={"software": {"name": "loops", "version": "1.0"}})
             if path == "/api/v1/account/username/carol":
                 return httpx.Response(200, json={"data": {"id": "3", "username": "carol", "name": "Carol",
                                                           "bio": "Cats #cats", "local": True, "remote_url": None}})
@@ -170,8 +175,9 @@ def comments(bouncer, tid):
 
 
 def test_accounts_and_posts_are_recognised():
-    assert parse_community_ref("@alice@pix.test").domain == "pix.test"
-    assert parse_community_ref("@alice@pix.test").name == "alice"
+    # Handles are resolved after the server is identified, as with Mastodon.
+    assert parse_community_ref("@alice@pix.test").domain == TAG_DOMAIN
+    assert parse_community_ref("@alice@pix.test").name == "@alice@pix.test"
     assert parse_community_ref("!math@lemmy.ml").name == "math"  # the rest as before
     for url, name in (("https://pix.test/alice", "alice"), ("https://pix.test/users/alice/", "alice"),
                       ("https://loops.test/@carol", "carol"), ("https://loops.test/ap/users/3", "3")):
@@ -286,6 +292,8 @@ def test_the_loops_view_scrolls_through_video_posts(web, b, fedi):
 
     box = web.get(f"/video?url=https://{LOOPS}/v/code52&bare=1").text  # what app.js puts in
     assert f'data-embed="https://{LOOPS}/embed/code52"' in box and 'action="/video/save"' in box
+    blocked = web.get(f"/video?url=https://{LOOPS}/v/code49&bare=1").text
+    assert "data-embed" not in blocked and "doesn't let it play on other sites" in blocked
 
 
 def test_opening_a_loops_video_reads_its_comments(b, fedi):
@@ -310,7 +318,7 @@ def test_loops_links_play_in_loops_player(b):
     b.adapter_for(LOOPS)  # known to run Loops
     v = video_of("https://loops.test/v/code52")
     assert (v.kind, v.embed, v.fetch_url, v.site) == ("loops", "https://loops.test/embed/code52",
-                                                      "https://loops.test/v/code52", "Loops")
+                                                      "https://loops.test/embed/code52", "Loops")
     assert video_of("https://elsewhere.test/v/code52") is None  # not known to be Loops
     assert video_of("https://loops.video/v/eQYqneK5va").kind == "loops"
 
@@ -318,3 +326,47 @@ def test_loops_links_play_in_loops_player(b):
 def test_hashtag_posts_from_pixelfed_read_their_comments_there(b, fedi):
     got = b.tag_adapter.fetch_comments(f"autumn https://{PIX}/p/alice/101")
     assert not got.complete and {c.body for c in got} == {"Lovely", "Where?", "Thanks!"}
+
+
+@pytest.mark.parametrize("address,domain,actor,name", [
+    ("@alice@pix.test", PIX, ALICE, "alice"),
+    ("https://pix.test/users/alice", PIX, ALICE, "alice"),
+    ("pix.test/alice", PIX, ALICE, "alice"),
+    ("@carol@loops.test", LOOPS, CAROL, "carol"),
+    ("loops.test/@carol", LOOPS, CAROL, "carol"),
+    (CAROL, LOOPS, CAROL, "carol"),
+])
+def test_media_accounts_use_their_api_with_the_mastodon_follow_worker(web, b, fedi, address, domain, actor, name):
+    from threadbnc.people import PeopleFollows
+
+    note_software(domain, None)  # a server never seen before, resolved through real detection
+    b._adapter_factory = None
+    people = web.app.state.people
+    assert isinstance(people, PeopleFollows)
+    cid = b.follow_community(address, backfill=True)
+    people.housekeeping(now=True)
+    row = one(b, "SELECT * FROM community_follows WHERE community_id=?", cid)
+    assert row["source_domain"] == domain and row["source_ref"] == name
+    assert row["polling"] == 1 and row["push_state"] is None and row["push_actor"] is None
+    assert b.community_ref(cid).domain == domain
+    assert b.poll_follow(cid) >= 2
+    page = web.get(f"/c/{cid}").text
+    assert "They couldn't be asked for their posts" not in page and "Stop checking" not in page
+    b.unfollow(cid)
+    b.follow_community(actor)
+    assert one(b, "SELECT COUNT(*) FROM communities WHERE canonical_ap_id=?", actor)[0] == 1
+
+
+def test_pixelfed_polling_continues_past_filtered_posts(b, fedi):
+    cid = b.follow_community("@alice@pix.test", backfill=True)
+    b.poll_follow(cid)
+    fedi.pixelfed = [pf_status(str(n), "A reply", in_reply_to_id="10") for n in range(140, 120, -1)] + [
+        pf_status("120", "New photo"), *fedi.pixelfed]
+    assert b.poll_follow(cid) == 1
+    assert root(b, f"https://{PIX}/p/alice/120")["title"] == "New photo"
+
+
+def test_unavailable_pixelfed_replies_do_not_mark_archived_comments_deleted(b, fedi):
+    adapter = b.adapter_for(PIX)
+    del fedi.pf_comments[("8", "201")]
+    assert not adapter.fetch_comments("alice/101").complete
