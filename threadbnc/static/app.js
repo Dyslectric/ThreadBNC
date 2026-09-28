@@ -1630,7 +1630,27 @@ document.documentElement.classList.add("js");
       loopNear.observe(el);
       loopShown.observe(el);
     }
+    if (els.length) queueLoopSnap();
   }
+
+  // The page snaps from post to post only while you're among them (style.css: loops-snap).
+  // Above the first (the view's buttons) or below the last (Load more), Firefox would
+  // otherwise snap back to the post it last snapped to whenever the page changed, even
+  // on clicking a button there.
+  let loopSnapQueued = false;
+  function queueLoopSnap() {
+    if (loopSnapQueued) return;
+    loopSnapQueued = true;
+    requestAnimationFrame(() => {
+      loopSnapQueued = false;
+      const loops = $$("#items.loops article.loop");
+      const pad = parseFloat(getComputedStyle(document.documentElement).scrollPaddingTop) || 0;
+      const among = loops.length > 0 && loops[0].getBoundingClientRect().top <= pad + 12
+        && loops[loops.length - 1].getBoundingClientRect().top >= pad - 12;
+      document.documentElement.classList.toggle("loops-snap", among);
+    });
+  }
+  addEventListener("scroll", () => { if ($("#items.loops")) queueLoopSnap(); }, { passive: true });
 
   async function loadLoop(el, play = false) {
     if (!el || loopVeiled(el)) return;

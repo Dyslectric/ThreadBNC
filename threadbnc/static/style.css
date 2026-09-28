@@ -650,12 +650,13 @@ fieldset.media-kind p { margin: 0; }
 .picture-card .pc-excerpt { -webkit-line-clamp: 5; line-clamp: 5; }
 
 /* ---- Loops: a video post to a screen, scrolled through upwards (post_loop, app.js) ---- */
-html:has(#items.loops) { scroll-snap-type: y proximity; }
-/* The page's top and end stop the scrolling too, or what's above the first video (the view's
-   buttons) and below the last (Load more) would be snapped away from, back to the video. */
-html:has(#items.loops) body::before, html:has(#items.loops) body::after { content: ""; display: block; }
-html:has(#items.loops) body::before { scroll-snap-align: start; }
-html:has(#items.loops) body::after { scroll-snap-align: end; }
+/* Only while among the posts (app.js), so what's above the first (the view's buttons) and
+   below the last (Load more) isn't snapped away from, back to a post. The page's top and end
+   are snap points too, or Chrome's wheel wouldn't leave the first post or the last. */
+html.loops-snap { scroll-snap-type: y proximity; }
+html.loops-snap body::before, html.loops-snap body::after { content: ""; display: block; }
+html.loops-snap body::before { scroll-snap-align: start; }
+html.loops-snap body::after { scroll-snap-align: end; }
 .loop { height: calc(100dvh - var(--header-h) - 24px); min-height: 22rem; margin-bottom: 12px;
   display: grid; grid-template-rows: minmax(0, 1fr) auto; scroll-snap-align: start;
   background: var(--card); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; box-shadow: var(--shadow); }
