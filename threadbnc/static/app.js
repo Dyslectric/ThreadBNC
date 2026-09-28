@@ -432,12 +432,32 @@ document.documentElement.classList.add("js");
   }
 
   // ---- load more ---------------------------------------------------------------
-  document.addEventListener("click", async (ev) => {
+  // With infinite scroll (Settings) the link loads itself as it nears the screen;
+  // if that fails, it's there to click again.
+  document.addEventListener("click", (ev) => {
     const link = ev.target.closest("[data-load-more]");
-    if (!link) return;
-    const list = $("[data-items]");
-    if (!list) return;
+    if (!link || !$("[data-items]")) return;
     ev.preventDefault();
+    loadMore(link, false);
+  });
+
+  let moreObserver = null;
+  function watchLoadMore(root) {
+    if (!("IntersectionObserver" in window) || !document.documentElement.hasAttribute("data-infinite-scroll")) return;
+    moreObserver = moreObserver || new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        if (!e.isIntersecting) continue;
+        moreObserver.unobserve(e.target);
+        loadMore(e.target, true);
+      }
+    }, { rootMargin: "0px 0px 1200px 0px" });
+    for (const link of $$("[data-load-more]", root)) moreObserver.observe(link);
+  }
+
+  async function loadMore(link, auto) {
+    const list = $("[data-items]");
+    if (!list || link.getAttribute("aria-busy")) return;
+    const label = link.textContent;
     link.setAttribute("aria-busy", "true");
     link.textContent = "Loading…";
     try {
@@ -453,13 +473,19 @@ document.documentElement.classList.add("js");
       added.forEach((el) => { watchUnread(el); watchArticles(el); });
       const pager = link.closest(".pager");
       const next = $(".pager", doc);
-      if (next) pager.replaceWith(document.adoptNode(next)); else pager.remove();
+      if (next) {
+        const fresh = document.adoptNode(next);
+        pager.replaceWith(fresh);
+        watchLoadMore(fresh);
+      } else pager.remove();
       const first = added.find((el) => el.matches("[data-entry]"));
-      if (first && current) select(first);
+      if (first && current && !auto) select(first);
     } catch (e) {
-      location.assign(link.href);
+      if (!auto) { location.assign(link.href); return; }
+      link.removeAttribute("aria-busy");
+      link.textContent = label;
     }
-  });
+  }
 
   // ---- galleries: swipe, or step with the arrows (wrapping round) ---------------------
   function stepGallery(g, step) {
@@ -2338,6 +2364,7 @@ document.documentElement.classList.add("js");
     watchUnread(document);
     watchArticles(document);
     watchDiscussions(document);
+    watchLoadMore(document);
     watchTrendPictures(document);
     watchAvatars(document);
     new MutationObserver((changes) => {

@@ -104,6 +104,9 @@ def test_custom_feed_can_be_edited_and_deleted(client, bouncer):
     assert tuple(custom) == ("Both", "tiles")
     assert len(titles(client.get(f"/f/{fid}?view=list").text)) == 4
     assert one(bouncer, "SELECT view_mode FROM custom_feeds WHERE id=?", fid)[0] == "list"  # remembered
+    assert '<option value="timeline" >Timeline</option>' in client.get(f"/f/{fid}/edit").text
+    client.post(f"/f/{fid}/edit", data={"name": "Both", "community": [math, physics], "view": "timeline"})
+    assert 'class="timeline"' in client.get(f"/f/{fid}").text
     client.post(f"/f/{fid}/delete")
     assert client.get(f"/f/{fid}").status_code == 404
     assert one(bouncer, "SELECT COUNT(*) FROM custom_feed_communities")[0] == 0
