@@ -638,7 +638,7 @@ def test_subscribing_to_your_mastodon_servers_public_timeline(web, tagged, fedi,
 
     fedi.home.handle = home
     b.hooks.remove(relays.housekeeping)
-    stream._checked = 0.0
+    stream._checked = float("-inf")
     b.tick()
     assert asked == [["300"]]
     with b.db.connect() as conn:
@@ -862,7 +862,7 @@ def test_mastodon_posts_are_read_without_listening_and_boosts_are_counted(web, t
 
     fedi.home.handle = home
     b.hooks.remove(relays.housekeeping)
-    stream._checked = 0.0
+    stream._checked = float("-inf")
     b.tick()
     assert sorted(searched) == [big["uri"], lost["uri"]]
     got = {r["ref"]: r for r in rows(b, "SELECT * FROM stream_posts")}

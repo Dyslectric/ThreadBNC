@@ -167,7 +167,7 @@ class Bouncer:
         self.articles = articles.ArticleFetcher(db, settings.user_agent, enabled=settings.archive_articles,
                                                 timeout=max(settings.http_timeout, 30.0), throttle=self.http.throttle)
         self._media_backfilled = False
-        self._articles_swept = 0.0  # monotonic time of the last sweep of articles read from links
+        self._articles_swept = float("-inf")  # monotonic time of the last sweep of articles read from links
         # "reddit" / "youtube" -> monotonic time of the last check of one (None: you're away)
         self._paced_clock: dict[str, float | None] = {}
         self._clock: Callable[[], float] = time.monotonic

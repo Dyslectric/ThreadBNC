@@ -259,7 +259,7 @@ class Federation:
         self.relays = relays
         self.wake = threading.Event()
         self._stop = threading.Event()
-        self._housekept = 0.0
+        self._housekept = float("-inf")  # monotonic time counts from boot: the first round runs at once
         self._subscribe_all = False  # asked for on the Communities page (request_subscribe_all)
         for domain in relays:  # your own servers: no need to space out requests
             self.bouncer.http.throttle.exempt.add(domain)
