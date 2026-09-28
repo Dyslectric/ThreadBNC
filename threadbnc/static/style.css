@@ -1141,6 +1141,9 @@ a.article-link.dived, a[data-dive].dived, a.video-link.dived, a.live-link.dived 
 /* List/picture/thread cards really contain their expansion. The inset border
    joins the new content to the card instead of looking like a detached card. */
 .inline-panels { flex-basis: 100%; min-width: 0; }
+/* Beneath a feed card, the article fills the card's width, thumbnail and avatar columns included. */
+.post-card:has(> .inline-panels) { flex-wrap: wrap; row-gap: 0; }
+[data-entry] > .inline-panels .reader { max-width: none; }
 .thread-article-panels { margin: -2px 0 12px; }
 .card-inline-panel { margin: 10px 0 0; border-radius: 9px; box-shadow: none; background: var(--bg); }
 .card-inline-panel.panel-continuation { margin-top: 0; border-top: 0; border-top-left-radius: 0; border-top-right-radius: 0; }
