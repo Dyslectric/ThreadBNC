@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import when, state_badges, votes, byname, icon, keep_button, pager as load_more %}
+{% from "_macros.html" import when, state_badges, votes, byname, icon, keep_button, veil, pager as load_more %}
 {% block title %}{{ ('Search: ' ~ q) if q else 'Search' }}{% endblock %}
 
 {% macro earlier(h) -%}
@@ -76,7 +76,7 @@
   {% if h.object_type == 'post' %}
   <li class="post-card hit" id="h{{ h.id }}" data-entry data-open="{{ link }}">
     {% if h.thumb %}
-      <a class="thumb" href="{{ link }}" tabindex="-1" aria-hidden="true">
+      <a class="thumb" href="{{ link }}" tabindex="-1" aria-hidden="true"{{ veil(h.veil) }}>
         {% if h.thumb.video %}<video src="/media/{{ h.thumb.id }}" muted preload="metadata"></video>
         {% else %}<img src="{{ thumb(h.thumb.id, 'list') }}" alt="" loading="lazy">{% endif %}
       </a>

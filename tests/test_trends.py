@@ -367,6 +367,26 @@ def test_posts_of_the_past_hour(settings, bouncer, bsky, monkeypatch):  # noqa: 
     assert 'href="/trending?sort=replies&t=day&' in page
 
 
+def test_trending_blurs_adult_pictures(settings, bouncer, bsky):  # noqa: F811
+    # A Bluesky post labelled as adult content has its pictures blurred until clicked, as the feed's are.
+    lewd, tame = tid(), tid(clock=8)
+    bsky.author_feed = [{"post": post_view(lewd, "Lewd", likes=9, created=stamp(hours=-1), labels=("porn",))},
+                        {"post": post_view(tame, "Tame", likes=5, created=stamp(hours=-1))}]
+    tally = trends.Tally("bluesky")
+    for ref in (lewd, tame):
+        tally.reply(at(ref), trends.post_time(at(ref)))
+    tally.flush(bouncer.db)
+    trends.Trends(bouncer).check_bluesky()
+    web_client = TestClient(create_app(settings, bouncer))
+    web_client.post("/login", data={"password": "pw"})
+    page = web_client.get("/trending").text
+    assert page.count('data-veil="NSFW"') == 1 and page.index("Lewd") < page.index('data-veil="NSFW"') < page.index("Tame")
+    # So is a Mastodon status marked sensitive.
+    view = mastodon_stream.status_view
+    assert view({"content": "Hi", "sensitive": True}, "masto.test")["sensitive"] is True
+    assert view({"content": "Hi"}, "masto.test")["sensitive"] is False
+
+
 def test_the_trending_page(settings, bouncer, bsky):  # noqa: F811
     busy = tid()
     bsky.author_feed = [{"post": post_view(busy, "Big thread", likes=40, replies=12, created=stamp(hours=-1))}]

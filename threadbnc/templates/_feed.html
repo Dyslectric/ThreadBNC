@@ -1,4 +1,4 @@
-{% from "_macros.html" import when, state_badges, votes, vote_breakdown, copy_where, byname, icon, keep_button, read_button, trash_button, avatar %}
+{% from "_macros.html" import when, state_badges, votes, vote_breakdown, copy_where, byname, icon, keep_button, read_button, trash_button, avatar, veil %}
 {% from "_macros.html" import pager as load_more %}
 
 {# base: URL prefix ending in "?" or "&" that keeps any fixed params (e.g. tab).
@@ -221,13 +221,14 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
 
 {# A post's pictures, swiped or stepped through with the arrows when there are several.
    view: "tile" or "picture", for the size of copy asked for (thumbs.py). `shown`:
-   these pictures of it rather than all of them. #}
-{% macro gallery(i, veiled, view, shown=none) %}
+   these pictures of it rather than all of them. NSFW and spoiler pictures stay
+   blurred until clicked (veil). #}
+{% macro gallery(i, view, shown=none) %}
 {% set pics = shown or i.thumb.pics %}
-<div class="gallery"{% if pics | length > 1 %} data-gallery{% endif %}>
+<div class="gallery"{% if pics | length > 1 %} data-gallery{% endif %}{{ veil(i.veil) }}>
   <div class="gallery-track">
     {% for p in pics %}
-    <a class="gallery-slide" href="/t/{{ i.id }}" tabindex="-1" aria-hidden="true"{% if veiled %} data-reveal{% endif %}>
+    <a class="gallery-slide" href="/t/{{ i.id }}" tabindex="-1" aria-hidden="true">
       {% if p.video %}<video src="/media/{{ p.id }}" muted preload="metadata"></video>
       {% else %}<img src="{{ thumb(p.id, view) }}" alt="" loading="lazy">{% endif %}
     </a>
@@ -240,7 +241,6 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
   {% endif %}
   {% if pics[0].video %}<span class="tile-badge right" title="Video">{{ icon('play') }}</span>{% endif %}
   {% if i.group %}<span class="tile-badge" title="Posted {{ i.copies | length }} times">×{{ i.copies | length }}</span>{% endif %}
-  {% if veiled %}<span class="tile-veil">{{ 'NSFW' if i.nsfw else 'Spoiler' }}<span class="small">Tap to show</span></span>{% endif %}
 </div>
 {% endmacro %}
 
@@ -285,12 +285,10 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
 {% endif %}
 {%- endmacro %}
 
-{# A post as a grid tile: its pictures, else a text card. NSFW and
-   spoiler media stays blurred until hovered, focused or tapped. #}
+{# A post as a grid tile: its pictures, else a text card. #}
 {% macro post_tile(i, show_community=True, next_id=none) %}
-{% set veiled = (i.nsfw or i.spoiler) and i.thumb %}
-<article class="tile {{ 'unread' if i.unread }} {{ 'kept' if i.all_kept }} {{ 'veiled' if veiled }}" {{ entry_attrs(i) }}>
-  {% if i.thumb %}<div class="tile-media">{{ gallery(i, veiled, 'tile') }}</div>
+<article class="tile {{ 'unread' if i.unread }} {{ 'kept' if i.all_kept }}" {{ entry_attrs(i) }}>
+  {% if i.thumb %}<div class="tile-media">{{ gallery(i, 'tile') }}</div>
   {% else %}
   <a class="tile-media" href="/t/{{ i.id }}" tabindex="-1" aria-hidden="true">
     <span class="tile-text">{{ i.excerpt or i.title }}</span>
@@ -330,7 +328,7 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
 {% macro post_card(i, show_community=True, next_id=none) %}
 <article class="post-card {{ 'unread' if i.unread }} {{ 'kept' if i.all_kept }}" {{ entry_attrs(i) }}>
   {% if i.thumb %}
-    <a class="thumb" href="/t/{{ i.id }}" tabindex="-1" aria-hidden="true">
+    <a class="thumb" href="/t/{{ i.id }}" tabindex="-1" aria-hidden="true"{{ veil(i.veil) }}>
       {% if i.thumb.video %}<video src="/media/{{ i.thumb.id }}" muted preload="metadata"></video>
       {% else %}<img src="{{ thumb(i.thumb.id, 'list') }}" alt="" loading="lazy">{% endif %}
       {% if i.thumb.pics | length > 1 %}<span class="thumb-count" title="{{ i.thumb.pics | length }} pictures">{{ icon('picture') }}{{ i.thumb.pics | length }}</span>{% endif %}
@@ -380,8 +378,7 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
 
 {# A post in the one-column pictures view: its pictures at full width, else the start of its text. #}
 {% macro post_picture(i, show_community=True, next_id=none) %}
-{% set veiled = (i.nsfw or i.spoiler) and i.thumb %}
-<article class="picture-card {{ 'unread' if i.unread }} {{ 'kept' if i.all_kept }} {{ 'veiled' if veiled }}" {{ entry_attrs(i) }}>
+<article class="picture-card {{ 'unread' if i.unread }} {{ 'kept' if i.all_kept }}" {{ entry_attrs(i) }}>
   <div class="pc-meta small">
     {{ reposted_by(i) }}
     {% if show_community %}<a class="pc-community" href="/c/{{ i.community_id }}">{{ chandle(i.cname, i.c_ap) }}</a> ·{% endif %}
@@ -391,7 +388,7 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
   <h3 class="pc-title"><a href="/t/{{ i.id }}">{{ i.title }}</a></h3>
   {{ post_link(i) }}
   {{ audio_bar(i) }}
-  {% if i.thumb %}<div class="picture-media">{{ gallery(i, veiled, 'picture') }}</div>
+  {% if i.thumb %}<div class="picture-media">{{ gallery(i, 'picture') }}</div>
   {% elif i.excerpt %}<p class="pc-excerpt">{{ i.excerpt }}</p>{% endif %}
   <div class="pc-actions actions small">
     {{ post_content_link(i) }}
@@ -414,10 +411,9 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
    with it, and replying and liking below. A post with a title of its own (a blog's,
    or a Lemmy post that was tagged) has it above its text. `md`: feed_md. #}
 {% macro post_status(i, md, show_community=True, next_id=none) %}
-{% set veiled = (i.nsfw or i.spoiler) and i.attached %}
 {% set profile = i.author_ap | safe_url if i.author_ap and not is_rss(i.c_ap) else none %}
 {% set name = i.a_name or i.username or '?' %}
-<article class="status {{ 'unread' if i.unread }} {{ 'kept' if i.all_kept }} {{ 'veiled' if veiled }}" {{ entry_attrs(i) }}>
+<article class="status {{ 'unread' if i.unread }} {{ 'kept' if i.all_kept }}" {{ entry_attrs(i) }}>
   {% if i.reposted_by %}<div class="st-repost small muted">{{ reposted_by(i) }}</div>{% endif %}
   <div class="st-row">
     {{ avatar(i.avatar, name, i.hue, ('actor:' ~ i.author_id) if i.author_id and avatar_wait(i) else none, profile) }}
@@ -436,8 +432,8 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
       {% set badges = state_badges(i) | trim %}{% if badges %}<div class="small">{{ badges }}</div>{% endif %}
       {% set content %}
         {% if not i.untitled and not i.warning %}<h3 class="st-title"><a href="/t/{{ i.id }}">{{ i.title }}</a></h3>{% endif %}
-        {% if i.body %}<div class="md st-text">{{ md(i.body) }}</div>{% elif i.untitled %}<p class="st-text">{{ i.title }}</p>{% endif %}
-        {% if i.attached %}<div class="st-media">{{ gallery(i, veiled, 'picture', i.attached) }}</div>{% endif %}
+        {% if i.body %}<div class="md st-text"{{ veil(i.veil) }}>{{ md(i.body) }}</div>{% elif i.untitled %}<p class="st-text">{{ i.title }}</p>{% endif %}
+        {% if i.attached %}<div class="st-media">{{ gallery(i, 'picture', i.attached) }}</div>{% endif %}
         {{ post_link(i) }}
         {{ audio_bar(i) }}
       {% endset %}

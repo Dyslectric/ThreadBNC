@@ -279,7 +279,12 @@ def test_nsfw_tiles_are_veiled(settings, server, mbouncer):
     client = TestClient(create_app(settings, mbouncer))
     client.post("/login", data={"password": "pw"})
     page = client.get(f"/c/{cid}").text
-    assert page.count(" veiled") == 1 and '<span class="tile-veil">NSFW<span class="small">Tap to show</span></span>' in page
+    assert 'class="tiles"' in page and page.count('data-veil="NSFW"') == 1
+    # Blurred in every view, on its page and in search results too.
+    for view in ("pictures", "list", "timeline"):
+        assert client.get(f"/c/{cid}?view={view}").text.count('data-veil="NSFW"') == 1, view
+    assert '<div class="gallery" data-veil="NSFW">' in client.get(f"/t/{tid}").text
+    assert client.get("/search", params={"q": "picture"}).text.count('data-veil="NSFW"') == 1
 
 
 

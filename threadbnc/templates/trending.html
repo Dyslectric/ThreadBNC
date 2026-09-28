@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import when, icon, avatar, pager as load_more %}
+{% from "_macros.html" import when, icon, avatar, veil, pager as load_more %}
 {% block title %}Trending{% endblock %}
 {% block content %}
 {% set st = status %}
@@ -216,8 +216,10 @@
           </p>
         {% endif %}
         {# Its pictures at the column's width, as on Mastodon: one shown whole, several two to a row.
-           Pressed, one is shown whole, from its full-size file (app.js). #}
-        <div class="trend-pics" id="pics-{{ p.key }}" {% if not p.pictures %}hidden{% endif %}>
+           Pressed, one is shown whole, from its full-size file (app.js). Blurred until then when
+           it's marked sensitive (on Bluesky, labelled as adult content). #}
+        <div class="trend-pics" id="pics-{{ p.key }}" {% if not p.pictures %}hidden{% endif %}
+             {{- veil(('Spoiler' if v.warning else 'NSFW') if v.sensitive) }}>
           {% for mid in p.pictures %}<button type="button" class="trend-pic" data-full="/media/{{ mid }}" aria-pressed="false"
             title="Show it whole"><img src="{{ thumb(mid, 'picture') }}" alt="" loading="lazy"></button>{% endfor %}
         </div>
