@@ -51,7 +51,7 @@
       <label>From <select name="t">{% for k, v in windows.items() %}<option value="{{ k }}" {{ 'selected' if settings.window == k }}>{{ v }}</option>{% endfor %}</select></label>
       <label>Show <select name="unread">{% for k, v in shows.items() %}<option value="{{ k }}" {{ 'selected' if settings.unread == k }}>{{ v }}</option>{% endfor %}</select></label>
       <label>As <select name="view">
-        {% for k, v in [('auto', 'Pick by how many have images'), ('list', 'Posts'), ('pictures', 'Pictures'), ('tiles', 'Grid'), ('timeline', 'Timeline')] %}
+        {% for k, v in [('auto', 'Pick by how many have images'), ('list', 'Posts'), ('pictures', 'Pictures'), ('tiles', 'Grid'), ('timeline', 'Timeline'), ('loops', 'Loops: videos only')] %}
         <option value="{{ k }}" {{ 'selected' if view_mode == k or (k == 'auto' and not view_mode) }}>{{ v }}</option>{% endfor %}
       </select></label>
     </div>

@@ -16,7 +16,8 @@
 {% set here = feed_url(base, sort, window, unread) %}
 {% set views = [('list', 'Posts: thumbnail, title and the start of the text', 'list'),
                 ('pictures', 'Pictures, one column', 'picture'), ('tiles', 'Pictures in a grid', 'tiles'),
-                ('timeline', 'Timeline: whole posts by who posted them, as on Mastodon', 'timeline')] %}
+                ('timeline', 'Timeline: whole posts by who posted them, as on Mastodon', 'timeline'),
+                ('loops', 'Loops: videos one at a time, scrolling up to the next', 'loops')] %}
 {% set windows = {'day': 'Past day', 'week': 'Past week', 'month': 'Past month', 'all': 'All time'} %}
 <div class="feed-controls">
   <nav class="seg" aria-label="Sort by">
@@ -65,7 +66,7 @@
     <div class="menu-panel">
       <div class="menu-section">
         <div class="menu-label">Show posts as</div>
-        {% for key, label in [('list', 'Posts'), ('pictures', 'Pictures'), ('tiles', 'Grid'), ('timeline', 'Timeline'), ('auto', 'Pick for me')] %}
+        {% for key, label in [('list', 'Posts'), ('pictures', 'Pictures'), ('tiles', 'Grid'), ('timeline', 'Timeline'), ('loops', 'Loops'), ('auto', 'Pick for me')] %}
           {% set on = (view_chosen == key) or (key == 'auto' and not view_chosen) %}
           <a class="menu-item {{ 'on' if on }}" href="{{ here }}&view={{ key }}"><span class="tick">{% if on %}{{ icon('check') }}{% endif %}</span>{{ label }}</a>
         {% endfor %}
@@ -467,11 +468,50 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
 </article>
 {% endmacro %}
 
-{# The feed's posts: as posts, pictures in one column, a grid of pictures, or a timeline.
+{# A video post in the Loops view, filling the screen: its picture until its player
+   comes (app.js fetches it from loop_box once the post nears the screen, and lets it
+   go once it's far, so only a few are on the page), which is the site's own until
+   the video's saved here (its box's Download and archive), with who posted it, its
+   text and what can be done with it beside it. #}
+{% macro post_loop(i, show_community=True, next_id=none) %}
+{% set box = loop_box(i.url) if not i.no_embed else none %}
+<article class="loop {{ 'unread' if i.unread }} {{ 'kept' if i.all_kept }}" {{ entry_attrs(i) }}{% if box %} data-loop="{{ box }}"{% endif %}>
+  <div class="loop-stage"{{ veil(i.veil) }}>
+    <div class="loop-slot">
+      {% if i.thumb and not i.thumb.video %}<img class="loop-poster" src="{{ thumb(i.thumb.id, 'picture') }}" alt="" loading="lazy">{% endif %}
+      {% if box %}<a class="loop-start" href="/t/{{ i.id }}" title="Play it here">{{ icon('play') }}<span class="sr-only">Play</span></a>
+      {% else %}<p class="loop-elsewhere small">Whoever posted it doesn't let it play on other sites.
+        <a class="button secondary" href="{{ i.url | safe_url }}" rel="noreferrer noopener nofollow" target="_blank">{{ icon('external') }} Watch it there</a></p>{% endif %}
+    </div>
+  </div>
+  <div class="loop-info">
+    <div class="pc-meta small">
+      {{ reposted_by(i) }}
+      {% if show_community %}<a class="pc-community" href="/c/{{ i.community_id }}">{{ chandle(i.cname, i.c_ap) }}</a> ·{% endif %}
+      <span>{{ byname(i.username, i.a_instance, i.c_ap) }}</span> · {{ when(i.created_at) }}
+      {{ state_badges(i) }}
+    </div>
+    <h3 class="pc-title"><a href="/t/{{ i.id }}">{{ i.title }}</a></h3>
+    {% if i.excerpt and i.excerpt != i.title %}<p class="pc-excerpt">{{ i.excerpt }}</p>{% endif %}
+    <div class="pc-actions actions small">
+      <a class="act inline-comments" href="/t/{{ i.id }}#comments" aria-expanded="false">{{ icon('comment') }}<span>{{ i.n_comments }} comment{{ 's' if i.n_comments != 1 }}</span></a>
+      {% if i.n_new %}<a href="/t/{{ i.id }}#comments" class="pill new inline-comments" aria-expanded="false">{{ i.n_new }} new</a>{% endif %}
+      {{ talk_link(i, short=True) }}
+      {{ tile_votes(i, breakdown=True) }}
+      {{ read_button(i.id, i.unread, i.group, anchor='p' ~ i.id, short=True, refresh='p' ~ i.id) }}
+      {{ keep_button(i.id, i.all_kept, i.group, anchor='p' ~ i.id, short=True, refresh='p' ~ i.id) }}
+      {% if not i.all_kept %}{{ trash_button(i.id, i.group, ('p' ~ next_id) if next_id else '', short=True, refresh='p' ~ i.id) }}{% endif %}
+      {{ hide_button(i, short=True) }}
+    </div>
+  </div>
+</article>
+{% endmacro %}
+
+{# The feed's posts: as posts, pictures in one column, a grid of pictures, a timeline, or Loops.
    as_of: the time the list is as of, which app.js puts in the address so going
    back shows the same posts; snapshot: the address already said (feed_as_of). #}
 {% macro posts(items, view, show_community=True, as_of=none, snapshot=false) %}
-{% set layout = {'tiles': 'tiles', 'pictures': 'pictures', 'timeline': 'timeline'}.get(view, 'cards') if items else 'cards' %}
+{% set layout = {'tiles': 'tiles', 'pictures': 'pictures', 'timeline': 'timeline', 'loops': 'loops'}.get(view, 'cards') if items else 'cards' %}
 {% set md = feed_md(items) if view == 'timeline' else none %}
 <div id="items" class="{{ layout }}" data-items{% if mark_on_scroll() %} data-mark-on-scroll{% endif %}{% if mark_on_view() %} data-mark-on-view{% endif %}
      {%- if as_of %} data-as-of="{{ as_of }}"{% endif %}{% if snapshot %} data-snapshot{% endif %}>
@@ -480,6 +520,7 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
   {% if view == 'tiles' %}{{ post_tile(i, show_community, next_id) }}
   {% elif view == 'pictures' %}{{ post_picture(i, show_community, next_id) }}
   {% elif view == 'timeline' %}{{ post_status(i, md, show_community, next_id) }}
+  {% elif view == 'loops' %}{{ post_loop(i, show_community, next_id) }}
   {% else %}{{ post_card(i, show_community, next_id) }}{% endif %}
 {% endfor %}
 </div>

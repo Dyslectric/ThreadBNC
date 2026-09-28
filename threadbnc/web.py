@@ -444,6 +444,21 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         return {"href": video.href, "cls": "video-link", "title": video.link_title} if video else None
 
     templates.env.globals["link_box"] = link_box
+
+    def loop_box(url: Any) -> str | None:
+        """Where a video post's player comes from in the Loops view (app.js fetches
+        it once the post nears the screen): the box its page shows it in
+        (post_video_box), without its header. None for anything else."""
+        url = safe_url(url) if isinstance(url, str) else None
+        if not url or livestream.stream_of(url):
+            return None
+        vid = youtube.saved_video_id(url)
+        if vid:
+            return VIDEO_HREF.format(vid) + "?bare=1"
+        video = videos.video_of(url)
+        return video.href + "&bare=1" if video else None
+
+    templates.env.globals["loop_box"] = loop_box
     # A page that might be an article to read here (articles.candidate), not a video's or a post's.
     templates.env.tests["readable"] = lambda url: bool(isinstance(url, str) and articles.candidate(url))
     # A Lemmy or PieFed community (not a subreddit, a feed or Bluesky): one that can be pushed.
@@ -800,11 +815,16 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         """Whether a view leaves out posts with no picture: the grid, when Settings say so."""
         return view == "tiles" and tiles_pictures_only()
 
+    def view_filters(view: str) -> dict[str, bool]:
+        """What a view leaves out: posts with no picture (pictures_only), and
+        in the Loops view, posts that aren't a video."""
+        return {"pictures": pictures_only(view), "videos_only": view == "loops"}
+
     def load_in_view(conn: Any, chosen: str | None, **kw: Any) -> tuple[feed_mod.FeedPage, str]:
         """A page of a feed that mixes communities, and the view to show it in:
         the one chosen, else ("auto") picked by what's on the page."""
         if chosen in feed_mod.VIEWS:
-            return feed_mod.load_feed(conn, pictures=pictures_only(chosen), **kw), chosen
+            return feed_mod.load_feed(conn, **view_filters(chosen), **kw), chosen
         fp = feed_mod.load_feed(conn, **kw)
         shown = feed_mod.pick_view(None, sum(1 for i in fp.items if i["thumb"]), len(fp.items))
         if pictures_only(shown):
@@ -2082,10 +2102,10 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             fp, shown = None, "list"
             if tab in ("feed", "kept"):
                 shown = feed_mod.pick_view(c["view_mode"], *feed_mod.media_share(conn, cid),
-                                           microblog=is_tag(c["canonical_ap_id"]))
+                                           microblog=is_tag(c["canonical_ap_id"]),
+                                           videos=media_software(c["canonical_ap_id"]) == "loops")
                 fp = feed_mod.load_feed(conn, community_id=cid, sort=sort, window=t, unread=unread,
-                                        kept_only=tab == "kept", pictures=pictures_only(shown), page=page,
-                                        as_of=as_of)
+                                        kept_only=tab == "kept", **view_filters(shown), page=page, as_of=as_of)
             counts = {r["k"]: r["n"] for r in conn.execute(
                 "SELECT CASE WHEN trashed_at IS NOT NULL THEN 'trash' ELSE retention END AS k, COUNT(*) n "
                 "FROM archived_threads WHERE community_id=? GROUP BY 1", (cid,))}

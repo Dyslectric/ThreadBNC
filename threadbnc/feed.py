@@ -46,8 +46,9 @@ _FOUND = """(SELECT COALESCE(SUM(n), 0) FROM (SELECT MAX(dd.comments) AS n FROM 
         GROUP BY dd.url) AS found)"""
 _LINKED = f"({_SAVED} + {_FOUND})"
 WINDOWS = {"day": timedelta(days=1), "week": timedelta(days=7), "month": timedelta(days=30), "all": None}
-# posts; pictures in one column; a grid of pictures; whole posts by who posted them, as on Mastodon
-VIEWS = ("list", "pictures", "tiles", "timeline")
+# posts; pictures in one column; a grid of pictures; whole posts by who posted them, as on Mastodon;
+# video posts one at a time, scrolled through upwards, as on Loops
+VIEWS = ("list", "pictures", "tiles", "timeline", "loops")
 # "Auto" shows tiles when at least this share of recent posts have an image or video.
 TILES_WHEN = 0.6
 MEDIA_SAMPLE = 40  # recent posts looked at to decide
@@ -74,6 +75,14 @@ _HAS_MEDIA = "EXISTS (SELECT 1 FROM media_refs mr JOIN media mm ON mm.id=mr.medi
 _VIDEO_EXT, _AUDIO_EXT = _ext_sql(VIDEO_EXTENSIONS), _ext_sql(AUDIO_EXTENSIONS)
 # Posts with a picture to show (thumbnails()), for a grid of pictures only.
 _PICTURES = _HAS_MEDIA + "mm.kept_only=0 AND " + _VISUAL.replace("m.", "mm.") + ")"
+# Posts whose link may be a video that plays here (plays_here: videos.py's sites, a YouTube
+# video, a file), for the Loops view. Loose, so as not to page through everything: what
+# it lets through is checked with plays_here.
+_VIDEO_LINK_PATTERNS = ("%youtube.com/watch%", "%youtube.com/shorts/%", "%youtu.be/%", "%vimeo.com/%",
+                        "%dailymotion.com/%", "%dai.ly/%", "%streamable.com/%", "%/w/%", "%/videos/watch/%",
+                        "%/videos/embed/%", "%/v/%")
+_VIDEO_LINKS = ("(" + " OR ".join("LOWER(r.url) LIKE ?" for _ in _VIDEO_LINK_PATTERNS) + " OR "
+                + _VIDEO_EXT[0].replace("mm.url", "r.url") + ")", [*_VIDEO_LINK_PATTERNS, *_VIDEO_EXT[1]])
 MEDIA_KINDS = {
     "video": (_HAS_MEDIA + ("mr.from_article=0 AND (mm.content_type LIKE 'video/%' OR mm.kept_only=1 OR "
                             f"(mm.content_type IS NULL AND {_VIDEO_EXT[0]})))"), _VIDEO_EXT[1]),
@@ -259,12 +268,13 @@ def _scope(community_id: int | None, community_ids: list[int] | None, column: st
 
 def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: list[int] | None = None,
               thread_ids: list[int] | None = None, sort: str = "new", window: str = "all",
-              unread: str | bool = "", kept_only: bool = False, media: str = "", pictures: bool = False, page: int = 1,
-              per_page: int = 25, as_of: str | None = None) -> FeedPage:
+              unread: str | bool = "", kept_only: bool = False, media: str = "", pictures: bool = False,
+              videos_only: bool = False, page: int = 1, per_page: int = 25, as_of: str | None = None) -> FeedPage:
     """A page of posts. `thread_ids`: just those (the caller orders them);
     kept_only with no communities given: kept posts from anywhere, followed or not.
     `media`: only posts that are a video or audio (MEDIA_KINDS); `pictures`: only
-    ones with a picture to show. Posts in
+    ones with a picture to show; `videos_only`: only ones that are a video that
+    plays here (plays_here: a page can come out shorter). Posts in
     languages other than the ones chosen are left out, except from kept posts
     and `thread_ids` (languages.py).
 
@@ -296,6 +306,9 @@ def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: lis
         args += params
     if pictures:
         scope += " AND " + _PICTURES
+    if videos_only:
+        scope += " AND " + _VIDEO_LINKS[0]
+        args += _VIDEO_LINKS[1]
     filters = ""
     delta = WINDOWS.get(window)
     if delta is not None:
@@ -337,6 +350,7 @@ def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: lis
         i["veil"] = veil_label(meta)
         i["reposted_by"] = meta.get("reposted_by")
         i["episode"] = meta.get("episode")  # a podcast episode: its page and running time
+        i["no_embed"] = bool(meta.get("no_embed"))  # a Loops video whose player won't play it here
         # For the timeline view: a post with no title of its own (shown as its text), its content
         # warning, the pictures it came with that its text doesn't show, and a colour for its author.
         i["untitled"] = bool(meta.get("untitled"))
@@ -352,6 +366,8 @@ def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: lis
         talk = [n for tid, n in others.get(i["oid"], {}).items() if tid not in i["group_ids"]]
         talk += found.get(i["oid"], {}).values()
         i["talk"] = {"posts": len(talk), "comments": sum(talk)} if talk else None
+    if videos_only:
+        items = [i for i in items if i["video"]]
     return FeedPage(items, page, len(rows) > per_page, as_of)
 
 
@@ -654,11 +670,14 @@ def media_share(conn: Conn, community_id: int) -> tuple[int, int]:
     return row["visual"] or 0, row["n"]
 
 
-def pick_view(chosen: str | None, visual: int, total: int, microblog: bool = False) -> str:
-    """The view to show: the one you chose, else the timeline for a microblog
-    feed (a hashtag's), else tiles for media-heavy feeds."""
+def pick_view(chosen: str | None, visual: int, total: int, microblog: bool = False, videos: bool = False) -> str:
+    """The view to show: the one you chose, else Loops for a feed of videos (a
+    Loops account's), else the timeline for a microblog feed (a hashtag's),
+    else tiles for media-heavy feeds."""
     if chosen in VIEWS:
         return chosen
+    if videos:
+        return "loops"
     if microblog:
         return "timeline"
     return "tiles" if total >= TILES_MIN_POSTS and visual >= TILES_WHEN * total else "list"

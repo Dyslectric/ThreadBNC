@@ -525,6 +525,7 @@ document.documentElement.classList.add("js");
     ev.preventDefault();
     ev.stopPropagation();
     veil.classList.add("revealed");
+    if (veil.matches(".loop-stage")) loadLoop(veil.closest("article.loop"), true);  // its player waited for this
   }, true);
 
   // A post shown again in place (after marking it read, say) keeps the pictures that were shown.
@@ -1594,18 +1595,141 @@ document.documentElement.classList.add("js");
       });
   });
 
+  // ---- the Loops view: a video post to a screen (_feed.html post_loop) -----------------
+  // A post's player (its box, as its page has it: the site's own, until it's saved here)
+  // is fetched once the post is within a screen of being shown, and let go once it's
+  // further, so only a few players are on the page at a time. The post mostly on
+  // screen plays; the others pause. Loops's player is asked to (it listens for "play"
+  // and "pause"); other sites' players can't be, so they're put back to the start,
+  // and a file's plays and pauses. A veiled post's player waits for the veil's click.
+  let loopNear = null;
+  let loopShown = null;
+  const loopVeiled = (el) => !!$(".loop-stage[data-veil]:not(.revealed)", el);
+  const loopOnScreen = (el) => el.hasAttribute("data-on-screen");
+
+  function watchLoops(root) {
+    if (!("IntersectionObserver" in window)) return;
+    // The saved copy, in place of the site's player once it's come: it plays on where that did.
+    const shown = root.matches && root.matches("article.video-box") && root.closest("article.loop[data-on-screen]");
+    if (shown) playLoop(shown, true);
+    loopNear = loopNear || new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        if (e.isIntersecting) loadLoop(e.target);
+        else unloadLoop(e.target);
+      }
+    }, { rootMargin: "100% 0px 100% 0px" });
+    loopShown = loopShown || new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        const on = e.isIntersecting && e.intersectionRatio >= 0.6;
+        e.target.toggleAttribute("data-on-screen", on);
+        if (e.target.dataset.loaded === "1") playLoop(e.target, on);
+      }
+    }, { threshold: [0, 0.6] });
+    const els = root.matches && root.matches("article.loop[data-loop]") ? [root] : $$("article.loop[data-loop]", root);
+    for (const el of els) {
+      loopNear.observe(el);
+      loopShown.observe(el);
+    }
+  }
+
+  async function loadLoop(el, play = false) {
+    if (!el || el.dataset.loaded || loopVeiled(el)) return;
+    const slot = $(".loop-slot", el);
+    el.dataset.loaded = "loading";
+    try {
+      const box = $("article.video-box", await fetchDoc(el.dataset.loop));
+      if (!box || el.dataset.loaded !== "loading" || !el.isConnected) return;  // let go meanwhile
+      el.loopPlaceholder = slot.innerHTML;
+      slot.replaceChildren(document.adoptNode(box));
+      el.dataset.loaded = "1";
+      startPlayers();
+      // A site's player only listens once its page has loaded.
+      for (const frame of $$("iframe", slot)) {
+        frame.addEventListener("load", () => { if (loopOnScreen(el)) playLoop(el, true); }, { once: true });
+      }
+      if (play || loopOnScreen(el)) playLoop(el, true);
+    } catch (e) {
+      delete el.dataset.loaded;
+    }
+  }
+
+  function unloadLoop(el) {
+    if (el.dataset.loaded !== "1") { delete el.dataset.loaded; return; }
+    stopVideos(el);
+    $(".loop-slot", el).innerHTML = el.loopPlaceholder || "";
+    delete el.dataset.loaded;
+  }
+
+  function playLoop(el, on) {
+    for (const v of $$("video", el)) {
+      v.loop = true;
+      if (on) v.play().catch(() => {});  // the browser may want a click first
+      else v.pause();
+    }
+    const box = $("article.video-box", el);
+    if (!box) return;
+    if (box.id.startsWith("video-loops-")) {
+      for (const frame of $$("iframe", box)) {
+        if (frame.contentWindow) frame.contentWindow.postMessage({ context: "loops-embed", action: on ? "play" : "pause" }, new URL(frame.src).origin);
+      }
+    } else if (!on) {
+      for (const frame of $$(".video-player[data-started] iframe", box)) {
+        const slot = frame.parentElement;
+        delete slot.dataset.started;
+        slot.replaceChildren();  // put in again, from the start (startPlayers)
+      }
+    }
+  }
+
+  // A video on screen plays again from the start when it ends, as on Loops: Loops's player
+  // says when it's ended; a file's plays in a loop of its own.
+  addEventListener("message", (ev) => {
+    const d = ev.data;
+    if (!d || d.context !== "loops-embed" || d.event !== "ended") return;
+    const frame = $$("article.loop iframe").find((f) => f.contentWindow === ev.source);
+    const el = frame && frame.closest("article.loop");
+    if (!el || !loopOnScreen(el)) return;
+    const origin = new URL(frame.src).origin;
+    frame.contentWindow.postMessage({ context: "loops-embed", action: "seek", time: 0 }, origin);
+    frame.contentWindow.postMessage({ context: "loops-embed", action: "play" }, origin);
+  });
+
+  // Play before its player has come: fetch it now, and play it.
+  document.addEventListener("click", (ev) => {
+    const start = ev.target.closest("article.loop[data-loop] .loop-start");
+    if (!start) return;
+    ev.preventDefault();
+    loadLoop(start.closest("article.loop"), true);
+  });
+
   // ---- livestreams: their players, and which sites are Owncast servers ---------------
   // A livestream's box gets its player once it's on the page (so closing the
   // box stops it), as a video's box does. Twitch's player wants the name this
   // site is reached by. Links to sites' front pages might be Owncast servers:
   // they're asked about once shown (the server remembers), and the ones that
   // are open theirs too.
+  const LOOPS_CARD = [326, 580];  // Loops's player's video, in its card (px)
+  const fitLoops = new ResizeObserver((entries) => {
+    for (const e of entries) {
+      const { width, height } = e.contentRect;
+      e.target.style.setProperty("--loops-scale", String(Math.min(width / LOOPS_CARD[0], height / LOOPS_CARD[1])));
+    }
+  });
+
   function startPlayers() {
     for (const el of $$("article.live-box:not([data-started]), .video-player[data-embed]:not([data-started])")) {
       el.dataset.started = "1";
       const frame = document.createElement("iframe");
       let src = el.dataset.embed;
       if ("parent" in el.dataset) src += "&parent=" + encodeURIComponent(location.hostname);
+      // Loops's player is a card of a set size: the video, then its caption (the post has it). Just the
+      // video is shown, scaled to fit (fitLoops), in the page's colours.
+      if (el.closest("article.video-box[id^='video-loops-']")) {
+        const theme = document.documentElement.dataset.theme;
+        if (theme === "dark" || (!theme && matchMedia("(prefers-color-scheme: dark)").matches)) src += "?theme=dark";
+        frame.setAttribute("scrolling", "no");
+        fitLoops.observe(el);
+      }
       frame.src = src;
       frame.title = el.dataset.label || "Player";
       frame.allow = "autoplay; fullscreen; picture-in-picture; encrypted-media";
@@ -2402,8 +2526,10 @@ document.documentElement.classList.add("js");
     watchLoadMore(document);
     watchTrendPictures(document);
     watchAvatars(document);
+    watchLoops(document);
     new MutationObserver((changes) => {
       for (const c of changes) for (const el of c.addedNodes) if (el.nodeType === 1) {
+        watchLoops(el);
         watchDiscussions(el);
         watchTrendPictures(el);
         watchAvatars(el);

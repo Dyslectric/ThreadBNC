@@ -3,9 +3,9 @@ read through the public API Loops's own web pages use, which needs no account.
 
 An account is its ActivityPub address, https://<server>/ap/users/<id>, and is
 checked on a schedule: one request lists its latest ten videos, with their
-likes and comment counts. A video's post links to its video file, which
-plays here and is saved like any other video (when you open or keep it); its
-thumbnail is its picture. A post's local id is the video's id; its address
+likes and comment counts. A video's post links to its page, so it plays in
+Loops's own player (videos.py) and is only downloaded when you press
+Download and archive under it; its thumbnail is its picture. A post's local id is the video's id; its address
 is /v/<shortcode>, and its ActivityPub id .../ap/users/<id>/video/<id>.
 Opening a post reads its comments, with the first replies to each. Liking and
 replying are done as your Mastodon account (accounts.py).
@@ -114,13 +114,15 @@ class LoopsAdapter(ThreadiverseAdapter):
             meta["nsfw"] = True
         if media.get("alt_text"):
             meta["alt_text"] = media["alt_text"]
+        if (v.get("permissions") or {}).get("can_embed") is False:  # its player refuses to play it elsewhere
+            meta["no_embed"] = True
         likes = v.get("likes") if isinstance(v.get("likes"), int) else None
         return NPost(
             ap_id=f"{self.actor(str(account.get('id') or ''))}/video/{v['id']}",
             local_id=str(v["id"]),
             title=title_from(caption) if caption else "Untitled loop",
             body=caption_markdown(caption, self.domain) or None,
-            url=media.get("src_url") or media.get("hls_url") or v.get("url"),
+            url=v.get("url") or f"https://{self.domain}/v/{v.get('shortcode')}",
             created_at=v.get("created_at"),
             updated_at=None,
             deleted=False, removed=False, locked=not (v.get("permissions") or {}).get("can_comment", True),

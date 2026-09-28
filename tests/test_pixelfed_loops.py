@@ -73,7 +73,7 @@ class WithMedia(WithHome):
                                            # a deleted account's: Pixelfed still lists it, with no one and no address
                                            {**pf_comment("302", "Spam", "201"), "uri": "/404", "account": None}]}
         self.loops = [loop("51", "Pinned intro", pinned=True), loop("52", "My cat\n#cats", is_sensitive=True),
-                      loop("50", "")]
+                      loop("50", ""), loop("49", "Not here", permissions={"can_embed": False})]
         self.loops_comments = {"52": [loops_comment("61", "So cute", replies=1),
                                       loops_comment("62", "gone", tombstone=True),
                                       loops_comment("63", "hi from afar", who="eve@masto.test",
@@ -253,18 +253,39 @@ def test_following_a_loops_account_captures_its_videos(web, b, fedi):
     cid = b.follow_community("https://loops.test/@carol", backfill=True)
     c = one(b, "SELECT * FROM communities WHERE id=?", cid)
     assert (c["canonical_ap_id"], c["name"], c["title"]) == (CAROL, "carol", "Carol")
-    assert b.poll_follow(cid) == 3
+    assert b.poll_follow(cid) == 4
     cat = root(b, f"{CAROL}/video/52")
     assert (cat["title"], cat["url"], cat["thumbnail_url"]) == (
-        "My cat", f"https://cdn.{LOOPS}/52.720p.mp4", f"https://cdn.{LOOPS}/52.jpg")
+        "My cat", f"https://{LOOPS}/v/code52", f"https://cdn.{LOOPS}/52.jpg")
     assert "[#cats](https://loops.test/tag/cats)" in cat["body"] and '"nsfw": true' in cat["metadata_json"]
     assert (cat["upvotes"], cat["reply_count"]) == (12, 2)
     assert root(b, f"{CAROL}/video/50")["title"] == "Untitled loop"
     assert one(b, "SELECT cur_featured FROM objects WHERE canonical_ap_id=?", f"{CAROL}/video/51")[0]
 
-    page = web.get(f"/t/{cat['tid']}").text
-    assert f'<video class="media" src="https://cdn.{LOOPS}/52.720p.mp4"' in page
+    page = web.get(f"/t/{cat['tid']}").text  # Loops's own player, and nothing downloaded until you save it
+    assert f'data-embed="https://{LOOPS}/embed/code52"' in page and "Download and archive" in page
+    assert "cdn.loops.test/52.720p.mp4" not in page
     assert "@carol@loops.test (Loops)" in page and "This is on Loops." in page
+
+
+def test_the_loops_view_scrolls_through_video_posts(web, b, fedi):
+    loops = b.follow_community("@carol@loops.test", backfill=True)
+    pix = b.follow_community("@alice@pix.test", backfill=True)
+    b.poll_follow(loops)
+    b.poll_follow(pix)
+    page = web.get(f"/c/{loops}").text  # a Loops account's own view, unless you pick another
+    assert '<div id="items" class="loops"' in page
+    assert page.count('<article class="loop ') == 4 and 'data-embed' not in page  # players come as you scroll
+    assert f'data-loop="/video?url=https%3A%2F%2F{LOOPS}%2Fv%2Fcode52&amp;bare=1"' in page
+    assert 'class="loop-stage" data-veil="NSFW"' in page  # its player waits for the veil's click
+    assert page.count("data-loop=") == 3 and "doesn't let it play on other sites" in page  # as its poster chose
+
+    home = web.get("/?view=loops").text  # anywhere: only the posts that are videos
+    assert home.count('<article class="loop ') == 4 and "Autumn walk" not in home
+    assert "Autumn walk" in web.get("/?view=list").text
+
+    box = web.get(f"/video?url=https://{LOOPS}/v/code52&bare=1").text  # what app.js puts in
+    assert f'data-embed="https://{LOOPS}/embed/code52"' in box and 'action="/video/save"' in box
 
 
 def test_opening_a_loops_video_reads_its_comments(b, fedi):
