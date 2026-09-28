@@ -145,6 +145,25 @@ def test_posts_scrolled_past_are_read(settings, server, bouncer):
     assert "post 3" in unread and "post 1" not in unread
 
 
+def test_posts_on_screen_a_while_can_be_read(settings, server, bouncer):
+    """Marking posts read after 5 seconds on screen (app.js) is its own choice,
+    beside scrolling past them."""
+    followed_with_posts(server, bouncer)
+    client = TestClient(create_app(settings, bouncer))
+    client.post("/login", data={"password": "pw"})
+    assert "data-mark-on-view" not in client.get("/").text  # off unless chosen
+    client.post("/feed/settings", data={"mark_read_on_view": "1"})
+    page = client.get("/").text
+    assert "data-mark-on-view" in page and "data-mark-on-scroll" not in page
+    assert 'name="mark_read_on_view" value="0"' in page  # the menu offers to turn it off
+    client.post("/feed/settings", data={"mark_read_on_scroll": "1"})
+    page = client.get("/").text
+    assert "data-mark-on-view" in page and "data-mark-on-scroll" in page
+    client.post("/feed/settings", data={"mark_read_on_view": "0"})
+    page = client.get("/").text
+    assert "data-mark-on-view" not in page and "data-mark-on-scroll" in page
+
+
 def test_going_back_to_a_feed_shows_the_same_posts(settings, server, bouncer):
     """The page puts the time its list is as of in its address (app.js), so
     Back shows the same posts: read ones stay, new ones wait. A reload, or the
