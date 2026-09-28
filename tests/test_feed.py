@@ -214,6 +214,18 @@ def test_unread_marker_is_chosen_on_the_settings_page(settings, bouncer):
     assert r.status_code == 303 and 'data-unread="edge"' in client.get("/").text.split("<head>")[0]
 
 
+def test_infinite_scroll_is_a_setting(settings, bouncer):
+    client = TestClient(create_app(settings, bouncer))
+    client.post("/login", data={"password": "pw"})
+    assert "data-infinite-scroll" not in client.get("/").text.split("<head>")[0]
+    assert 'name="on" value="1" >' in client.get("/settings").text
+    client.post("/settings/infinite-scroll", data={"on": "1"})
+    assert "data-infinite-scroll" in client.get("/").text.split("<head>")[0]  # app.js loads pages as you near the end
+    assert 'name="on" value="1" checked>' in client.get("/settings").text
+    client.post("/settings/infinite-scroll", data={})
+    assert "data-infinite-scroll" not in client.get("/").text.split("<head>")[0]
+
+
 def test_empty_feed_prompts_follow(settings, bouncer):
     client = TestClient(create_app(settings, bouncer))
     client.post("/login", data={"password": "pw"})

@@ -783,7 +783,11 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         """Whether the grid view leaves out posts with no picture (Settings)."""
         return db.get_setting("tiles_pictures_only") == "1"
 
-    templates.env.globals["tiles_pictures_only"] = tiles_pictures_only
+    def infinite_scroll() -> bool:
+        """Whether lists load their next page as you near the end, rather than at Load more (Settings)."""
+        return db.get_setting("infinite_scroll") == "1"
+
+    templates.env.globals.update(tiles_pictures_only=tiles_pictures_only, infinite_scroll=infinite_scroll)
 
     def pictures_only(view: str) -> bool:
         """Whether a view leaves out posts with no picture: the grid, when Settings say so."""
@@ -1150,6 +1154,15 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             conn.execute("INSERT INTO app_settings(key, value) VALUES ('tiles_pictures_only', ?) "
                          "ON CONFLICT(key) DO UPDATE SET value=excluded.value", ("1" if on else "0",))
         flash(request, "The grid shows only posts with pictures." if on else "The grid shows every post.")
+        return RedirectResponse(back(request, "/settings"), status_code=303)
+
+    @app.post("/settings/infinite-scroll")
+    def set_infinite_scroll(request: Request, on: str = Form("")):
+        with db.transaction() as conn:
+            conn.execute("INSERT INTO app_settings(key, value) VALUES ('infinite_scroll', ?) "
+                         "ON CONFLICT(key) DO UPDATE SET value=excluded.value", ("1" if on == "1" else "0",))
+        flash(request, "More posts load as you scroll to the end of a list." if on == "1" else
+              "Lists end at Load more.")
         return RedirectResponse(back(request, "/settings"), status_code=303)
 
     @app.post("/theme")
