@@ -5,6 +5,7 @@ A private, feed-first reader for Lemmy, PieFed, Reddit, RSS/Atom feeds, podcasts
 **Following and reading:**
 - Follow communities. Lemmy and PieFed posts arrive as they're made, pushed through your own Lemmy server (see [Pushes from your own server](#pushes-from-your-own-server)); feeds and subreddits are checked on a schedule.
 - Follow **#hashtags**: public posts with them arrive from Mastodon and the rest of the fediverse through a tag relay (or your Mastodon server's public timeline, once you subscribe to it), and from Bluesky through its Jetstream (see [Hashtags](#hashtags)).
+- Follow **people on Mastodon** (and GoToSocial, Akkoma, Misskey...) by `@name@server`: their server sends ThreadBNC their public posts as they're made (see [People on Mastodon](#people-on-mastodon)).
 - **Trending** shows the posts most liked and most replied to on Bluesky and Mastodon, the articles posted most there and in your archive, and the hashtags used most (see [Trending](#trending)).
 - Your **feed** is built from the saved copy. Posts you haven't opened stand out, opened posts show "N new comments", and you can sort by New, Active, Top or Most comments.
 - **Opening a post** reads its comments and saves the article it links to, like a browser would. The page shows the saved copy at once and swaps in the fresh one.
@@ -63,6 +64,7 @@ ThreadBNC behaves like one more subscribed server, or like your own browser, nev
 - **Discussions elsewhere, when you open it.** Opening a post with a linked article, or the article, asks your own Lemmy server, Reddit (when connected) and Bluesky (when you're signed in) for other posts of it, and a blog that federates or takes webmentions for its replies: once, then not again for an hour (see [Discussions](#discussions)).
 - **Votes, cheaply.** Votes are updated every 5 minutes for a post's first half hour, then every 10, every 30 until 6 hours, hourly until a day, daily until a week, and then not at all (opening a post still updates them). A pushed community's come from your own server; a checked community's from one listing covering all its posts; only a post kept on its own is asked about by itself.
 - **Hashtags through a relay.** A followed hashtag is one Follow to its relay. Each post it passes on is read once from its own server, a signed request like any receiving server makes, and its votes aren't checked in the background at all; opening it reads it again with its replies.
+- **People on Mastodon, pushed by their server.** Following someone is a WebFinger lookup, a read of their actor and one Follow; after that their server sends each post with its text, so nothing is fetched for it. Their server is never checked in the background unless you turn it on for them.
 - **Hashtags on Bluesky, from its public stream.** Bluesky offers nothing to subscribe to for a hashtag, only one stream of everything posted there. While any hashtag is followed, or Bluesky is counted for Trending (on unless you turn it off), ThreadBNC listens to it (Jetstream, new posts only, compressed: about 25 a second, about 0.75 GB a day), keeps the posts with a followed hashtag, and asks Bluesky for those alone, up to 25 in one request.
 - **Your Mastodon server's public timeline, when you subscribe.** One streaming connection to your own server, as your account. Posts with a followed hashtag are kept from it (instead of through the relays); the rest are only counted.
 - **Trending's pictures when you scroll to them.** A trending post's pictures are downloaded once it's on your screen, like a feed post's article.
@@ -532,6 +534,31 @@ sign-in middleware, since other servers have to reach them:
   should return the actor, not Lemmy's error.
 - `THREADBNC_TAG_RELAY` picks another relay that works the same way, `{tag}` standing for the hashtag.
 
+## People on Mastodon
+
+Follow someone on Mastodon, or GoToSocial, Akkoma, Misskey or anything else on the fediverse that has
+accounts rather than communities, by `@name@server` or their profile's address (`https://server/@name`) in the
+Communities box. `name@server` works too when the server doesn't run Lemmy or PieFed. It needs ThreadBNC's own
+ActivityPub identity, `THREADBNC_ACTOR_DOMAIN` (see [Hashtags](#hashtags) for setting it up); without it, a
+Mastodon profile's address is followed as its RSS feed instead.
+
+- **Following** looks them up and sends them a Follow from `threadbnc@` your domain, as any fediverse user's
+  server would. Their feed's **Following** menu shows **From their server** once it's accepted. Someone who
+  approves their followers has to approve it; until the follow is answered it's sent again once a day (Mastodon
+  takes that as the same request, so they aren't asked twice).
+- **Their posts** are sent by their server as they're made, signed by it, with the post inside, so nothing is
+  fetched for them. Only public and unlisted posts are kept, not their replies (they belong under what they
+  answer) or boosts, as with a Bluesky account's reposts. Their edits arrive too and are kept as new versions;
+  deletions are seen when you open a post.
+- **Start with the posts on the first page** (ticked by default) also reads the first page of their outbox
+  once, the posts their profile shows.
+- Their feed is shown as a **timeline** by default, like a hashtag's. Opening a post reads it again, with its
+  replies from their server, and liking and replying are done as your Mastodon account, as for hashtags.
+- If their server won't accept the follow, **Check on a schedule** in the Following menu reads their outbox
+  every so often instead (two requests a check).
+- **Trending**'s posts that you open are saved under their author, so if you follow that author they're in
+  the same feed.
+
 ## Accounts and posting
 
 On the **Accounts** page, add any Lemmy or PieFed account: the server, username, password and, on Lemmy, a 2FA code if you use one. You can then act as that account from ThreadBNC. The header has a switcher for choosing which account to act as; the default is marked on the Accounts page.
@@ -756,7 +783,7 @@ API (each call with `Authorization: Bearer $THREADBNC_API_TOKEN`):
 | `THREADBNC_MEDIA_TRANSCODE_SOURCE_MAX_MB` | `1000` | Largest original downloaded to transcode; bigger files are skipped |
 | `THREADBNC_PODCAST_MAX_MB` | `500` | Largest podcast episode saved, whatever the Audio size limit is (see [Podcasts](#podcasts)) |
 | `THREADBNC_RELAY_INBOXES` | *(none)* | Your own Lemmy servers whose inboxes are routed through ThreadBNC, as `domain=Lemmy's address`, comma-separated (see [Pushes from your own server](#pushes-from-your-own-server)) |
-| `THREADBNC_ACTOR_DOMAIN` | unset | The domain of ThreadBNC's own ActivityPub actor, for following hashtags on the fediverse (see [Hashtags](#hashtags)). Unset: hashtags come from Bluesky alone |
+| `THREADBNC_ACTOR_DOMAIN` | unset | The domain of ThreadBNC's own ActivityPub actor, for following hashtags and people on the fediverse (see [Hashtags](#hashtags) and [People on Mastodon](#people-on-mastodon)). Unset: hashtags come from Bluesky alone |
 | `THREADBNC_TAG_RELAY` | `https://relay.fedi.buzz/tag/{tag}` | The relay actor followed for each hashtag, `{tag}` standing for it |
 | `THREADBNC_JETSTREAM` | `wss://jetstream2.us-east.bsky.network/subscribe` | The Jetstream hashtags are picked out of, and Trending counts, on Bluesky (see [On Bluesky](#on-bluesky)); `off`: fediverse hashtags only, and Bluesky isn't counted |
 | `THREADBNC_ARTICLES` | `1` | Read the web pages posts link to and keep the article, for **Read article** (see [Linked articles](#linked-articles)); `0` turns it off |

@@ -43,8 +43,8 @@ from starlette.concurrency import run_in_threadpool
 
 from . import store
 from .accounts import Account, AccountError, Poster
-from .adapters import (NComment, NPost, RemoteError, RemoteNotFound, RemotePaused, ThreadiverseAdapter, host_of,
-                       is_reddit_host, is_rss, is_tag)
+from .adapters import (NComment, NPost, RemoteError, RemoteNotFound, RemotePaused, ThreadiverseAdapter, from_fediverse,
+                       host_of, is_bluesky, is_reddit_host, is_rss)
 from .db import fmt_ts, parse_ts, utcnow
 from .traffic import delivered
 
@@ -248,7 +248,10 @@ def with_payload(item: NPost | NComment, payload: dict[str, Any]) -> NPost | NCo
 
 
 def _federated(ap_id: str) -> bool:
-    return not is_rss(ap_id) and not is_tag(ap_id) and not is_reddit_host(host_of(ap_id))
+    """A Lemmy or PieFed community: not a feed, subreddit or Bluesky, and not a
+    hashtag or someone on Mastodon (ThreadBNC's own actor follows those)."""
+    return (not is_rss(ap_id) and not from_fediverse(ap_id) and not is_reddit_host(host_of(ap_id))
+            and not is_bluesky(ap_id))
 
 
 # --- the push worker ------------------------------------------------------------
