@@ -2,11 +2,12 @@
 Misskey...), read the way their servers publish them: the ActivityPub object
 at its own address, asked for with ThreadBNC's signature (actor.py).
 
-These are the posts hashtags bring (tags.py), and the posts you make on your
-Mastodon account (accounts.py). A thread's local id is "<key> <post's
-ActivityPub id>": what it's filed under, and where to read it. The key is the
-hashtag, or for your own posts your account's address; those are read back
-through their server's Mastodon API, which needs no signature. Replies are
+These are the posts hashtags bring (tags.py), the posts of people you follow
+(people.py), and the posts you make on your Mastodon account (accounts.py). A
+thread's local id is "<key> <post's ActivityPub id>": what it's filed under,
+and where to read it. The key is the hashtag, or the account's address for
+someone followed and for your own posts; those are read back through their
+server's Mastodon API, which needs no signature. Replies are
 read when a post is opened, from the post's own server through the Mastodon
 API that Mastodon, GoToSocial, Akkoma and Pleroma share, when its address says
 which status it is; elsewhere a post shows no comments, and none are taken for
@@ -16,10 +17,13 @@ from __future__ import annotations
 
 import html as htmllib
 import re
+import time
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Callable
 from urllib.parse import urlparse
 
 from .. import languages
+from ..actor import is_public
 from .base import (
     TAG_DOMAIN,
     TAG_PREFIX,
@@ -35,6 +39,8 @@ from .base import (
     ThreadRef,
     UnsupportedSoftware,
     host_of,
+    is_fedi_account,
+    is_fedi_account_ref,
 )
 from .rss import html_to_markdown
 
@@ -48,6 +54,8 @@ _LINK = re.compile(r"<a\s[^>]*>", re.I)
 _HREF = re.compile(r'href="([^"]+)"', re.I)
 _CLASS = re.compile(r'class="([^"]*)"', re.I)
 TITLE_CHARS = 80
+PEOPLE = ("Person", "Service", "Application", "Organization")  # actors whose posts can be followed
+ACTOR_CACHE_SECONDS = 600.0  # following someone looks them up, then asks for their posts: once will do
 
 
 def tag_community(tag: str, description: str | None = None) -> NCommunity:
@@ -65,6 +73,33 @@ def account_community(actor: str, description: str | None = None) -> NCommunity:
 
 def community_for(key: str) -> NCommunity:
     return account_community(key) if key.startswith("https://") else tag_community(key)
+
+
+def person_community(doc: dict[str, Any]) -> NCommunity:
+    """Someone followed on the fediverse (people.py), from their actor document."""
+    actor = _id(doc.get("id")) or ""
+    username = doc.get("preferredUsername") if isinstance(doc.get("preferredUsername"), str) else None
+    about = plain_text(_text(doc.get("summary"))).strip()
+    c = account_community(actor, about or None)
+    return replace(c, name=username or c.name, title=(_text(doc.get("name")) or "").strip() or None,
+                   description=about or f"Public posts by @{username or c.name}@{host_of(actor)}.")
+
+
+def own_post(activity: Any, actor: str) -> dict[str, Any] | None:
+    """The post a Create by `actor` carries, when it's one of theirs to follow:
+    made by them on their own server, public or unlisted, and not a reply.
+    Replies belong under the post they answer, not beside it in a feed (and
+    their profile leaves them out too)."""
+    if not isinstance(activity, dict) or activity.get("type") != "Create" or _id(activity.get("actor")) != actor:
+        return None
+    obj = activity.get("object")
+    if not isinstance(obj, dict) or _id(obj.get("id")) is None or obj.get("type") == "Tombstone":
+        return None
+    if _id(obj.get("attributedTo")) != actor or host_of(obj["id"]) != host_of(actor):
+        return None
+    if not is_public(obj) or obj.get("inReplyTo"):
+        return None
+    return obj
 
 
 def status_id(ap_id: str) -> str | None:
@@ -218,15 +253,76 @@ class ActivityPubAdapter(ThreadiverseAdapter):
         # () -> whether hashtags come from your Mastodon server's public
         # timeline (mastodon_stream.py sets it), which needs no actor either.
         self.mastodon: Callable[[], bool] = lambda: False
+        self._people: dict[str, tuple[dict[str, Any], float]] = {}  # name or address -> (actor document, when)
 
-    def _need_actor(self) -> Actor:
+    def _need_actor(self, what: str = "hashtags") -> Actor:
         if self.actor is None:
-            raise RemoteAuthError("Following hashtags on the fediverse needs ThreadBNC's own ActivityPub identity: "
+            raise RemoteAuthError(f"Following {what} on the fediverse needs ThreadBNC's own ActivityPub identity: "
                                   "set THREADBNC_ACTOR_DOMAIN (see README, \"Hashtags\").")
         return self.actor
 
+    # -- people ------------------------------------------------------------------
+    def person(self, name: str) -> dict[str, Any]:
+        """Someone's actor document, by @name@server or their address. A
+        profile page's address (https://server/@name) is looked up by
+        WebFinger as @name@server, as it's only a web page on some servers."""
+        cached = self._people.get(name)
+        if cached and time.monotonic() - cached[1] < ACTOR_CACHE_SECONDS:
+            return cached[0]
+        actor = self._need_actor("people")
+        page = re.match(r"^https://([^/]+)/@([^/@]+)$", name)
+        handle = name if name.startswith("@") else f"@{page.group(2)}@{page.group(1)}" if page else None
+        url: str | None = name if handle is None else None
+        if handle:
+            user, _, server = handle[1:].partition("@")
+            try:
+                jrd = self.http.get_json(server, "/.well-known/webfinger", params={"resource": f"acct:{user}@{server}"})
+            except RemoteNotFound:
+                raise RemoteNotFound(f"{server} doesn't know {handle}") from None
+            links = jrd.get("links") if isinstance(jrd, dict) else None
+            url = next((link["href"] for link in links or [] if isinstance(link, dict) and link.get("rel") == "self"
+                        and "json" in str(link.get("type")) and isinstance(link.get("href"), str)), None)
+            if not url:
+                raise RemoteNotFound(f"{server} has no fediverse account {handle}")
+        doc = actor.fetch(url)  # type: ignore[arg-type]
+        ap_id = _id(doc.get("id"))
+        if ap_id is None or host_of(ap_id) != host_of(url or ""):
+            raise RemoteNotFound(f"{url} answered with someone from elsewhere")
+        if doc.get("type") not in PEOPLE or not is_fedi_account(ap_id) or not _id(doc.get("inbox")):
+            raise UnsupportedSoftware(f"{handle or url} isn't an account whose posts can be followed here "
+                                      f"(it's a {doc.get('type') or 'thing'} at {ap_id})")
+        for key in (name, ap_id):
+            self._people[key] = (doc, time.monotonic())
+        return doc
+
+    def outbox_posts(self, actor_id: str, limit: int = 20) -> list[NPost]:
+        """Someone's latest posts, from the first page of their outbox (the
+        posts their profile shows, public ones only): read when they're
+        followed, and for their page's live view."""
+        actor = self._need_actor("people")
+        outbox = _id(self.person(actor_id).get("outbox"))
+        if outbox is None or host_of(outbox) != host_of(actor_id):
+            return []
+        box = actor.fetch(outbox)
+        first = box.get("first")
+        if isinstance(first, str) and first.startswith("https://") and host_of(first) == host_of(actor_id):
+            box = actor.fetch(first)
+        elif isinstance(first, dict):
+            box = first
+        items = box.get("orderedItems") or box.get("items") or []
+        posts = []
+        for item in items if isinstance(items, list) else []:
+            obj = own_post(item, actor_id)
+            if obj is not None:
+                posts.append(self.post_from(obj, actor_id))
+            if len(posts) >= limit:
+                break
+        return posts
+
     # -- communities: a hashtag has nothing to list; its posts are passed on as they're made
     def fetch_community(self, ref: CommunityRef) -> NCommunity:
+        if is_fedi_account_ref(ref):
+            return person_community(self.person(ref.name))
         timeline = self.mastodon()
         if not self.bluesky and not timeline:
             self._need_actor()
@@ -238,7 +334,11 @@ class ActivityPubAdapter(ThreadiverseAdapter):
 
     def list_community_posts(self, ref: CommunityRef, sort: str = "New", page: int = 1,
                              limit: int = 20) -> list[NPost]:
-        return []
+        """Someone followed: their latest posts (one page, however many are
+        asked for). A hashtag: nothing, its posts arrive as they're made."""
+        if not is_fedi_account_ref(ref) or page > 1:
+            return []
+        return self.outbox_posts(_id(self.person(ref.name).get("id")) or "", limit)
 
     def resolve_url(self, ref: ThreadRef) -> str:
         raise RemoteNotFound("Posts from hashtags arrive by following the hashtag")
@@ -257,7 +357,8 @@ class ActivityPubAdapter(ThreadiverseAdapter):
             raise RemoteNotFound(f"{ap_id} answered with something from elsewhere")
         return obj
 
-    def post_from(self, obj: dict[str, Any], tag: str, ap_id: str | None = None) -> NPost:
+    def post_from(self, obj: dict[str, Any], key: str, ap_id: str | None = None) -> NPost:
+        """A post filed under `key`: a hashtag, or the account it's followed from."""
         ap_id = _id(obj.get("id")) or ap_id or ""
         html = _text(obj.get("content")) or _text(obj.get("contentMap"))
         body = html_to_markdown(html, ap_id)
@@ -282,14 +383,14 @@ class ActivityPubAdapter(ThreadiverseAdapter):
             meta["ap_type"] = obj.get("type")
         return NPost(
             ap_id=ap_id,
-            local_id=f"{tag} {ap_id}",
+            local_id=f"{key} {ap_id}",
             title=name or warning or title_from(plain_text(html)),
             body=body or None,
             url=shared_link(html) or video,
             created_at=_text(obj.get("published")),
             updated_at=_text(obj.get("updated")),
             deleted=False, removed=False, locked=False,
-            community=tag_community(tag),
+            community=community_for(key),
             author=author_of(obj),
             metadata=meta,
             score=_count(obj.get("likes")),
@@ -302,11 +403,17 @@ class ActivityPubAdapter(ThreadiverseAdapter):
 
     def fetch_post(self, local_id: str) -> NPost:
         key, _, ap_id = local_id.partition(" ")
-        if key.startswith("https://"):  # one of your own, read back as your server shows anyone
+        if key.startswith("https://"):  # yours, or someone's followed: read back as their server shows anyone
             sid = status_id(ap_id)
-            if sid is None or self.http is None:
+            if sid is not None and self.http is not None:
+                try:
+                    return status_post(self.http.get_json(host_of(ap_id), f"/api/v1/statuses/{sid}"), key)
+                except RemoteAuthError:  # its API is for its own users: ask as a server would
+                    if self.actor is None:
+                        raise
+            if self.actor is None:
                 raise RemoteNotFound(f"{ap_id} can't be read back")
-            return status_post(self.http.get_json(host_of(ap_id), f"/api/v1/statuses/{sid}"), key)
+            return self.post_from(self.fetch_object(ap_id), key, ap_id)
         if self.actor is None:  # from your server's public timeline: read as its own server shows anyone
             sid = status_id(ap_id)
             if sid is None or self.http is None:

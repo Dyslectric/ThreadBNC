@@ -212,9 +212,14 @@ TAG_DOMAIN = "hashtag"
 TAG_PREFIX = "tag:"
 _HASHTAG = re.compile(r"^\w+$")
 # A fediverse account's own address (Mastodon, GoToSocial, Akkoma...): where
-# posts you make on your Mastodon account are filed. Lemmy and PieFed never
-# put a community there (theirs are /c/name, and their people /u/name).
+# posts you make on your Mastodon account are filed, and the posts of someone
+# you follow there (people.py). Lemmy and PieFed never put a community there
+# (theirs are /c/name, and their people /u/name). Following someone takes
+# @name@server or their profile's address; either is a community on the
+# hashtag pseudo server, named by what was given until it's looked up, then
+# by their actor's address.
 _FEDI_ACCOUNT = re.compile(r"^/(?:users/[^/]+|@[^/]+)/?$")
+_FEDI_HANDLE = re.compile(r"^@([\w.-]+)@((?:[a-z0-9-]+\.)+[a-z0-9-]+)$", re.I)
 
 
 def is_tag(ap_id: str | None) -> bool:
@@ -224,6 +229,22 @@ def is_tag(ap_id: str | None) -> bool:
 def is_fedi_account(ap_id: str | None) -> bool:
     parsed = urlparse(ap_id or "")
     return parsed.scheme == "https" and bool(_FEDI_ACCOUNT.match(parsed.path)) and not is_bluesky(ap_id)
+
+
+def fedi_account_ref(text: str) -> CommunityRef | None:
+    """Someone on Mastodon (or GoToSocial, Akkoma, Misskey...) to follow:
+    @name@server, or their profile's address (https://server/@name or
+    https://server/users/name)."""
+    m = _FEDI_HANDLE.match(text)
+    if m:
+        return CommunityRef(TAG_DOMAIN, f"@{m.group(1)}@{m.group(2).lower()}", TAG_DOMAIN)
+    if text.lower().startswith("https://") and is_fedi_account(text.split("?")[0].split("#")[0]):
+        return CommunityRef(TAG_DOMAIN, text.split("?")[0].split("#")[0].rstrip("/"), TAG_DOMAIN)
+    return None
+
+
+def is_fedi_account_ref(ref: CommunityRef) -> bool:
+    return ref.domain == TAG_DOMAIN and ref.name.startswith(("@", "https://"))
 
 
 def from_fediverse(community_ap_id: str | None) -> bool:
@@ -337,8 +358,9 @@ def parse_community_ref(text: str) -> CommunityRef:
     """Accepts !name@host, name@host, https://host/c/name, https://host/c/name@home,
     subreddits: r/name or https://www.reddit.com/r/name, and feeds: rss:<url>, a
     YouTube channel or playlist link, or any other web address (a feed, or a
-    page that links to one), hashtags: #name or tag:name, and Bluesky accounts
-    and feeds: @handle.bsky.social or a bsky.app/profile link."""
+    page that links to one), hashtags: #name or tag:name, Bluesky accounts
+    and feeds: @handle.bsky.social or a bsky.app/profile link, and people on
+    Mastodon: @name@server or https://server/@name."""
     text = text.strip()
     bluesky = _bluesky_ref(text)
     if bluesky:
@@ -363,6 +385,9 @@ def parse_community_ref(text: str) -> CommunityRef:
     if re.match(r"^(?:https?://)?(?:[\w-]+\.)*(?:youtube\.com|youtu\.be)/", text, re.I):
         # A YouTube channel or playlist (youtube.com/@name has an "@" in it too)
         return CommunityRef(RSS_DOMAIN, text if "://" in text else "https://" + text, RSS_DOMAIN)
+    account = fedi_account_ref(text)
+    if account:  # a profile's address that turns out not to be one is tried as a feed (Bouncer.resolve_community)
+        return account
     if "://" in text or text.startswith(("/", "www.")) or ("/c/" in text):
         u = text if "://" in text else "https://" + text
         parsed = urlparse(u)

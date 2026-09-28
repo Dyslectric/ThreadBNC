@@ -1,5 +1,6 @@
 """ThreadBNC's own ActivityPub identity, for following what no community
-carries: hashtags, through relays (tags.py).
+carries: hashtags, through relays (tags.py), and people on Mastodon and the
+like (people.py).
 
 It's one actor, https://{THREADBNC_ACTOR_DOMAIN}/threadbnc/actor, known as
 threadbnc@{that domain}. It never posts. It follows, it's sent what it
@@ -128,7 +129,7 @@ class Actor:
             "type": "Application",
             "preferredUsername": USERNAME,
             "name": "ThreadBNC",
-            "summary": "<p>A private reader that follows hashtags. It doesn't post, and doesn't take followers.</p>",
+            "summary": "<p>A private reader that follows hashtags and people. It doesn't post, and doesn't take followers.</p>",
             "url": self.id,
             "inbox": self.inbox,
             "outbox": self.outbox,
