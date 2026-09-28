@@ -1712,7 +1712,14 @@ document.documentElement.classList.add("js");
       v.loop = true;
       if (el.dataset.video) v.muted = loopMuted;
       else if (!v.dataset.loopReady) { v.muted = true; v.dataset.loopReady = "1"; }
-      if (on) v.play().catch(() => {});  // the browser may want a click first
+      if (on) v.play().catch((e) => {  // the browser may want a click first
+        // Firefox set to let sound start only straight after a click (or to block all autoplay)
+        // refuses a video with sound once scrolled to: it plays without, and the sound button
+        // says so, so a click on it brings the sound back.
+        if (e.name !== "NotAllowedError" || !el.dataset.video || v.muted || !loopOnScreen(el)) return;
+        setLoopSound(false);
+        v.play().catch(() => {});
+      });
       else v.pause();
     }
     const box = $("article.video-box", slot);
@@ -1743,15 +1750,21 @@ document.documentElement.classList.add("js");
     frame.contentWindow.postMessage({ context: "loops-embed", action: "play" }, origin);
   });
 
-  // A Trending video: tapped, it pauses or plays; the sound button turns sound on for it and the next.
+  function setLoopSound(on) {
+    loopMuted = !on;
+    for (const b of $$(".loop-sound")) b.setAttribute("aria-pressed", String(on));
+    for (const v of $$(".loop-video")) v.muted = loopMuted;
+  }
+
+  // A Trending video: tapped, it pauses or plays; the sound button turns sound on for it and the
+  // next, and starts it if it hadn't (Firefox set to block all autoplay waits for a click).
   document.addEventListener("click", (ev) => {
     const loop = ev.target.closest("article.loop[data-video]");
     if (!loop || ev.target.closest("[data-veil]:not(.revealed)")) return;
     const video = $(".loop-video", loop);
     if (ev.target.closest(".loop-sound")) {
-      loopMuted = !loopMuted;
-      for (const b of $$(".loop-sound")) b.setAttribute("aria-pressed", String(!loopMuted));
-      for (const v of $$(".loop-video")) v.muted = loopMuted;
+      setLoopSound(loopMuted);
+      if (!loopMuted && video && video.paused && video.currentTime === 0 && loopOnScreen(loop)) video.play().catch(() => {});
     } else if (video && ev.target.closest(".loop-stage")) {
       if (video.paused) video.play().catch(() => {}); else video.pause();
     }

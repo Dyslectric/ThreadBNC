@@ -668,9 +668,15 @@ html:has(#items.loops) .toolbar { position: static; }
 .loop-stage { min-height: 0; background: #000; }
 .loop-slot { position: relative; height: 100%; display: flex; flex-direction: column; }
 .loop-poster { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+/* Buttons over a video: a dark fill inside a light ring, so they stand out on a white frame
+   (the fill) and on a black one (the ring), whichever theme the page is in. */
+.loop-start .i, .loop-sound, .trending-loop .loop-info :is(.trend-meter, .act) {
+  color: #fff; background: rgba(0, 0, 0, .66); border: 2px solid rgba(255, 255, 255, .88);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .45), 0 2px 8px rgba(0, 0, 0, .35); }
+.loop-start:hover .i, .loop-sound:hover, .trending-loop .loop-info :is(.trend-meter, .act):hover {
+  color: #fff; background: rgba(0, 0, 0, .85); border-color: #fff; }
 .loop-start { position: absolute; inset: 0; display: grid; place-items: center; color: #fff; }
-.loop-start .i { width: 64px; height: 64px; padding: 16px; border-radius: 999px; background: rgba(0, 0, 0, .55); }
-.loop-start:hover .i { background: rgba(0, 0, 0, .75); }
+.loop-start .i { width: 88px; height: 88px; padding: 22px; border-radius: 999px; }
 .loop-elsewhere { position: absolute; inset: auto 0 0; margin: 0; padding: 12px 16px; display: flex; gap: 10px;
   align-items: center; flex-wrap: wrap; color: #fff; background: linear-gradient(transparent, rgba(0, 0, 0, .8)); }
 .loop .video-box { max-width: none; flex: 1; min-height: 0; display: flex; flex-direction: column; }
@@ -683,19 +689,35 @@ html:has(#items.loops) .toolbar { position: static; }
 .loop .pc-title { overflow-wrap: anywhere; }
 .loop.unread .pc-title a { font-weight: 700; }
 .loop .pc-excerpt { -webkit-line-clamp: 2; line-clamp: 2; }
+/* The post's buttons, big enough to hit at a glance, each with an edge that shows on the card in
+   either theme (--line is too faint to), and its words in the text's colour, not the muted one. */
+.loop .pc-actions { margin: 8px 0 0; gap: 8px; font-size: 1rem; }
+.loop .pc-actions :is(.act, button.vote), .trending-loop .loop-info .trend-meter {
+  min-height: 42px; padding: 8px 14px; border-radius: 10px; font-size: 1rem; line-height: 1.2; }
+.loop .pc-actions .act .i, .trending-loop .loop-info .trend-meter .i { width: 1.3em; height: 1.3em; }
+.loop:not(.trending-loop) .pc-actions :is(.act, button.vote) {
+  color: var(--text); background: var(--card); border: 1px solid color-mix(in srgb, var(--text) 45%, transparent); }
+.loop:not(.trending-loop) .pc-actions :is(.act, button.vote):hover { background: var(--hover); border-color: var(--text); }
+.loop:not(.trending-loop) .pc-actions .act.on { color: var(--kept); border-color: var(--kept); }
+.loop .pc-actions > .pill { font-size: .9rem; padding: 6px 12px; }
+.loop .tile-votes.obj-actions { gap: 6px; }
+.loop .tile-votes button.vote { min-width: 48px; }
 /* Trending's Loops: the video fills the screen, with who posted it and what it says over its foot. */
 .trending-loop { display: block; position: relative; background: #000; color: #fff; }
 .trending-loop .loop-stage, .trending-loop .loop-slot { position: absolute; inset: 0; height: auto; }
 .loop-video { width: 100%; height: 100%; object-fit: contain; background: #000; cursor: pointer; }
-.trending-loop .loop-info { position: absolute; inset: auto 0 0; padding: 48px 72px 14px 16px; pointer-events: none;
-  background: linear-gradient(transparent, rgba(0, 0, 0, .78)); text-shadow: 0 1px 3px rgba(0, 0, 0, .6); }
+.trending-loop .loop-info { position: absolute; inset: auto 0 0; padding: 48px 88px 16px 16px; pointer-events: none;
+  background: linear-gradient(transparent, rgba(0, 0, 0, .6) 40%, rgba(0, 0, 0, .86)); text-shadow: 0 1px 3px rgba(0, 0, 0, .8); }
 .trending-loop .loop-info :is(a, button, form) { pointer-events: auto; }
-.trending-loop .loop-info, .trending-loop .loop-info :is(a, .muted, .trend-meter, .act) { color: #fff; }
+.trending-loop .loop-info, .trending-loop .loop-info :is(a, .muted, .pc-meta, .pc-excerpt) { color: #fff; }
 .trending-loop .pc-excerpt { -webkit-line-clamp: 3; line-clamp: 3; margin: 4px 0 6px; }
-.trending-loop .trend-meter { background: rgba(255, 255, 255, .14); border-color: transparent; }
-.loop-sound { position: absolute; right: 12px; bottom: 76px; z-index: 1; width: 44px; height: 44px; padding: 10px;
-  display: grid; place-items: center; color: #fff; background: rgba(0, 0, 0, .55); border: 0; border-radius: 999px; cursor: pointer; }
-.loop-sound .i { width: 24px; height: 24px; }
+/* The count it's sorted by, and a like of yours, stand out from the other buttons over the video. */
+.trending-loop .loop-info .trend-meter.sorted { color: #111; background: rgba(255, 255, 255, .94); border-color: #fff; }
+.trending-loop .loop-info .trend-meter.on { color: #f0c26b; border-color: #f0c26b; }
+.trending-loop .loop-info .trend-meter.sorted.on { color: #7a4d00; }
+.loop-sound { position: absolute; right: 14px; bottom: 96px; z-index: 1; width: 60px; height: 60px; padding: 0;
+  display: grid; place-items: center; border-radius: 999px; cursor: pointer; }
+.loop-sound .i { width: 30px; height: 30px; }
 .loop-sound .sound-on, .loop-sound[aria-pressed="true"] .sound-off { display: none; }
 .loop-sound[aria-pressed="true"] .sound-on { display: block; }
 .kb-current.loop { outline: 2px solid var(--ring); outline-offset: -2px; }
