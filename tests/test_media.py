@@ -256,6 +256,10 @@ def test_grid_can_leave_out_posts_without_pictures(settings, server, mbouncer):
         page = client.get(url).text
         assert page.count('class="tile ') == 4 and "text 1" not in page, url
     assert "text 1" in client.get(f"/c/{cid}?view=list").text  # other views show every post
+    with mbouncer.db.transaction() as conn:
+        conn.execute("UPDATE archived_threads SET retention='manual'")
+    assert client.get("/kept?view=tiles").text.count('class="tile ') == 4  # and on the Kept page
+    assert client.get("/kept?view=list").text.count('class="post-card ') == 6
     client.get(f"/c/{cid}?view=tiles")
     client.post("/settings/tiles", data={})
     assert client.get(f"/c/{cid}").text.count('class="tile ') == 6
