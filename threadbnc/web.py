@@ -779,6 +779,27 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             return fmt_ts(now), False
         return fmt_ts(then), True
 
+    def tiles_pictures_only() -> bool:
+        """Whether the grid view leaves out posts with no picture (Settings)."""
+        return db.get_setting("tiles_pictures_only") == "1"
+
+    templates.env.globals["tiles_pictures_only"] = tiles_pictures_only
+
+    def view_media(view: str) -> str:
+        """load_feed's media filter for a view: pictures only in the grid, when Settings say so."""
+        return "pictures" if view == "tiles" and tiles_pictures_only() else ""
+
+    def load_in_view(conn: Any, chosen: str | None, **kw: Any) -> tuple[feed_mod.FeedPage, str]:
+        """A page of a feed that mixes communities, and the view to show it in:
+        the one chosen, else ("auto") picked by what's on the page."""
+        if chosen in feed_mod.VIEWS:
+            return feed_mod.load_feed(conn, media=view_media(chosen), **kw), chosen
+        fp = feed_mod.load_feed(conn, **kw)
+        shown = feed_mod.pick_view(None, sum(1 for i in fp.items if i["thumb"]), len(fp.items))
+        if view_media(shown):
+            fp = feed_mod.load_feed(conn, media=view_media(shown), **kw)
+        return fp, shown
+
     @app.get("/", response_class=HTMLResponse)
     def home(request: Request, sort: str | None = None, t: str | None = None, unread: str | None = None,
              page: int = 1, view: str | None = None, at: str | None = None):
@@ -790,10 +811,9 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         with db.connect() as conn:
             defaults = feed_mod.load_defaults(conn)
             s = defaults.with_url(sort, t, unread)
-            fp = feed_mod.load_feed(conn, sort=s.sort, window=s.window, unread=s.unread, page=page, as_of=as_of)
+            fp, shown = load_in_view(conn, chosen, sort=s.sort, window=s.window, unread=s.unread, page=page,
+                                     as_of=as_of)
             follows = feed_mod.followed_communities(conn)
-        # The home feed mixes communities, so "auto" goes by what's on this page.
-        shown = feed_mod.pick_view(chosen, sum(1 for i in fp.items if i["thumb"]), len(fp.items))
         return render(request, "feed.html", feed=fp, follows=follows, sort=s.sort, window=s.window, unread=s.unread,
                       defaults=defaults, custom=None, base_url="/", community=None, view=shown, view_chosen=chosen,
                       snapshot=snapshot)
@@ -812,10 +832,9 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                 raise HTTPException(404)
             defaults = feed_mod.feed_settings(custom, feed_mod.load_defaults(conn))
             s = defaults.with_url(sort, t, unread)
-            fp = feed_mod.load_feed(conn, community_ids=custom["community_ids"], sort=s.sort, window=s.window,
-                                    unread=s.unread, page=page, as_of=as_of)
+            fp, shown = load_in_view(conn, custom["view_mode"], community_ids=custom["community_ids"], sort=s.sort,
+                                     window=s.window, unread=s.unread, page=page, as_of=as_of)
             follows = feed_mod.followed_communities(conn)
-        shown = feed_mod.pick_view(custom["view_mode"], sum(1 for i in fp.items if i["thumb"]), len(fp.items))
         return render(request, "feed.html", feed=fp, follows=follows, sort=s.sort, window=s.window, unread=s.unread,
                       defaults=defaults, custom=custom, base_url=f"/f/{fid}", community=None, view=shown,
                       view_chosen=custom["view_mode"], snapshot=snapshot)
@@ -1122,6 +1141,15 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         if is_fetch(request):
             return {"ok": True}
         flash(request, f"Unread posts are marked with: {UNREAD_MARKERS[marker][0].lower()}.")
+        return RedirectResponse(back(request, "/settings"), status_code=303)
+
+    @app.post("/settings/tiles")
+    def set_tiles_pictures_only(request: Request, pictures_only: str = Form("")):
+        on = pictures_only == "1"
+        with db.transaction() as conn:
+            conn.execute("INSERT INTO app_settings(key, value) VALUES ('tiles_pictures_only', ?) "
+                         "ON CONFLICT(key) DO UPDATE SET value=excluded.value", ("1" if on else "0",))
+        flash(request, "The grid shows only posts with pictures." if on else "The grid shows every post.")
         return RedirectResponse(back(request, "/settings"), status_code=303)
 
     @app.post("/theme")
@@ -2026,10 +2054,10 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             follow_row = conn.execute("SELECT * FROM community_follows WHERE community_id=?", (cid,)).fetchone()
             fp, shown = None, "list"
             if tab in ("feed", "kept"):
-                fp = feed_mod.load_feed(conn, community_id=cid, sort=sort, window=t, unread=unread,
-                                        kept_only=tab == "kept", page=page, as_of=as_of)
                 shown = feed_mod.pick_view(c["view_mode"], *feed_mod.media_share(conn, cid),
                                            microblog=is_tag(c["canonical_ap_id"]))
+                fp = feed_mod.load_feed(conn, community_id=cid, sort=sort, window=t, unread=unread,
+                                        kept_only=tab == "kept", media=view_media(shown), page=page, as_of=as_of)
             counts = {r["k"]: r["n"] for r in conn.execute(
                 "SELECT CASE WHEN trashed_at IS NOT NULL THEN 'trash' ELSE retention END AS k, COUNT(*) n "
                 "FROM archived_threads WHERE community_id=? GROUP BY 1", (cid,))}

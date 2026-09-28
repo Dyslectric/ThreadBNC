@@ -243,6 +243,24 @@ def test_view_choice_is_remembered_per_community(settings, server, mbouncer):
     assert 'class="tiles"' in client.get(f"/c/{cid}").text
 
 
+def test_grid_can_leave_out_posts_without_pictures(settings, server, mbouncer):
+    cid = picture_community(server, mbouncer, pictures=4, texts=2)
+    client = TestClient(create_app(settings, mbouncer))
+    client.post("/login", data={"password": "pw"})
+    for url in (f"/c/{cid}?view=tiles", "/?view=tiles"):
+        assert client.get(url).text.count('class="tile ') == 6  # text posts as text cards, by default
+    assert 'name="pictures_only" value="1" >' in client.get("/settings").text
+    client.post("/settings/tiles", data={"pictures_only": "1"})
+    assert 'name="pictures_only" value="1" checked>' in client.get("/settings").text
+    for url in (f"/c/{cid}", "/", f"/c/{cid}?view=auto", "/?view=auto"):  # chosen, then picked for the page
+        page = client.get(url).text
+        assert page.count('class="tile ') == 4 and "text 1" not in page, url
+    assert "text 1" in client.get(f"/c/{cid}?view=list").text  # other views show every post
+    client.get(f"/c/{cid}?view=tiles")
+    client.post("/settings/tiles", data={})
+    assert client.get(f"/c/{cid}").text.count('class="tile ') == 6
+
+
 def test_pictures_view_is_a_third_choice(settings, server, mbouncer):
     cid = picture_community(server, mbouncer)
     client = TestClient(create_app(settings, mbouncer))

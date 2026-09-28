@@ -156,6 +156,7 @@
           {% if tab == 'kept' %}Nothing kept from this community yet. Use Keep on a post.
           {% elif not following %}You're not following this community. Follow it to fill this feed, or browse the Live tab.
           {% elif unread == 'comments' %}No new comments on posts you've read.{% elif unread %}You're all caught up.{% else %}No posts captured yet.{% endif %}
+          {% if view == 'tiles' and tiles_pictures_only() %}The grid shows only posts with pictures (<a href="/settings">Settings</a>).{% endif %}
         </p></section>
       {% endif %}
       {{ pager(feed, base, sort, window, unread) }}
