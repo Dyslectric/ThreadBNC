@@ -965,12 +965,12 @@ document.documentElement.classList.add("js");
       panel.classList.add("card-inline-panel");
       slot.append(panel);
     } else {
-      const host = owner.matches(".post-card, .status") ? $(".pc-main", owner) : owner;
-      let slot = $(":scope > .inline-panels", host);
+      // The card's whole width, beneath a list card's thumbnail or a timeline post's avatar too.
+      let slot = $(":scope > .inline-panels", owner);
       if (!slot) {
         slot = document.createElement("div");
         slot.className = "inline-panels";
-        host.append(slot);
+        owner.append(slot);
       }
       panel.classList.add("card-inline-panel");
       slot.append(panel);

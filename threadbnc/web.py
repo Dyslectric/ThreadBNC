@@ -785,19 +785,19 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
 
     templates.env.globals["tiles_pictures_only"] = tiles_pictures_only
 
-    def view_media(view: str) -> str:
-        """load_feed's media filter for a view: pictures only in the grid, when Settings say so."""
-        return "pictures" if view == "tiles" and tiles_pictures_only() else ""
+    def pictures_only(view: str) -> bool:
+        """Whether a view leaves out posts with no picture: the grid, when Settings say so."""
+        return view == "tiles" and tiles_pictures_only()
 
     def load_in_view(conn: Any, chosen: str | None, **kw: Any) -> tuple[feed_mod.FeedPage, str]:
         """A page of a feed that mixes communities, and the view to show it in:
         the one chosen, else ("auto") picked by what's on the page."""
         if chosen in feed_mod.VIEWS:
-            return feed_mod.load_feed(conn, media=view_media(chosen), **kw), chosen
+            return feed_mod.load_feed(conn, pictures=pictures_only(chosen), **kw), chosen
         fp = feed_mod.load_feed(conn, **kw)
         shown = feed_mod.pick_view(None, sum(1 for i in fp.items if i["thumb"]), len(fp.items))
-        if view_media(shown):
-            fp = feed_mod.load_feed(conn, media=view_media(shown), **kw)
+        if pictures_only(shown):
+            fp = feed_mod.load_feed(conn, pictures=True, **kw)
         return fp, shown
 
     @app.get("/", response_class=HTMLResponse)
@@ -1539,12 +1539,10 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                 out["linked_videos"] = linked_videos(conn, linked)
             if tab == "threads" or tab in KEPT_MEDIA:
                 s = feed_mod.load_defaults(conn).with_url(sort, t, unread)
-                out.update(sort=s.sort, window=s.window, unread=s.unread,
-                           feed=feed_mod.load_feed(conn, kept_only=True, media=KEPT_MEDIA.get(tab, ""), sort=s.sort,
-                                                   window=s.window, unread=s.unread, page=page, as_of=as_of))
                 chosen = db.get_setting("kept_view")
-                out.update(view_chosen=chosen, view=feed_mod.pick_view(
-                    chosen, sum(1 for i in out["feed"].items if i["thumb"]), len(out["feed"].items)))
+                fp, shown = load_in_view(conn, chosen, kept_only=True, media=KEPT_MEDIA.get(tab, ""), sort=s.sort,
+                                         window=s.window, unread=s.unread, page=page, as_of=as_of)
+                out.update(sort=s.sort, window=s.window, unread=s.unread, feed=fp, view_chosen=chosen, view=shown)
             elif tab == "articles":
                 out["articles"], out["has_more"] = kept_articles_page(conn, page)
             elif tab == "changed":
@@ -2057,7 +2055,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                 shown = feed_mod.pick_view(c["view_mode"], *feed_mod.media_share(conn, cid),
                                            microblog=is_tag(c["canonical_ap_id"]))
                 fp = feed_mod.load_feed(conn, community_id=cid, sort=sort, window=t, unread=unread,
-                                        kept_only=tab == "kept", media=view_media(shown), page=page, as_of=as_of)
+                                        kept_only=tab == "kept", pictures=pictures_only(shown), page=page,
+                                        as_of=as_of)
             counts = {r["k"]: r["n"] for r in conn.execute(
                 "SELECT CASE WHEN trashed_at IS NOT NULL THEN 'trash' ELSE retention END AS k, COUNT(*) n "
                 "FROM archived_threads WHERE community_id=? GROUP BY 1", (cid,))}

@@ -90,6 +90,7 @@
       {% if tab != 'threads' and counts[tab] == 0 %}No {{ 'videos' if tab == 'videos' else 'audio' }} kept yet. Keep a post that {{ 'is a video' if tab == 'videos' else 'links to an audio file' }} and it shows up here.
       {% elif counts.threads == 0 %}Nothing kept yet. Use Keep ({{ icon('star') }}, or <kbd>s</kbd>) on a post in your feed, or keep one by its link.
       {% elif unread == 'comments' %}No new comments on posts you've kept.{% elif unread %}You're all caught up.{% else %}Nothing kept in this time range.{% endif %}
+      {% if view == 'tiles' and tiles_pictures_only() %}The grid shows only posts with pictures (<a href="/settings">Settings</a>).{% endif %}
     </p></section>
   {% endif %}
   {{ pager(feed, base, sort, window, unread) }}
