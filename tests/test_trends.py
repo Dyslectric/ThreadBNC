@@ -1209,3 +1209,15 @@ def test_trending_videos_play_on_the_page_and_in_loops(settings, bouncer):  # no
     assert web_client.get("/trending/video", params={"did": ALICE, "cid": "bafkreiotherotherother"},
                           follow_redirects=False).status_code == 404
     assert web_client.get("/trending/video", params={"did": "did:web:evil.test", "cid": cid}).status_code == 404
+
+
+def test_videos_read_before_their_files_were_kept_are_read_again(bouncer):  # noqa: F811
+    now = fmt_ts(datetime.now(timezone.utc))
+    old = {"text": "Old clip", "video": True}
+    with bouncer.db.transaction(exclusive=False) as conn:
+        trends.record_totals(conn, "bluesky", {
+            at("3kold"): {"likes": 5, "replies": 1, "reposts": 0, "created_at": stamp(hours=-30), "view": old},
+            at("3knew"): {"likes": 4, "replies": 1, "reposts": 0, "created_at": stamp(hours=-30),
+                          "view": {**old, "video_src": "/trending/video?did=d&cid=c"}}}, [], now)
+    with bouncer.db.connect() as conn:
+        assert [r["ref"] for r in trends.due_checks(conn, "bluesky", 10)] == [at("3kold")]

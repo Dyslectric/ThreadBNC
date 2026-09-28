@@ -1386,7 +1386,9 @@ def due_checks(conn: Conn, source: str, limit: int, now: str | None = None, pref
         age = moment - (parse_ts(r["created_at"] or r["first_seen_at"]) or moment)
         every = next((e for limit_age, e in RECHECK if age < limit_age), RECHECK[-1][1])
         checked = parse_ts(r["checked_at"])
-        return checked is None or moment - checked >= every
+        # a video read before its file's address was kept (video_src) is read again now, for Loops
+        unplayable = '"video": true' in (r["view_json"] or "") and '"video_src"' not in r["view_json"]
+        return checked is None or unplayable or moment - checked >= every
 
     rows = busiest(MAX_POST_AGE, CHECK_LOOKED_AT)
     looked = {r["ref"] for r in rows}
