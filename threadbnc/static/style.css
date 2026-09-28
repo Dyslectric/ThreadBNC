@@ -170,6 +170,8 @@ table.list { width: 100%; border-collapse: collapse; background: var(--card); bo
 table.list th, table.list td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
 table.timeline td { padding: 6px 12px 6px 0; vertical-align: top; }
 .body { white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0; }
+/* A post's link can be a long address (a Loops video's file) that would widen the page. */
+.post-link { overflow-wrap: anywhere; }
 .body.faded { opacity: 0.75; }
 .post h1 { margin-top: 0; }
 .meta { color: var(--muted); }

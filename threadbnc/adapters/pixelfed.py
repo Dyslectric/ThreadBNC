@@ -35,6 +35,13 @@ COMMENT_PAGES = 3  # of 10: the newest 30 comments
 REPLIED_COMMENTS = 10  # comments whose replies are read too (their first 10)
 
 
+def _real(s: Any) -> bool:
+    """A post or comment that's there to read. Pixelfed still lists those of
+    deleted accounts, with no author and "/404" for an address."""
+    return (isinstance(s, dict) and bool(s.get("id")) and isinstance(s.get("account"), dict)
+            and str(s.get("uri") or "").startswith("https://"))
+
+
 class PixelfedAdapter(ThreadiverseAdapter):
     software = "pixelfed"
     poll_page_size = 20
@@ -100,8 +107,7 @@ class PixelfedAdapter(ThreadiverseAdapter):
             params["max_id"] = self._older[ref.name.lower()]
         got = self.http.get_json(self.domain, f"/api/pixelfed/v1/accounts/{self._id_of(ref.name)}/statuses",
                                  params=params)
-        statuses = [s for s in got if isinstance(s, dict) and s.get("id") and s.get("uri")] \
-            if isinstance(got, list) else []
+        statuses = [s for s in got if _real(s)] if isinstance(got, list) else []
         if statuses:
             self._older[ref.name.lower()] = str(statuses[-1]["id"])
         else:
@@ -137,7 +143,7 @@ class PixelfedAdapter(ThreadiverseAdapter):
         data = got.get("data") if isinstance(got, dict) else None
         pages = ((got.get("meta") or {}).get("pagination") or {}) if isinstance(got, dict) else {}
         more = isinstance(pages.get("total_pages"), int) and pages["total_pages"] > page
-        return [c for c in data or [] if isinstance(c, dict) and c.get("id") and c.get("uri")], more
+        return [c for c in data or [] if _real(c)], more
 
     def fetch_comments(self, post_local_id: str) -> CommentList:
         """The post's newest comments (COMMENT_PAGES pages) and the first

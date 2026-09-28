@@ -69,7 +69,9 @@ class WithMedia(WithHome):
         ]
         self.pf_comments = {("7", "101"): [pf_comment("201", "Lovely", "101", replies=1),
                                            pf_comment("202", "Where?", "101", who="cat", who_id="9")],
-                            ("8", "201"): [pf_comment("301", "Thanks!", "201", who="alice", who_id="7")]}
+                            ("8", "201"): [pf_comment("301", "Thanks!", "201", who="alice", who_id="7"),
+                                           # a deleted account's: Pixelfed still lists it, with no one and no address
+                                           {**pf_comment("302", "Spam", "201"), "uri": "/404", "account": None}]}
         self.loops = [loop("51", "Pinned intro", pinned=True), loop("52", "My cat\n#cats", is_sensitive=True),
                       loop("50", "")]
         self.loops_comments = {"52": [loops_comment("61", "So cute", replies=1),
