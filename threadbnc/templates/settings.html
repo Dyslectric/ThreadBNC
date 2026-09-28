@@ -40,6 +40,16 @@
   </section>
 
   <section class="card settings-section">
+    <h2>Grid view</h2>
+    <p class="muted small">Feeds shown as pictures in a grid. The same on every device.</p>
+    <form method="post" action="/settings/tiles" data-autosubmit>
+      <label class="check"><input type="checkbox" name="pictures_only" value="1" {{ 'checked' if tiles_pictures_only() }}>
+        Only posts with pictures: leave out text posts and links without one</label>
+      <p class="no-js"><button>Save</button></p>
+    </form>
+  </section>
+
+  <section class="card settings-section">
     <h2>Theme</h2>
     <p class="muted small">Kept for this browser only, so each device can have its own.</p>
     {% set theme = request.cookies.get('theme') if request.cookies.get('theme') in themes else '' %}

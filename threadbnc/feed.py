@@ -57,11 +57,13 @@ def _ext_sql(extensions: tuple[str, ...]) -> tuple[str, list[str]]:
 # Posts that are a video or a piece of audio (the Kept page's tabs): a video
 # archived with the post (its link or embedded), a YouTube video saved when
 # kept, or a video link not downloaded yet; audio as the feed's player finds it
-# (audio()). o and r are the post and its current revision in _BASE.
+# (audio()). o and r are the post and its current revision in _BASE. And posts
+# with a picture to show (thumbnails()), for a grid of pictures only.
 # Each is (SQL, its parameters).
 _HAS_MEDIA = "EXISTS (SELECT 1 FROM media_refs mr JOIN media mm ON mm.id=mr.media_id WHERE mr.object_id=o.id AND "
 _VIDEO_EXT, _AUDIO_EXT = _ext_sql(VIDEO_EXTENSIONS), _ext_sql(AUDIO_EXTENSIONS)
 MEDIA_KINDS = {
+    "pictures": (_HAS_MEDIA + "mm.kept_only=0 AND " + _VISUAL.replace("m.", "mm.") + ")", []),
     "video": (_HAS_MEDIA + ("mr.from_article=0 AND (mm.content_type LIKE 'video/%' OR mm.kept_only=1 OR "
                             f"(mm.content_type IS NULL AND {_VIDEO_EXT[0]})))"), _VIDEO_EXT[1]),
     "audio": (_HAS_MEDIA + ("mm.url=r.url AND mm.status != 'skipped' AND (mm.content_type LIKE 'audio/%' OR "
@@ -250,7 +252,7 @@ def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: lis
               per_page: int = 25, as_of: str | None = None) -> FeedPage:
     """A page of posts. `thread_ids`: just those (the caller orders them);
     kept_only with no communities given: kept posts from anywhere, followed or not.
-    `media`: only posts that are a video or audio (MEDIA_KINDS). Posts in
+    `media`: only posts that are a video or audio, or have a picture (MEDIA_KINDS). Posts in
     languages other than the ones chosen are left out, except from kept posts
     and `thread_ids` (languages.py).
 

@@ -32,6 +32,7 @@
           {% if custom and not custom.community_ids %}This feed has no communities yet. <a href="/f/{{ custom.id }}/edit">Choose some</a>.
           {% elif not custom and not (follows | selectattr('in_home') | list) %}You've left every community out of your feed. <a href="/feed/edit">Choose some</a>.
           {% elif unread == 'comments' %}No new comments on posts you've read.{% elif unread %}You're all caught up.{% elif window != 'all' %}Nothing in this time range.{% else %}No posts captured yet. The bouncer checks followed communities every few minutes.{% endif %}
+          {% if view == 'tiles' and tiles_pictures_only() %}The grid shows only posts with pictures (<a href="/settings">Settings</a>).{% endif %}
         </p></section>
       {% endif %}
       {{ pager(feed, base_url ~ '?', sort, window, unread) }}
