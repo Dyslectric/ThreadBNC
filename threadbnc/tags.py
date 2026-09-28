@@ -64,7 +64,7 @@ class TagRelays:
         self.bouncer, self.db, self.actor = bouncer, bouncer.db, actor
         self.template = relay_template
         self.timeline = timeline or (lambda: False)
-        self._housekept = 0.0
+        self._housekept = float("-inf")  # monotonic time counts from boot: the first round runs at once
         bouncer.follow_hooks.append(self.subscribe)
         bouncer.unfollow_hooks.append(self.unsubscribe)
         bouncer.hooks.append(self.housekeeping)

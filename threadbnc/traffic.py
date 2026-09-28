@@ -101,7 +101,7 @@ class Meter:
         self._counts: dict[Key, list[int]] = {}
         self.db: Any = None
         self._thread: threading.Thread | None = None
-        self._pruned = 0.0
+        self._pruned = float("-inf")
 
     def record(self, direction: str, host: str | None, *, requests: int = 1, bytes_in: int = 0, bytes_out: int = 0,
                errors: int = 0, slowed: int = 0, community: int | str | None = None,

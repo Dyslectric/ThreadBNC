@@ -1445,7 +1445,7 @@ class Trends:
         self.bouncer, self.db = bouncer, bouncer.db
         # () -> the source domains a stream counts already (see ranked_articles).
         self.archive_skips = archive_skips or (lambda: ())
-        self._tidied = self._checked = self._cached = 0.0
+        self._tidied = self._checked = self._cached = float("-inf")
         self._tidying = threading.Lock()
         bouncer.hooks.append(self.upkeep)
         bouncer.job_handlers[READ_JOB] = self.read_article

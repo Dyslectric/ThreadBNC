@@ -217,7 +217,7 @@ def test_pending_subscription_polls_as_usual_until_accepted(fed, bouncer, server
     assert one(bouncer, "SELECT push_state FROM community_follows WHERE community_id=?", cid)[0] == "pending"
     # Accepted: following again would still answer pending, but the check reads it.
     server.subscription_state[("dave", "77")] = "subscribed"
-    fed._housekept = 0.0
+    fed._housekept = float("-inf")
     fed.housekeeping()
     assert one(bouncer, "SELECT push_state FROM community_follows WHERE community_id=?", cid)[0] == "subscribed"
 

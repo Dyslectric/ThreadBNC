@@ -210,7 +210,7 @@ class MastodonStream:
         self._stop = threading.Event()
         self._streaming: dict[str, str] = {}  # your server -> where its stream is
         self._access: dict[str, tuple[float, dict[str, Any] | None]] = {}  # server -> (when read, its live feeds)
-        self._checked = self._trending = self._tags_read = self._resolved = 0.0
+        self._checked = self._trending = self._tags_read = self._resolved = float("-inf")
         self.closed_hooks: list[Any] = []  # called when a live feed is found off, or on again
         self._peek_lock = threading.Lock()
         self._peeked: dict[str, tuple[float, dict[str, Any]]] = {}  # ref -> (when, what peek() read)
