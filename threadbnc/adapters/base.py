@@ -211,10 +211,32 @@ def is_rss(ap_id: str | None) -> bool:
 TAG_DOMAIN = "hashtag"
 TAG_PREFIX = "tag:"
 _HASHTAG = re.compile(r"^\w+$")
-# A fediverse account's own address (Mastodon, GoToSocial, Akkoma...): where
-# posts you make on your Mastodon account are filed. Lemmy and PieFed never
-# put a community there (theirs are /c/name, and their people /u/name).
-_FEDI_ACCOUNT = re.compile(r"^/(?:users/[^/]+|@[^/]+)/?$")
+# A fediverse account's own address (Mastodon, GoToSocial, Akkoma, Pixelfed,
+# Loops's /ap/users/<id>...): where posts you make on your Mastodon account
+# are filed, and the Pixelfed and Loops accounts you follow. Lemmy and PieFed
+# never put a community there (theirs are /c/name, and their people /u/name).
+_FEDI_ACCOUNT = re.compile(r"^/(?:users/[^/]+|@[^/]+|ap/users/[^/]+)/?$")
+
+# Pixelfed (pictures) and Loops (short videos): fediverse servers whose
+# accounts are followed like communities (adapters/pixelfed.py, loops.py). A
+# server's software is only known once it's been asked (bouncer.adapter_for
+# notes it here), apart from the flagship servers.
+MEDIA_SOFTWARE = {"pixelfed": "Pixelfed", "loops": "Loops"}
+_media_servers: dict[str, str] = {"pixelfed.social": "pixelfed", "loops.video": "loops"}
+
+
+def note_software(domain: str, software: str | None) -> None:
+    if software in MEDIA_SOFTWARE:
+        _media_servers[domain.lower()] = software  # type: ignore[assignment]
+    else:
+        _media_servers.pop(domain.lower(), None)
+
+
+def media_software(where: str | None) -> str | None:
+    """"pixelfed" or "loops" for an address or a server name on a Pixelfed or
+    Loops server known here, None for anything else."""
+    where = where or ""
+    return _media_servers.get(host_of(where) if "://" in where else where.lower())
 
 
 def is_tag(ap_id: str | None) -> bool:
@@ -301,6 +323,10 @@ _POST_PATTERNS = [
     re.compile(r"^/post/(\d+)(?:/(\d+))?/?"),  # lemmy /post/1  /post/1/2 (comment context)
     re.compile(r"^/c/[^/]+/p/(\d+)(?:/[^/]*)?/?"),  # piefed /c/name/p/1/slug
 ]
+# Pixelfed's /p/<username>/<id> (its local id is "<username>/<id>"), and
+# Loops's /v/<shortcode> (the video's page).
+PIXELFED_POST = re.compile(r"^/p/([\w.-]+)/(\d+)/?$")
+LOOPS_VIDEO = re.compile(r"^/v/([A-Za-z0-9_-]{4,32})/?$")
 _COMMENT_PATTERNS = [re.compile(r"^/comment/(\d+)/?"), re.compile(r"^/post/\d+/comment/(\d+)")]
 
 
@@ -330,6 +356,12 @@ def parse_thread_url(url: str) -> ThreadRef:
         m = pat.match(path)
         if m:
             return ThreadRef(domain, "post", m.group(1))
+    m = PIXELFED_POST.match(path)
+    if m:
+        return ThreadRef(domain, "post", f"{m.group(1)}/{m.group(2)}")
+    m = LOOPS_VIDEO.match(path)
+    if m:
+        return ThreadRef(domain, "post", m.group(1))
     raise ValueError(f"Unrecognised post URL path: {path}")
 
 
@@ -337,12 +369,17 @@ def parse_community_ref(text: str) -> CommunityRef:
     """Accepts !name@host, name@host, https://host/c/name, https://host/c/name@home,
     subreddits: r/name or https://www.reddit.com/r/name, and feeds: rss:<url>, a
     YouTube channel or playlist link, or any other web address (a feed, or a
-    page that links to one), hashtags: #name or tag:name, and Bluesky accounts
-    and feeds: @handle.bsky.social or a bsky.app/profile link."""
+    page that links to one), hashtags: #name or tag:name, Bluesky accounts
+    and feeds: @handle.bsky.social or a bsky.app/profile link, and fediverse
+    accounts: @name@host (Pixelfed's and Loops's; their profile links are
+    told apart from feeds by asking the server, bouncer.resolve_community)."""
     text = text.strip()
     bluesky = _bluesky_ref(text)
     if bluesky:
         return bluesky
+    m = re.match(r"^@([\w.-]+)@([a-z0-9.-]+\.[a-z]{2,}(?::\d+)?)$", text, re.I)
+    if m:
+        return CommunityRef(m.group(2).lower(), m.group(1), m.group(2).lower())
     if text.startswith("#") or text.lower().startswith(TAG_PREFIX):
         tag = normalize_tag(text[len(TAG_PREFIX):] if text.lower().startswith(TAG_PREFIX) else text)
         return CommunityRef(TAG_DOMAIN, tag, TAG_DOMAIN)
@@ -383,6 +420,22 @@ def parse_community_ref(text: str) -> CommunityRef:
             raise ValueError("Expected !name@host")
         return CommunityRef(home.lower(), name, home.lower())
     raise ValueError("Expected !name@host or a community URL")
+
+
+_PROFILE = re.compile(r"^/(?:@|users/|ap/users/)?([\w.-]+)/?$")
+_NOT_PROFILE = re.compile(r"^(?:feed|rss|atom|blog|news|index)$|\.(?:xml|rss|atom|json|html?|php)$", re.I)
+
+
+def profile_ref(url: str) -> CommunityRef | None:
+    """The account a profile link might be (https://host/@name, /users/name,
+    Pixelfed's /name, Loops's /ap/users/<id>), before its server is asked
+    whether it runs Pixelfed or Loops. None for anything that can't be one."""
+    parsed = urlparse(url if "://" in url else "https://" + url)
+    m = _PROFILE.match(parsed.path or "")
+    if not parsed.hostname or parsed.query or not m or _NOT_PROFILE.search(m.group(1)):
+        return None
+    domain = parsed.hostname.lower() + (f":{parsed.port}" if parsed.port else "")
+    return CommunityRef(domain, m.group(1), domain)
 
 
 def host_of(ap_id: str) -> str:

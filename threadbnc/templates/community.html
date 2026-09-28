@@ -112,7 +112,7 @@
             <form method="post" action="/c/{{ c.id }}/unfollow"><button class="small secondary">Unfollow</button></form>
           </div>
         </details>
-      {% elif not is_fedi_account(c.canonical_ap_id) %}{# your Mastodon account's posts: made here, never followed #}
+      {% elif not is_fedi_account(c.canonical_ap_id) or is_media_account(c.canonical_ap_id) %}{# not your Mastodon account's posts: made here, never followed #}
         <form method="post" action="/follow" class="inline">
           <input type="hidden" name="community" value="{{ c.canonical_ap_id }}">
           <input type="hidden" name="backfill" value="1">

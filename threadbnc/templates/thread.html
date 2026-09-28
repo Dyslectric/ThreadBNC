@@ -319,7 +319,8 @@
 <p class="small muted comment-hint">This is on Bluesky. <a href="/accounts#bluesky">Log in to Bluesky</a> to like and reply here, or do it
   through <a href="{{ po.canonical_ap_id | safe_url }}" rel="noreferrer noopener nofollow" target="_blank">the original</a>.</p>
 {% elif from_fediverse(pc.t.c_ap) %}
-<p class="small muted comment-hint">This came from a hashtag, from {{ po.a_instance or 'another server' }}.
+<p class="small muted comment-hint">{% if media_site(pc.t.c_ap) %}This is on {{ media_site(pc.t.c_ap) }}.
+  {%- else %}This came from a hashtag, from {{ po.a_instance or 'another server' }}.{% endif %}
   <a href="/accounts#mastodon">Sign in to Mastodon</a> to like and reply here, or do it through
   <a href="{{ po.canonical_ap_id | safe_url }}" rel="noreferrer noopener nofollow" target="_blank">the original</a>{% if accounts %},
   or <a href="/t/{{ pc.t.id }}/repost">repost it</a> to discuss it on your own server{% endif %}.</p>

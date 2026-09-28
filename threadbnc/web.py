@@ -43,8 +43,8 @@ from . import hidden as hidden_mod
 from . import avatars as avatars_mod
 from . import sidebar as sidebar_mod
 from .actor import ActorEndpoints
-from .adapters import (BSKY_DOMAIN, RSS_PREFIX, CommunityRef, RemoteError, from_fediverse, host_of, is_bluesky,
-                       is_fedi_account, is_reddit_host, is_rss, is_tag)
+from .adapters import (BSKY_DOMAIN, MEDIA_SOFTWARE, RSS_PREFIX, CommunityRef, RemoteError, from_fediverse, host_of,
+                       is_bluesky, is_fedi_account, is_reddit_host, is_rss, is_tag, media_software)
 from .adapters.base import RSS_DOMAIN, TAG_DOMAIN
 from .accounts import Account, AccountError, Poster
 from .bouncer import PUSHED_POLL_MINUTES, Bouncer
@@ -277,7 +277,8 @@ def chandle(name: str, ap_id: str | None, plain: bool = False) -> Markup | str:
     """A community's handle: r/name for subreddits, the feed's title for feeds
     (the channel's name for YouTube), #name for hashtags, @handle for Bluesky
     accounts and the feed's name for Bluesky feeds, @name@host for your
-    Mastodon account, !name@host otherwise (with the host dimmed unless `plain`)."""
+    Mastodon account and Pixelfed and Loops accounts, !name@host otherwise
+    (with the host dimmed unless `plain`)."""
     if is_reddit(ap_id):
         return f"r/{name}"
     if is_bluesky(ap_id):
@@ -288,9 +289,9 @@ def chandle(name: str, ap_id: str | None, plain: bool = False) -> Markup | str:
     if is_tag(ap_id):
         return f"#{name}"
     if is_fedi_account(ap_id):
-        host = host_of(ap_id or "")
-        return f"@{name}@{host} (Mastodon)" if plain else Markup(
-            '@{}<span class="muted">@{} · Mastodon</span>').format(name, host)
+        host, site = host_of(ap_id or ""), MEDIA_SOFTWARE.get(media_software(ap_id) or "", "Mastodon")
+        return f"@{name}@{host} ({site})" if plain else Markup(
+            '@{}<span class="muted">@{} · {}</span>').format(name, host, site)
     if is_youtube_feed(ap_id):
         return f"{name} (YouTube)" if plain else Markup('{}<span class="muted"> · YouTube</span>').format(name)
     if is_rss(ap_id):
@@ -528,6 +529,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                                  proxy_login=bool(settings.proxy_auth_header), chandle=chandle,
                                  is_reddit=is_reddit, is_rss=is_rss, is_tag=is_tag, is_youtube=is_youtube_feed,
                                  is_bluesky=is_bluesky, from_fediverse=from_fediverse, is_fedi_account=is_fedi_account,
+                                 is_media_account=lambda ap_id: is_fedi_account(ap_id) and bool(media_software(ap_id)),
+                                 media_site=lambda ap_id: MEDIA_SOFTWARE.get(media_software(ap_id) or ""),
                                  actor_handle=bouncer.actor.handle if bouncer.actor else None,
                                  reading_articles=bouncer.articles.enabled)
     app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
@@ -1804,7 +1807,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                    GROUP BY c.id ORDER BY c.name""").fetchall()
         return render(request, "communities.html", follows=follows, others=others, push_handle=push_handle(),
                       default_poll=settings.default_follow_poll_minutes, reddit_poll=settings.reddit_poll_minutes,
-                      bluesky_poll=settings.bluesky_poll_minutes,
+                      bluesky_poll=settings.bluesky_poll_minutes, media_poll=settings.pixelfed_loops_poll_minutes,
                       default_days=settings.default_follow_retention_days, reddit=bouncer.reddit.status())
 
     @app.get("/communities.opml")

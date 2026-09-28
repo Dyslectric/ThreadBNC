@@ -9,6 +9,7 @@ from pathlib import Path
 REDDIT_MIN_POLL_MINUTES = 10  # the fastest a subreddit may be checked, whatever is asked for
 RSS_MIN_POLL_MINUTES = 5  # likewise for a feed
 BLUESKY_MIN_POLL_MINUTES = 5  # and for a Bluesky account or feed
+PIXELFED_LOOPS_MIN_POLL_MINUTES = 5  # and a Pixelfed or Loops account
 # Bluesky's own Jetstream, asked for posts only (jetstream.py).
 JETSTREAM = "wss://jetstream2.us-east.bsky.network/subscribe"
 
@@ -79,6 +80,7 @@ class Settings:
     reddit_min_request_interval: float = 2.0
     rss_poll_minutes: int = 60  # feeds rarely change faster, and conditional requests keep checks cheap
     bluesky_poll_minutes: int = 30  # Bluesky accounts and feeds (adapters/bluesky.py)
+    pixelfed_loops_poll_minutes: int = 30  # Pixelfed and Loops accounts (adapters/pixelfed.py, loops.py)
     # Your own Lemmy servers whose inboxes are routed through ThreadBNC, so what
     # they receive is pushed to it too (federation.py): domain -> Lemmy's own address.
     relay_inboxes: dict[str, str] = field(default_factory=dict)
@@ -156,6 +158,8 @@ def load_settings() -> Settings:
         reddit_min_request_interval=max(1.0, float(os.environ.get("THREADBNC_REDDIT_MIN_REQUEST_INTERVAL", "2.0"))),
         rss_poll_minutes=max(RSS_MIN_POLL_MINUTES, _env_int("THREADBNC_RSS_POLL_MINUTES", 60)),
         bluesky_poll_minutes=max(BLUESKY_MIN_POLL_MINUTES, _env_int("THREADBNC_BLUESKY_POLL_MINUTES", 30)),
+        pixelfed_loops_poll_minutes=max(PIXELFED_LOOPS_MIN_POLL_MINUTES,
+                                        _env_int("THREADBNC_PIXELFED_LOOPS_POLL_MINUTES", 30)),
         inbox_poll_minutes=max(1, _env_int("THREADBNC_INBOX_POLL_MINUTES", 5)),
         relay_inboxes=_relays(os.environ.get("THREADBNC_RELAY_INBOXES", "")),
         actor_domain=os.environ.get("THREADBNC_ACTOR_DOMAIN", "").strip().lower() or None,

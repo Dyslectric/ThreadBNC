@@ -30,6 +30,7 @@ from . import feed as feed_mod
 from . import hidden as hidden_mod
 from .adapters import (
     BSKY_DOMAIN,
+    MEDIA_SOFTWARE,
     CommentList,
     CommunityRef,
     HttpClient,
@@ -52,8 +53,11 @@ from .adapters import (
     host_of,
     is_reddit_host,
     is_rss,
+    media_software,
+    note_software,
     parse_community_ref,
     parse_thread_url,
+    profile_ref,
 )
 from .actor import Actor
 from .adapters.activitypub import ActivityPubAdapter
@@ -61,7 +65,8 @@ from .adapters.bluesky import BlueskyAdapter
 from .adapters.mastodon import MastodonAdapter
 from .adapters.reddit import RedditAdapter
 from .adapters.rss import FeedFetcher, RssAdapter
-from .config import BLUESKY_MIN_POLL_MINUTES, REDDIT_MIN_POLL_MINUTES, RSS_MIN_POLL_MINUTES, Settings
+from .config import (BLUESKY_MIN_POLL_MINUTES, PIXELFED_LOOPS_MIN_POLL_MINUTES, REDDIT_MIN_POLL_MINUTES,
+                     RSS_MIN_POLL_MINUTES, Settings)
 from .db import Database, fmt_ts, parse_ts, utcnow
 from .reddit import RedditConnection
 from .vault import TokenVault
@@ -146,6 +151,10 @@ class Bouncer:
         self.bluesky_adapter = BlueskyAdapter(self.http)
         self._adapter_factory = adapter_factory
         self._adapters: dict[str, tuple[ThreadiverseAdapter, str]] = {}  # domain -> (adapter, chosen at)
+        with db.connect() as conn:  # the Pixelfed and Loops servers found before (for labels and scheduling)
+            for r in conn.execute("SELECT domain, software FROM instances WHERE software IN (?, ?)",
+                                  tuple(MEDIA_SOFTWARE)).fetchall():
+                note_software(r["domain"], r["software"])
         # Extra work for each pass that needs accounts (e.g. private community join requests).
         self.hooks: list[Callable[[], Any]] = []
         # Other kinds of job, by kind: payload -> result (e.g. tags.py's "relayed").
@@ -185,7 +194,9 @@ class Bouncer:
         if domain == BSKY_DOMAIN:
             return self.bluesky_adapter
         if self._adapter_factory:
-            return self._adapter_factory(domain)
+            made = self._adapter_factory(domain)
+            note_software(domain, made.software)
+            return made
         now = utcnow()
         cached = self._adapters.get(domain)
         # Ask the server what it runs on first use after starting, then daily: a
@@ -206,6 +217,7 @@ class Bouncer:
         else:
             with self.db.transaction() as conn:
                 store.upsert_instance(conn, domain, now, software=software, version=version)
+        note_software(domain, software)
         cls = adapter_class(software, version)
         if cls is None:
             raise UnsupportedSoftware(f"{domain} runs '{software}', which is not supported yet")
@@ -497,8 +509,8 @@ class Bouncer:
     @staticmethod
     def _votes_elsewhere(conn: Any, community_id: int | None) -> bool:
         """Feed articles have no votes, a subreddit's come with its listing
-        while you're using ThreadBNC (poll_follow), as a Bluesky account's or
-        feed's likes do with every check of it, and a hashtag's posts are
+        while you're using ThreadBNC (poll_follow), as a Bluesky, Pixelfed or
+        Loops account's likes do with every check of it, and a hashtag's posts are
         from anywhere, so their votes are read only when opened: none gets vote checks."""
         row = conn.execute("SELECT canonical_ap_id FROM communities WHERE id=?", (community_id,)).fetchone()
         return bool(row) and (is_rss(row["canonical_ap_id"]) or from_fediverse(row["canonical_ap_id"])
@@ -1006,6 +1018,8 @@ class Bouncer:
     # -- communities -------------------------------------------------------
     def resolve_community(self, text: str) -> tuple[CommunityRef, NCommunity]:
         ref = parse_community_ref(text)
+        if ref.domain == RSS_DOMAIN:
+            ref = self._media_account(ref.name) or ref
         adapter = self.adapter_for(ref.domain)
         community = adapter.fetch_community(ref)
         if ref.domain == RSS_DOMAIN:  # the feed's own URL (a page may have led to it)
@@ -1022,10 +1036,24 @@ class Bouncer:
                 log.info("home instance %s unusable, polling via %s: %s", home, ref.domain, exc)
         return CommunityRef(ref.domain, community.name, home), community
 
+    def _media_account(self, url: str) -> CommunityRef | None:
+        """A Pixelfed or Loops account's profile link (followed as the account,
+        not as a feed): its server is asked what it runs, once."""
+        ref = profile_ref(url)
+        if ref is None or is_reddit_host(ref.domain) or youtube.is_youtube_host(ref.domain):
+            return None
+        if media_software(ref.domain) is None:
+            try:
+                self.adapter_for(ref.domain)  # notes the software it finds
+            except RemoteError:
+                return None
+        return ref if media_software(ref.domain) else None
+
     @staticmethod
     def always_polled(domain: str) -> bool:
-        """Feeds, subreddits and Bluesky can't push, so following them means checking them."""
-        return domain in (RSS_DOMAIN, BSKY_DOMAIN) or is_reddit_host(domain)
+        """Feeds, subreddits, Bluesky and Pixelfed and Loops accounts can't
+        push here, so following them means checking them."""
+        return domain in (RSS_DOMAIN, BSKY_DOMAIN) or is_reddit_host(domain) or media_software(domain) is not None
 
     def follow_community(self, text: str, poll_interval_minutes: int | None = None,
                          retention_days: int | None = -1, backfill: bool = False,
@@ -1084,6 +1112,8 @@ class Bouncer:
             return max(asked or self.settings.rss_poll_minutes, RSS_MIN_POLL_MINUTES)
         if domain == BSKY_DOMAIN:
             return max(asked or self.settings.bluesky_poll_minutes, BLUESKY_MIN_POLL_MINUTES)
+        if media_software(domain):
+            return max(asked or self.settings.pixelfed_loops_poll_minutes, PIXELFED_LOOPS_MIN_POLL_MINUTES)
         return asked or self.settings.default_follow_poll_minutes
 
     def set_polling(self, community_id: int, on: bool) -> None:

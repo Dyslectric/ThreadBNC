@@ -9,8 +9,9 @@ hashtag, or for your own posts your account's address; those are read back
 through their server's Mastodon API, which needs no signature. Replies are
 read when a post is opened, from the post's own server through the Mastodon
 API that Mastodon, GoToSocial, Akkoma and Pleroma share, when its address says
-which status it is; elsewhere a post shows no comments, and none are taken for
-gone."""
+which status it is, or through Pixelfed's or Loops's own (adapters/pixelfed.py,
+loops.py) for theirs; elsewhere a post shows no comments, and none are taken
+for gone."""
 
 from __future__ import annotations
 
@@ -317,10 +318,20 @@ class ActivityPubAdapter(ThreadiverseAdapter):
 
     # -- replies -----------------------------------------------------------------
     def fetch_comments(self, post_local_id: str) -> CommentList:
-        """The replies the post's own server knows of, through its Mastodon API.
-        It's never the complete tree (servers only know the replies that
-        reached them), so nothing missing from it is taken for deleted."""
+        """The replies the post's own server knows of, through its Mastodon API
+        (or Pixelfed's or Loops's). It's never the complete tree (servers only
+        know the replies that reached them), so nothing missing from it is
+        taken for deleted."""
         _, _, ap_id = post_local_id.partition(" ")
+        elsewhere = media_post(ap_id, self.http) if self.http is not None else None
+        if elsewhere is not None:
+            adapter, local = elsewhere
+            try:
+                found = adapter.fetch_comments(local)
+            except (RemoteNotFound, RemoteAuthError):
+                found = CommentList()
+            found.complete = False
+            return found
         status = status_id(ap_id)
         if status is None or self.http is None:
             return context_comments(None, "")
@@ -331,6 +342,20 @@ class ActivityPubAdapter(ThreadiverseAdapter):
         except RemoteAuthError:  # the server doesn't show replies to visitors
             return context_comments(None, status)
         return context_comments(context, status)
+
+
+def media_post(ap_id: str, http: Any) -> tuple[ThreadiverseAdapter, str] | None:
+    """A Pixelfed post's (/p/<name>/<id>) or Loops video's (/ap/users/<id>/video/<id>)
+    reader on its own server, and its local id there, when its address is one."""
+    from .loops import LoopsAdapter
+    from .pixelfed import PixelfedAdapter
+
+    domain = urlparse(ap_id).netloc.lower()
+    for adapter in (PixelfedAdapter(domain, http), LoopsAdapter(domain, http)):
+        local = adapter.resolve_ap_id(ap_id)
+        if local:
+            return adapter, local
+    return None
 
 
 def context_comments(context: Any, status: str) -> CommentList:

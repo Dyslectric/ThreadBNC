@@ -40,7 +40,7 @@ from urllib.parse import urlparse
 from . import store
 from .adapters import (
     BSKY_DOMAIN, REDDIT_DOMAIN, TAG_DOMAIN, RemoteAuthError, RemoteError, RemoteNotFound, RemoteRejected,
-    ThreadiverseAdapter, host_of, is_bluesky, is_reddit_host, is_rss,
+    ThreadiverseAdapter, host_of, is_bluesky, is_reddit_host, is_rss, media_software,
 )
 from .adapters.bluesky import web_url
 from .bouncer import Bouncer
@@ -55,8 +55,8 @@ EXCERPT_CHARS = 500  # how much of a feed article a post of it quotes
 NO_REDDIT_LOGIN = ("To vote, comment or post on Reddit, log in with Reddit on the Reddit page (an app-only "
                    "connection can only read).")
 NO_BLUESKY_LOGIN = "To like, reply or post on Bluesky, log in to Bluesky on the Accounts page."
-NO_MASTODON_LOGIN = ("To like or reply to posts from hashtags, sign in to your Mastodon account on the "
-                     "Accounts page.")
+NO_MASTODON_LOGIN = ("To like or reply to posts from hashtags, Pixelfed or Loops, sign in to your Mastodon "
+                     "account on the Accounts page.")
 MASTODON = "mastodon"  # the software of a Mastodon account, whatever its server runs
 MASTODON_PENDING = "mastodon_signin"  # the sign-in waiting for your server to send you back
 MASTODON_APPS = "mastodon_apps"  # ThreadBNC's app on each server: {domain: {redirect_uri, client_id, secret_enc}}
@@ -243,12 +243,12 @@ class Poster:
         return account
 
     def _from_hashtag(self, ap_id: str) -> bool:
-        """A post or reply that came from a hashtag: from anywhere on the
-        fediverse, so acted on as your Mastodon account."""
+        """A post or reply that came from a hashtag, or from a Pixelfed or
+        Loops account: from the fediverse, so acted on as your Mastodon account."""
         with self.db.connect() as conn:
-            return conn.execute("SELECT 1 FROM objects o JOIN archived_threads t ON t.id=o.thread_id "
-                                "WHERE o.canonical_ap_id=? AND t.source_domain=?",
-                                (ap_id, TAG_DOMAIN)).fetchone() is not None
+            row = conn.execute("SELECT t.source_domain FROM objects o JOIN archived_threads t ON t.id=o.thread_id "
+                               "WHERE o.canonical_ap_id=?", (ap_id,)).fetchone()
+        return row is not None and (row["source_domain"] == TAG_DOMAIN or media_software(row["source_domain"]) is not None)
 
     # -- the Bluesky account -------------------------------------------------------
     def bluesky_account(self) -> Account | None:

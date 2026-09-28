@@ -516,15 +516,16 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
 
 {% macro sidebar(follows, current_id=none, feed_id=none) %}
 {# Grouped by kind of source once the list is long enough to need it. #}
-{% set g = namespace(fedi=[], reddit=[], youtube=[], bluesky=[], feeds=[]) %}
+{% set g = namespace(fedi=[], reddit=[], youtube=[], bluesky=[], media=[], feeds=[]) %}
 {% for f in follows %}
   {% if is_reddit(f.canonical_ap_id) %}{% set g.reddit = g.reddit + [f] %}
   {% elif is_bluesky(f.canonical_ap_id) %}{% set g.bluesky = g.bluesky + [f] %}
+  {% elif is_media_account(f.canonical_ap_id) %}{% set g.media = g.media + [f] %}
   {% elif is_youtube(f.canonical_ap_id) %}{% set g.youtube = g.youtube + [f] %}
   {% elif is_rss(f.canonical_ap_id) %}{% set g.feeds = g.feeds + [f] %}
   {% else %}{% set g.fedi = g.fedi + [f] %}{% endif %}
 {% endfor %}
-{% set groups = [('Lemmy & PieFed', g.fedi), ('Reddit', g.reddit), ('YouTube', g.youtube), ('Bluesky', g.bluesky),
+{% set groups = [('Lemmy & PieFed', g.fedi), ('Reddit', g.reddit), ('YouTube', g.youtube), ('Bluesky', g.bluesky), ('Pixelfed & Loops', g.media),
                   ('Feeds', g.feeds)] | selectattr(1) | list %}
 {% set grouped = follows | length > 8 and groups | length > 1 %}
 {% set home = current_id is none and feed_id is none %}

@@ -1,9 +1,10 @@
 # ThreadBNC — Threadiverse bouncer + private archive
 
-A private, feed-first reader for Lemmy, PieFed, Reddit, RSS/Atom feeds, podcasts, Bluesky and hashtags that keeps a history of what it observes. When a post or comment is edited, removed or deleted after the bouncer has seen it, the change is recorded alongside the earlier version instead of replacing it.
+A private, feed-first reader for Lemmy, PieFed, Reddit, RSS/Atom feeds, podcasts, Bluesky, Pixelfed, Loops and hashtags that keeps a history of what it observes. When a post or comment is edited, removed or deleted after the bouncer has seen it, the change is recorded alongside the earlier version instead of replacing it.
 
 **Following and reading:**
 - Follow communities. Lemmy and PieFed posts arrive as they're made, pushed through your own Lemmy server (see [Pushes from your own server](#pushes-from-your-own-server)); feeds and subreddits are checked on a schedule.
+- Follow **Pixelfed** and **Loops** accounts: pictures and short videos from the fediverse, checked on a schedule (see [Pixelfed and Loops](#pixelfed-and-loops)).
 - Follow **#hashtags**: public posts with them arrive from Mastodon and the rest of the fediverse through a tag relay (or your Mastodon server's public timeline, once you subscribe to it), and from Bluesky through its Jetstream (see [Hashtags](#hashtags)).
 - **Trending** shows the posts most liked and most replied to on Bluesky and Mastodon, the articles posted most there and in your archive, and the hashtags used most (see [Trending](#trending)).
 - Your **feed** is built from the saved copy. Posts you haven't opened stand out, opened posts show "N new comments", and you can sort by New, Active, Top or Most comments.
@@ -20,7 +21,7 @@ A private, feed-first reader for Lemmy, PieFed, Reddit, RSS/Atom feeds, podcasts
 
 ![A saved article in the reading view, with a linked article opened beside it](docs/img/article-diving.svg)
 
-**Videos and live streams.** A video plays in its own site's player where it's linked: in a post that is the video's link, and in a box under a video link in a comment or article. That covers YouTube, Vimeo, Dailymotion, Streamable, PeerTube and video files. **Download and archive**, under the player, saves it here. A live stream link opens the stream's own player in the same place.
+**Videos and live streams.** A video plays in its own site's player where it's linked: in a post that is the video's link, and in a box under a video link in a comment or article. That covers YouTube, Vimeo, Dailymotion, Streamable, PeerTube, Loops and video files. **Download and archive**, under the player, saves it here. A live stream link opens the stream's own player in the same place.
 
 ![A video and a live stream opened under their links](docs/img/videos-and-streams.svg)
 
@@ -67,6 +68,7 @@ ThreadBNC behaves like one more subscribed server, or like your own browser, nev
 - **Your Mastodon server's public timeline, when you subscribe.** One streaming connection to your own server, as your account. Posts with a followed hashtag are kept from it (instead of through the relays); the rest are only counted.
 - **Trending's pictures when you scroll to them.** A trending post's pictures are downloaded once it's on your screen, like a feed post's article.
 - **Trending's totals, a few at a time.** Likes and replies of the posts replied to most are read from Bluesky's AppView (up to 100 posts every 5 minutes, 25 to a request) and from your Mastodon server (20 to a request, at most one a minute; its trending posts every 15 minutes; and 20 searches every 5 minutes for the posts boosted most in FediBuzz's firehose, while it's counted). Only the 12 articles at the top of each ranking (day, week, month and rising, on each network) are read, each once.
+- **Pixelfed and Loops accounts, a request each,** every half hour by default: their latest posts, with their likes. A post's comments are read when you open it.
 - **Reddit only while you're here,** spread out, one subreddit at a time (see [Checking, conservatively](#checking-conservatively)).
 - **Pictures at once, videos later.** Pictures and thumbnails are downloaded as posts arrive; full videos wait until you open or keep a post showing them.
 - **Video players are the sites' own.** A post that is a video's link, or a video link's box, loads the site's player in your browser (YouTube's from youtube-nocookie.com), or plays a video file from where it is. Nothing is downloaded for that. A video from a site is only downloaded when you press **Download and archive**, or keep a post that links to a YouTube video.
@@ -302,7 +304,7 @@ link is read once, when you follow it, to find the channel's id.
 - **Watching:** a post that links to a YouTube video shows YouTube's player (from youtube-nocookie.com), with **Download and archive** under it; the **Video** button in the feed opens it in place. A YouTube link in a comment or article opens the same player in a box under it, which then says how big the video would be to save (found with yt-dlp once the box is open, and remembered for 6 hours; opening a post doesn't ask). Once a video is saved, the saved copy plays instead.
 - **Videos are saved only for posts you keep.** Opening a post or scrolling past it downloads nothing. This covers any kept post that links to a YouTube video, a Lemmy or Reddit one included. **Download and archive**, under the player, keeps the video the same way: as a post in its channel, with its description and comments, just as if you'd kept it from a followed channel. [yt-dlp](https://github.com/yt-dlp/yt-dlp) does the downloading, with deno (installed by `requirements.txt`) solving YouTube's player challenges. With ffmpeg, video and sound are joined up to the chosen quality. Without it, YouTube often only has 360p as a single file.
 - **The YouTube page** (`/youtube`, linked from Accounts) sets the largest video downloaded (2000 MB by default) and the **resolution** videos are saved at (1080p). They're saved as YouTube encoded them and aren't otherwise transcoded: the **Videos** media settings are for other videos. Lowering the resolution scales videos already saved at more than it down to it, in the background, at a steady quality (H.264, CRF 23); raising it doesn't bring back what was scaled down. "720p" is the shorter side, so upright videos and Shorts count the same. A community that doesn't archive videos saves no YouTube videos.
-- **Other sites' videos** play the same way, in their own players: Vimeo, Dailymotion, Streamable and PeerTube servers (links to `/w/…` or `/videos/watch/…`; PeerTube's player without sharing the video with other viewers). So do links to video files (`.mp4`, `.webm`, `.mov`, `.m4v`, `.gifv`), in your browser's player, straight from where they are (https only). **Download and archive** saves one here for good, whatever the community's media settings: a site's video with yt-dlp, at this page's resolution and size limit (Vimeo from its player, as its pages want you signed in); a file as other media is, up to the larger of the Videos limit and this page's. YouTube's session isn't sent to other sites. They're listed on the Kept page's **Videos** tab, under **Saved from links**. Vimeo and Dailymotion only send videos in pieces, which yt-dlp needs ffmpeg to put together: without it they can't be saved.
+- **Other sites' videos** play the same way, in their own players: Vimeo, Dailymotion, Streamable, PeerTube servers (links to `/w/…` or `/videos/watch/…`; PeerTube's player without sharing the video with other viewers) and Loops servers (`/v/…`, see [Pixelfed and Loops](#pixelfed-and-loops)). So do links to video files (`.mp4`, `.webm`, `.mov`, `.m4v`, `.gifv`), in your browser's player, straight from where they are (https only). **Download and archive** saves one here for good, whatever the community's media settings: a site's video with yt-dlp, at this page's resolution and size limit (Vimeo from its player, as its pages want you signed in); a file as other media is, up to the larger of the Videos limit and this page's. YouTube's session isn't sent to other sites. They're listed on the Kept page's **Videos** tab, under **Saved from links**. Vimeo and Dailymotion only send videos in pieces, which yt-dlp needs ffmpeg to put together: without it they can't be saved.
 - **Session:** YouTube often asks servers to "confirm you're not a bot". On the YouTube page, paste your browser's youtube.com cookies (a `cookies.txt` export or a `Cookie` header) and, optionally, a PO token. They're encrypted like account tokens and used only for these downloads. Saving a session retries videos that failed. A spare Google account is safest: YouTube can suspend accounts it thinks are downloading.
 
 ## Bluesky
@@ -327,6 +329,34 @@ their own **Bluesky** group in the sidebar and in the feed editor. Everything is
   - see replies to you, mentions of you and quotes of your posts in the **Inbox**, checked with the other inboxes, and answer them there. Bluesky only keeps "seen up to" rather than a read mark per item, so marking one read is kept here, and Mark all read marks them all seen on Bluesky too.
 - Signed out, likes show as votes but nothing can be liked, replied to or posted. Reposting a Bluesky post to one of your Lemmy communities works either way.
 - **Keeping one post:** a `bsky.app/profile/…/post/…` link can be kept like any post link.
+
+## Pixelfed and Loops
+
+Follow a [Pixelfed](https://pixelfed.org) account (pictures) or a [Loops](https://joinloops.org) account (short
+videos) by pasting `@name@server` (`@dansup@pixelfed.social`, `@dansup@loops.video`) or its profile link
+(`pixelfed.social/dansup`, `loops.video/@dansup`) into the follow box. A profile link is only taken for an account
+once its server says it runs Pixelfed or Loops (one request to its NodeInfo, when you follow it); anything else is
+followed as a feed, as before. They get their own **Pixelfed & Loops** group in the sidebar and in the feed editor.
+Everything is read from the server's own public API, the one its web pages use, with no account.
+
+- **What arrives:** the account's own posts, not its reposts or replies. A Pixelfed post's pictures show like any
+  other post's (an album as a carousel), and its caption is its text; a sensitive post is veiled. A Loops video's
+  post links to its video file, which plays in the post, with its thumbnail as its picture; like any post's video,
+  the file is only downloaded when you open or keep the post. A pinned video stays at the top.
+- **Checking** is every 30 minutes by default (`THREADBNC_PIXELFED_LOOPS_POLL_MINUTES`, at least 5): one request
+  per account, which also updates the likes and comment counts of the posts it lists. Only accounts on the server
+  you follow them on can be followed (not one Loops or Pixelfed knows from elsewhere), and a private Pixelfed
+  account can't be.
+- **Comments:** opening a post reads its newest 30 comments, and the first replies to the first ten that have some:
+  up to 11 requests on Pixelfed, and on Loops, which hands out replies three at a time, up to 23. They aren't read
+  again within five minutes, and not when a post merely scrolls past. A comment deleted on Loops keeps its text here.
+- **Liking and replying** is done as your Mastodon account, as for hashtag posts (see [Hashtags](#hashtags)): your
+  server finds the post by its address. Pixelfed and Loops both federate with Mastodon.
+- **Keeping one post:** a `…/p/name/123` Pixelfed link or a `…/v/…` Loops link can be kept like any post link.
+- **Loops links** anywhere else (in a comment or an article) open Loops's own player in a box under them, with
+  **Download and archive**, like the other video sites'. That's loops.video's links, and any other Loops server
+  ThreadBNC has already asked.
+- **Hashtag posts from Pixelfed or Loops** read their comments from their own server through the same API.
 
 ## Trending
 
@@ -749,6 +779,7 @@ API (each call with `Authorization: Bearer $THREADBNC_API_TOKEN`):
 | `THREADBNC_REDDIT_MIN_REQUEST_INTERVAL` | `2.0` | Seconds between requests to Reddit (at least 1) |
 | `THREADBNC_RSS_POLL_MINUTES` | `60` | Default check interval for followed feeds (at least 5) |
 | `THREADBNC_BLUESKY_POLL_MINUTES` | `30` | Default check interval for followed Bluesky accounts and feeds (at least 5) |
+| `THREADBNC_PIXELFED_LOOPS_POLL_MINUTES` | `30` | Default check interval for followed Pixelfed and Loops accounts (at least 5) |
 | `THREADBNC_INBOX_POLL_MINUTES` | `5` | How often each account's inbox is checked (Reddit's: at least 10) |
 | `THREADBNC_MEDIA_DIR` | `<data>/media` | Where archived images/videos are stored |
 | `THREADBNC_MEDIA_MAX_MB` | `25` | Largest picture, video or audio file archived as it is; bigger files are skipped and linked to the original (the Storage page and each community can set this for each kind of file) |
@@ -975,5 +1006,6 @@ Under a post with a linked article (and in the reader) is where else the article
 
 - PieFed moderation attribution is always `unknown` for now, because its modlog API varies between versions.
 - ThreadBNC's own ActivityPub actor only follows hashtag relays so far. Lemmy and PieFed pushes still need your own Lemmy server; without one, those communities have to be checked on a schedule.
-- Replies to hashtag posts from the fediverse are only read from servers with the Mastodon API.
+- Replies to hashtag posts from the fediverse are only read from servers with the Mastodon API, Pixelfed and Loops.
+- Pixelfed and Loops accounts are checked on a schedule. ThreadBNC's own actor could follow them instead, so their posts are pushed, but that would show it among their followers.
 - Post pin/feature state, actor profile history, search, tags and notes are not implemented.

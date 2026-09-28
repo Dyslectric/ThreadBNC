@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .base import (
     BSKY_DOMAIN,
+    MEDIA_SOFTWARE,
     REDDIT_DOMAIN,
     RSS_DOMAIN,
     RSS_PREFIX,
@@ -31,19 +32,25 @@ from .base import (
     is_reddit_host,
     is_rss,
     is_tag,
+    media_software,
     normalize_tag,
+    note_software,
     parse_community_ref,
     parse_thread_url,
+    profile_ref,
 )
 from .http import HttpClient
 from .lemmy import LemmyAdapter
 from .lemmy1 import JoinRequest, Lemmy1Adapter, speaks_v4
+from .loops import LoopsAdapter
 from .piefed import PieFedAdapter
+from .pixelfed import PixelfedAdapter
 
-ADAPTERS: dict[str, type[LemmyAdapter]] = {"lemmy": LemmyAdapter, "piefed": PieFedAdapter}
+ADAPTERS: dict[str, type[ThreadiverseAdapter]] = {"lemmy": LemmyAdapter, "piefed": PieFedAdapter,
+                                                  "pixelfed": PixelfedAdapter, "loops": LoopsAdapter}
 
 
-def adapter_class(software: str | None, version: str | None) -> type[LemmyAdapter] | None:
+def adapter_class(software: str | None, version: str | None) -> type[ThreadiverseAdapter] | None:
     """The adapter for a server, by NodeInfo software name and version."""
     if software == "lemmy" and speaks_v4(version):
         return Lemmy1Adapter
@@ -71,10 +78,11 @@ def detect_software(http: HttpClient, domain: str) -> tuple[str, str | None]:
 
 __all__ = [
     "ADAPTERS", "BSKY_DOMAIN", "REDDIT_DOMAIN", "RSS_DOMAIN", "RSS_PREFIX", "TAG_DOMAIN", "TAG_PREFIX", "CommentList", "CommunityRef", "HttpClient", "JoinRequest", "Lemmy1Adapter",
-    "LemmyAdapter", "ModAction",
+    "LemmyAdapter", "LoopsAdapter", "MEDIA_SOFTWARE", "ModAction",
     "NActor", "NComment",
-    "NCommunity", "NInboxItem", "NPost", "PieFedAdapter", "RemoteAuthError", "RemoteError", "RemoteNotFound",
+    "NCommunity", "NInboxItem", "NPost", "PieFedAdapter", "PixelfedAdapter", "RemoteAuthError", "RemoteError", "RemoteNotFound",
     "RemotePaused", "RemoteRejected", "RemoteUnavailable",
     "ThreadRef", "ThreadiverseAdapter", "UnsupportedSoftware", "adapter_class", "detect_software", "from_fediverse", "host_of",
-    "is_bluesky", "is_fedi_account", "is_reddit_host", "is_rss", "is_tag", "normalize_tag", "parse_community_ref", "parse_thread_url",
+    "is_bluesky", "is_fedi_account", "is_reddit_host", "is_rss", "is_tag", "media_software", "normalize_tag", "note_software",
+    "parse_community_ref", "parse_thread_url", "profile_ref",
 ]

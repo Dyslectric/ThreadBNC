@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from . import articles, avatars, dupes, hidden, languages, videos, youtube
-from .adapters.base import BSKY_DOMAIN, RSS_DOMAIN, TAG_DOMAIN, is_reddit_host
+from .adapters.base import BSKY_DOMAIN, RSS_DOMAIN, TAG_DOMAIN, is_reddit_host, media_software
 from .db import Conn, fmt_ts, parse_ts, utcnow
 from .render import AUDIO_EXTENSIONS, VIDEO_EXTENSIONS, looks_like_audio, sole_link
 
@@ -535,12 +535,12 @@ PREVIEW_FRESH = {"reddit": timedelta(minutes=5), "youtube": timedelta(hours=1), 
 
 def preview_kind(source_domain: str | None, community_ap_id: str | None, url: str | None) -> str | None:
     """"reddit", "youtube" or "comments" (Lemmy and PieFed) for posts that get
-    previews, None for the rest."""
+    previews, None for the rest (Pixelfed's and Loops's come complete with each check)."""
     if is_reddit_host(source_domain):
         return "reddit"
     if youtube.is_youtube_feed(community_ap_id) and youtube.video_id(url):
         return "youtube"
-    if source_domain and source_domain not in (RSS_DOMAIN, TAG_DOMAIN, BSKY_DOMAIN):
+    if source_domain and source_domain not in (RSS_DOMAIN, TAG_DOMAIN, BSKY_DOMAIN) and not media_software(source_domain):
         return "comments"
     return None
 

@@ -1,5 +1,5 @@
 """Video links: a link to a video on a site whose player can be embedded
-(Vimeo, Dailymotion, Streamable, a PeerTube server) or to a video file opens
+(Vimeo, Dailymotion, Streamable, a PeerTube or Loops server) or to a video file opens
 a box with its player, under the link (app.js), and a button to download and
 archive it. A post that is such a link shows the box in the post. YouTube's
 links have a box of their own (/youtube/v/<id>, web.py), and livestreams
@@ -20,6 +20,7 @@ import re
 from dataclasses import dataclass
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
+from .adapters.base import LOOPS_VIDEO, media_software
 from .render import VIDEO_EXTENSIONS
 
 BOX_HREF = "/video?url={}"  # the box a video link opens (web.py, app.js)
@@ -37,9 +38,9 @@ _HOST = re.compile(r"^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?(?::\d{1,5})?$")
 
 @dataclass(frozen=True)
 class Video:
-    kind: str       # vimeo, dailymotion, streamable, peertube, file
-    key: str        # the video's id on its site; a file's address
-    host: str = ""  # a PeerTube server's name
+    kind: str       # vimeo, dailymotion, streamable, peertube, loops, file
+    key: str        # the video's id on its site (a Loops video's shortcode); a file's address
+    host: str = ""  # a PeerTube or Loops server's name
     secret: str = ""  # an unlisted Vimeo video's hash
 
     @property
@@ -57,13 +58,16 @@ class Video:
             return f"https://streamable.com/{self.key}"
         if self.kind == "peertube":
             return f"https://{self.host}/w/{self.key}"
+        if self.kind == "loops":
+            return f"https://{self.host}/v/{self.key}"
         return self.key
 
     @property
     def site(self) -> str:
         if self.is_file:
             return urlparse(self.key).hostname or "the site"
-        return {"vimeo": "Vimeo", "dailymotion": "Dailymotion", "streamable": "Streamable"}.get(self.kind, "PeerTube")
+        return {"vimeo": "Vimeo", "dailymotion": "Dailymotion", "streamable": "Streamable",
+                "loops": "Loops"}.get(self.kind, "PeerTube")
 
     @property
     def embed(self) -> str | None:
@@ -76,6 +80,8 @@ class Video:
             return f"https://streamable.com/e/{self.key}"
         if self.kind == "peertube":  # without sharing it with other viewers (WebRTC), which shows them your address
             return f"https://{self.host}/videos/embed/{self.key}?p2p=0"
+        if self.kind == "loops":
+            return f"https://{self.host}/embed/{self.key}"
         return None
 
     @property
@@ -151,6 +157,9 @@ def video_of(url: str | None) -> Video | None:
     peertube = _peertube(parts)
     if peertube and _HOST.match(u.netloc.lower()):
         return Video("peertube", peertube, host=u.netloc.lower())
+    loops = LOOPS_VIDEO.match(u.path)
+    if loops and media_software(host) == "loops" and _HOST.match(u.netloc.lower()):  # /v/<shortcode>
+        return Video("loops", loops.group(1), host=u.netloc.lower())
     if u.path.lower().endswith(VIDEO_EXTENSIONS):
         return Video("file", url)
     return None
