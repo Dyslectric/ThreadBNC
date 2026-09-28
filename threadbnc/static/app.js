@@ -1798,7 +1798,7 @@ document.documentElement.classList.add("js");
   let loopWheelUntil = 0;
   addEventListener("wheel", (ev) => {
     if (ev.ctrlKey || ev.defaultPrevented || !loopsAmong() || Math.abs(ev.deltaY) <= Math.abs(ev.deltaX)) return;
-    if (ev.target.closest(".panel-owner-open, .inline-panel, .menu-panel, textarea, select")) return;
+    if (ev.target.closest(".panel-owner-open, .trending-loop:has(> .trend-peek-box:not([hidden])), .inline-panel, .menu-panel, textarea, select")) return;
     const now = performance.now();
     const busy = now < loopWheelUntil;
     if (busy) { loopWheelUntil = Math.max(loopWheelUntil, now + 140); ev.preventDefault(); return; }
@@ -2566,7 +2566,7 @@ document.documentElement.classList.add("js");
     if (!link || ev.button !== 0 || ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.altKey) return;
     ev.preventDefault();
     ev.stopPropagation();
-    const main = link.closest(".pc-main");
+    const main = link.closest(".pc-main, .trending-loop");  // (beneath a Loops video, not over it)
     let box = main && $(":scope > .trend-peek-box", main);
     if (box) { showTrendPeek(link, box, box.hidden); return; }
     if (!main || link.getAttribute("aria-busy")) return;

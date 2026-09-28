@@ -1200,6 +1200,8 @@ def test_trending_videos_play_on_the_page_and_in_loops(settings, bouncer):  # no
     assert 'aria-current="page">' in loops and "Words only" not in loops
     assert loops.count('class="loop trending-loop"') == 2 and 'id="items" class="loops"' in loops
     assert "data-short" in loops
+    # Its replies and reposts are buttons there too, as on the Posts tab: comments open beneath it.
+    assert loops.count('class="trend-meter trend-peek') == 2 and loops.count('name="what" value="repost"') == 2
     only = web_client.get("/trending/loops", params={"src": "mastodon"}).text
     assert only.count('class="loop trending-loop"') == 1
     # A Bluesky video's file is served from its author's server, when a post seen here has it.

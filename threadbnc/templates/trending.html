@@ -56,6 +56,32 @@
     {% for s in span.new %}<span class="bad-text">{{ 'Bluesky' if s == 'bluesky' else 'Mastodon' }} was counted for under {{ baseline }} hours before that, so everything on it looks new.</span>{% endfor %}</p>
   {% endif %}
 {% endmacro %}
+{#- A trending post's counts, as buttons: like it, show its comments here, repost it (app.js). -#}
+{% macro trend_counts(p) %}
+  {% set v = p.view %}
+  {% set site = 'Bluesky' if p.source == 'bluesky' else 'Mastodon' %}
+  <form method="post" action="/trending/act" class="inline" data-trend-act>
+    <input type="hidden" name="source" value="{{ p.source }}"><input type="hidden" name="ref" value="{{ p.ref }}">
+    <input type="hidden" name="what" value="like"><input type="hidden" name="on" value="{{ '0' if p.liked else '1' }}">
+    <button class="trend-meter {{ 'sorted' if sort == 'likes' }} {{ 'on' if p.liked }}" aria-pressed="{{ 'true' if p.liked else 'false' }}"
+            title="Like it as your {{ site }} account">♥ <span class="n">{{ p.likes or 0 }}</span></button>
+  </form>
+  {% if p.here %}
+  <a class="trend-meter inline-comments {{ 'sorted' if sort == 'replies' }}" href="/t/{{ p.here }}#comments" aria-expanded="false"
+     title="Show its comments here, as saved">{{ icon('comment') }} <span class="n">{{ p.replies or 0 }}</span></a>
+  {% else %}
+  <a class="trend-meter trend-peek {{ 'sorted' if sort == 'replies' }}" href="{{ v.url | safe_url or '#' }}"
+     data-peek="/trending/peek?source={{ p.source }}&ref={{ p.ref | urlencode }}"
+     data-open="/trending/open" data-source="{{ p.source }}" data-ref="{{ p.ref }}" aria-expanded="false"
+     title="Show its text and comments here, to sort and reply to (it's saved here, as a post opened from a link is)">{{ icon('comment') }} <span class="n">{{ p.replies or 0 }}</span></a>
+  {% endif %}
+  <form method="post" action="/trending/act" class="inline" data-trend-act>
+    <input type="hidden" name="source" value="{{ p.source }}"><input type="hidden" name="ref" value="{{ p.ref }}">
+    <input type="hidden" name="what" value="repost"><input type="hidden" name="on" value="{{ '0' if p.reposted else '1' }}">
+    <button class="trend-meter {{ 'sorted' if sort == 'reposts' }} {{ 'on' if p.reposted }}" aria-pressed="{{ 'true' if p.reposted else 'false' }}"
+            title="{{ 'Repost' if p.source == 'bluesky' else 'Boost' }} it as your {{ site }} account">{{ icon('repost') }} <span class="n">{{ p.reposts or 0 }}</span></button>
+  </form>
+{% endmacro %}
 <div class="articles-page trending-page">
   <div class="feed-head articles-head">
     <div>
@@ -200,6 +226,9 @@
     {% set site = 'Bluesky' if p.source == 'bluesky' else 'Mastodon' %}
     {% set profile = v.author_url | safe_url %}
     <article class="loop trending-loop" id="tp-{{ p.key }}" data-entry data-post="{{ p.source }} {{ p.ref }}" data-video="{{ v.video_src }}"{% if v.video_loops %} data-short{% endif %}>
+      {# The screen's worth: the video, with who posted it over its foot. Comments opened
+         (its replies button) come beneath it, and the post grows to hold them. #}
+      <div class="loop-screen">
       <div class="loop-stage"{{ veil(('Spoiler' if v.warning else 'NSFW') if v.sensitive) }}>
         <div class="loop-slot">
           <video class="loop-video" preload="none" playsinline loop muted></video>
@@ -216,17 +245,10 @@
         {% if v.warning %}<p class="pc-excerpt"><span class="pill warn">CW</span> {{ v.warning }}</p>{% endif %}
         <p class="pc-excerpt">{{ v.text or '' }}</p>
         <div class="pc-actions actions small">
-          <form method="post" action="/trending/act" class="inline" data-trend-act>
-            <input type="hidden" name="source" value="{{ p.source }}"><input type="hidden" name="ref" value="{{ p.ref }}">
-            <input type="hidden" name="what" value="like"><input type="hidden" name="on" value="{{ '0' if p.liked else '1' }}">
-            <button class="trend-meter {{ 'sorted' if sort == 'likes' }} {{ 'on' if p.liked }}" aria-pressed="{{ 'true' if p.liked else 'false' }}"
-                    title="Like it as your {{ site }} account">♥ <span class="n">{{ p.likes or 0 }}</span></button>
-          </form>
-          <span class="trend-meter {{ 'sorted' if sort == 'replies' }}" title="Replies">{{ icon('comment') }} <span class="n">{{ p.replies or 0 }}</span></span>
-          <span class="trend-meter {{ 'sorted' if sort == 'reposts' }}" title="{{ 'Reposts' if p.source == 'bluesky' else 'Boosts' }}">{{ icon('repost') }} <span class="n">{{ p.reposts or 0 }}</span></span>
-          {% if p.here %}<a class="act" href="/t/{{ p.here }}#comments">{{ icon('comment') }}<span>Comments</span></a>{% endif %}
+          {{ trend_counts(p) }}
           {% if v.url | safe_url %}<a class="act" href="{{ v.url | safe_url }}" target="_blank" rel="noreferrer noopener nofollow">{{ icon('external') }}<span>Original</span></a>{% endif %}
         </div>
+      </div>
       </div>
     </article>
   {% endfor %}
@@ -281,27 +303,7 @@
         {% else %}{{ content }}{% endif %}
         <div class="pc-actions st-actions actions small">
           <span class="trend-counts" title="{{ 'Totals as last read' if p.checked_at else 'As counted from the stream' }}">
-            <form method="post" action="/trending/act" class="inline" data-trend-act>
-              <input type="hidden" name="source" value="{{ p.source }}"><input type="hidden" name="ref" value="{{ p.ref }}">
-              <input type="hidden" name="what" value="like"><input type="hidden" name="on" value="{{ '0' if p.liked else '1' }}">
-              <button class="trend-meter {{ 'sorted' if sort == 'likes' }} {{ 'on' if p.liked }}" aria-pressed="{{ 'true' if p.liked else 'false' }}"
-                      title="Like it as your {{ site }} account">♥ <span class="n">{{ p.likes or 0 }}</span></button>
-            </form>
-            {% if p.here %}
-            <a class="trend-meter inline-comments {{ 'sorted' if sort == 'replies' }}" href="/t/{{ p.here }}#comments" aria-expanded="false"
-               title="Show its comments here, as saved">{{ icon('comment') }} <span class="n">{{ p.replies or 0 }}</span></a>
-            {% else %}
-            <a class="trend-meter trend-peek {{ 'sorted' if sort == 'replies' }}" href="{{ v.url | safe_url or '#' }}"
-               data-peek="/trending/peek?source={{ p.source }}&ref={{ p.ref | urlencode }}"
-               data-open="/trending/open" data-source="{{ p.source }}" data-ref="{{ p.ref }}" aria-expanded="false"
-               title="Show its text and comments here, to sort and reply to (it's saved here, as a post opened from a link is)">{{ icon('comment') }} <span class="n">{{ p.replies or 0 }}</span></a>
-            {% endif %}
-            <form method="post" action="/trending/act" class="inline" data-trend-act>
-              <input type="hidden" name="source" value="{{ p.source }}"><input type="hidden" name="ref" value="{{ p.ref }}">
-              <input type="hidden" name="what" value="repost"><input type="hidden" name="on" value="{{ '0' if p.reposted else '1' }}">
-              <button class="trend-meter {{ 'sorted' if sort == 'reposts' }} {{ 'on' if p.reposted }}" aria-pressed="{{ 'true' if p.reposted else 'false' }}"
-                      title="{{ 'Repost' if p.source == 'bluesky' else 'Boost' }} it as your {{ site }} account">{{ icon('repost') }} <span class="n">{{ p.reposts or 0 }}</span></button>
-            </form>
+            {{- trend_counts(p) -}}
           </span>
           {% if v.link is readable %}
             <a class="act read-article" href="/read?url={{ v.link | urlencode }}" aria-expanded="false"

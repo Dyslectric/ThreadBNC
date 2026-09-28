@@ -702,9 +702,22 @@ html:has(#items.loops) .toolbar { position: static; }
 .loop .pc-actions > .pill { font-size: .9rem; padding: 6px 12px; }
 .loop .tile-votes.obj-actions { gap: 6px; }
 .loop .tile-votes button.vote { min-width: 48px; }
+/* Reddit's arrows and score share one outlined box: the box, not each button, has the edge and
+   the rounded corners, so the buttons fill it instead of being cut off at its ends. */
+.loop .pc-actions .reddit-votes { border: 1px solid color-mix(in srgb, var(--text) 45%, transparent); border-radius: 10px;
+  background: var(--card); }
+.loop .pc-actions .reddit-votes button.vote { border: 0; border-radius: 0; min-width: 48px; }
+.loop .pc-actions button.vote.up.on { color: var(--good); border-color: var(--good); background: var(--good-bg); }
+.loop .pc-actions button.vote.down.on { color: var(--bad); border-color: var(--bad); background: var(--bad-bg); }
+.loop .reddit-votes .reddit-score { border-inline-color: color-mix(in srgb, var(--text) 45%, transparent); padding-inline: 10px; }
 /* Trending's Loops: the video fills the screen, with who posted it and what it says over its foot. */
-.trending-loop { display: block; position: relative; background: #000; color: #fff; }
+.trending-loop { display: block; background: #000; color: #fff; }
+.loop-screen { position: relative; height: 100%; }
 .trending-loop .loop-stage, .trending-loop .loop-slot { position: absolute; inset: 0; height: auto; }
+/* Its comments opened: they come beneath the video, which keeps most of the screen. */
+.trending-loop:is(.panel-owner-open, :has(> .trend-peek-box:not([hidden]))) { height: auto; }
+.trending-loop:is(.panel-owner-open, :has(> .trend-peek-box:not([hidden]))) .loop-screen { height: max(22rem, 65dvh); }
+.trending-loop > :is(.inline-panels, .trend-peek-box) { margin: 0; padding: 8px 12px 12px; color: var(--text); background: var(--bg); }
 .loop-video { width: 100%; height: 100%; object-fit: contain; background: #000; cursor: pointer; }
 .trending-loop .loop-info { position: absolute; inset: auto 0 0; padding: 48px 88px 16px 16px; pointer-events: none;
   background: linear-gradient(transparent, rgba(0, 0, 0, .6) 40%, rgba(0, 0, 0, .86)); text-shadow: 0 1px 3px rgba(0, 0, 0, .8); }
