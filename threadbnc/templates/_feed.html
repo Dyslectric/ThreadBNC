@@ -83,12 +83,19 @@
         {% endif %}
       </form>
       {% endif %}
-      {% set scrolling = mark_on_scroll() %}
-      <form method="post" action="/feed/settings" class="menu-section">
-        <input type="hidden" name="mark_read_on_scroll" value="{{ '' if scrolling else '1' }}">
-        <button class="menu-item {{ 'on' if scrolling }}" aria-pressed="{{ 'true' if scrolling else 'false' }}">
-          <span class="tick">{% if scrolling %}{{ icon('check') }}{% endif %}</span><span class="grow">Mark posts read as I scroll past them</span></button>
-      </form>
+      {% set scrolling, viewing = mark_on_scroll(), mark_on_view() %}
+      <div class="menu-section">
+        <form method="post" action="/feed/settings">
+          <input type="hidden" name="mark_read_on_scroll" value="{{ '' if scrolling else '1' }}">
+          <button class="menu-item {{ 'on' if scrolling }}" aria-pressed="{{ 'true' if scrolling else 'false' }}">
+            <span class="tick">{% if scrolling %}{{ icon('check') }}{% endif %}</span><span class="grow">Mark posts read as I scroll past them</span></button>
+        </form>
+        <form method="post" action="/feed/settings">
+          <input type="hidden" name="mark_read_on_view" value="{{ '0' if viewing else '1' }}">
+          <button class="menu-item {{ 'on' if viewing }}" aria-pressed="{{ 'true' if viewing else 'false' }}">
+            <span class="tick">{% if viewing %}{{ icon('check') }}{% endif %}</span><span class="grow">Mark posts read after 5 seconds on screen</span></button>
+        </form>
+      </div>
       {% set n_hidden = hidden_count() %}
       <div class="menu-section">
         <a class="menu-item" href="/hidden"><span class="tick">{{ icon('hide') }}</span><span class="grow">Hidden people and feeds{% if n_hidden %} ({{ n_hidden }}){% endif %}</span></a>
@@ -164,12 +171,13 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
 {%- endmacro %}
 
 {# The posts here of the same article by another link (feed.posted_elsewhere),
-   listed under Discussions on the post's page. The Comments sort counts their
-   comments too, so a feed's article sorts by the conversation about it. #}
+   and the ones found elsewhere when it was opened (feed.found_elsewhere), listed
+   under Discussions on the post's page. The Comments sort counts their comments
+   too, so a feed's article sorts by the conversation about it. #}
 {% macro talk_link(i, short=False) -%}
 {% if i.talk %}{% set p, c = i.talk.posts, i.talk.comments %}
 {% set words = c ~ ' comment' ~ ('s' if c != 1) ~ ' in ' ~ p ~ ' other post' ~ ('s' if p != 1) %}
-<a class="act talk-link" href="/t/{{ i.id }}#discussions" title="Also posted here by another link: {{ words }}">{{ icon('repost') }}{% if short %}<span class="sr-only">Also posted: {{ words }}</span>{{ c }}{% else %}<span>{{ words }}</span>{% endif %}</a>
+<a class="act talk-link" href="/t/{{ i.id }}#discussions" title="Also posted by another link, or elsewhere: {{ words }}">{{ icon('repost') }}{% if short %}<span class="sr-only">Also posted: {{ words }}</span>{{ c }}{% else %}<span>{{ words }}</span>{% endif %}</a>
 {% endif %}
 {%- endmacro %}
 
@@ -465,7 +473,7 @@ id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ (i.group_ids 
 {% macro posts(items, view, show_community=True, as_of=none, snapshot=false) %}
 {% set layout = {'tiles': 'tiles', 'pictures': 'pictures', 'timeline': 'timeline'}.get(view, 'cards') if items else 'cards' %}
 {% set md = feed_md(items) if view == 'timeline' else none %}
-<div id="items" class="{{ layout }}" data-items{% if mark_on_scroll() %} data-mark-on-scroll{% endif %}
+<div id="items" class="{{ layout }}" data-items{% if mark_on_scroll() %} data-mark-on-scroll{% endif %}{% if mark_on_view() %} data-mark-on-view{% endif %}
      {%- if as_of %} data-as-of="{{ as_of }}"{% endif %}{% if snapshot %} data-snapshot{% endif %}>
 {% for i in items %}
   {% set next_id = loop.nextitem.id if loop.nextitem else none %}

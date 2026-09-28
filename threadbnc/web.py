@@ -465,6 +465,10 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     def mark_on_scroll() -> bool:
         return db.get_setting("mark_read_on_scroll") == "1"
 
+    def mark_on_view() -> bool:
+        """Posts are marked read once they've been on screen for a while (app.js)."""
+        return db.get_setting("mark_read_on_view") == "1"
+
     def unread_marker() -> str:
         """How unread posts are marked (UNREAD_MARKERS), the same on every device."""
         value = db.get_setting("unread_marker")
@@ -516,7 +520,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     templates.env.globals.update(event_label=event_label, tone=lambda e: TONE.get(e["event_type"], ""),
                                  thumb=thumb, video_title=video_title,
                                  static_url=static_url, trash_count=trash_count, inbox_count=inbox.unread_count,
-                                 mark_on_scroll=mark_on_scroll, unread_marker=unread_marker, feed_languages=feed_languages,
+                                 mark_on_scroll=mark_on_scroll, mark_on_view=mark_on_view, unread_marker=unread_marker, feed_languages=feed_languages,
                                  language_name=languages.name, audio_rate=audio_rate, themes=THEMES, custom_feeds=custom_feeds,
                                  following_collapsed=following_collapsed, feed_sorts=FEED_SORTS,
                                  feed_windows=FEED_WINDOWS, feed_shows=FEED_SHOWS,
@@ -1035,13 +1039,22 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         return {"ok": True}
 
     @app.post("/feed/settings")
-    def feed_settings(request: Request, mark_read_on_scroll: str = Form("")):
-        on = mark_read_on_scroll == "1"
+    def feed_settings(request: Request, mark_read_on_scroll: str | None = Form(None),
+                      mark_read_on_view: str | None = Form(None)):
+        """Either way of marking posts read without opening them, whichever the form sent."""
+        key, value = (("mark_read_on_view", mark_read_on_view) if mark_read_on_view is not None
+                      else ("mark_read_on_scroll", mark_read_on_scroll or ""))
+        on = value == "1"
         with db.transaction() as conn:
-            conn.execute("INSERT INTO app_settings(key, value) VALUES ('mark_read_on_scroll', ?) "
-                         "ON CONFLICT(key) DO UPDATE SET value=excluded.value", ("1" if on else "0",))
-        flash(request, "Posts are marked read as you scroll past them." if on else
-              "Posts stay unread until you open them.")
+            conn.execute("INSERT INTO app_settings(key, value) VALUES (?, ?) "
+                         "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, "1" if on else "0"))
+        if on:
+            flash(request, "Posts are marked read once they've been on screen for 5 seconds."
+                  if key == "mark_read_on_view" else "Posts are marked read as you scroll past them.")
+        else:
+            flash(request, "Posts stay unread until you open them or scroll past them." if mark_on_scroll() else
+                  "Posts stay unread until you open them or they've been on screen for 5 seconds."
+                  if mark_on_view() else "Posts stay unread until you open them.")
         return RedirectResponse(back(request, "/"), status_code=303)
 
     # ---- the Following list's own arrangement (sidebar.py) ------------------------

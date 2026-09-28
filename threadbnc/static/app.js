@@ -552,16 +552,20 @@ document.documentElement.classList.add("js");
     v.setAttribute("aria-expanded", open ? "true" : "false");
   }
 
-  // ---- marking posts read as they're scrolled past ---------------------------------
+  // ---- marking posts read as they're scrolled past, or after a while on screen ------
   const seenQueue = new Set();
   const wasVisible = new WeakSet();
   let seenTimer = null;
   const headerH = () => ($("header.top") && getComputedStyle($("header.top")).position === "sticky"
     ? $("header.top").offsetHeight : 0);
   let observer = null;
+  let viewObserver = null;
+  const VIEW_MS = 5000;  // on screen this long: read (Feed options)
+  const viewTimers = new Map();  // post -> its timer, while it's on screen
 
   function watchUnread(root) {
-    if (!("IntersectionObserver" in window) || !$("[data-items][data-mark-on-scroll]")) return;
+    const marking = "[data-items][data-mark-on-scroll], [data-items][data-mark-on-view]";
+    if (!("IntersectionObserver" in window) || !$(marking)) return;
     // A post counts as scrolled past once it was on screen and then went above the header.
     observer = observer || new IntersectionObserver((entries) => {
       for (const e of entries) {
@@ -570,12 +574,43 @@ document.documentElement.classList.add("js");
         if (wasVisible.has(e.target) && e.boundingClientRect.bottom <= top + 1) markSeen(e.target);
       }
     }, { rootMargin: `-${headerH()}px 0px 0px 0px` });
+    // And as seen once at least half of it (or, if it's taller, half the screen) has been on screen for VIEW_MS.
+    viewObserver = viewObserver || new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        const screen = e.rootBounds ? e.rootBounds.height : innerHeight;
+        const inView = e.isIntersecting && (e.intersectionRatio >= 0.5 || e.intersectionRect.height >= screen / 2);
+        if (inView && !viewTimers.has(e.target)) viewTimers.set(e.target, viewTimer(e.target));
+        else if (!inView && viewTimers.has(e.target)) {
+          clearTimeout(viewTimers.get(e.target));
+          viewTimers.delete(e.target);
+        }
+      }
+    }, { rootMargin: `-${headerH()}px 0px 0px 0px`, threshold: [0, 0.25, 0.5, 0.75, 1] });
     const els = root.matches && root.matches("[data-ids].unread") ? [root] : $$("[data-ids].unread", root);
-    for (const el of els) if (el.closest("[data-mark-on-scroll]")) observer.observe(el);
+    for (const el of els) {
+      if (el.closest("[data-mark-on-scroll]")) observer.observe(el);
+      if (el.closest("[data-mark-on-view]")) viewObserver.observe(el);
+    }
   }
 
+  function viewTimer(el) {
+    // Only while the page is shown: a background tab's posts aren't being read.
+    return document.visibilityState === "visible"
+      ? setTimeout(() => { viewTimers.delete(el); if (el.isConnected) markSeen(el); }, VIEW_MS) : null;
+  }
+
+  document.addEventListener("visibilitychange", () => {
+    for (const [el, timer] of viewTimers) {
+      clearTimeout(timer);
+      viewTimers.set(el, viewTimer(el));  // the time starts over when the page is back
+    }
+  });
+
   function markSeen(el) {
-    observer.unobserve(el);
+    if (observer) observer.unobserve(el);
+    if (viewObserver) viewObserver.unobserve(el);
+    const timer = viewTimers.get(el);
+    if (timer) { clearTimeout(timer); viewTimers.delete(el); }
     if (!el.classList.contains("unread")) return;
     el.classList.remove("unread");
     el.classList.add("seen");

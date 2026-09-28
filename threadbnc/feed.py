@@ -24,9 +24,9 @@ SORTS = {  # NULLS LAST: Postgres otherwise puts NULLs first in DESC order
 # page, anywhere in the archive: the post itself, its copies (the same link,
 # dupes.py) and posts of the same article by another link (articles.py's keys:
 # tracking, AMP, short links, the page's own address). So a feed's article,
-# which has no comments of its own, sorts by the conversation about it here.
-# o and t are the post and its thread in _BASE.
-_LINKED = """(SELECT COALESCE(SUM((SELECT MAX(column1) FROM (VALUES ((SELECT COUNT(*) FROM objects x
+# which has no comments of its own, sorts by the conversation about it here,
+# and elsewhere (_FOUND). o and t are the post and its thread in _BASE.
+_SAVED = """(SELECT COALESCE(SUM((SELECT MAX(column1) FROM (VALUES ((SELECT COUNT(*) FROM objects x
         WHERE x.thread_id=lt.id AND x.object_type='comment')), (COALESCE(lo.reply_count, 0))) AS v)), 0)
       FROM archived_threads lt JOIN objects lo ON lo.id=lt.root_object_id
       WHERE lt.trashed_at IS NULL AND lt.root_object_id IN (
@@ -34,6 +34,17 @@ _LINKED = """(SELECT COALESCE(SUM((SELECT MAX(column1) FROM (VALUES ((SELECT COU
         UNION SELECT ar2.object_id FROM article_refs ar1 JOIN article_keys k1 ON k1.article_id=ar1.article_id
           JOIN article_keys k2 ON k2.key=k1.key JOIN article_refs ar2 ON ar2.article_id=k2.article_id
         WHERE ar1.object_id=o.id))"""
+# The comments on the posts of the same page found elsewhere when it was opened
+# (discussions.py: Lemmy, Reddit, Bluesky...), but the ones saved here, which
+# _SAVED counts already. Each post once, though found for several addresses.
+_FOUND = """(SELECT COALESCE(SUM(n), 0) FROM (SELECT MAX(dd.comments) AS n FROM discussions dd
+        WHERE dd.article_id IN (SELECT ar.article_id FROM article_refs ar WHERE ar.object_id=o.id
+          UNION SELECT k2.article_id FROM article_refs ar JOIN article_keys k1 ON k1.article_id=ar.article_id
+            JOIN article_keys k2 ON k2.key=k1.key WHERE ar.object_id=o.id)
+        AND dd.comments IS NOT NULL AND NOT EXISTS (SELECT 1 FROM objects so JOIN archived_threads st
+          ON st.root_object_id=so.id AND st.trashed_at IS NULL WHERE so.canonical_ap_id=dd.url)
+        GROUP BY dd.url) AS found)"""
+_LINKED = f"({_SAVED} + {_FOUND})"
 WINDOWS = {"day": timedelta(days=1), "week": timedelta(days=7), "month": timedelta(days=30), "all": None}
 # posts; pictures in one column; a grid of pictures; whole posts by who posted them, as on Mastodon
 VIEWS = ("list", "pictures", "tiles", "timeline")
@@ -306,6 +317,7 @@ def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: lis
     waiting = articles.waiting(conn, [(i["oid"], i["url"]) for i in items])
     sounds = audio(conn, [(i["oid"], i["url"]) for i in items])
     others = posted_elsewhere(conn, [i["oid"] for i in items])
+    found = found_elsewhere(conn, [i["oid"] for i in items])
     now = utcnow()
     for i in items:
         # When this post's text, pictures and votes are to be read once it's on
@@ -335,9 +347,11 @@ def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: lis
         if meta.get("untitled") and i["excerpt"]:  # a fediverse post has text, not a title: show the text once
             i["title"], i["excerpt"] = i["excerpt"], ""
         attach_group(i, copies.get(i["dupe_key"]) or [])
-        # Posts of the same article by another link: how many, and their comments (what the comments sort adds).
-        talk = {tid: n for tid, n in others.get(i["oid"], {}).items() if tid not in i["group_ids"]}
-        i["talk"] = {"posts": len(talk), "comments": sum(talk.values())} if talk else None
+        # Posts of the same article by another link, here or found elsewhere: how many,
+        # and their comments (what the comments sort adds).
+        talk = [n for tid, n in others.get(i["oid"], {}).items() if tid not in i["group_ids"]]
+        talk += found.get(i["oid"], {}).values()
+        i["talk"] = {"posts": len(talk), "comments": sum(talk)} if talk else None
     return FeedPage(items, page, len(rows) > per_page, as_of)
 
 
@@ -365,6 +379,29 @@ def posted_elsewhere(conn: Conn, object_ids: list[int]) -> dict[int, dict[int, i
                 JOIN objects lo ON lo.id=lt.root_object_id
                 WHERE ar1.object_id IN ({','.join('?' * len(object_ids))})""", object_ids):
         out.setdefault(r["src"], {})[r["id"]] = r["n"]
+    return out
+
+
+def found_elsewhere(conn: Conn, object_ids: list[int]) -> dict[int, dict[str, int]]:
+    """The posts of the same page as each of these posts found elsewhere when
+    it was opened (discussions.py), but the ones saved here, which
+    posted_elsewhere has: {object id: {their address: comments}} (_FOUND)."""
+    if not object_ids:
+        return {}
+    out: dict[int, dict[str, int]] = {}
+    marks = ",".join("?" * len(object_ids))
+    for r in conn.execute(
+            f"""SELECT src, dd.url, MAX(dd.comments) AS n FROM (
+                  SELECT ar.object_id AS src, ar.article_id FROM article_refs ar WHERE ar.object_id IN ({marks})
+                  UNION SELECT ar.object_id, k2.article_id FROM article_refs ar
+                    JOIN article_keys k1 ON k1.article_id=ar.article_id JOIN article_keys k2 ON k2.key=k1.key
+                  WHERE ar.object_id IN ({marks})
+                ) AS pages JOIN discussions dd ON dd.article_id=pages.article_id
+                WHERE dd.comments IS NOT NULL
+                  AND NOT EXISTS (SELECT 1 FROM objects so JOIN archived_threads st ON st.root_object_id=so.id
+                    AND st.trashed_at IS NULL WHERE so.canonical_ap_id=dd.url)
+                GROUP BY src, dd.url""", [*object_ids, *object_ids]):
+        out.setdefault(r["src"], {})[r["url"]] = r["n"]
     return out
 
 

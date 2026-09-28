@@ -278,3 +278,41 @@ def test_feed_articles_sort_by_the_comments_on_posts_of_them(settings, bouncer, 
 
     bouncer.move_to_trash(copy)  # trashed posts don't count
     assert order() == [first, second]
+
+
+def test_feed_articles_sort_by_the_comments_found_elsewhere(settings, bouncer, web, server):
+    """The posts of a feed's article found elsewhere when it was opened
+    (discussions.py) count for the comments sort too, each once, and not again
+    when one of them is saved here."""
+    cid = bouncer.follow_community(FEED, None, 30, backfill=True)
+    bouncer.poll_follow(cid)
+    first, second = post_row(bouncer, "post-1"), post_row(bouncer, "post-2")
+
+    def order():
+        with bouncer.db.connect() as conn:
+            return [i["id"] for i in feed.load_feed(conn, community_id=cid, sort="comments").items]
+
+    def found(row, url, comments):
+        with bouncer.db.transaction() as conn:
+            aid = conn.execute("SELECT article_id FROM article_refs WHERE object_id=?", (row["id"],)).fetchone()[0]
+            conn.execute("INSERT INTO discussions(article_id, source, url, title, comments, found_at) "
+                         "VALUES (?, 'reddit', ?, 'Talk', ?, '2026-09-27T00:00:00Z')", (aid, url, comments))
+
+    assert order() == [second["tid"], first["tid"]]
+    found(first, "https://www.reddit.com/r/blogs/comments/abc/talk/", 4)
+    found(first, "https://bsky.app/profile/did:plc:abc/post/3k", None)  # replies not known: nothing to add
+    assert order() == [first["tid"], second["tid"]]
+    page = logged_in(settings, bouncer).get(f"/c/{cid}?sort=comments").text
+    assert f'href="/t/{first["tid"]}#discussions"' in page and "4 comments in 1 other post" in page
+
+    server.add_post("9", "Talk", "")  # found on Lemmy with 5 comments, then opened here, with 2 read
+    server.edit_post("9", url="https://blog.example/posts/2")
+    for n in range(2):
+        server.add_comment("9", f"9{n}", f"Comment {n}")
+    found(second, f"https://{DOMAIN}/post/9", 5)
+    assert order() == [second["tid"], first["tid"]]
+    bouncer.ingest_url(f"https://{DOMAIN}/post/9")  # counted as saved now, not twice
+    with bouncer.db.connect() as conn:
+        items = {i["id"]: i for i in feed.load_feed(conn, community_id=cid, sort="comments").items}
+    assert items[first["tid"]]["talk"] == {"posts": 1, "comments": 4}
+    assert order() == [first["tid"], second["tid"]]
