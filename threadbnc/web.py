@@ -3621,7 +3621,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                       comment_sort=sort, comment_sorts=COMMENT_SORTS, instance=instance, since=since,
                       grouped=len(tids) > 1, post_copies=post_copies, merge=merge, article=article,
                       n_copies=max(len(copies), 1), refresh_job=refresh_job, post_audio=post_audio, talk=talk,
-                      post_pics=post_pics,
+                      post_pics=post_pics, post_veil=feed_mod.veil_label(json.loads(post["rmeta"] or "{}")) if post else None,
                       all_kept=all(th["retention"] == "manual" for th in threads.values()))
 
     def read_href(url: str) -> str:
@@ -3882,18 +3882,20 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
 
     def add_post_details(conn: Any, hits: list[dict[str, Any]]) -> None:
         """What a post hit needs to look like it does in the feed: its
-        thumbnail and comment count."""
+        thumbnail (blurred, if it's NSFW) and comment count."""
         if not hits:
             return
         marks = ",".join("?" * len(hits))
         extra = {r["id"]: r for r in conn.execute(
             f"SELECT o.id, o.thumbnail_url, (SELECT COUNT(*) FROM objects x WHERE x.thread_id=o.thread_id "
-            f"AND x.object_type='comment') AS n_comments FROM objects o WHERE o.id IN ({marks})",
+            f"AND x.object_type='comment') AS n_comments, (SELECT r.metadata_json FROM revisions r "
+            f"WHERE r.object_id=o.id AND r.seq=o.revision_count) AS rmeta FROM objects o WHERE o.id IN ({marks})",
             [h["id"] for h in hits])}
         thumbs = feed_mod.thumbnails(conn, [(h["id"], h["url"], extra[h["id"]]["thumbnail_url"]) for h in hits])
         for h in hits:
             h["thumb"] = thumbs.get(h["id"])
             h["n_comments"] = extra[h["id"]]["n_comments"]
+            h["veil"] = feed_mod.veil_label(json.loads(extra[h["id"]]["rmeta"] or "{}"))
 
     @app.get("/search", response_class=HTMLResponse)
     def search_page(request: Request, q: str = "", what: str = "all", community: str = "", author: str = "",

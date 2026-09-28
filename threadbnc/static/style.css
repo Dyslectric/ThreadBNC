@@ -590,20 +590,19 @@ fieldset.media-kind p { margin: 0; }
 .tile-badge { position: absolute; top: 8px; left: 8px; background: rgba(0, 0, 0, .62); color: #fff; font-size: 0.75em;
   font-weight: 700; padding: 2px 8px; border-radius: 999px; display: inline-flex; align-items: center; }
 .tile-badge.right { left: auto; right: 8px; }
-.veiled .gallery img, .veiled .gallery video { filter: blur(22px) saturate(.7); transform: scale(1.1); }
-.veiled.revealed .gallery img, .veiled.revealed .gallery video { filter: none; transform: none; }
-.tile-veil { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 2px; color: #fff; font-weight: 700; letter-spacing: .06em; text-shadow: 0 1px 3px rgba(0, 0, 0, .6);
-  pointer-events: none; transition: opacity .2s; }
-.tile-veil .small { font-weight: 500; letter-spacing: 0; }
-.veiled.revealed .tile-veil { opacity: 0; }
-@media (hover: hover) {
-  .veiled:hover .gallery img, .veiled:hover .gallery video { filter: none; transform: none; }
-  .veiled:hover .tile-veil { opacity: 0; }
-  .tile-veil .small { display: none; }
-}
-.veiled:focus-within .gallery img, .veiled:focus-within .gallery video { filter: none; transform: none; }
-.veiled:focus-within .tile-veil { opacity: 0; }
+/* NSFW and spoiler pictures (data-veil, _macros.html): blurred, with what they are
+   over them, until clicked (app.js adds .revealed). Not on hover: only a click shows them. */
+[data-veil] { position: relative; }
+[data-veil]:not(.revealed) :is(img, video) { filter: blur(22px) saturate(.7); clip-path: inset(0 round 6px); cursor: pointer; }
+/* Where their box clips them, a little larger, so the blur's faded edges don't show. */
+:is(.gallery, .thumb, .trend-pics)[data-veil]:not(.revealed) :is(img, video),
+.tile:hover .gallery[data-veil]:not(.revealed) :is(img, video) { transform: scale(1.1); clip-path: none; }
+[data-veil]:not(.revealed)::after { content: attr(data-veil) "\A" "Click to show"; white-space: pre; position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center; text-align: center; color: #fff; font-weight: 700;
+  letter-spacing: .04em; line-height: 1.5; text-shadow: 0 1px 3px rgba(0, 0, 0, .7); pointer-events: none; z-index: 1; }
+.thumb[data-veil]:not(.revealed)::after { content: attr(data-veil); font-size: .8em; }
+/* In a post's text (and a link's preview) only the pictures are blurred, with no label over the words. */
+:is(.md, .link-preview)[data-veil]:not(.revealed)::after { content: none; }
 
 /* ---- galleries: a post's pictures side by side, one showing; swipe or use the arrows ---- */
 .gallery { position: relative; }

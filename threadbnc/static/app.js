@@ -68,6 +68,7 @@ document.documentElement.classList.add("js");
     if (now.tagName === "DETAILS" && now.open) fresh.open = true;
     document.adoptNode(fresh);
     keepPlaying(now, fresh);
+    keepRevealed(now, fresh);
     const wasCurrent = now === current;
     now.replaceWith(fresh);
     if (wasCurrent) select(fresh, false);
@@ -488,17 +489,26 @@ document.documentElement.classList.add("js");
   }
   document.addEventListener("load", (ev) => { if (ev.target.tagName === "IMG") shapeGallery(ev.target); }, true);
 
-  // ---- touch: reveal blurred tiles, show vote breakdowns ----------------------------
-  const noHover = window.matchMedia("(hover: none)");
+  // ---- NSFW and spoiler pictures: blurred until clicked -------------------------------
+  // The click only shows them: it doesn't open the post, or the picture whole.
+  // Paging a gallery with its arrows doesn't, and in a post's text only its pictures do.
   document.addEventListener("click", (ev) => {
-    const veil = ev.target.closest("[data-reveal]");
-    if (veil) {
-      const tile = veil.closest(".veiled");
-      if (tile && !tile.classList.contains("revealed") && noHover.matches) {
-        ev.preventDefault();
-        tile.classList.add("revealed");
-      }
-    }
+    const veil = ev.target.closest("[data-veil]:not(.revealed)");
+    if (!veil || ev.target.closest(".gallery-nav")) return;
+    if (veil.matches(".md") && !ev.target.closest("img, video")) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    veil.classList.add("revealed");
+  }, true);
+
+  // A post shown again in place (after marking it read, say) keeps the pictures that were shown.
+  function keepRevealed(now, fresh) {
+    const shown = $$("[data-veil]", now).map((v) => v.classList.contains("revealed"));
+    $$("[data-veil]", fresh).forEach((v, n) => { if (shown[n]) v.classList.add("revealed"); });
+  }
+
+  // ---- touch: show vote breakdowns ------------------------------------------------------
+  document.addEventListener("click", (ev) => {
     const votes = ev.target.closest(".votes.has-breakdown");
     for (const open of $$(".votes.has-breakdown.open")) {
       if (open !== votes) { open.classList.remove("open"); open.setAttribute("aria-expanded", "false"); }

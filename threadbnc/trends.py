@@ -1414,12 +1414,13 @@ def record_totals(conn: Conn, source: str, found: dict[str, dict[str, Any]], ask
 
 def bluesky_view(view: dict[str, Any]) -> dict[str, Any]:
     """What the Trending page shows of a Bluesky post, from its AppView view."""
-    from .adapters.bluesky import _Content, web_url
+    from .adapters.bluesky import NSFW_LABELS, _Content, web_url
 
     record = view.get("record") if isinstance(view.get("record"), dict) else {}
     content = _Content(record, view.get("embed"))
     author = view.get("author") or {}
-    return {"url": web_url(view["uri"]), "text": content.text[:3000],
+    labels = {str(x.get("val")) for x in view.get("labels") or [] if isinstance(x, dict)}
+    return {"url": web_url(view["uri"]), "text": content.text[:3000], "sensitive": bool(labels & NSFW_LABELS),
             "handle": author.get("handle") or author.get("did"), "name": author.get("displayName") or None,
             "author_url": f"https://{BSKY_DOMAIN}/profile/{author.get('did') or author.get('handle')}",
             "avatar": author.get("avatar") if isinstance(author.get("avatar"), str) else None,

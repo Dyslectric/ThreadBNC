@@ -177,6 +177,7 @@ def status_view(status: dict[str, Any], domain: str) -> dict[str, Any]:
     warning = (status.get("spoiler_text") or "").strip()
     return {"url": status.get("url") or status.get("uri"), "uri": status.get("uri"),
             "text": plain_text(status.get("content")).strip()[:3000], "warning": warning or None,
+            "sensitive": bool(status.get("sensitive")),
             "handle": acct if "@" in acct else f"{acct}@{domain}", "name": account.get("display_name") or None,
             "author_url": account.get("url"), "author_uri": account.get("uri"),
             "avatar": account.get("avatar_static") or account.get("avatar") or None,

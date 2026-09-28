@@ -317,6 +317,7 @@ def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: lis
         i["video"] = plays_here(i["url"])
         meta = json.loads(i.pop("rmeta") or "{}")
         i["nsfw"], i["spoiler"] = bool(meta.get("nsfw")), bool(meta.get("spoiler"))
+        i["veil"] = veil_label(meta)
         i["reposted_by"] = meta.get("reposted_by")
         i["episode"] = meta.get("episode")  # a podcast episode: its page and running time
         # For the timeline view: a post with no title of its own (shown as its text), its content
@@ -333,6 +334,12 @@ def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: lis
         talk = {tid: n for tid, n in others.get(i["oid"], {}).items() if tid not in i["group_ids"]}
         i["talk"] = {"posts": len(talk), "comments": sum(talk.values())} if talk else None
     return FeedPage(items, page, len(rows) > per_page, as_of)
+
+
+def veil_label(meta: dict[str, Any]) -> str | None:
+    """What a post's pictures are blurred as until clicked ("NSFW" or
+    "Spoiler"), from its revision's metadata; None when they aren't."""
+    return "NSFW" if meta.get("nsfw") else "Spoiler" if meta.get("spoiler") else None
 
 
 def posted_elsewhere(conn: Conn, object_ids: list[int]) -> dict[int, dict[int, int]]:

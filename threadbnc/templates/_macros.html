@@ -125,11 +125,18 @@
 
 {# Move a thread (and its copies when `group`) to the trash. `next_anchor`: the
    element to come back to, since this one leaves the page. #}
+{# NSFW and spoiler pictures: the attribute that blurs the pictures and videos in
+   an element, labelled `label` ("NSFW" or "Spoiler"), until they're clicked (app.js).
+   Nothing when `label` is none. #}
+{% macro veil(label) -%}
+{% if label %} data-veil="{{ label }}"{% endif %}
+{%- endmacro %}
+
 {# A post's pictures (and videos) at full width, swiped or stepped through with
    the arrows, one at a time: on the post's page, and in its text opened in a feed.
-   `pics`: feed.thumbnails' "pics". #}
-{% macro carousel(pics) -%}
-<div class="gallery"{% if pics | length > 1 %} data-gallery{% endif %}>
+   `pics`: feed.thumbnails' "pics". `veiled`: "NSFW" or "Spoiler", to blur them (veil). #}
+{% macro carousel(pics, veiled=none) -%}
+<div class="gallery"{% if pics | length > 1 %} data-gallery{% endif %}{{ veil(veiled) }}>
   <div class="gallery-track">
     {% for p in pics %}
     <div class="gallery-slide">
