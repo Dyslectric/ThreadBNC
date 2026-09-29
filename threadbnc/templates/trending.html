@@ -293,9 +293,27 @@
           {% for mid in p.pictures %}<button type="button" class="trend-pic" data-full="/media/{{ mid }}" aria-pressed="false"
             title="Show it whole"><img src="{{ thumb(mid, 'picture') }}" alt="" loading="lazy"></button>{% endfor %}
         </div>
-        {% if (v.pictures and not p.pictures) or (v.video and not v.video_src) or v.quote %}
+        {% if v.quoted %}
+          {% set qv = v.quoted %}
+          <blockquote class="trend-quote small">
+          {% if qv.gone %}<span class="muted">A quoted post that isn't available</span>
+          {% else %}
+            {% set qprofile = qv.author_url | safe_url %}
+            <div class="trend-quote-head">{% if qprofile %}<a class="st-name" href="{{ qprofile }}" target="_blank" rel="noreferrer noopener nofollow">{{ qv.name or qv.handle }}</a>
+              {%- else %}<span class="st-name">{{ qv.name or qv.handle }}</span>{% endif %}
+              <span class="muted">@{{ qv.handle }}</span>
+              {% if qv.url | safe_url %}· <a href="{{ qv.url | safe_url }}" target="_blank" rel="noreferrer noopener nofollow">quoted post</a>{% endif %}</div>
+            {% if qv.warning %}<p><span class="pill warn">CW</span> {{ qv.warning }}</p>{% endif %}
+            {% if qv.text %}<p class="trend-quote-text">{{ qv.text }}</p>{% endif %}
+            {% if qv.link_title %}<p class="muted">{{ icon('link') }} {{ qv.link_title }}</p>{% endif %}
+            {% if qv.pictures or qv.video %}<p class="muted">{% if qv.pictures %}{{ icon('picture') }} {{ qv.pictures }} picture{{ 's' if qv.pictures != 1 }}{% endif %}
+              {% if qv.video %}{{ icon('video') }} a video{% endif %}</p>{% endif %}
+          {% endif %}
+          </blockquote>
+        {% endif %}
+        {% if (v.pictures and not p.pictures) or (v.video and not v.video_src) or (v.quote and not v.quoted) %}
           <p class="small muted trend-media-note">{% if v.pictures and not p.pictures %}{{ icon('picture') }} {{ v.pictures }} picture{{ 's' if v.pictures != 1 }}{% endif %}
-            {% if v.video %}{{ icon('video') }} a video{% endif %}{% if v.quote %} · quotes a post{% endif %}</p>
+            {% if v.video %}{{ icon('video') }} a video{% endif %}{% if v.quote and not v.quoted %} · quotes a post{% endif %}</p>
         {% endif %}
         {% endset %}
         {% if v.warning %}

@@ -177,6 +177,28 @@ def video_src(media: list[dict[str, Any]]) -> str | None:
     return None
 
 
+def quoted_view(status: dict[str, Any]) -> dict[str, Any] | None:
+    """The status a status quotes, as the Trending page shows it (None when it
+    quotes nothing; {"gone": True} when it can't be seen). Mastodon 4.5 nests it
+    as {state, quoted_status}; other servers put the status itself in `quote`."""
+    q = status.get("quote")
+    if not isinstance(q, dict):
+        return None
+    inner = q.get("quoted_status") if "quoted_status" in q or "state" in q else q
+    if not isinstance(inner, dict) or not inner.get("uri"):
+        return {"gone": True}
+    account = inner.get("account") or {}
+    acct = str(account.get("acct") or account.get("username") or "?")
+    media = [m for m in inner.get("media_attachments") or [] if isinstance(m, dict)]
+    warning = (inner.get("spoiler_text") or "").strip()
+    return {"url": inner.get("url") or inner.get("uri"), "warning": warning or None,
+            "text": "" if warning else plain_text(inner.get("content")).strip()[:1000],
+            "handle": acct if "@" in acct else f"{acct}@{urlparse(str(inner['uri'])).netloc}",
+            "name": account.get("display_name") or None, "author_url": account.get("url"),
+            "pictures": sum(1 for m in media if m.get("type") == "image"),
+            "video": any(m.get("type") in ("video", "gifv") for m in media)}
+
+
 def status_view(status: dict[str, Any], domain: str) -> dict[str, Any]:
     """What the Trending page shows of a status."""
     account = status.get("account") or {}
@@ -193,7 +215,8 @@ def status_view(status: dict[str, Any], domain: str) -> dict[str, Any]:
             "link": card.get("url"), "link_title": card.get("title") or None,
             "pictures": sum(1 for m in media if m.get("type") == "image"),
             "video": any(m.get("type") in ("video", "gifv") for m in media), "video_src": video_src(media),
-            "video_loops": any(m.get("type") == "gifv" for m in media), "quote": False,
+            "video_loops": any(m.get("type") == "gifv" for m in media), "quote": bool(status.get("quote")),
+            "quoted": quoted_view(status),
             "lang": languages.normalize(status.get("language")),
             "images": [u for u in ([m.get("url") if m.get("type") == "image" else m.get("preview_url") for m in media
                                     if m.get("type") in ("image", "video", "gifv")] or [card.get("image")])
