@@ -1922,7 +1922,7 @@ document.documentElement.classList.add("js");
   // ---- keyboard shortcuts ---------------------------------------------------------
   let current = null;
   let gPending = null;
-  const GO = { f: "/", c: "/communities", r: "/trending", a: "/trending/articles", k: "/kept", i: "/inbox", t: "/trash", s: "/search" };
+  const GO = { f: "/", c: "/forums", r: "/trending", a: "/trending/articles", k: "/kept", i: "/inbox", t: "/trash", s: "/search" };
 
   function items() {
     const entries = $$("[data-entry]").filter(shown);
@@ -2081,6 +2081,27 @@ document.documentElement.classList.add("js");
       for (const other of $$("details.menu[open]")) if (other !== d) other.open = false;
     }
   }, true);
+
+  // ---- a forum's page, filling in -----------------------------------------------------
+  // Opening part of a forum (forum.html) downloads its pictures and asks its
+  // server about the communities listed (forums.py). While that's under way
+  // (data-forum-wait), the page is read again every few seconds and brought up
+  // to date in place, until it's all there or a couple of minutes have passed.
+  const FORUM_WAIT_MS = 120000;
+
+  async function awaitForum() {
+    const started = Date.now();
+    while (Date.now() - started < FORUM_WAIT_MS) {
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      const body = $("#forum-body");
+      if (!body || !body.hasAttribute("data-forum-wait")) return;
+      if (document.visibilityState === "hidden") continue;
+      try {
+        const fresh = (await fetchDoc(location.href)).getElementById("forum-body");
+        if (fresh && body.isConnected) steady(() => morph(body, fresh));
+      } catch (e) { /* try again */ }
+    }
+  }
 
   // ---- where an article is discussed ------------------------------------------------
   // Opening a post or an article asks other places about it (discussions.py).
@@ -2647,6 +2668,7 @@ document.documentElement.classList.add("js");
     watchTrendPictures(document);
     watchAvatars(document);
     watchLoops(document);
+    if ($("#forum-body[data-forum-wait]")) awaitForum();
     new MutationObserver((changes) => {
       for (const c of changes) for (const el of c.removedNodes) if (el.nodeType === 1 && !el.isConnected) {
         const loops = el.matches("article.loop") ? [el] : $$("article.loop", el);

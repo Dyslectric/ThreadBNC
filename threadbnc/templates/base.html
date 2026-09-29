@@ -20,12 +20,13 @@
     {% set path = request.url.path %}
     {% set ic = inbox_count() %}
     <nav class="primary" aria-label="Main" id="site-nav" data-live>
-      {% for href, name, ico, on in [('/', 'Feed', 'feed', path == '/'),
-                                     ('/communities', 'Communities', 'communities', path.startswith('/communities') or path.startswith('/c/')),
+      {# A community's page is a feed narrowed to it (the Following list leads there), so it's under Feeds. #}
+      {% for href, name, ico, on in [('/forums', 'Forums', 'communities', path.startswith('/forums')),
+                                     ('/', 'Feeds', 'feed', path == '/' or path.startswith(('/c/', '/f/', '/feed'))),
                                      ('/trending', 'Trending', 'trending', path.startswith('/trending') or path.startswith('/articles')),
-                                     ('/post', 'New post', 'pencil', path == '/post'),
+                                     ('/inbox', 'Inbox', 'inbox', path.startswith('/inbox')),
                                      ('/kept', 'Kept', 'star', path.startswith('/kept')),
-                                     ('/inbox', 'Inbox', 'inbox', path.startswith('/inbox'))] %}
+                                     ('/post', 'New post', 'pencil', path == '/post')] %}
         <a href="{{ href }}" class="{{ 'on' if on }}"{% if on %} aria-current="page"{% endif %} title="{{ name }}">{{ icon(ico) }}<span class="label">{{ name }}</span>
           {%- if href == '/inbox' and ic %} <span class="count" aria-label="{{ ic }} unread">{{ ic }}</span>{% endif %}</a>
       {% endfor %}
@@ -59,6 +60,7 @@
         {% endif %}
         <div class="menu-section">
           <a class="menu-item {{ 'on' if path.startswith('/accounts') }}" href="/accounts">{{ icon('user') }}<span class="grow">Accounts</span></a>
+          <a class="menu-item {{ 'on' if path.startswith('/communities') }}" href="/communities">{{ icon('rss') }}<span class="grow">Subscriptions</span></a>
           {% if accounts and accounts | selectattr('is_admin') | list %}<a class="menu-item {{ 'on' if path.startswith('/admin') }}" href="/admin">{{ icon('shield') }}<span class="grow">Admin</span></a>{% endif %}
           <a class="menu-item {{ 'on' if path.startswith('/storage') }}" href="/storage">{{ icon('storage') }}<span class="grow">Storage</span></a>
           <a class="menu-item {{ 'on' if path.startswith('/traffic') }}" href="/traffic">{{ icon('activity') }}<span class="grow">Traffic</span></a>
@@ -107,7 +109,7 @@
       <section><h3>Anywhere</h3><dl>
         <div><dt><kbd>/</kbd></dt><dd>Search</dd></div>
         <div><dt><kbd>g</kbd> <kbd>f</kbd></dt><dd>Go to the feed</dd></div>
-        <div><dt><kbd>g</kbd> <kbd>c</kbd></dt><dd>Communities</dd></div>
+        <div><dt><kbd>g</kbd> <kbd>c</kbd></dt><dd>Forums</dd></div>
         <div><dt><kbd>g</kbd> <kbd>r</kbd></dt><dd>Trending posts</dd></div>
         <div><dt><kbd>g</kbd> <kbd>a</kbd></dt><dd>Trending articles</dd></div>
         <div><dt><kbd>g</kbd> <kbd>k</kbd></dt><dd>Kept</dd></div>

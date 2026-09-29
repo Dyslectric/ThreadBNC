@@ -83,12 +83,13 @@ ThreadBNC behaves like one more subscribed server, or like your own browser, nev
 
 | Page | What it's for |
 |---|---|
-| **Feed** (`/`) | Posts from every followed community. Sort by New, Active, Top or Most comments; filter by day, week, month or all time; show only unread posts, read posts with new comments, or either; mark posts read one at a time or all at once. **Make this the default** in the feed's ⚙ menu keeps the current sort, time range and filter as what the feed (and community pages) show when you open them. The sidebar lists your own feeds and the communities you follow, with unread counts; the Following list collapses. A post with pictures shows them in a carousel when its text is opened (**Post text**, or **Pictures** for one with only pictures), in the list view or the grid. **Hide user** on a post leaves everything by whoever posted it out of your feeds and stops saving their new posts; on a feed's or YouTube channel's post it hides the whole feed or channel, and asks first either way. |
+| **Feeds** (`/`) | Posts from every followed community. Sort by New, Active, Top or Most comments; filter by day, week, month or all time; show only unread posts, read posts with new comments, or either; mark posts read one at a time or all at once. **Make this the default** in the feed's ⚙ menu keeps the current sort, time range and filter as what the feed (and community pages) show when you open them. The sidebar lists your own feeds and the communities you follow, with unread counts; the Following list collapses. A post with pictures shows them in a carousel when its text is opened (**Post text**, or **Pictures** for one with only pictures), in the list view or the grid. **Hide user** on a post leaves everything by whoever posted it out of your feeds and stops saving their new posts; on a feed's or YouTube channel's post it hides the whole feed or channel, and asks first either way. |
 | **Your Following list** (`/following`, **Edit this list** in the sidebar) | Arrange the Following list: put communities and feeds into folders, drag them into order (or number them, without JavaScript), and hide the ones you don't need listed. Hidden ones stay followed and in your feed; ones followed later go at the end. Folders open and close, and stay as you left them. **Reset** goes back to alphabetical order. |
 | **Hidden** (`/hidden`, in the feed's ⚙ menu) | The people, feeds and channels you've hidden, each with **Show again**. Showing one again brings back what's still in the archive; what wasn't saved meanwhile isn't fetched. |
 | **Your own feeds** (`/f/{id}`, **New feed** in the sidebar) | A named mix of communities, each feed with its own default sort, time range, filter and view. Mark all read covers just its communities. The ✎ next to its name edits or deletes it; the communities and their posts are untouched. |
 | **Community** (`/c/{id}`) | The same feed for one community, plus ★ Kept, **Live on server** (browse its full history, fetched live), **Media** (what it archives, size limit, transcoding) and a log. Follow settings sit behind the "✓ Following" pill. |
-| **Communities** | Follow a community (starts with its current first page) and manage the check interval and retention for each one. |
+| **Forums** (`/forums`) | Trees of communities someone arranged on PieFed, added by their link: a feed that holds other feeds (`https://server/f/name` or `~name@server`), one topic, or all of a server's topics (`https://server/topics`). Each opens as a forum index: sections with their sub-forums, then the communities in each, with their pictures, descriptions, subscribers and posts, and **Follow** buttons. A tree is read from its server when it's added and when you **Refresh** it, in one request; what a community's server says of it is asked when a page listing it is opened, at most 50 at a time, and believed for two weeks. Below the forums, the Lemmy and PieFed communities you follow, with where each is found in your forums. |
+| **Subscriptions** (`/communities`, in the menu) | Follow anything (a community, hashtag, person, subreddit, channel or feed; starts with its current first page), import and export OPML, and manage the check interval and retention for each one. |
 | **Trending** (`/trending`) | **Posts**: the posts most liked, replied to or reposted on Bluesky and Mastodon over the past hour, day or week. Their videos play in the post. **Loops**: just those with a video, one to a screen, scrolled through as on Shorts or Reels. **Articles**: the pages posted most on Bluesky, on Mastodon and in the archive over the past day, week or month. **Tags**: the hashtags used in the most posts. **Rising** shows what's posted far more than usual, **Look back** any day since it started keeping them, all in your feeds' languages. Posts' replies and articles open in place. **Sources** chooses what's counted. See [Trending](#trending). |
 | **Post** (`/t/{id}`) | A post's pictures are a carousel at full width: swipe, or use the arrows. |
 | **★ Kept** | Keep a post by link, see kept threads grouped by community, recent changes and the bouncer queue. |
@@ -285,7 +286,7 @@ enclosure is an **episode**. It gets a player bar in the feed, in every view, an
 
 ### OPML import and export
 
-The **Communities** page imports and exports OPML 2.0 subscription lists. Import accepts nested folders, ignores
+The **Subscriptions** page imports and exports OPML 2.0 subscription lists. Import accepts nested folders, ignores
 duplicate URLs, and follows each HTTP(S) RSS or Atom feed with the chosen check interval and retention; feeds
 you already follow keep their own settings. Export
 contains every active RSS/Atom follow whose canonical feed address is an HTTP(S) URL.
@@ -460,7 +461,7 @@ site. On a server that's been counting for a while, the first days kept are thos
 
 ## Hashtags
 
-Follow a hashtag (`#selfhosted` in the Communities box) and public posts with it arrive in your feed from across
+Follow a hashtag (`#selfhosted` in the Subscriptions box) and public posts with it arrive in your feed from across
 the fediverse, Mastodon and other microblogging servers included, and from Bluesky, as they're made (see
 [On Bluesky](#on-bluesky) below). ActivityPub has no way to follow a hashtag, so ThreadBNC gets fediverse posts
 from a **tag relay**. [FediBuzz](https://relay.fedi.buzz) watches public posts on
@@ -573,7 +574,7 @@ sign-in middleware, since other servers have to reach them:
 
 Follow someone on Mastodon, or GoToSocial, Akkoma, Misskey or anything else on the fediverse that has
 accounts rather than communities, by `@name@server` or their profile's address (`https://server/@name`) in the
-Communities box. `name@server` works too when the server doesn't run Lemmy or PieFed. It needs ThreadBNC's own
+Subscriptions box. `name@server` works too when the server doesn't run Lemmy or PieFed. It needs ThreadBNC's own
 ActivityPub identity, `THREADBNC_ACTOR_DOMAIN` (see [Hashtags](#hashtags) for setting it up); without it, a
 Mastodon profile's address is followed as its RSS feed instead.
 
@@ -604,7 +605,7 @@ On the **Accounts** page, add any Lemmy or PieFed account: the server, username,
 | Your own posts and comments | Edit, and delete or restore |
 | Top navigation | **New post** to choose one or more communities, and your Mastodon and Bluesky accounts, and write a link and/or text post |
 | Community page | **✎ New post** for a link and/or text post, there and in any other communities you tick under **Also post in other communities** |
-| Communities page | **＋ Start a community** on a server where one of your accounts is an admin |
+| Forums and Subscriptions pages | **＋ Start a community** on a server where one of your accounts is an admin |
 
 **Starting a community**
 - Accounts that are admins of their server get an **admin** badge. The check runs at login; use **Refresh** on the Accounts page after a change.
@@ -898,7 +899,7 @@ If you run your own Lemmy server, ThreadBNC can get a followed community's chang
 - **What arrives at once:** new posts and comments, edits, deletions and restorations, removals, locks and pins. A new post in a followed community is captured the moment it's posted. Without pushes, a Lemmy or PieFed community brings nothing new unless you have it checked on a schedule.
 - **More complete:** each edit is kept, even when the next one follows seconds later, and a comment deleted soon after it was posted keeps its text, because the text comes from the delivery itself.
 - **How it works:** Traefik sends POSTs to your server's inboxes (`/inbox`, `/site_inbox`, `/u/…/inbox`, `/c/…/inbox`) to ThreadBNC. ThreadBNC passes each one unchanged to Lemmy and returns Lemmy's answer to the sender. Lemmy checks the signature, and only what it accepts is kept for the push worker. The worker re-reads the post or comment from your server, where it has just arrived, and records it like a polled check. Posts captured this way are read from your server from then on, votes included, so nothing is asked of the community's home server.
-- **Subscribing:** once an account on a relayed server is added, following a Lemmy or PieFed community subscribes it there too, and unfollowing unsubscribes it. The **Following** menu on a community page shows whether it's **Pushed**, and has **Get pushes** and **Stop pushes**. For communities you followed earlier, use **Subscribe to all** on the Communities page. A subscription shows **push pending** until the community accepts it (for a private community, until a moderator does). Every half hour ThreadBNC asks your server whether it has been accepted yet, and it counts as pushed as soon as a change from that community arrives.
+- **Subscribing:** once an account on a relayed server is added, following a Lemmy or PieFed community subscribes it there too, and unfollowing unsubscribes it. The **Following** menu on a community page shows whether it's **Pushed**, and has **Get pushes** and **Stop pushes**. For communities you followed earlier, use **Subscribe to all** on the Subscriptions page. A subscription shows **push pending** until the community accepts it (for a private community, until a moderator does). Every half hour ThreadBNC asks your server whether it has been accepted yet, and it counts as pushed as soon as a change from that community arrives.
 - **Looked over, rarely:** every 6 hours, ThreadBNC reads a pushed community as your own server has it, to catch anything a delivery missed. That asks nothing of the community's home server.
 - **If ThreadBNC is down,** deliveries to your server fail, and senders retry them later (Lemmy keeps retrying for a while), so the pushes arrive when ThreadBNC is back. Your server's incoming federation also pauses meanwhile.
 - **Only your own servers:** pushes go to the server of the subscribing account. For an account on someone else's server, they arrive there, and ThreadBNC can't see them.

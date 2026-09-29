@@ -34,6 +34,7 @@ from . import articles, dupes, integrity, languages, livestream, opml, portable,
 from . import search as search_mod
 from . import discussions as discussions_mod
 from . import feed as feed_mod
+from . import forums as forums_mod
 from . import media as media_mod
 from . import storage as storage_mod
 from . import thumbs as thumbs_mod
@@ -1854,6 +1855,174 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         return {"id": j["id"], "kind": j["kind"], "status": j["status"], "attempts": j["attempts"],
                 "error": j["error"], "result": json.loads(j["result_json"] or "null")}
 
+    # ---- forums: trees of communities arranged on PieFed (forums.py) -----------
+    def community_kind(ap_id: str) -> bool:
+        """A Lemmy or PieFed community: what forums are made of (not a hashtag, a person, a feed...)."""
+        return (not is_rss(ap_id) and not from_fediverse(ap_id) and not is_bluesky(ap_id)
+                and not is_reddit_host(host_of(ap_id)) and not is_youtube_feed(ap_id))
+
+    def forum_href(fid: int, path: list[str]) -> str:
+        return f"/forums/{fid}" + "".join("/" + quote(p, safe="") for p in path)
+
+    def forum_pictures(conn: Any, fid: int, urls: list[str | None], now: str) -> tuple[Callable[[str | None], str | None], bool]:
+        """Addresses to show a forum's pictures at (downloading those not yet
+        downloaded), and whether any are still to come."""
+        got = forums_mod.pictures(conn, fid, urls, now)
+        waiting = any(status == "pending" for _, status in got.values())
+        return (lambda url: thumb(got[url][0], "list") if url in got and got[url][1] == "ok" else None), waiting
+
+    def unread_of(follows: dict[str, dict[str, Any]], node: dict[str, Any]) -> tuple[int, int]:
+        """How many of a forum node's communities (and those below) you follow, and their unread posts."""
+        mine = [follows[a] for a in {c["ap_id"] for c in forums_mod.communities_in(node)} if a in follows]
+        return len(mine), sum(f["unread"] or 0 for f in mine)
+
+    @app.get("/forums", response_class=HTMLResponse)
+    def forums_index(request: Request):
+        now = utcnow()
+        with db.connect() as conn:
+            kept = forums_mod.all_forums(conn)
+            followed = [f for f in feed_mod.followed_communities(conn) if community_kind(f["canonical_ap_id"])]
+        follows = {f["canonical_ap_id"]: f for f in followed}
+        # Where each community you follow is found in your forums: the first place in each.
+        found_in: dict[str, list[dict[str, Any]]] = {}
+        icons: dict[str, str] = {}
+
+        def place(forum: dict[str, Any], node: dict[str, Any], path: list[str], titles: list[str]) -> None:
+            for c in node["communities"]:
+                if c["ap_id"] in follows:
+                    if not any(p["forum"] == forum["id"] for p in found_in.get(c["ap_id"], [])):
+                        found_in.setdefault(c["ap_id"], []).append(
+                            {"forum": forum["id"], "titles": titles, "href": forum_href(forum["id"], path)})
+                    if c["icon"] and not c["nsfw"]:
+                        icons.setdefault(c["ap_id"], c["icon"])
+            for child in node["children"]:
+                place(forum, child, [*path, child["name"]], [*titles, child["title"]])
+
+        cards = []
+        with db.transaction() as conn:
+            for forum in kept:
+                tree = forum["tree"]
+                place(forum, tree, [], [tree["title"]])
+                pic, _ = forum_pictures(conn, forum["id"], [tree["icon"], tree["banner"]], now)
+                mine, unread = unread_of(follows, tree)
+                cards.append({"id": forum["id"], "title": tree["title"], "host": forum["host"], "url": tree["url"],
+                              "description": forums_mod.excerpt(tree["description"], 220),
+                              "icon": pic(tree["icon"]), "banner": pic(tree["banner"]),
+                              "letter": (tree["title"] or "?")[:1].upper(), "hue": forums_mod.hue(tree["url"]),
+                              "forums": len(tree["children"]), "total": tree["total"], "followed": mine,
+                              "unread": unread, "fetched_at": forum["fetched_at"],
+                              "sections": [(ch["title"], forum_href(forum["id"], [ch["name"]]))  # those with forums in them first
+                                           for ch in sorted(tree["children"], key=lambda ch: not ch["children"])[:8]]})
+            by_forum: dict[int, list[str]] = {}  # a community's icon is kept with the first forum it's in
+            for ap_id, url in icons.items():
+                by_forum.setdefault(found_in[ap_id][0]["forum"], []).append(url)
+            shown: dict[str, str | None] = {}
+            for fid, urls in by_forum.items():
+                pic, _ = forum_pictures(conn, fid, urls, now)
+                shown.update({u: pic(u) for u in urls})
+        communities = [{**f, "icon": shown.get(icons.get(f["canonical_ap_id"], "")), "found_in": found_in.get(f["canonical_ap_id"], []),
+                        "hue": forums_mod.hue(f["canonical_ap_id"]), "letter": (f["title"] or f["name"] or "?")[:1].upper()}
+                       for f in followed]
+        return render(request, "forums.html", forums=cards, communities=communities, push_handle=push_handle())
+
+    @app.post("/forums")
+    def add_forum(request: Request, link: str = Form(...)):
+        """Plain def, like /follow: the tree is read from its server while you wait."""
+        try:
+            where = forums_mod.parse_link(link)
+            with traffic_mod.tagged("forums"):
+                tree = forums_mod.fetch(bouncer.http, where)
+        except (RemoteError, ValueError) as exc:
+            flash(request, f"Couldn't add {link.strip()}: {exc}", "error")
+            return RedirectResponse("/forums#add", status_code=303)
+        with db.transaction() as conn:
+            fid = forums_mod.save(conn, where, tree, utcnow())
+        flash(request, f"Added {tree['title']}: {len(tree['children']):,} forums and {tree['total']:,} communities.")
+        return RedirectResponse(f"/forums/{fid}", status_code=303)
+
+    @app.post("/forums/{fid}/refresh")
+    def refresh_forum(request: Request, fid: int):
+        with db.connect() as conn:
+            forum = forums_mod.load(conn, fid)
+        if forum is None:
+            raise HTTPException(404)
+        try:
+            with traffic_mod.tagged("forums"):
+                tree = forums_mod.fetch(bouncer.http, forums_mod.link_of(forum))
+        except (RemoteError, ValueError) as exc:
+            flash(request, f"Couldn't read {forum['title']} again: {exc}", "error")
+            return RedirectResponse(back(request, f"/forums/{fid}"), status_code=303)
+        with db.transaction() as conn:
+            forums_mod.save(conn, forums_mod.link_of(forum), tree, utcnow())
+        flash(request, f"{tree['title']} is up to date: {len(tree['children']):,} forums and "
+                       f"{tree['total']:,} communities.")
+        return RedirectResponse(back(request, f"/forums/{fid}"), status_code=303)
+
+    @app.post("/forums/{fid}/remove")
+    def remove_forum(request: Request, fid: int):
+        with db.transaction() as conn:
+            forum = forums_mod.load(conn, fid)
+            if forum is None:
+                raise HTTPException(404)
+            forums_mod.remove(conn, fid)
+        flash(request, f"Removed {forum['title']}. The communities in it you follow are still followed.")
+        return RedirectResponse("/forums", status_code=303)
+
+    @app.get("/forums/{fid}", response_class=HTMLResponse)
+    @app.get("/forums/{fid}/{path:path}", response_class=HTMLResponse)
+    def forum_page(request: Request, fid: int, path: str = ""):
+        now = utcnow()
+        parts = [p for p in path.split("/") if p]
+        with db.connect() as conn:
+            forum = forums_mod.load(conn, fid)
+            found = forums_mod.walk(forum["tree"], parts) if forum else None
+            if found is None:
+                raise HTTPException(404)
+            follows = {f["canonical_ap_id"]: f for f in feed_mod.followed_communities(conn)}
+            node, trail = found
+            known = forums_mod.details(conn, [c["ap_id"] for c in node["communities"]])
+
+        def row(n: dict[str, Any], p: list[str]) -> dict[str, Any]:
+            mine, unread = unread_of(follows, n)
+            return {"title": n["title"], "description": forums_mod.excerpt(n["description"]), "href": forum_href(fid, p),
+                    "icon": n["icon"] if not n["nsfw"] else None, "nsfw": n["nsfw"], "total": n["total"],
+                    "followed": mine, "unread": unread, "letter": (n["title"] or "?")[:1].upper(),
+                    "hue": forums_mod.hue(n["url"]), "own": len(n["communities"]),
+                    "children": [(ch["title"], forum_href(fid, [*p, ch["name"]])) for ch in n["children"]]}
+
+        categories, loose = [], []
+        for child in node["children"]:
+            p = [*parts, child["name"]]
+            if child["children"]:
+                categories.append({"head": row(child, p), "rows": [row(g, [*p, g["name"]]) for g in child["children"]]})
+            else:
+                loose.append(row(child, p))
+        communities = []
+        for c in node["communities"]:
+            d = known.get(c["ap_id"]) or {}
+            f = follows.get(c["ap_id"])
+            communities.append({**c, "icon": c["icon"] if not c["nsfw"] else None, "follow": f,
+                                "description": forums_mod.excerpt(d.get("description")),
+                                "subscribers": d.get("subscribers"), "posts": d.get("posts"),
+                                "active": d.get("active_month"), "hue": forums_mod.hue(c["ap_id"]),
+                                "letter": (c["title"] or c["name"] or "?")[:1].upper()})
+        urls = [node["icon"] if not node["nsfw"] else None, node["banner"] if not node["nsfw"] else None,
+                *(r["icon"] for cat in categories for r in [cat["head"], *cat["rows"]]),
+                *(r["icon"] for r in loose), *(c["icon"] for c in communities)]
+        with db.transaction() as conn:
+            pic, pictures_waiting = forum_pictures(conn, fid, urls, now)
+            stale = [c for c in node["communities"] if c.get("ref") is not None
+                     and forums_mod.stale(known.get(c["ap_id"]), now)]
+            asking = forums_mod.looking(conn, fid, parts)
+        if stale and not asking:
+            bouncer.enqueue(forums_mod.JOB, forums_mod.job_payload(fid, parts))
+            asking = True
+        head = row(node, parts)
+        return render(request, "forum.html", forum=forum, node=node, head=head, parts=parts,
+                      trail=[(n["title"], forum_href(fid, p)) for n, p in trail], categories=categories, loose=loose,
+                      communities=communities, pic=pic, waiting=pictures_waiting or asking,
+                      description=render_markdown(node["description"]) if node["description"] else None)
+
     # ---- communities ---------------------------------------------------
     @app.get("/communities", response_class=HTMLResponse)
     def communities(request: Request):
@@ -1938,10 +2107,12 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     @app.post("/follow")
     def follow(request: Request, community: str = Form(...), poll_interval_minutes: str = Form(""),
                retention_days: str = Form("30"), backfill: str | None = Form(None),
-               polling: str | None = Form(None)):
+               polling: str | None = Form(None), stay: str | None = Form(None), anchor: str = Form("")):
         """A blank check interval means the default for that kind of server
         (slower for Reddit). Lemmy and PieFed communities are only checked on a
-        schedule with `polling`; otherwise their posts arrive by push."""
+        schedule with `polling`; otherwise their posts arrive by push. `stay`:
+        back to the page the form was on (a forum's), at `anchor`, instead of
+        going to the community."""
         days = None if retention_days.strip().lower() in ("", "forever", "none") else int(retention_days)
         every = int(poll_interval_minutes) if poll_interval_minutes.strip().isdigit() else None
         try:
@@ -1991,6 +2162,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             flash(request, "Following, but nothing will arrive yet: posts from Lemmy and PieFed come through your "
                            "own server (THREADBNC_RELAY_INBOXES), which couldn't subscribe. You can have it "
                            "checked on a schedule instead, here.", "warn-flash")
+        if stay:
+            return RedirectResponse(back(request, f"/c/{cid}", re.sub(r"[^\w-]", "", anchor) or None), status_code=303)
         return RedirectResponse(f"/c/{cid}", status_code=303)
 
     @app.post("/c/{cid}/polling")

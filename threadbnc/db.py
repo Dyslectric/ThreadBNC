@@ -517,6 +517,36 @@ CREATE TABLE IF NOT EXISTS custom_feed_communities (
     PRIMARY KEY (feed_id, community_id)
 );
 
+-- Forums (forums.py): trees of communities arranged on a PieFed server (a feed
+-- and the feeds in it, or topics), read from there when added or refreshed.
+CREATE TABLE IF NOT EXISTS forums (
+    id INTEGER PRIMARY KEY,
+    ap_id TEXT NOT NULL UNIQUE,        -- the feed's (or topic's) address
+    host TEXT NOT NULL,                -- the server it's read from
+    kind TEXT NOT NULL,                -- feed | topic
+    name TEXT,                         -- its name there; NULL for all of a server's topics
+    title TEXT,
+    tree_json TEXT NOT NULL,           -- see forums.py
+    position INTEGER,
+    added_at TEXT NOT NULL,
+    fetched_at TEXT NOT NULL
+);
+-- What a forum's server said of a community in it, asked when a page listing it is opened.
+CREATE TABLE IF NOT EXISTS forum_communities (
+    ap_id TEXT PRIMARY KEY,
+    description TEXT,
+    subscribers INTEGER,
+    posts INTEGER,
+    active_month INTEGER,
+    checked_at TEXT NOT NULL
+);
+-- Pictures shown in a forum (its feeds' and communities' icons), kept while it is.
+CREATE TABLE IF NOT EXISTS forum_media (
+    forum_id INTEGER NOT NULL REFERENCES forums(id) ON DELETE CASCADE,
+    media_id INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+    PRIMARY KEY (forum_id, media_id)
+);
+
 -- People, feeds and YouTube channels you've hidden (hidden.py): their posts are
 -- left out of feeds and not captured any more.
 CREATE TABLE IF NOT EXISTS hidden_sources (

@@ -1,9 +1,9 @@
 {% extends "base.html" %}
 {% from "_macros.html" import when, icon %}
-{% block title %}Communities{% endblock %}
+{% block title %}Subscriptions{% endblock %}
 {% block content %}
 <div class="feed-head">
-  <h1>Communities</h1>
+  <h1>Subscriptions</h1>
   {% if accounts | selectattr('is_admin') | list %}<a class="button secondary small" href="/communities/new">{{ icon('plus') }} Start a community</a>{% endif %}
 </div>
 

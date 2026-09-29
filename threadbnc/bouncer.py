@@ -25,7 +25,7 @@ import traceback
 from datetime import timedelta
 from typing import Any, Callable
 
-from . import articles, avatars, livestream, media, store, thumbs, traffic, youtube
+from . import articles, avatars, forums, livestream, media, store, thumbs, traffic, youtube
 from . import feed as feed_mod
 from . import hidden as hidden_mod
 from .adapters import (
@@ -118,7 +118,7 @@ JOB_PURPOSES = {"ingest": "saving", "keep_youtube": "saving", "open": "opening",
                 "articles": "articles", "audio": "media", "previews": "previews", "poll": "polling",
                 "relayed": "hashtags", "bluesky_tagged": "hashtags", "mastodon_tagged": "hashtags",
                 "trending_article": "trends", "mastodon_open": "opening",
-                "discussions": "discussions", avatars.JOB: "avatars"}
+                "discussions": "discussions", avatars.JOB: "avatars", forums.JOB: "forums"}
 # Jobs someone is waiting on (a post opened, its comments expanded): run before
 # the ones scrolling a feed queues up, and in between those ones' posts.
 URGENT_JOBS = ("open", "sync", "mastodon_open")
@@ -164,6 +164,7 @@ class Bouncer:
         # Other kinds of job, by kind: payload -> result (e.g. tags.py's "relayed").
         self.job_handlers: dict[str, Callable[[dict[str, Any]], Any]] = {}
         self.job_handlers[avatars.JOB] = lambda payload: avatars.look_up(self, payload)
+        self.job_handlers[forums.JOB] = lambda payload: forums.look_up(self, payload)
         # Called with the community id after following / unfollowing (federation.py subscribes).
         self.follow_hooks: list[Callable[[int], Any]] = []
         self.unfollow_hooks: list[Callable[[int], Any]] = []

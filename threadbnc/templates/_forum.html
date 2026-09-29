@@ -1,0 +1,64 @@
+{% from "_macros.html" import icon %}
+
+{# A picture for a forum or a community: its icon once downloaded, else its
+   first letter on a colour of its own. `src`: the icon's address here, or none. #}
+{% macro badge(src, letter, hue, size='') -%}
+<span class="f-icon av-{{ hue }}{{ ' ' ~ size if size }}{{ ' has-picture' if src }}" aria-hidden="true">
+  {%- if src %}<img src="{{ src }}" alt="" loading="lazy" decoding="async">{% else %}{{ letter }}{% endif %}</span>
+{%- endmacro %}
+
+{% macro num(n) -%}{{ "{:,}".format(n) }}{%- endmacro %}
+
+{# A forum in a list of them: its picture, name, description, the forums in it,
+   and how many communities are in it (and how many of those you follow). #}
+{% macro forum_row(r, pic) -%}
+<div class="forum-row">
+  {{ badge(pic(r.icon), r.letter, r.hue) }}
+  <div class="forum-row-main">
+    <a class="forum-row-title" href="{{ r.href }}">{{ r.title }}</a>
+    {%- if r.nsfw %} <span class="pill bad">NSFW</span>{% endif %}
+    {% if r.description %}<p class="forum-row-desc">{{ r.description }}</p>{% endif %}
+    {% if r.children %}<p class="forum-row-subs">{{ icon('chevron-right') }}
+      {% for title, href in r.children %}<a href="{{ href }}">{{ title }}</a>{{ ' · ' if not loop.last }}{% endfor %}</p>{% endif %}
+  </div>
+  <div class="forum-row-stats">
+    <span><strong>{{ num(r.total) }}</strong> communit{{ 'y' if r.total == 1 else 'ies' }}</span>
+    {% if r.followed %}<span class="muted">{{ r.followed }} followed{% if r.unread %} <span class="count" aria-label="{{ r.unread }} unread">{{ r.unread }}</span>{% endif %}</span>{% endif %}
+  </div>
+</div>
+{%- endmacro %}
+
+{# A community in a forum: where to read it (here once you follow it, on its own
+   server until then), what its server says of it, and a button to follow it. #}
+{% macro community_row(c, pic, anchor, waiting) -%}
+<div class="forum-row community-row" id="{{ anchor }}">
+  {{ badge(pic(c.icon), c.letter, c.hue) }}
+  <div class="forum-row-main">
+    {% if c.follow %}<a class="forum-row-title" href="/c/{{ c.follow.id }}">{{ c.title }}</a>
+    {% else %}<a class="forum-row-title" href="{{ c.ap_id }}" target="_blank" rel="noopener noreferrer"
+                 title="Open it on its own server">{{ c.title }} {{ icon('external', 'ext') }}</a>{% endif %}
+    {%- if c.nsfw %} <span class="pill bad">NSFW</span>{% endif %}
+    <span class="forum-row-handle">{{ chandle(c.name, c.ap_id) }}</span>
+    {% if c.description %}<p class="forum-row-desc">{{ c.description }}</p>
+    {% elif waiting and c.subscribers is none %}<p class="forum-row-desc muted"><span class="skeleton-line"></span></p>{% endif %}
+  </div>
+  <div class="forum-row-stats">
+    {% if c.subscribers is not none %}<span><strong>{{ num(c.subscribers) }}</strong> subscriber{{ '' if c.subscribers == 1 else 's' }}</span>{% endif %}
+    {% if c.posts is not none %}<span class="muted">{{ num(c.posts) }} post{{ '' if c.posts == 1 else 's' }}</span>{% endif %}
+  </div>
+  <div class="forum-row-act">
+    {% if c.follow %}
+      <a class="pill good" href="/c/{{ c.follow.id }}" title="You follow it: read it here">{{ icon('check') }} Following</a>
+      {% if c.follow.unread %}<span class="count" aria-label="{{ c.follow.unread }} unread">{{ c.follow.unread }}</span>{% endif %}
+    {% else %}
+      <form method="post" action="/follow" class="inline">
+        <input type="hidden" name="community" value="{{ c.ap_id }}">
+        <input type="hidden" name="backfill" value="1">
+        <input type="hidden" name="stay" value="1">
+        <input type="hidden" name="anchor" value="{{ anchor }}">
+        <button class="small secondary">{{ icon('plus') }} Follow</button>
+      </form>
+    {% endif %}
+  </div>
+</div>
+{%- endmacro %}

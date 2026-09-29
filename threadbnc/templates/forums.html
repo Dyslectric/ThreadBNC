@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon %}
+{% from "_forum.html" import badge, num %}
+{% block title %}Forums{% endblock %}
+{% block content %}
+<div class="feed-head">
+  <h1>Forums</h1>
+  <div class="row">
+    {% if accounts | selectattr('is_admin') | list %}<a class="button secondary small" href="/communities/new">{{ icon('plus') }} Start a community</a>{% endif %}
+    <a class="button secondary small" href="/communities" title="Hashtags, people, Reddit, YouTube, Bluesky and feeds too">{{ icon('settings') }} Subscriptions</a>
+  </div>
+</div>
+
+{% macro add_form() -%}
+<form method="post" action="/forums" class="row forum-add">
+  <input name="link" required placeholder="https://your.piefed.server/f/name  ·  ~name@server  ·  …/topics" aria-label="A forum's link">
+  <button>Add forum</button>
+</form>
+<p class="small muted">A forum is a PieFed feed that holds other feeds, or a PieFed server's topics: communities
+  from all over Lemmy and PieFed, arranged by someone into sections. Paste its link. It's read from its server when
+  you add it and when you refresh it.</p>
+{%- endmacro %}
+
+{% if forums %}
+<div class="forum-cards">
+  {% for f in forums %}
+  <article class="card forum-card">
+    {% if f.banner %}<a class="forum-card-banner" href="/forums/{{ f.id }}" tabindex="-1" aria-hidden="true"><img src="{{ f.banner }}" alt=""></a>{% endif %}
+    <div class="forum-card-body">
+      <div class="forum-card-title">
+        {{ badge(f.icon, f.letter, f.hue, 'big') }}
+        <div class="grow">
+          <h2><a href="/forums/{{ f.id }}">{{ f.title }}</a></h2>
+          <p class="small muted">{{ f.host }} · {{ num(f.forums) }} forum{{ '' if f.forums == 1 else 's' }} · {{ num(f.total) }} communities</p>
+        </div>
+        {% if f.unread %}<span class="count" aria-label="{{ f.unread }} unread">{{ f.unread }}</span>{% endif %}
+      </div>
+      {% if f.description %}<p class="forum-card-desc">{{ f.description }}</p>{% endif %}
+      {% if f.sections %}<p class="forum-card-sections">
+        {% for title, href in f.sections %}<a class="pill src" href="{{ href }}">{{ title }}</a>{% endfor %}
+        {% if f.forums > f.sections | length %}<a class="small" href="/forums/{{ f.id }}">and {{ f.forums - f.sections | length }} more →</a>{% endif %}</p>{% endif %}
+      <p class="small muted">{% if f.followed %}You follow {{ f.followed }} of its communities.{% else %}You don't follow any of its communities yet.{% endif %}</p>
+    </div>
+  </article>
+  {% endfor %}
+</div>
+<details class="card forum-add-card" id="add">
+  <summary class="button secondary small">{{ icon('plus') }} Add a forum</summary>
+  {{ add_form() }}
+</details>
+{% else %}
+<section class="card hero" id="add">
+  <h2>Add a forum</h2>
+  {{ add_form() }}
+</section>
+{% endif %}
+
+<section class="card" id="communities">
+  <div class="section-head">
+    <h2>Your communities <span class="count muted">{{ communities | length }}</span></h2>
+    <a class="small" href="/communities#follow">{{ icon('plus') }} Follow a community</a>
+  </div>
+  {% if not communities %}<p class="muted">You don't follow any Lemmy or PieFed communities yet. Follow them from a forum,
+    or by name on <a href="/communities#follow">Subscriptions</a>.</p>{% endif %}
+  <ul class="plain community-list">
+  {% for c in communities %}
+    <li class="forum-row">
+      {{ badge(c.icon, c.letter, c.hue) }}
+      <div class="forum-row-main">
+        <a class="forum-row-title" href="/c/{{ c.id }}">{{ c.title or c.name }}</a>
+        <span class="forum-row-handle">{{ chandle(c.name, c.canonical_ap_id) }}</span>
+        {% if c.found_in %}<p class="forum-row-subs">{% for p in c.found_in %}<a href="{{ p.href }}">{{ p.titles | join(' › ') }}</a>{{ ' · ' if not loop.last }}{% endfor %}</p>{% endif %}
+      </div>
+      <div class="forum-row-stats">
+        <span class="muted">{{ num(c.total) }} saved</span>
+        {% if c.push_state != 'subscribed' and not c.polling %}<span class="pill bad" title="Not pushed and not checked on a schedule: nothing new arrives. See the community's Following menu.">not arriving</span>
+        {% elif c.last_error %}<span class="bad-text" title="{{ c.last_error }}">{{ icon('alert') }} failing</span>{% endif %}
+      </div>
+      <div class="forum-row-act">{% if c.unread %}<a class="count" href="/c/{{ c.id }}" aria-label="{{ c.unread }} unread">{{ c.unread }}</a>{% endif %}</div>
+    </li>
+  {% endfor %}
+  </ul>
+  <p class="small muted">Hashtags, people, subreddits, YouTube channels, Bluesky and RSS feeds are on
+    <a href="/communities">Subscriptions</a>, with every follow's settings.</p>
+</section>
+{% endblock %}
