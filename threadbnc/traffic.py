@@ -35,6 +35,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from . import timing
+
 log = logging.getLogger(__name__)
 
 HOUR = "%Y-%m-%dT%H"  # UTC
@@ -217,7 +219,8 @@ class MeteredTransport(httpx.BaseTransport):
         sent = (len(request.method) + len(request.url.raw_path) + 12 + _headers_size(request.headers)
                 + int(request.headers.get("content-length") or 0))
         try:
-            response = self.inner.handle_request(request)
+            with timing.span("remote"):
+                response = self.inner.handle_request(request)
         except Exception:
             record("out", host, bytes_out=sent, errors=1, community=community, purpose=purpose)
             raise

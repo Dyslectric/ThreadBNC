@@ -30,6 +30,8 @@ from markupsafe import Markup
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.background import BackgroundTask
 
+from . import timing
+from .responsive import Responsive
 from . import articles, dupes, integrity, languages, livestream, opml, portable, store, videos, youtube
 from . import search as search_mod
 from . import discussions as discussions_mod
@@ -639,6 +641,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             resp.headers["Content-Security-Policy"] = "default-src 'none'; sandbox"
         elif not path.startswith("/static/"):
             resp.headers["Cache-Control"] = "no-store"
+        elif "v" in request.query_params:  # addressed by its file's date (static_url): never changes
+            resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
         return resp
 
     # Added after the guard so it wraps it (session must be decoded first).
@@ -654,6 +658,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                            receive=lambda activity, signer: next(
                                (f for f in followed_by_actor if f.expects(activity)), tags).receive(activity, signer),
                            expects=lambda activity: any(f.expects(activity) for f in followed_by_actor))
+    # Outermost: it times, revalidates and compresses what everything inside sends.
+    app.add_middleware(Responsive)
     app.state.federation = federation
     app.state.tags = tags
     app.state.people = people
@@ -696,7 +702,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                     item["my_vote"] = next((mine.get(c.get("canonical_ap_id"), 0)
                                             for c in item.get("copies", [])
                                             if mine.get(c.get("canonical_ap_id"), 0)), 0)
-        return templates.TemplateResponse(request, name, ctx)
+        with timing.span("render"):
+            return templates.TemplateResponse(request, name, ctx)
 
     def require_acting(request: Request) -> Account:
         account = (acting(request) or poster.reddit_account() or poster.bluesky_account()

@@ -50,7 +50,8 @@ document.documentElement.classList.add("js");
   // Parts are re-rendered by the server: after an action the page is fetched
   // again and the parts that changed are swapped in by id.
   async function fetchDoc(url) {
-    const r = await fetch(url, { credentials: "same-origin" });
+    // no-cache: never a copy kept from prefetching a link (see "prefetching" below)
+    const r = await fetch(url, { credentials: "same-origin", cache: "no-cache" });
     if (!r.ok) throw new Error("HTTP " + r.status);
     return new DOMParser().parseFromString(await r.text(), "text/html");
   }
@@ -2658,6 +2659,31 @@ document.documentElement.classList.add("js");
       delete d.dataset.peeked;
     }
   }, true);
+
+  // ---- prefetching -----------------------------------------------------------
+  // A link to a page that only reads (the server decides: responsive.py) is
+  // fetched as it's pointed at, or touched, so the click that follows is
+  // answered from the browser's copy. The server answers nothing to any other page.
+  const PREFETCHABLE = /^\/(trending(\/(loops|articles|stories|tags))?|articles|communities)?$/;
+  const prefetched = new Map(); // address -> when, so a page isn't asked for again within 20 s
+  let prefetchTimer = null;
+  function prefetch(ev) {
+    const link = ev.target.closest && ev.target.closest("a[href]");
+    if (!link || link.target || link.hasAttribute("download") || link.origin !== location.origin) return;
+    if (!PREFETCHABLE.test(link.pathname) || link.href === location.href) return;
+    if (navigator.connection && navigator.connection.saveData) return;
+    const last = prefetched.get(link.href);
+    if (last && Date.now() - last < 20000) return;
+    clearTimeout(prefetchTimer);
+    // a moment's rest on it, so passing the pointer over links doesn't ask for each
+    prefetchTimer = setTimeout(() => {
+      prefetched.set(link.href, Date.now());
+      fetch(link.href, { credentials: "same-origin", headers: { "X-ThreadBNC-Prefetch": "1" } }).catch(() => {});
+    }, ev.type === "touchstart" ? 0 : 65);
+  }
+  document.addEventListener("mouseover", prefetch, { passive: true });
+  document.addEventListener("touchstart", prefetch, { passive: true });
+  document.addEventListener("mouseout", () => clearTimeout(prefetchTimer), { passive: true });
 
   document.addEventListener("DOMContentLoaded", () => {
     keepFeedAsOf();
