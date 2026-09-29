@@ -64,7 +64,7 @@ PROXY_SECRET_HEADER = "X-ThreadBNC-Proxy-Secret"
 from .config import Settings, load_settings
 from .federation import Federation, InboxRelay, summarize
 from .jetstream import BlueskyStream
-from .mastodon_stream import OPEN_JOB as MASTODON_OPEN_JOB, RESOLVE_EACH, SCOPES as MASTODON_SCOPES, MastodonStream
+from .mastodon_stream import OPEN_JOB as MASTODON_OPEN_JOB, RESOLVE_EACH, RESOLVE_EVERY, SCOPES as MASTODON_SCOPES, MastodonStream
 from .fedibuzz import FediBuzzStream
 from .mastodon_stream import feed_closed as mastodon_feed_closed
 from .mastodon_stream import subscribe as mastodon_subscribe, subscription as mastodon_subscription
@@ -1254,7 +1254,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         return {"chosen": chosen, "bluesky": bluesky_stream, "embedded": settings.embedded_bouncer,
                 "mastodon": mastodon_stream, "mastodon_account": mastodon_stream.account(),
                 "mastodon_accounts": mastodon_stream.accounts(), "mastodon_closed": mastodon_stream.closed(),
-                "fedibuzz": fedibuzz, "resolve_each": RESOLVE_EACH,
+                "fedibuzz": fedibuzz, "resolve_each": RESOLVE_EACH, "resolve_every": f"{RESOLVE_EVERY / 60:g}",
                 "mastodon_scope": (mastodon_subscription(db) or {}).get("scope"), "scopes": MASTODON_SCOPES,
                 "actor": bouncer.actor.handle if bouncer.actor else None}
 

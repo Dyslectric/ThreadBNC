@@ -93,8 +93,8 @@ CHECK_EVERY = 60.0  # seconds between reads of posts' totals
 CHECK_POSTS = 20  # posts read at once (the most Mastodon's /api/v1/statuses takes)
 ONE_BY_ONE = 5  # a server too old to read several at once: this many, one request each
 TRENDING_EVERY = 900.0
-RESOLVE_EVERY = 300.0  # seconds between rounds of looking up posts boosted in FediBuzz's firehose
-RESOLVE_EACH = 20  # of them, the most boosted, each round (one search each)
+RESOLVE_EVERY = 120.0  # seconds between rounds of looking up posts boosted in FediBuzz's firehose
+RESOLVE_EACH = 40  # of them, the most boosted, each round (one search each)
 RESOLVE_LEAST = trends.QUIET_SEEN  # boosts (or replies) seen, at least, before your server's asked
 FOLLOWED_SQL = ("SELECT c.name, f.capture_since FROM community_follows f JOIN communities c ON c.id=f.community_id "
                 "WHERE f.active=1 AND c.canonical_ap_id LIKE 'tag:%'")
