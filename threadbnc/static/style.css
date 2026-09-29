@@ -1588,3 +1588,7 @@ html:not(.js) .forum-row { padding-left: 16px; }
     width: min(290px, calc(100vw - 48px)); max-width: none; }
   .forum-cards { grid-template-columns: minmax(0, 1fr); }
 }
+
+.trend-quote { margin: 6px 0; padding: 4px 10px; border-left: 3px solid var(--line); overflow-wrap: anywhere; }
+.trend-quote p { margin: 2px 0; }
+.trend-quote .trend-quote-text { white-space: pre-line; }

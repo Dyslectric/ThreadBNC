@@ -188,6 +188,8 @@ class Bouncer:
         self._paced_clock: dict[str, float | None] = {}
         self._clock: Callable[[], float] = time.monotonic
         self.wake = threading.Event()
+        self.urgent_wake = threading.Event()  # an urgent job (URGENT_JOBS) was queued: see run_urgent_forever
+        self._urgent_thread: threading.Thread | None = None
         self._stop = threading.Event()
 
     # -- adapters ----------------------------------------------------------
@@ -1457,6 +1459,8 @@ class Bouncer:
                 (kind, json.dumps(payload), now, now, run_after),
             )
         self.wake.set()
+        if kind in URGENT_JOBS:
+            self.urgent_wake.set()
         return cur.lastrowid
 
     def _claim_job(self, urgent_only: bool = False) -> Any:
@@ -1625,8 +1629,26 @@ class Bouncer:
         if purged:
             log.info("purged %d expired auto-captured threads", purged)
 
+    def run_urgent_forever(self, idle_seconds: float = 30.0) -> None:
+        """Jobs someone is waiting on (URGENT_JOBS: a post's comments opened) run here, at once, on a
+        thread of their own. The main loop can be busy for minutes with a feed poll, votes or downloads
+        (each spaced out by its server's limit), and it only looks for urgent jobs between the posts of a
+        few of its jobs, so comments waited for whatever it was doing. Claiming a job is atomic, so
+        either loop may run any of them."""
+        while not self._stop.is_set():
+            try:
+                while not self._stop.is_set() and self.run_one_job(urgent_only=True):
+                    pass
+            except Exception:
+                log.error("urgent jobs crashed: %s", traceback.format_exc())
+            self.urgent_wake.wait(idle_seconds)
+            self.urgent_wake.clear()
+
     def run_forever(self, idle_seconds: float = 10.0) -> None:
         log.info("bouncer started")
+        if self._urgent_thread is None:
+            self._urgent_thread = threading.Thread(target=self.run_urgent_forever, name="bouncer-urgent", daemon=True)
+            self._urgent_thread.start()
         while not self._stop.is_set():
             try:
                 self.tick()
@@ -1638,6 +1660,7 @@ class Bouncer:
     def stop(self) -> None:
         self._stop.set()
         self.wake.set()
+        self.urgent_wake.set()
 
     def start_thread(self) -> threading.Thread:
         t = threading.Thread(target=self.run_forever, name="bouncer", daemon=True)

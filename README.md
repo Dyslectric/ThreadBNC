@@ -807,7 +807,7 @@ API (each call with `Authorization: Bearer $THREADBNC_API_TOKEN`):
 | `THREADBNC_HTTPS_ONLY` | `0` (`1` in compose) | Only send login cookies over HTTPS |
 | `THREADBNC_FOLLOW_POLL_MINUTES` | `15` | Default check interval for Lemmy and PieFed communities checked on a schedule (only those you turn it on for) |
 | `THREADBNC_FOLLOW_RETENTION_DAYS` | `30` | Default retention for auto-captured posts (`forever` allowed) |
-| `THREADBNC_MIN_REQUEST_INTERVAL` | `1.0` | Seconds between requests to the same server. A server that answers 429 Too Many Requests isn't contacted again until its `Retry-After` has passed (a minute, doubling, when it doesn't say) |
+| `THREADBNC_MIN_REQUEST_INTERVAL` | `0.25` | Seconds between requests to the same server. A server that answers 429 Too Many Requests isn't contacted again until its `Retry-After` has passed (a minute, doubling, when it doesn't say) |
 | `THREADBNC_REDDIT_POLL_MINUTES` | `60` | Default check interval for followed subreddits (at least 10) |
 | `THREADBNC_REDDIT_MIN_REQUEST_INTERVAL` | `2.0` | Seconds between requests to Reddit (at least 1) |
 | `THREADBNC_RSS_POLL_MINUTES` | `60` | Default check interval for followed feeds (at least 5) |

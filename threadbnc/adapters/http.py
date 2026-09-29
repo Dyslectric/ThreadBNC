@@ -11,6 +11,7 @@ from typing import Any, Mapping
 
 import httpx
 
+from .. import timing
 from ..traffic import metered
 from .base import RemoteAuthError, RemoteNotFound, RemotePaused, RemoteRejected, RemoteUnavailable
 
@@ -120,7 +121,8 @@ class HttpClient:
         self.throttle = HostThrottle(min_interval)
 
     def _throttle(self, domain: str) -> None:
-        self.throttle.wait(domain)
+        with timing.span("wait"):
+            self.throttle.wait(domain)
 
     def get_json(self, domain: str, path: str, params: dict[str, Any] | None = None,
                  token: str | None = None) -> Any:

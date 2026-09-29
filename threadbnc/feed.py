@@ -113,45 +113,55 @@ class FeedPage:
     as_of: str | None = None  # the time this list is as of (load_feed)
 
 
-_BASE = """
-SELECT * FROM (
-  SELECT feed.*,
-         ROW_NUMBER() OVER (PARTITION BY dkey ORDER BY created_at, id) AS g_rank,
-         SUM(score) OVER (PARTITION BY dkey) AS g_score,
-         MAX(n_linked) OVER (PARTITION BY dkey) AS g_linked,
-         SUM(n_new) OVER (PARTITION BY dkey) AS g_new,
-         SUM(CASE WHEN last_viewed_at IS NULL THEN 1 ELSE 0 END) OVER (PARTITION BY dkey) AS g_unread,
-         SUM(touched) OVER (PARTITION BY dkey) AS g_touched,
-         MAX(last_activity) OVER (PARTITION BY dkey) AS g_activity
+# A page of the feed is found in two steps. First the order: which threads, of all those in
+# scope, come first, from narrow rows (no text, no counts nobody asked to sort or filter by),
+# grouping the copies of one post. Then those 25 or so are read in full. Reading everything
+# about every thread, to sort it and throw all but a page away, takes seconds in a big archive.
+_KEYS = """
+SELECT grouped.id FROM (
+  SELECT feed.id, feed.created_at,
+         ROW_NUMBER() OVER (PARTITION BY dkey ORDER BY created_at, id) AS g_rank{windows}
   FROM (
-    SELECT t.id, t.retention, t.retained_at, t.promoted_at, t.expires_at, t.last_viewed_at, t.community_id,
-           t.source_domain, t.previewed_at, t.last_full_fetch_at, o.id AS oid, o.canonical_ap_id, o.created_at, o.score,
-           o.cur_deleted, o.cur_removed, o.cur_locked,
-           o.cur_missing, o.revision_count, o.thumbnail_url, o.upvotes, o.downvotes, o.dupe_key,
-           COALESCE(o.dupe_key, 'thread:' || t.id) AS dkey,
-           r.title, r.body, r.url, r.metadata_json AS rmeta, a.username, a.instance AS a_instance, a.display_name AS a_name,
-           a.canonical_ap_id AS author_ap, a.id AS author_id, a.avatar_url, a.avatar_checked_at,
-           am.id AS avatar_mid, am.status AS avatar_status,
-           c.name AS cname, c.canonical_ap_id AS c_ap, {touched} AS touched, {linked} AS n_linked,
-           -- the comments saved, or as many as the server last said it has, if more (not read yet)
-           (SELECT MAX(column1) FROM (VALUES ((SELECT COUNT(*) FROM objects x WHERE x.thread_id=t.id
-               AND x.object_type='comment')), (COALESCE(o.reply_count, 0))) AS v) AS n_comments,
-           (SELECT COUNT(*) FROM objects x WHERE x.thread_id=t.id AND x.discovered_late=1
-               AND t.last_viewed_at IS NOT NULL AND x.first_seen_at > t.last_viewed_at) AS n_new,
-           (SELECT MAX(COALESCE(x.created_at, x.first_seen_at)) FROM objects x WHERE x.thread_id=t.id)
-               AS last_activity
+    SELECT t.id, o.created_at, COALESCE(o.dupe_key, 'thread:' || t.id) AS dkey{columns}
     FROM archived_threads t
     JOIN objects o ON o.id=t.root_object_id
     JOIN revisions r ON r.object_id=o.id AND r.seq=o.revision_count
-    JOIN communities c ON c.id=t.community_id
-    LEFT JOIN actors a ON a.id=o.author_id
-    LEFT JOIN media am ON am.id=a.avatar_media_id
     WHERE t.trashed_at IS NULL {scope}
   ) AS feed WHERE 1=1 {filters}
 ) AS grouped WHERE g_rank=1 {group_filters}
 ORDER BY {order}
 LIMIT ? OFFSET ?
 """
+
+_BASE = """
+SELECT t.id, t.retention, t.retained_at, t.promoted_at, t.expires_at, t.last_viewed_at, t.community_id,
+       t.source_domain, t.previewed_at, t.last_full_fetch_at, o.id AS oid, o.canonical_ap_id, o.created_at, o.score,
+       o.cur_deleted, o.cur_removed, o.cur_locked,
+       o.cur_missing, o.revision_count, o.thumbnail_url, o.upvotes, o.downvotes, o.dupe_key,
+       COALESCE(o.dupe_key, 'thread:' || t.id) AS dkey,
+       r.title, r.body, r.url, r.metadata_json AS rmeta, a.username, a.instance AS a_instance, a.display_name AS a_name,
+       a.canonical_ap_id AS author_ap, a.id AS author_id, a.avatar_url, a.avatar_checked_at,
+       am.id AS avatar_mid, am.status AS avatar_status,
+       c.name AS cname, c.canonical_ap_id AS c_ap,
+       -- the comments saved, or as many as the server last said it has, if more (not read yet)
+       (SELECT MAX(column1) FROM (VALUES ((SELECT COUNT(*) FROM objects x WHERE x.thread_id=t.id
+           AND x.object_type='comment')), (COALESCE(o.reply_count, 0))) AS v) AS n_comments,
+       (SELECT COUNT(*) FROM objects x WHERE x.thread_id=t.id AND x.discovered_late=1
+           AND t.last_viewed_at IS NOT NULL AND x.first_seen_at > t.last_viewed_at) AS n_new
+FROM archived_threads t
+JOIN objects o ON o.id=t.root_object_id
+JOIN revisions r ON r.object_id=o.id AND r.seq=o.revision_count
+JOIN communities c ON c.id=t.community_id
+LEFT JOIN actors a ON a.id=o.author_id
+LEFT JOIN media am ON am.id=a.avatar_media_id
+WHERE t.trashed_at IS NULL AND t.id IN ({marks})
+"""
+
+# What each thing a feed can be sorted or filtered by needs of the narrow rows (_KEYS):
+# (its column in each thread's row, its total over the copies of a post).
+_NEW = ("(SELECT COUNT(*) FROM objects x WHERE x.thread_id=t.id AND x.discovered_late=1 "
+        "AND t.last_viewed_at IS NOT NULL AND x.first_seen_at > t.last_viewed_at)")
+_ACTIVITY = "(SELECT MAX(COALESCE(x.created_at, x.first_seen_at)) FROM objects x WHERE x.thread_id=t.id)"
 
 
 # The unread filter: posts not opened yet, read posts with new comments, or either.
@@ -289,11 +299,9 @@ def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: lis
     else:
         where, args = _scope(community_id, community_ids, "t.community_id")
     scope = f"AND {where}"
-    head: list[Any] = []  # the parameter for {touched}, which comes before the rest
     if as_of:
         scope += " AND o.first_seen_at <= ?"
         args.append(as_of)
-        head.append(as_of)
     if kept_only:
         scope += " AND t.retention='manual'"
     elif thread_ids is None:
@@ -314,16 +322,49 @@ def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: lis
     if delta is not None:
         filters += " AND created_at >= ?"
         args.append(fmt_ts((parse_ts(as_of) or datetime.now(timezone.utc)) - delta))
-    mode = unread_mode(unread)
-    group_filters = f" AND ({UNREAD[mode]} OR g_touched > 0)" if mode else ""
-    touched = "CASE WHEN t.last_viewed_at > ? THEN 1 ELSE 0 END" if as_of else "0"
     order = SORTS.get(sort, SORTS["new"])
-    linked = _LINKED if order == SORTS["comments"] else "0"  # only worth counting to sort by
+    # Only what the order and the filters use is worked out for every thread; the parameter of
+    # `touched`, which comes before the rest, is `head`.
+    columns: list[str] = []
+    windows: list[str] = []
+    head: list[Any] = []
+    if order == SORTS["top"]:
+        columns.append("o.score")
+        windows.append("SUM(score) OVER (PARTITION BY dkey) AS g_score")
+    if order == SORTS["comments"]:  # only worth counting to sort by
+        columns.append(f"{_LINKED} AS n_linked")
+        windows.append("MAX(n_linked) OVER (PARTITION BY dkey) AS g_linked")
+    if order == SORTS["active"]:
+        columns.append(f"{_ACTIVITY} AS last_activity")
+        windows.append("MAX(last_activity) OVER (PARTITION BY dkey) AS g_activity")
+    mode = unread_mode(unread)
+    group_filters = ""
+    if mode:
+        wanted = []
+        if mode in ("posts", "any"):
+            columns.append("t.last_viewed_at")
+            windows.append("SUM(CASE WHEN last_viewed_at IS NULL THEN 1 ELSE 0 END) OVER (PARTITION BY dkey) AS g_unread")
+            wanted.append(UNREAD["posts"])
+        if mode in ("comments", "any"):
+            columns.append(f"{_NEW} AS n_new")
+            windows.append("SUM(n_new) OVER (PARTITION BY dkey) AS g_new")
+            wanted.append(UNREAD["comments"])
+        group_filters = f" AND ({' OR '.join(wanted)}"
+        if as_of:  # what was read since is still shown: it was unread then
+            columns.append("CASE WHEN t.last_viewed_at > ? THEN 1 ELSE 0 END AS touched")
+            windows.append("SUM(touched) OVER (PARTITION BY dkey) AS g_touched")
+            head.append(as_of)
+            group_filters += " OR g_touched > 0"
+        group_filters += ")"
     page = max(1, page)
-    rows = conn.execute(_BASE.format(scope=scope, filters=filters, group_filters=group_filters, order=order,
-                                     touched=touched, linked=linked),
+    keys = conn.execute(_KEYS.format(scope=scope, filters=filters, group_filters=group_filters, order=order,
+                                     columns="".join(f", {c}" for c in columns),
+                                     windows="".join(f",\n         {w}" for w in windows)),
                         [*head, *args, per_page + 1, (page - 1) * per_page]).fetchall()
-    items = [dict(r) for r in rows[:per_page]]
+    ids = [r[0] for r in keys[:per_page]]
+    by_id = {r["id"]: r for r in conn.execute(_BASE.format(marks=",".join("?" * len(ids))), ids)} if ids else {}
+    rows = [by_id[i] for i in ids if i in by_id]
+    items = [dict(r) for r in rows]
     thumbs = thumbnails(conn, [(i["oid"], i["url"], i["thumbnail_url"]) for i in items])
     copies = dupes.load_copies(conn, [i["dupe_key"] for i in items])
     readable = articles.readable(conn, [i["oid"] for i in items])
@@ -368,7 +409,7 @@ def load_feed(conn: Conn, *, community_id: int | None = None, community_ids: lis
         i["talk"] = {"posts": len(talk), "comments": sum(talk)} if talk else None
     if videos_only:
         items = [i for i in items if i["video"]]
-    return FeedPage(items, page, len(rows) > per_page, as_of)
+    return FeedPage(items, page, len(keys) > per_page, as_of)
 
 
 def veil_label(meta: dict[str, Any]) -> str | None:

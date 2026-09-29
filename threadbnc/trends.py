@@ -78,7 +78,7 @@ RANKED_KEPT = 200  # the most posted of each window kept as ranked (the page sho
 RANKING = "trending_rank:"  # app setting, + window: {"at": when, "items": [...]}
 STALE_RANKING = timedelta(minutes=45)  # older than this, the page ranks for itself
 READ_JOB = "trending_article"
-READ_SPACING = timedelta(seconds=20)  # between the articles read, so other work carries on in between
+READ_SPACING = timedelta(seconds=3)  # between the articles read, so other work carries on in between
 TIDY_BATCH = 2000  # rows forgotten at a time, each lot a short transaction of its own
 PICTURES = 4  # a trending post's pictures downloaded, at most
 CACHE_EVERY = 900.0  # seconds between choosing them
@@ -108,7 +108,7 @@ HISTORY_THROUGH = "trend_history_through"  # app setting: the last day kept
 HOURS_FILLED = "trend_hours_filled"  # app setting: when backfill_hours filled in the hours counted before
 
 # Reading the totals of the posts most replied to (Bluesky: through the AppView).
-CHECK_EVERY = 300.0  # seconds between rounds
+CHECK_EVERY = 60.0  # seconds between rounds
 CHECK_POSTS = 100  # at most this many posts a round (GET_POSTS to a request)
 CHECK_LOOKED_AT = 400  # of the posts most talked about lately
 CHECK_FRESH = 50  # and of those made in the past hour, which the week's busiest would crowd out
@@ -1299,9 +1299,13 @@ def trending_posts(conn: Conn, window: str = "day", sort: str = "likes", source:
     if videos:
         where, params = where + " AND view_json LIKE ?", [*params, '%"video_src": "%']
     page = max(1, page)
+    # The page's posts are chosen from the keys and scores alone, then read whole (each carries its
+    # view_json): sorting a day's posts with their text would move megabytes to keep 25 of them.
     rows = conn.execute(
-        f"SELECT *, {score} AS score FROM stream_posts WHERE view_json IS NOT NULL AND gone=0 "
-        f"AND created_at >= ?{where} ORDER BY score DESC, created_at DESC LIMIT ? OFFSET ?",
+        f"SELECT s.*, t.score FROM (SELECT source, ref, {score} AS score, created_at FROM stream_posts "
+        f"WHERE view_json IS NOT NULL AND gone=0 AND created_at >= ?{where} "
+        f"ORDER BY score DESC, created_at DESC LIMIT ? OFFSET ?) t "
+        f"JOIN stream_posts s ON s.source=t.source AND s.ref=t.ref ORDER BY t.score DESC, s.created_at DESC",
         (*params, per_page + 1, (page - 1) * per_page)).fetchall()
     out = []
     for r in rows[:per_page]:
@@ -1325,8 +1329,11 @@ def trending_posts(conn: Conn, window: str = "day", sort: str = "likes", source:
 
 
 def unread_pictures(view: dict[str, Any]) -> bool:
-    """Whether a post was last read before its pictures' addresses were kept
-    (it's read again when it's shown: see the Trending page's /trending/pictures)."""
+    """Whether a post was last read before its pictures' addresses, or the post
+    it quotes, were kept (it's read again when it's shown: see the Trending
+    page's /trending/pictures)."""
+    if view.get("quote") and "quoted" not in view:
+        return True
     return "images" not in view and bool(view.get("pictures") or view.get("video") or view.get("link"))
 
 
@@ -1388,7 +1395,9 @@ def due_checks(conn: Conn, source: str, limit: int, now: str | None = None, pref
         checked = parse_ts(r["checked_at"])
         # a video read before its file's address was kept (video_src) is read again now, for Loops
         unplayable = '"video": true' in (r["view_json"] or "") and '"video_src"' not in r["view_json"]
-        return checked is None or unplayable or moment - checked >= every
+        # and so is one that quotes a post, read before that post was kept
+        unquoted = '"quote": true' in (r["view_json"] or "") and '"quoted"' not in r["view_json"]
+        return checked is None or unplayable or unquoted or moment - checked >= every
 
     rows = busiest(MAX_POST_AGE, CHECK_LOOKED_AT)
     looked = {r["ref"] for r in rows}
@@ -1422,6 +1431,24 @@ VIDEO_CID = re.compile(r"[A-Za-z0-9]{10,120}")
 VIDEO_DID = re.compile(r"did:(?:plc:[a-z0-9]{5,40}|web:[A-Za-z0-9.-]{1,253})")
 
 
+def bluesky_quoted_view(rec: Any) -> dict[str, Any] | None:
+    """The post a post quotes, as the Trending page shows it (None when it
+    quotes nothing; {"gone": True} when it can't be seen)."""
+    from .adapters.bluesky import _Content, web_url
+
+    if rec is None:
+        return None
+    if not isinstance(rec, dict) or not isinstance(rec.get("value"), dict) or not rec.get("uri"):
+        return {"gone": True}
+    author = rec.get("author") or {}
+    embeds = rec.get("embeds") or []
+    inner = _Content(rec["value"], embeds[0] if embeds else None)
+    return {"url": web_url(rec["uri"]), "text": inner.text[:1000], "handle": author.get("handle") or author.get("did"),
+            "name": author.get("displayName") or None,
+            "author_url": f"https://{BSKY_DOMAIN}/profile/{author.get('did') or author.get('handle')}",
+            "link_title": inner.link_title, "pictures": len(inner.pictures), "video": inner.video}
+
+
 def bluesky_view(view: dict[str, Any]) -> dict[str, Any]:
     """What the Trending page shows of a Bluesky post, from its AppView view."""
     from .adapters.bluesky import NSFW_LABELS, _Content, web_url
@@ -1436,7 +1463,8 @@ def bluesky_view(view: dict[str, Any]) -> dict[str, Any]:
             "avatar": author.get("avatar") if isinstance(author.get("avatar"), str) else None,
             "link": content.link, "link_title": content.link_title, "pictures": len(content.pictures),
             "video": content.video, "video_src": bluesky_video_src(view, record) if content.video else None,
-            "quote": content.quote is not None, "lang": record_lang(record),
+            "quote": content.quote is not None, "quoted": bluesky_quoted_view(content.quote),
+            "lang": record_lang(record),
             "images": (content.pictures or ([content.cover] if content.cover else []))[:PICTURES]}
 
 
