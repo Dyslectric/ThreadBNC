@@ -1188,7 +1188,7 @@ document.documentElement.classList.add("js");
         } catch (e) { setCommentsStatus(panel, "New comments arrived; reload to show them."); }
         return;
       }
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      await new Promise((resolve) => setTimeout(resolve, 400));
     }
     setCommentsStatus(panel, "Still checking for new comments; leave this open or try again in a moment.");
   }
