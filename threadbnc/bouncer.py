@@ -118,7 +118,8 @@ JOB_PURPOSES = {"ingest": "saving", "keep_youtube": "saving", "open": "opening",
                 "articles": "articles", "audio": "media", "previews": "previews", "poll": "polling",
                 "relayed": "hashtags", "bluesky_tagged": "hashtags", "mastodon_tagged": "hashtags",
                 "trending_article": "trends", "mastodon_open": "opening",
-                "discussions": "discussions", avatars.JOB: "avatars", forums.JOB: "forums"}
+                "discussions": "discussions", avatars.JOB: "avatars", forums.JOB: "forums",
+                forums.ADD_JOB: "forums"}
 # Jobs someone is waiting on (a post opened, its comments expanded): run before
 # the ones scrolling a feed queues up, and in between those ones' posts.
 URGENT_JOBS = ("open", "sync", "mastodon_open")
@@ -165,6 +166,7 @@ class Bouncer:
         self.job_handlers: dict[str, Callable[[dict[str, Any]], Any]] = {}
         self.job_handlers[avatars.JOB] = lambda payload: avatars.look_up(self, payload)
         self.job_handlers[forums.JOB] = lambda payload: forums.look_up(self, payload)
+        self.job_handlers[forums.ADD_JOB] = lambda payload: forums.add(self, payload)
         # Called with the community id after following / unfollowing (federation.py subscribes).
         self.follow_hooks: list[Callable[[int], Any]] = []
         self.unfollow_hooks: list[Callable[[int], Any]] = []

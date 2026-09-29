@@ -192,3 +192,28 @@ def test_stale_details_are_asked_again(settings, bouncer):
     assert forums.stale(None, now)
     assert not forums.stale({"checked_at": now}, now)
     assert forums.stale({"checked_at": "2020-01-01T00:00:00.000000Z"}, now)
+
+
+def test_default_forums_are_added_once(settings, bouncer):
+    import dataclasses
+    settings = dataclasses.replace(settings, default_forums=(f"https://{HOST}/f/bigtree",))
+    client = client_for(settings, bouncer)
+    page = client.get("/forums").text
+    assert "being read from its server" in page and "data-forum-wait" in page
+    client.get("/forums")  # not asked for twice
+    with bouncer.db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM jobs WHERE kind=?", (forums.ADD_JOB,)).fetchone()[0] == 1
+    bouncer.run_one_job()
+    page = client.get("/forums").text
+    assert "Big Tree" in page and "data-forum-wait" not in page
+    fid = int(page.split('href="/forums/', 1)[1].split('"', 1)[0])
+    client.post(f"/forums/{fid}/remove")
+    page = client.get("/forums").text  # removed stays removed
+    assert "Big Tree" not in page and "being read" not in page
+
+
+def test_default_forums_setting():
+    from threadbnc.config import DEFAULT_FORUMS, _forums
+    assert _forums(None) == DEFAULT_FORUMS == ("https://piefed.social/f/forumverse",)
+    assert _forums("off") == _forums("") == ()
+    assert _forums("https://a.test/f/x, ~y@b.test") == ("https://a.test/f/x", "~y@b.test")

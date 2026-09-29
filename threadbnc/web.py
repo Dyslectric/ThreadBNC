@@ -1879,7 +1879,12 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     @app.get("/forums", response_class=HTMLResponse)
     def forums_index(request: Request):
         now = utcnow()
+        with db.transaction() as conn:
+            defaults = forums_mod.start_defaults(conn, settings.default_forums)
+        for link in defaults:  # the first time: read from their servers in the background
+            bouncer.enqueue(forums_mod.ADD_JOB, {"link": link})
         with db.connect() as conn:
+            adding = forums_mod.adding(conn)
             kept = forums_mod.all_forums(conn)
             followed = [f for f in feed_mod.followed_communities(conn) if community_kind(f["canonical_ap_id"])]
         follows = {f["canonical_ap_id"]: f for f in followed}
@@ -1923,7 +1928,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         communities = [{**f, "icon": shown.get(icons.get(f["canonical_ap_id"], "")), "found_in": found_in.get(f["canonical_ap_id"], []),
                         "hue": forums_mod.hue(f["canonical_ap_id"]), "letter": (f["title"] or f["name"] or "?")[:1].upper()}
                        for f in followed]
-        return render(request, "forums.html", forums=cards, communities=communities, push_handle=push_handle())
+        return render(request, "forums.html", forums=cards, communities=communities, push_handle=push_handle(),
+                      adding=adding)
 
     @app.post("/forums")
     def add_forum(request: Request, link: str = Form(...)):

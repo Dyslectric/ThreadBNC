@@ -93,6 +93,20 @@ class Settings:
     # Bluesky's stream of everything posted there, which hashtags are picked out of (jetstream.py).
     # None: hashtags come from the fediverse only.
     jetstream_url: str | None = JETSTREAM
+    # Forums added by themselves the first time the Forums page is opened (forums.py);
+    # load_settings starts with DEFAULT_FORUMS. One you remove isn't added again.
+    default_forums: tuple[str, ...] = ()
+
+
+DEFAULT_FORUMS = ("https://piefed.social/f/forumverse",)
+
+
+def _forums(raw: str | None) -> tuple[str, ...]:
+    """THREADBNC_DEFAULT_FORUMS: forums' links, separated by commas or spaces, or "off"."""
+    if raw is None:
+        return DEFAULT_FORUMS
+    links = tuple(p for p in raw.replace(",", " ").split() if p)
+    return () if links in ((), ("off",)) else links
 
 
 def _jetstream(raw: str) -> str | None:
@@ -165,4 +179,5 @@ def load_settings() -> Settings:
         actor_domain=os.environ.get("THREADBNC_ACTOR_DOMAIN", "").strip().lower() or None,
         tag_relay=os.environ.get("THREADBNC_TAG_RELAY", "").strip() or "https://relay.fedi.buzz/tag/{tag}",
         jetstream_url=_jetstream(os.environ.get("THREADBNC_JETSTREAM", "")),
+        default_forums=_forums(os.environ.get("THREADBNC_DEFAULT_FORUMS")),
     )

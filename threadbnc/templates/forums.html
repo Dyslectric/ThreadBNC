@@ -21,7 +21,8 @@
   you add it and when you refresh it.</p>
 {%- endmacro %}
 
-{% if forums %}
+<div id="forum-body"{% if adding %} data-forum-wait{% endif %}>
+{% if forums or adding %}
 <div class="forum-cards">
   {% for f in forums %}
   <article class="card forum-card">
@@ -43,6 +44,20 @@
     </div>
   </article>
   {% endfor %}
+  {% for a in adding %}
+  <article class="card forum-card forum-card-adding" aria-busy="true">
+    <div class="forum-card-body">
+      <div class="forum-card-title">
+        {{ badge(none, (a.name or a.host)[:1] | upper, 0, 'big') }}
+        <div class="grow">
+          <h2>{{ a.name or 'Topics' }}</h2>
+          <p class="small muted">{{ a.host }} · being read from its server…</p>
+        </div>
+      </div>
+      <p class="forum-card-desc"><span class="skeleton-line"></span></p>
+    </div>
+  </article>
+  {% endfor %}
 </div>
 <details class="card forum-add-card" id="add">
   <summary class="button secondary small">{{ icon('plus') }} Add a forum</summary>
@@ -54,6 +69,7 @@
   {{ add_form() }}
 </section>
 {% endif %}
+</div>
 
 <section class="card" id="communities">
   <div class="section-head">

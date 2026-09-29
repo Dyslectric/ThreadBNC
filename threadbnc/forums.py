@@ -237,6 +237,48 @@ def excerpt(text: str | None, limit: int = 180) -> str:
     return ""
 
 
+# ---- forums added by themselves (Settings.default_forums) --------------------------------------
+
+ADD_JOB = "forum_add"
+ADDED_KEY = "default_forums_added"  # app_settings: the default forums already added once (JSON list)
+
+
+def start_defaults(conn: Conn, links: Iterable[str]) -> list[str]:
+    """The default forums not added before, now noted as added: they're read
+    from their servers (ADD_JOB) the first time the Forums page is opened, once
+    each, so a forum you remove stays removed."""
+    row = conn.execute("SELECT value FROM app_settings WHERE key=?", (ADDED_KEY,)).fetchone()
+    try:
+        done = set(json.loads(row["value"])) if row and row["value"] else set()
+    except ValueError:
+        done = set()
+    new = [link for link in links if link not in done]
+    if new:
+        conn.execute("INSERT INTO app_settings(key, value) VALUES (?, ?) "
+                     "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (ADDED_KEY, json.dumps(sorted(done | set(new)))))
+    return new
+
+
+def adding(conn: Conn) -> list[Link]:
+    """The default forums being read from their servers (ADD_JOB queued or running)."""
+    out = []
+    for r in conn.execute("SELECT payload_json FROM jobs WHERE kind=? AND status IN ('queued', 'running') ORDER BY id",
+                          (ADD_JOB,)).fetchall():
+        try:
+            out.append(parse_link(json.loads(r["payload_json"])["link"]))
+        except (ValueError, KeyError):
+            continue
+    return out
+
+
+def add(bouncer: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    """ADD_JOB: a default forum, read from its server and kept."""
+    link = parse_link(payload["link"])
+    tree = fetch(bouncer.http, link)
+    with bouncer.db.transaction() as conn:
+        return {"forum_id": save(conn, link, tree, utcnow())}
+
+
 # ---- what's asked of the server, and pictures, for a page you open ----------------------------
 
 def job_payload(forum_id: int, path: list[str]) -> dict[str, Any]:
