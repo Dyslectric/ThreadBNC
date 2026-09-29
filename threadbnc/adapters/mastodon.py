@@ -26,7 +26,7 @@ import re
 from typing import Any
 from urllib.parse import urlencode
 
-from .activitypub import account_avatar, status_post
+from .activitypub import account_avatar, status_post, with_quote
 from .base import (NActor, NComment, NPost, RemoteNotFound, RemoteRejected, ThreadiverseAdapter,
                    UnsupportedSoftware, host_of)
 from .rss import html_to_markdown
@@ -116,6 +116,7 @@ class MastodonAdapter(ThreadiverseAdapter):
         body = html_to_markdown(s.get("content"), s.get("uri"))
         if s.get("spoiler_text"):
             body = f"**CW: {s['spoiler_text']}**\n\n{body}"
+        body = with_quote(body, s) or ""
         return NComment(ap_id=s["uri"], local_id=str(s["id"]), parent_local_id=parent, body=body or None,
                         created_at=s.get("created_at"), updated_at=s.get("edited_at"), deleted=False, removed=False,
                         author=NActor(uri, account.get("username") or "?", host_of(uri) or self.domain,

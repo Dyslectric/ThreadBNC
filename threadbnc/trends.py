@@ -1422,6 +1422,24 @@ VIDEO_CID = re.compile(r"[A-Za-z0-9]{10,120}")
 VIDEO_DID = re.compile(r"did:(?:plc:[a-z0-9]{5,40}|web:[A-Za-z0-9.-]{1,253})")
 
 
+def bluesky_quoted_view(rec: Any) -> dict[str, Any] | None:
+    """The post a post quotes, as the Trending page shows it (None when it
+    quotes nothing; {"gone": True} when it can't be seen)."""
+    from .adapters.bluesky import _Content, web_url
+
+    if rec is None:
+        return None
+    if not isinstance(rec, dict) or not isinstance(rec.get("value"), dict) or not rec.get("uri"):
+        return {"gone": True}
+    author = rec.get("author") or {}
+    embeds = rec.get("embeds") or []
+    inner = _Content(rec["value"], embeds[0] if embeds else None)
+    return {"url": web_url(rec["uri"]), "text": inner.text[:1000], "handle": author.get("handle") or author.get("did"),
+            "name": author.get("displayName") or None,
+            "author_url": f"https://{BSKY_DOMAIN}/profile/{author.get('did') or author.get('handle')}",
+            "link_title": inner.link_title, "pictures": len(inner.pictures), "video": inner.video}
+
+
 def bluesky_view(view: dict[str, Any]) -> dict[str, Any]:
     """What the Trending page shows of a Bluesky post, from its AppView view."""
     from .adapters.bluesky import NSFW_LABELS, _Content, web_url
@@ -1436,7 +1454,8 @@ def bluesky_view(view: dict[str, Any]) -> dict[str, Any]:
             "avatar": author.get("avatar") if isinstance(author.get("avatar"), str) else None,
             "link": content.link, "link_title": content.link_title, "pictures": len(content.pictures),
             "video": content.video, "video_src": bluesky_video_src(view, record) if content.video else None,
-            "quote": content.quote is not None, "lang": record_lang(record),
+            "quote": content.quote is not None, "quoted": bluesky_quoted_view(content.quote),
+            "lang": record_lang(record),
             "images": (content.pictures or ([content.cover] if content.cover else []))[:PICTURES]}
 
 

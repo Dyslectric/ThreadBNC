@@ -1507,3 +1507,7 @@ a.forum-row.forum-more:hover { background: var(--hover); color: var(--text); tex
 .forum-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
 .forum-grid > .forum-row { border-top: 1px solid var(--line); }
 .forum-grid .forum-row-stats { min-width: 0; }
+
+.trend-quote { margin: 6px 0; padding: 4px 10px; border-left: 3px solid var(--line); overflow-wrap: anywhere; }
+.trend-quote p { margin: 2px 0; }
+.trend-quote .trend-quote-text { white-space: pre-line; }
