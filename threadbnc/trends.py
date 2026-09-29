@@ -1325,8 +1325,11 @@ def trending_posts(conn: Conn, window: str = "day", sort: str = "likes", source:
 
 
 def unread_pictures(view: dict[str, Any]) -> bool:
-    """Whether a post was last read before its pictures' addresses were kept
-    (it's read again when it's shown: see the Trending page's /trending/pictures)."""
+    """Whether a post was last read before its pictures' addresses, or the post
+    it quotes, were kept (it's read again when it's shown: see the Trending
+    page's /trending/pictures)."""
+    if view.get("quote") and "quoted" not in view:
+        return True
     return "images" not in view and bool(view.get("pictures") or view.get("video") or view.get("link"))
 
 
@@ -1388,7 +1391,9 @@ def due_checks(conn: Conn, source: str, limit: int, now: str | None = None, pref
         checked = parse_ts(r["checked_at"])
         # a video read before its file's address was kept (video_src) is read again now, for Loops
         unplayable = '"video": true' in (r["view_json"] or "") and '"video_src"' not in r["view_json"]
-        return checked is None or unplayable or moment - checked >= every
+        # and so is one that quotes a post, read before that post was kept
+        unquoted = '"quote": true' in (r["view_json"] or "") and '"quoted"' not in r["view_json"]
+        return checked is None or unplayable or unquoted or moment - checked >= every
 
     rows = busiest(MAX_POST_AGE, CHECK_LOOKED_AT)
     looked = {r["ref"] for r in rows}
