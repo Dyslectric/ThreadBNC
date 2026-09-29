@@ -1299,9 +1299,13 @@ def trending_posts(conn: Conn, window: str = "day", sort: str = "likes", source:
     if videos:
         where, params = where + " AND view_json LIKE ?", [*params, '%"video_src": "%']
     page = max(1, page)
+    # The page's posts are chosen from the keys and scores alone, then read whole (each carries its
+    # view_json): sorting a day's posts with their text would move megabytes to keep 25 of them.
     rows = conn.execute(
-        f"SELECT *, {score} AS score FROM stream_posts WHERE view_json IS NOT NULL AND gone=0 "
-        f"AND created_at >= ?{where} ORDER BY score DESC, created_at DESC LIMIT ? OFFSET ?",
+        f"SELECT s.*, t.score FROM (SELECT source, ref, {score} AS score, created_at FROM stream_posts "
+        f"WHERE view_json IS NOT NULL AND gone=0 AND created_at >= ?{where} "
+        f"ORDER BY score DESC, created_at DESC LIMIT ? OFFSET ?) t "
+        f"JOIN stream_posts s ON s.source=t.source AND s.ref=t.ref ORDER BY t.score DESC, s.created_at DESC",
         (*params, per_page + 1, (page - 1) * per_page)).fetchall()
     out = []
     for r in rows[:per_page]:

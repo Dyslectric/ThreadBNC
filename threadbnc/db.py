@@ -8,11 +8,14 @@ import json
 import queue
 import re
 import sqlite3
+import threading
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
+
+from . import timing
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS instances (
@@ -731,6 +734,11 @@ CREATE INDEX IF NOT EXISTS stream_posts_created ON stream_posts(created_at);
 CREATE INDEX IF NOT EXISTS stream_posts_first ON stream_posts(first_seen_at);
 -- The posts the Trending page can show: those whose totals have been read.
 CREATE INDEX IF NOT EXISTS stream_posts_shown ON stream_posts(source, created_at) WHERE view_json IS NOT NULL;
+-- Trending's posts in each order (trends.trending_posts), so the best few are found
+-- without sorting the whole window.
+CREATE INDEX IF NOT EXISTS stream_posts_by_likes ON stream_posts(COALESCE(likes, likes_seen) DESC, created_at DESC) WHERE view_json IS NOT NULL AND gone=0;
+CREATE INDEX IF NOT EXISTS stream_posts_by_replies ON stream_posts(COALESCE(replies, replies_seen) DESC, created_at DESC) WHERE view_json IS NOT NULL AND gone=0;
+CREATE INDEX IF NOT EXISTS stream_posts_by_reposts ON stream_posts(COALESCE(reposts, reposts_seen) DESC, created_at DESC) WHERE view_json IS NOT NULL AND gone=0;
 
 -- Mastodon posts' refs on your server, by ActivityPub id: a boost FediBuzz
 -- carries names the post by that alone, and is counted under its ref once known.
@@ -980,6 +988,12 @@ class Database:
         self.path = target
         self._pool: queue.LifoQueue[Any] = queue.LifoQueue(maxsize=pool_size)
         self.search_backend = "like"  # set by _migrate: postgres, fts5, or like (SQLite without FTS5)
+        # SQLite reads share one connection per thread (opening one costs more than most queries do).
+        self._local = threading.local()
+        self._readers: list[sqlite3.Connection] = []
+        # app_settings as read by get_setting (SQLite), dropped whenever anything here writes.
+        self._settings: dict[str, str | None] = {}
+        self._writes = 0
         if self.is_postgres:
             self._wait_for_postgres()
         # SQLite's executescript manages its own transaction; Postgres gets the
@@ -1019,15 +1033,23 @@ class Database:
         self.search_backend = install(conn, self.is_postgres)
 
     def get_setting(self, key: str, default: str | None = None) -> str | None:
+        if key in self._settings:
+            value = self._settings[key]
+            return value if value is not None else default
+        seen = self._writes
         with self.connect() as conn:
             row = conn.execute("SELECT value FROM app_settings WHERE key=?", (key,)).fetchone()
-        return row["value"] if row else default
+        value = row["value"] if row else None
+        if not self.is_postgres and seen == self._writes:  # nothing was written meanwhile: this is still so
+            self._settings[key] = value
+        return value if value is not None else default
 
     # -- sqlite ----------------------------------------------------------------
-    def _open_sqlite(self) -> sqlite3.Connection:
+    def _open_sqlite(self, wal: bool = False) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path, timeout=30, isolation_level=None)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
+        if wal:  # kept in the file: once is enough, not on every connection
+            conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA busy_timeout=30000")
         return conn
@@ -1061,11 +1083,20 @@ class Database:
             finally:
                 self._put_pg(raw)
             return
-        conn = self._open_sqlite()
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = self._open_sqlite(wal=not self._readers)
+            self._local.conn = conn
+            self._readers.append(conn)
+        start, changes = time.perf_counter(), conn.total_changes
         try:
             yield conn
         finally:
-            conn.close()
+            timing.add("db", time.perf_counter() - start)
+            if conn.total_changes != changes:  # it wrote (autocommit): what was read may be out of date
+                self._forget_settings()
+            if conn.in_transaction:  # never leave one open for the next user of this connection
+                conn.rollback()
 
     @contextmanager
     def transaction(self, exclusive: bool = True) -> Iterator[Any]:
@@ -1083,7 +1114,8 @@ class Database:
             finally:
                 self._put_pg(raw)
             return
-        conn = self._open_sqlite()
+        conn = self._open_sqlite(wal=not self._readers)
+        start = time.perf_counter()
         try:
             conn.execute("BEGIN IMMEDIATE")
             yield conn
@@ -1093,8 +1125,20 @@ class Database:
             raise
         finally:
             conn.close()
+            self._forget_settings()  # it may have written app_settings
+            timing.add("db", time.perf_counter() - start)
+
+    def _forget_settings(self) -> None:
+        self._writes += 1
+        self._settings.clear()
 
     def close(self) -> None:
+        for conn in self._readers:
+            try:
+                conn.close()
+            except sqlite3.ProgrammingError:  # made in another thread: closed with it
+                pass
+        self._readers.clear()
         while True:
             try:
                 self._pool.get_nowait().close()

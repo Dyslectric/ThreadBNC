@@ -9,7 +9,9 @@
   {% block head %}{% endblock %}
   <title>{% block title %}ThreadBNC{% endblock %} · ThreadBNC</title>
   <link rel="stylesheet" href="{{ static_url('style.css') }}">
-  <script src="{{ static_url('app.js') }}"></script>
+  {# The page's styles depend on this class, so it's set at once; the rest waits for the page. #}
+  <script src="{{ static_url('js-flag.js') }}"></script>
+  <script src="{{ static_url('app.js') }}" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
