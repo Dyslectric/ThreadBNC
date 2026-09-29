@@ -5,6 +5,7 @@ auto-captured thread, or one whose time in the trash has run out)."""
 from __future__ import annotations
 
 import json
+import logging
 import queue
 import re
 import sqlite3
@@ -157,6 +158,8 @@ CREATE TABLE IF NOT EXISTS objects (
     dupe_key TEXT,       -- posts: same link / same text as other posts (see dupes.py)
     language TEXT        -- posts: the ISO 639 code their server gave, if any (see languages.py)
 );
+-- Each community's posts, and how many are unread or trashed (the feeds' and sidebar's counts).
+CREATE INDEX IF NOT EXISTS archived_threads_community ON archived_threads(community_id, trashed_at, last_viewed_at);
 CREATE INDEX IF NOT EXISTS objects_thread ON objects(thread_id);
 CREATE INDEX IF NOT EXISTS objects_parent ON objects(parent_id);
 
@@ -975,6 +978,47 @@ class _PgConn:
         self.raw.execute(script)
 
 
+SLOW_QUERY = 0.15  # seconds: a query taking longer is logged, with its SQL (see _TimedCursor)
+log = logging.getLogger(__name__)
+
+
+class _TimedCursor(sqlite3.Cursor):
+    """A cursor that logs the queries that take long, running or being read, so the ones
+    behind a slow page can be found in the log without guessing."""
+
+    def _timed(self, call: Any, *args: Any) -> Any:
+        start = time.perf_counter()
+        try:
+            return call(*args)
+        finally:
+            took = time.perf_counter() - start
+            if took >= SLOW_QUERY:
+                log.warning("slow query, %.0f ms: %s", took * 1000, " ".join(str(self._sql).split())[:400])
+
+    def execute(self, sql: str, *args: Any) -> Any:
+        self._sql = sql
+        return self._timed(super().execute, sql, *args)
+
+    def fetchall(self) -> Any:
+        return self._timed(super().fetchall)
+
+    def fetchone(self) -> Any:
+        return self._timed(super().fetchone)
+
+    def fetchmany(self, *args: Any) -> Any:
+        return self._timed(super().fetchmany, *args)
+
+
+class _TimedConnection(sqlite3.Connection):
+    def cursor(self, factory: Any = _TimedCursor) -> Any:
+        return super().cursor(factory)
+
+    def execute(self, sql: str, *args: Any) -> Any:  # (the built-in one doesn't go through cursor())
+        cursor = self.cursor()
+        cursor.execute(sql, *args)
+        return cursor
+
+
 class Database:
     """SQLite (default, zero setup) or Postgres (when given a postgres:// URL).
 
@@ -1046,7 +1090,7 @@ class Database:
 
     # -- sqlite ----------------------------------------------------------------
     def _open_sqlite(self, wal: bool = False) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path, timeout=30, isolation_level=None)
+        conn = sqlite3.connect(self.path, timeout=30, isolation_level=None, factory=_TimedConnection)
         conn.row_factory = sqlite3.Row
         if wal:  # kept in the file: once is enough, not on every connection
             conn.execute("PRAGMA journal_mode=WAL")
