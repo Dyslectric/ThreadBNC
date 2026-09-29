@@ -21,9 +21,9 @@
     {% set ic = inbox_count() %}
     <nav class="primary" aria-label="Main" id="site-nav" data-live>
       {# A community's page is a feed narrowed to it (the Following list leads there), so it's under Feeds. #}
-      {% for href, name, ico, on in [('/forums', 'Forums', 'communities', path.startswith('/forums')),
-                                     ('/', 'Feeds', 'feed', path == '/' or path.startswith(('/c/', '/f/', '/feed'))),
+      {% for href, name, ico, on in [('/', 'Feeds', 'feed', path == '/' or path.startswith(('/c/', '/f/', '/feed'))),
                                      ('/trending', 'Trending', 'trending', path.startswith('/trending') or path.startswith('/articles')),
+                                     ('/forums', 'Forums', 'communities', path.startswith('/forums')),
                                      ('/inbox', 'Inbox', 'inbox', path.startswith('/inbox')),
                                      ('/kept', 'Kept', 'star', path.startswith('/kept')),
                                      ('/post', 'New post', 'pencil', path == '/post')] %}
