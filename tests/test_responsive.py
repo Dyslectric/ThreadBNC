@@ -38,3 +38,30 @@ def test_settings_are_read_again_after_a_write(settings, bouncer):
     with db.connect() as conn:  # a write that isn't in a transaction() counts too
         conn.execute("UPDATE app_settings SET value='2' WHERE key='probe'")
     assert db.get_setting("probe") == "2"
+
+
+def test_urgent_jobs_run_without_the_main_loop(bouncer):
+    """Comments someone is waiting on aren't queued behind whatever the main loop is busy with."""
+    import threading
+    import time
+
+    worker = threading.Thread(target=bouncer.run_urgent_forever, daemon=True)
+    worker.start()
+    try:
+        job = bouncer.enqueue("open", {"thread_ids": []})
+        deadline = time.monotonic() + 5
+        status = None
+        while time.monotonic() < deadline:
+            with bouncer.db.connect() as conn:
+                status = conn.execute("SELECT status FROM jobs WHERE id=?", (job,)).fetchone()["status"]
+            if status == "done":
+                break
+            time.sleep(0.05)
+        assert status == "done"
+        other = bouncer.enqueue("articles", {"thread_ids": []})  # not urgent: left for the main loop
+        time.sleep(0.5)
+        with bouncer.db.connect() as conn:
+            assert conn.execute("SELECT status FROM jobs WHERE id=?", (other,)).fetchone()["status"] == "queued"
+    finally:
+        bouncer.stop()
+        worker.join(timeout=5)
