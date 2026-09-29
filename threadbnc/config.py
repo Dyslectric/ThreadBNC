@@ -135,7 +135,7 @@ def load_settings() -> Settings:
         default_follow_poll_minutes=_env_int("THREADBNC_FOLLOW_POLL_MINUTES", 15),
         default_follow_retention_days=None if retention.lower() in ("", "none", "forever") else int(retention),
         http_timeout=float(os.environ.get("THREADBNC_HTTP_TIMEOUT", "20")),
-        min_request_interval=float(os.environ.get("THREADBNC_MIN_REQUEST_INTERVAL", "1.0")),
+        min_request_interval=float(os.environ.get("THREADBNC_MIN_REQUEST_INTERVAL", "0.25")),
         user_agent=os.environ.get(
             "THREADBNC_USER_AGENT", "ThreadBNC/0.1 (private thread archive; polling bouncer)"
         ),

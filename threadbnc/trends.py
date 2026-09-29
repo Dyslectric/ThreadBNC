@@ -78,7 +78,7 @@ RANKED_KEPT = 200  # the most posted of each window kept as ranked (the page sho
 RANKING = "trending_rank:"  # app setting, + window: {"at": when, "items": [...]}
 STALE_RANKING = timedelta(minutes=45)  # older than this, the page ranks for itself
 READ_JOB = "trending_article"
-READ_SPACING = timedelta(seconds=20)  # between the articles read, so other work carries on in between
+READ_SPACING = timedelta(seconds=3)  # between the articles read, so other work carries on in between
 TIDY_BATCH = 2000  # rows forgotten at a time, each lot a short transaction of its own
 PICTURES = 4  # a trending post's pictures downloaded, at most
 CACHE_EVERY = 900.0  # seconds between choosing them
@@ -108,7 +108,7 @@ HISTORY_THROUGH = "trend_history_through"  # app setting: the last day kept
 HOURS_FILLED = "trend_hours_filled"  # app setting: when backfill_hours filled in the hours counted before
 
 # Reading the totals of the posts most replied to (Bluesky: through the AppView).
-CHECK_EVERY = 300.0  # seconds between rounds
+CHECK_EVERY = 60.0  # seconds between rounds
 CHECK_POSTS = 100  # at most this many posts a round (GET_POSTS to a request)
 CHECK_LOOKED_AT = 400  # of the posts most talked about lately
 CHECK_FRESH = 50  # and of those made in the past hour, which the week's busiest would crowd out
