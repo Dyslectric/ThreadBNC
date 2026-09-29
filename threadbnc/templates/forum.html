@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% from "_macros.html" import icon, when %}
-{% from "_forum.html" import badge, num, forum_row, community_row, forum_menu %}
+{% from "_forum.html" import badge, num, forum_menu, forum_body %}
 {% block title %}{{ node.title }}{% endblock %}
 {% block content %}
 {% set root = not parts %}
@@ -15,11 +15,13 @@
     {{ badge(pic(head.icon), head.letter, head.hue, 'big') }}
     <div class="grow">
       <h1>{{ node.title }}{% if node.nsfw %} <span class="pill bad">NSFW</span>{% endif %}</h1>
-      <p class="small muted">
-        {% if node.children %}{{ num(node.children | length) }} forum{{ '' if node.children | length == 1 else 's' }} · {% endif %}
-        {{ num(head.total) }} communit{{ 'y' if head.total == 1 else 'ies' }}
-        {% if head.followed %}· you follow {{ head.followed }}{% if head.unread %} <span class="count" aria-label="{{ head.unread }} unread">{{ head.unread }}</span>{% endif %}{% endif %}
-        · <a href="{{ node.url }}" target="_blank" rel="noopener noreferrer">on {{ forum.host }} {{ icon('external', 'ext') }}</a></p>
+      <p class="forum-facts">
+        {% if node.children %}<span class="forum-fact"><strong>{{ num(node.children | length) }}</strong> forum{{ '' if node.children | length == 1 else 's' }}</span>{% endif %}
+        <span class="forum-fact"><strong>{{ num(head.total) }}</strong> communit{{ 'y' if head.total == 1 else 'ies' }}</span>
+        {% if head.followed %}<span class="forum-fact followed">{{ icon('check') }} you follow <strong>{{ head.followed }}</strong>
+          {%- if head.unread %} <span class="count" aria-label="{{ head.unread }} unread">{{ head.unread }}</span>{% endif %}</span>{% endif %}
+        <a class="forum-fact" href="{{ node.url }}" target="_blank" rel="noopener noreferrer">on {{ forum.host }} {{ icon('external', 'ext') }}</a>
+      </p>
     </div>
     <div class="row forum-actions">
       <form method="post" action="/forums/{{ forum.id }}/refresh" class="inline"
@@ -33,38 +35,13 @@
   {% if description %}<div class="md forum-desc">{{ description }}</div>{% endif %}
 </header>
 
-<div id="forum-body"{% if waiting %} data-forum-wait{% endif %}>
-  {% for cat in categories %}{% set h = cat.head %}
-  <section class="card forum-block">
-    <header class="forum-block-head">
-      {{ badge(pic(h.icon), h.letter, h.hue, 'small') }}
-      <div class="grow">
-        <h2><a href="{{ h.href }}">{{ h.title }}</a>{% if h.nsfw %} <span class="pill bad">NSFW</span>{% endif %}</h2>
-        {% if h.description %}<p class="forum-row-desc">{{ h.description }}</p>{% endif %}
-      </div>
-      <span class="small muted">{{ num(h.total) }} communit{{ 'y' if h.total == 1 else 'ies' }}
-        {%- if h.unread %} <span class="count" aria-label="{{ h.unread }} unread">{{ h.unread }}</span>{% endif %}</span>
-    </header>
-    {% for r in cat.rows %}{{ forum_row(r, pic) }}{% endfor %}
-    {% if h.own %}<a class="forum-row forum-more" href="{{ h.href }}#communities">
-      {{ icon('communities') }}<span class="grow">{{ num(h.own) }} communit{{ 'y' if h.own == 1 else 'ies' }} in {{ h.title }} itself</span>{{ icon('chevron-right') }}</a>{% endif %}
-  </section>
-  {% endfor %}
-
-  {% if loose %}
-  <section class="card forum-block">
-    <h2 class="forum-block-head">{{ 'More forums' if categories else 'Forums' }}</h2>
-    <div class="forum-grid">{% for r in loose %}{{ forum_row(r, pic) }}{% endfor %}</div>
-  </section>
-  {% endif %}
-
-  {% if communities %}
-  <section class="card forum-block" id="communities">
-    <h2 class="forum-block-head">Communities <span class="count muted">{{ communities | length }}</span></h2>
-    {% for c in communities %}{{ community_row(c, pic, 'fc-' ~ loop.index, waiting) }}{% endfor %}
-  </section>
-  {% elif not node.children %}
-  <section class="card empty"><p class="muted">There are no communities here.</p></section>
-  {% endif %}
+{% if v.categories or v.loose %}
+<div class="forum-tools js-only" role="group" aria-label="Sections">
+  <button type="button" class="small secondary" data-forum-fold="open">{{ icon('chevron-down') }} Open all</button>
+  <button type="button" class="small secondary" data-forum-fold="close">{{ icon('chevron-right') }} Close all</button>
+</div>
+{% endif %}
+<div id="forum-body" class="forum-body forum-page" data-forum-src="{{ v.src }}"{% if v.waiting %} data-forum-wait{% endif %}>
+{{ forum_body(v, pic, 0) }}
 </div>
 {% endblock %}

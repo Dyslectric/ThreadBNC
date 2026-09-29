@@ -27,29 +27,117 @@
 
 {% macro num(n) -%}{{ "{:,}".format(n) }}{%- endmacro %}
 
-{# A forum in a list of them: its picture, name, description, the forums in it,
-   and how many communities are in it (and how many of those you follow). #}
-{% macro forum_row(r, pic) -%}
-<div class="forum-row">
-  {{ badge(pic(r.icon), r.letter, r.hue) }}
-  <div class="forum-row-main">
-    <a class="forum-row-title" href="{{ r.href }}">{{ r.title }}</a>
-    {%- if r.nsfw %} <span class="pill bad">NSFW</span>{% endif %}
-    {% if r.description %}<p class="forum-row-desc">{{ r.description }}</p>{% endif %}
-    {% if r.children %}<p class="forum-row-subs">{{ icon('chevron-right') }}
-      {% for title, href in r.children %}<a href="{{ href }}">{{ title }}</a>{{ ' · ' if not loop.last }}{% endfor %}</p>{% endif %}
+{# How many communities are in a forum, and how many of those you follow, with their unread posts. #}
+{% macro stats(r) -%}
+<span class="forum-stat"><strong>{{ num(r.total) }}</strong> communit{{ 'y' if r.total == 1 else 'ies' }}</span>
+{%- if r.followed %}<span class="forum-stat followed" title="You follow {{ r.followed }} of them">{{ icon('check') }}{{ r.followed }}
+  {%- if r.unread %} <span class="count" aria-label="{{ r.unread }} unread">{{ r.unread }}</span>{% endif %}</span>{% endif %}
+{%- endmacro %}
+
+{# The bar down the left of what's opened, which closes it again (app.js). #}
+{% macro rail(title) -%}
+<button type="button" class="forum-rail js-only" aria-label="Close {{ title }}" title="Close {{ title }}"></button>
+{%- endmacro %}
+
+{# A forum in a list of them: its picture, name, description, the forums in it and
+   how many communities. The arrow opens what's in it right here, under a bar
+   that closes it (app.js reads it: `href`?part=1); the name goes to its page. #}
+{% macro forum_item(r, pic, depth) -%}
+<div class="forum-item">
+  <div class="forum-row">
+    {% if r.total or r.children %}<button type="button" class="forum-expand js-only" aria-expanded="false"
+      data-part="{{ r.href }}?part=1&amp;depth={{ depth }}" title="Open {{ r.title }} here">{{ icon('chevron-right') }}<span class="sr-only">Open {{ r.title }} here</span></button>
+    {%- else %}<span class="forum-expand js-only" aria-hidden="true"></span>{% endif %}
+    {{ badge(pic(r.icon), r.letter, r.hue) }}
+    <div class="forum-row-main">
+      <a class="forum-row-title" href="{{ r.href }}">{{ r.title }}</a>
+      {%- if r.nsfw %} <span class="pill bad">NSFW</span>{% endif %}
+      {% if r.description %}<p class="forum-row-desc">{{ r.description }}</p>{% endif %}
+      {% if r.children %}<p class="forum-subs">{% for title, href in r.children %}<a class="forum-sub" href="{{ href }}">{{ title }}</a>{% endfor %}</p>{% endif %}
+    </div>
+    <div class="forum-row-stats">{{ stats(r) }}</div>
   </div>
-  <div class="forum-row-stats">
-    <span><strong>{{ num(r.total) }}</strong> communit{{ 'y' if r.total == 1 else 'ies' }}</span>
-    {% if r.followed %}<span class="muted">{{ r.followed }} followed{% if r.unread %} <span class="count" aria-label="{{ r.unread }} unread">{{ r.unread }}</span>{% endif %}</span>{% endif %}
+  <div class="forum-fold d{{ depth % 6 }}" hidden>
+    {{ rail(r.title) }}
+    <div class="forum-fold-body"><p class="muted small forum-loading">Opening {{ r.title }}…</p></div>
   </div>
 </div>
 {%- endmacro %}
 
+{# A section's heading: it opens and closes the section (a <details>), as does the
+   bar down the section's left. `r`: a forum's view, for its counts. #}
+{% macro topic_head(title, href=none, icon_src=none, letter='', hue=0, description='', nsfw=false, r=none, count=none) -%}
+<summary class="forum-topic-head">
+  <span class="forum-chev" aria-hidden="true">{{ icon('chevron-down') }}</span>
+  {% if letter %}{{ badge(icon_src, letter, hue, 'small') }}{% endif %}
+  <span class="forum-topic-title">
+    <span class="forum-topic-name">{% if href %}<a href="{{ href }}">{{ title }}</a>{% else %}{{ title }}{% endif %}
+      {%- if nsfw %} <span class="pill bad">NSFW</span>{% endif %}
+      {%- if count is not none %} <span class="count muted">{{ num(count) }}</span>{% endif %}</span>
+    {% if description %}<span class="forum-topic-desc">{{ description }}</span>{% endif %}
+  </span>
+  {% if r %}<span class="forum-row-stats">{{ stats(r) }}</span>{% endif %}
+</summary>
+{%- endmacro %}
+
+{# A section, open until you close it; app.js remembers which you closed, by `key`. #}
+{% macro topic(key, depth, anchor=none) -%}
+<details class="forum-topic d{{ depth % 6 }}" data-fold="{{ key }}" open{% if anchor %} id="{{ anchor }}"{% endif %}>
+{{ caller() }}
+</details>
+{%- endmacro %}
+
+{# What's in a forum, `depth` forums down from the page: its sections, the forums
+   in it, then its communities. `v`: web.forum_page's view. #}
+{% macro forum_body(v, pic, depth) -%}
+{% set nested = depth > 0 %}
+{% for cat in v.categories %}{% set h = cat.head %}
+{% call topic(h.href, depth) %}
+  {{ topic_head(h.title, h.href, pic(h.icon), h.letter, h.hue, h.description, h.nsfw, h) }}
+  <div class="forum-fold">
+    {{ rail(h.title) }}
+    <div class="forum-fold-body">
+      {% for r in cat.rows %}{{ forum_item(r, pic, depth + 1) }}{% endfor %}
+      {% if h.own %}<a class="forum-row forum-more" href="{{ h.href }}#communities">
+        {{ icon('communities') }}<span class="grow">{{ num(h.own) }} communit{{ 'y' if h.own == 1 else 'ies' }} in {{ h.title }} itself</span>{{ icon('chevron-right') }}</a>{% endif %}
+    </div>
+  </div>
+{% endcall %}
+{% endfor %}
+
+{% if v.loose %}
+{% call topic(v.href ~ '#forums', depth) %}
+  {{ topic_head('More forums' if v.categories else 'Forums', count=v.loose | length) }}
+  <div class="forum-fold">
+    {{ rail('the forums') }}
+    <div class="forum-fold-body forum-grid">{% for r in v.loose %}{{ forum_item(r, pic, depth + 1) }}{% endfor %}</div>
+  </div>
+{% endcall %}
+{% endif %}
+
+{% if v.communities %}
+  {% if nested and not v.categories and not v.loose %}
+  <div class="forum-list">{% for c in v.communities %}{{ community_row(c, pic, v.waiting) }}{% endfor %}</div>
+  {% else %}
+  {% call topic(v.href ~ '#communities', depth, none if nested else 'communities') %}
+    {{ topic_head('Communities', count=v.communities | length) }}
+    <div class="forum-fold">
+      {{ rail('the communities') }}
+      <div class="forum-fold-body">{% for c in v.communities %}{{ community_row(c, pic, v.waiting) }}{% endfor %}</div>
+    </div>
+  {% endcall %}
+  {% endif %}
+{% elif not v.categories and not v.loose %}
+  <p class="muted forum-empty">There are no communities here.</p>
+{% endif %}
+{%- endmacro %}
+
 {# A community in a forum: where to read it (here once you follow it, on its own
-   server until then), what its server says of it, and a button to follow it. #}
-{% macro community_row(c, pic, anchor, waiting) -%}
-<div class="forum-row community-row" id="{{ anchor }}">
+   server until then), what its server says of it, and a button to follow it
+   (sent in the background by app.js: data-forum-follow). #}
+{% macro community_row(c, pic, waiting) -%}
+<div class="forum-row community-row" id="{{ c.anchor }}">
+  <span class="forum-expand js-only" aria-hidden="true"></span>
   {{ badge(pic(c.icon), c.letter, c.hue) }}
   <div class="forum-row-main">
     {% if c.follow %}<a class="forum-row-title" href="/c/{{ c.follow.id }}">{{ c.title }}</a>
@@ -61,19 +149,19 @@
     {% elif waiting and c.subscribers is none %}<p class="forum-row-desc muted"><span class="skeleton-line"></span></p>{% endif %}
   </div>
   <div class="forum-row-stats">
-    {% if c.subscribers is not none %}<span><strong>{{ num(c.subscribers) }}</strong> subscriber{{ '' if c.subscribers == 1 else 's' }}</span>{% endif %}
-    {% if c.posts is not none %}<span class="muted">{{ num(c.posts) }} post{{ '' if c.posts == 1 else 's' }}</span>{% endif %}
+    {% if c.subscribers is not none %}<span class="forum-stat"><strong>{{ num(c.subscribers) }}</strong> subscriber{{ '' if c.subscribers == 1 else 's' }}</span>{% endif %}
+    {% if c.posts is not none %}<span class="forum-stat muted">{{ num(c.posts) }} post{{ '' if c.posts == 1 else 's' }}</span>{% endif %}
   </div>
   <div class="forum-row-act">
     {% if c.follow %}
       <a class="pill good" href="/c/{{ c.follow.id }}" title="You follow it: read it here">{{ icon('check') }} Following</a>
       {% if c.follow.unread %}<span class="count" aria-label="{{ c.follow.unread }} unread">{{ c.follow.unread }}</span>{% endif %}
     {% else %}
-      <form method="post" action="/follow" class="inline">
+      <form method="post" action="/follow" class="inline" data-forum-follow>
         <input type="hidden" name="community" value="{{ c.ap_id }}">
         <input type="hidden" name="backfill" value="1">
         <input type="hidden" name="stay" value="1">
-        <input type="hidden" name="anchor" value="{{ anchor }}">
+        <input type="hidden" name="anchor" value="{{ c.anchor }}">
         <button class="small secondary">{{ icon('plus') }} Follow</button>
       </form>
     {% endif %}

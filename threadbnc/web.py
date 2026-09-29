@@ -1976,8 +1976,12 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
 
     @app.get("/forums/{fid}", response_class=HTMLResponse)
     @app.get("/forums/{fid}/{path:path}", response_class=HTMLResponse)
-    def forum_page(request: Request, fid: int, path: str = ""):
+    def forum_page(request: Request, fid: int, path: str = "", part: int = 0, depth: int = 0):
+        """A forum, or a part of it. `part`: just what's in it, to show inside the
+        page it's listed on (app.js, when a forum is expanded there), `depth`
+        forums down."""
         now = utcnow()
+        depth = max(0, min(depth, 20))
         parts = [p for p in path.split("/") if p]
         with db.connect() as conn:
             forum = forums_mod.load(conn, fid)
@@ -2011,7 +2015,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                                 "description": forums_mod.excerpt(d.get("description")),
                                 "subscribers": d.get("subscribers"), "posts": d.get("posts"),
                                 "active": d.get("active_month"), "hue": forums_mod.hue(c["ap_id"]),
-                                "letter": (c["title"] or c["name"] or "?")[:1].upper()})
+                                "letter": (c["title"] or c["name"] or "?")[:1].upper(),
+                                "anchor": "fc-%08x" % forums_mod.hue_key(c["ap_id"])})
         urls = [node["icon"] if not node["nsfw"] else None, node["banner"] if not node["nsfw"] else None,
                 *(r["icon"] for cat in categories for r in [cat["head"], *cat["rows"]]),
                 *(r["icon"] for r in loose), *(c["icon"] for c in communities)]
@@ -2024,9 +2029,13 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             bouncer.enqueue(forums_mod.JOB, forums_mod.job_payload(fid, parts))
             asking = True
         head = row(node, parts)
-        return render(request, "forum.html", forum=forum, node=node, head=head, parts=parts,
-                      trail=[(n["title"], forum_href(fid, p)) for n, p in trail], categories=categories, loose=loose,
-                      communities=communities, pic=pic, waiting=pictures_waiting or asking,
+        view = {"title": node["title"], "href": head["href"], "categories": categories, "loose": loose,
+                "communities": communities, "waiting": pictures_waiting or asking,
+                "src": f"{head['href']}?part=1&depth={depth}"}
+        if part:
+            return render(request, "forum_part.html", v=view, pic=pic, depth=depth)
+        return render(request, "forum.html", forum=forum, node=node, head=head, parts=parts, v=view,
+                      trail=[(n["title"], forum_href(fid, p)) for n, p in trail], pic=pic,
                       description=render_markdown(node["description"]) if node["description"] else None)
 
     # ---- communities ---------------------------------------------------

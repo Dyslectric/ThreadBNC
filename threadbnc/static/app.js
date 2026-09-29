@@ -106,6 +106,7 @@ document.documentElement.classList.add("js");
       if (now.nodeValue !== fresh.nodeValue) now.nodeValue = fresh.nodeValue;
       return;
     }
+    if (now.hasAttribute("data-keep")) return;  // what's yours to keep as it is (a forum opened in place)
     const yours = (name) => name === "open" && now.tagName === "DETAILS";
     for (const { name } of [...now.attributes]) {
       if (!fresh.hasAttribute(name) && !yours(name)) now.removeAttribute(name);
@@ -2082,26 +2083,137 @@ document.documentElement.classList.add("js");
     }
   }, true);
 
-  // ---- a forum's page, filling in -----------------------------------------------------
-  // Opening part of a forum (forum.html) downloads its pictures and asks its
-  // server about the communities listed (forums.py). While that's under way
-  // (data-forum-wait), the page is read again every few seconds and brought up
-  // to date in place, until it's all there or a couple of minutes have passed.
+  // ---- a forum's page ---------------------------------------------------------------
+  // Its sections open and close (<details>, forum.html), by their heading or the bar
+  // down their left, and the ones you close stay closed in this browser. A forum
+  // listed in one opens right there (its part of the page, forum_part.html), under
+  // a bar that closes it again. Opening any of it downloads its pictures and asks its
+  // server about the communities listed (forums.py); while that's under way
+  // (data-forum-wait), it's read again every few seconds and brought up to date in
+  // place, until it's all there or a couple of minutes have passed.
   const FORUM_WAIT_MS = 120000;
+  const FORUM_FOLDS = "forum-folds";
 
-  async function awaitForum() {
+  function forumFolds() {
+    try { return JSON.parse(localStorage.getItem(FORUM_FOLDS) || "{}") || {}; } catch (e) { return {}; }
+  }
+
+  function saveForumFold(key, open) {
+    try {
+      const folds = forumFolds();
+      if (open) delete folds[key]; else folds[key] = 1;
+      localStorage.setItem(FORUM_FOLDS, JSON.stringify(folds));
+    } catch (e) { /* not remembered, then */ }
+  }
+
+  function applyForumFolds(root) {
+    const folds = forumFolds();
+    for (const d of $$("details.forum-topic[data-fold]", root)) if (folds[d.dataset.fold]) d.open = false;
+  }
+
+  // Bring a forum's part of the page up to date, keeping what's opened in it as it is
+  // (data-keep, see morph) and the part's own attributes.
+  async function refreshForum(box) {
+    const fresh = $(".forum-body", await fetchDoc(box.dataset.forumSrc));
+    if (!fresh || !box.isConnected) return;
+    const next = box.cloneNode(false);
+    next.append(...fresh.childNodes);
+    if (!fresh.hasAttribute("data-forum-wait")) next.removeAttribute("data-forum-wait");
+    steady(() => morph(box, next));
+  }
+
+  async function awaitForum(box) {
+    if (box.dataset.watching) return;
+    box.dataset.watching = "true";
     const started = Date.now();
-    while (Date.now() - started < FORUM_WAIT_MS) {
+    while (box.isConnected && box.hasAttribute("data-forum-wait") && Date.now() - started < FORUM_WAIT_MS) {
       await new Promise((resolve) => setTimeout(resolve, 3000));
-      const body = $("#forum-body");
-      if (!body || !body.hasAttribute("data-forum-wait")) return;
       if (document.visibilityState === "hidden") continue;
-      try {
-        const fresh = (await fetchDoc(location.href)).getElementById("forum-body");
-        if (fresh && body.isConnected) steady(() => morph(body, fresh));
-      } catch (e) { /* try again */ }
+      try { await refreshForum(box); } catch (e) { /* try again */ }
+    }
+    delete box.dataset.watching;
+  }
+
+  function closeForumItem(item) {
+    item.classList.remove("open");
+    $(":scope > .forum-row > .forum-expand", item).setAttribute("aria-expanded", "false");
+    $(":scope > .forum-fold", item).hidden = true;
+  }
+
+  async function openForumItem(item) {
+    const button = $(":scope > .forum-row > .forum-expand", item);
+    const fold = $(":scope > .forum-fold", item);
+    item.classList.add("open");
+    item.setAttribute("data-keep", "");  // what's opened in it stays as it is when the page around it is updated
+    button.setAttribute("aria-expanded", "true");
+    fold.hidden = false;
+    if (item.dataset.loaded) return;
+    item.dataset.loaded = "true";
+    const body = $(":scope > .forum-fold-body", fold);
+    try {
+      const part = $(".forum-body", await fetchDoc(button.dataset.part));
+      if (!part) throw new Error("nothing there");
+      body.replaceChildren(document.adoptNode(part));
+      applyForumFolds(part);
+      if (part.hasAttribute("data-forum-wait")) awaitForum(part);
+    } catch (e) {
+      delete item.dataset.loaded;
+      body.innerHTML = '<p class="bad-text small forum-loading">Couldn\'t open it. Close it and try again.</p>';
     }
   }
+
+  document.addEventListener("click", (ev) => {
+    const rail = ev.target.closest(".forum-rail");
+    if (rail) {
+      const fold = rail.parentElement;
+      const topic = fold.parentElement.matches("details.forum-topic") ? fold.parentElement : null;
+      const item = topic ? null : fold.closest(".forum-item");
+      if (topic) { topic.open = false; saveForumFold(topic.dataset.fold, false); }
+      else if (item) closeForumItem(item);
+      const head = topic ? $(":scope > summary", topic) : item && $(":scope > .forum-row", item);
+      if (head && head.getBoundingClientRect().top < 0) head.scrollIntoView({ block: "start" });
+      return;
+    }
+    const expand = ev.target.closest("button.forum-expand");
+    if (expand) {
+      const item = expand.closest(".forum-item");
+      if (item.classList.contains("open")) closeForumItem(item); else openForumItem(item);
+      return;
+    }
+    const all = ev.target.closest("[data-forum-fold]");
+    if (all) {
+      for (const d of $$(".forum-page > details.forum-topic")) {
+        d.open = all.dataset.forumFold === "open";
+        saveForumFold(d.dataset.fold, d.open);
+      }
+      return;
+    }
+    // A section's heading opened or closed it (clicked, or Enter or Space on it): remembered.
+    // Not from its toggle event, which a section open in the page's HTML sends as it loads.
+    const head = ev.target.closest("details.forum-topic[data-fold] > summary");
+    if (head && !ev.target.closest("a")) {
+      const d = head.parentElement;
+      setTimeout(() => saveForumFold(d.dataset.fold, d.open));
+    }
+  });
+
+  // Following a community in a forum: done here, and its part of the page brought up to date.
+  document.addEventListener("submit", async (ev) => {
+    const form = ev.target.closest("form[data-forum-follow]");
+    if (!form) return;
+    ev.preventDefault();
+    const button = $("button", form);
+    if (button) button.disabled = true;
+    try {
+      const answer = await post(form.action, new URLSearchParams(new FormData(form)));
+      for (const m of answer.messages || []) toast(m);
+      const box = form.closest(".forum-body");
+      if (box) await refreshForum(box);
+    } catch (e) {
+      if (button) button.disabled = false;
+      toast({ kind: "error", text: "Couldn't follow it (" + e.message + "). Try again." });
+    }
+  });
 
   // ---- where an article is discussed ------------------------------------------------
   // Opening a post or an article asks other places about it (discussions.py).
@@ -2668,7 +2780,8 @@ document.documentElement.classList.add("js");
     watchTrendPictures(document);
     watchAvatars(document);
     watchLoops(document);
-    if ($("#forum-body[data-forum-wait]")) awaitForum();
+    applyForumFolds(document);
+    for (const box of $$(".forum-body[data-forum-wait]")) awaitForum(box);
     new MutationObserver((changes) => {
       for (const c of changes) for (const el of c.removedNodes) if (el.nodeType === 1 && !el.isConnected) {
         const loops = el.matches("article.loop") ? [el] : $$("article.loop", el);

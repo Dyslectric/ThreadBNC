@@ -241,3 +241,20 @@ def test_forum_menus(settings, bouncer):
     assert 'action="/forums/%d/remove"' % fid not in client.get(f"/forums/{fid}/animals").text  # only at its top
     r = client.post(f"/forums/{fid}/remove", headers={"referer": "http://testserver/forums"}, follow_redirects=False)
     assert r.headers["location"] == "/forums"
+
+
+def test_forum_opened_in_place(settings, bouncer):
+    client = client_for(settings, bouncer)
+    fid = int(client.post("/forums", data={"link": f"https://{HOST}/f/bigtree"},
+                          follow_redirects=False).headers["location"].rsplit("/", 1)[-1])
+    page = client.get(f"/forums/{fid}").text
+    # each section opens and closes, and each forum in one opens right there
+    assert page.count('<details class="forum-topic') == 2  # Animals, and More forums
+    assert f'data-part="/forums/{fid}/animals/cats?part=1&amp;depth=1"' in page
+    assert 'class="forum-rail' in page and 'data-forum-fold="close"' in page
+    part = client.get(f"/forums/{fid}/animals/cats?part=1&depth=1").text
+    assert "<html" not in part and 'class="forum-body"' in part and "Math cats" in part
+    assert f'data-forum-src="/forums/{fid}/animals/cats?part=1&amp;depth=1"' in part
+    assert "data-forum-follow" in part and 'id="fc-' in part
+    # a part with forums in it has its sections, coloured by how far down it is
+    assert 'class="forum-topic d1"' in client.get(f"/forums/{fid}/animals?part=1&depth=1").text

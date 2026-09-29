@@ -1,0 +1,5 @@
+{# What's in a forum, to show inside the page it's listed on (app.js: a forum opened in place). #}
+{% from "_forum.html" import forum_body %}
+<div class="forum-body" data-forum-src="{{ v.src }}"{% if v.waiting %} data-forum-wait{% endif %}>
+{{ forum_body(v, pic, depth) }}
+</div>

@@ -220,9 +220,13 @@ def communities_in(node: dict[str, Any]) -> Iterable[dict[str, Any]]:
         yield from communities_in(child)
 
 
+def hue_key(key: str | None) -> int:
+    return zlib.crc32((key or "").encode())
+
+
 def hue(key: str | None) -> int:
     """One of eight colours for a letter shown while there's no picture (style.css .av-N)."""
-    return zlib.crc32((key or "").encode()) % 8
+    return hue_key(key) % 8
 
 
 def excerpt(text: str | None, limit: int = 180) -> str:
