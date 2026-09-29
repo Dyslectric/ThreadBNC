@@ -7,6 +7,24 @@
   {%- if src %}<img src="{{ src }}" alt="" loading="lazy" decoding="async">{% else %}{{ letter }}{% endif %}</span>
 {%- endmacro %}
 
+{# A forum's ⋯ menu: Refresh (unless `refresh` is false, where there's a button for it) and Remove. #}
+{% macro forum_menu(id, title, refresh=true) -%}
+<details class="menu forum-menu">
+  <summary class="button secondary small" title="More for {{ title }}">{{ icon('more') }}<span class="sr-only">More for {{ title }}</span></summary>
+  <div class="menu-panel">
+    {% if refresh %}
+    <form method="post" action="/forums/{{ id }}/refresh" class="menu-section">
+      <button class="menu-item">{{ icon('refresh') }}<span class="grow">Refresh from its server</span></button>
+    </form>
+    {% endif %}
+    <form method="post" action="/forums/{{ id }}/remove" class="menu-section">
+      <button class="menu-item">{{ icon('trash') }}<span class="grow">Remove this forum</span></button>
+      <p class="menu-note">The communities in it you follow stay followed. Paste its link to add it again.</p>
+    </form>
+  </div>
+</details>
+{%- endmacro %}
+
 {% macro num(n) -%}{{ "{:,}".format(n) }}{%- endmacro %}
 
 {# A forum in a list of them: its picture, name, description, the forums in it,

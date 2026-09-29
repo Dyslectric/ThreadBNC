@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% from "_macros.html" import icon, when %}
-{% from "_forum.html" import badge, num, forum_row, community_row %}
+{% from "_forum.html" import badge, num, forum_row, community_row, forum_menu %}
 {% block title %}{{ node.title }}{% endblock %}
 {% block content %}
 {% set root = not parts %}
@@ -26,15 +26,7 @@
             title="Read {{ forum.title }} from {{ forum.host }} again (read {{ forum.fetched_at | ago }})">
         <button class="small secondary">{{ icon('refresh') }} Refresh</button></form>
       {% if root %}
-      <details class="menu">
-        <summary class="button secondary small" title="More">{{ icon('more') }}<span class="sr-only">More</span></summary>
-        <div class="menu-panel">
-          <form method="post" action="/forums/{{ forum.id }}/remove" class="menu-section">
-            <p class="menu-note">The communities in it you follow stay followed.</p>
-            <button class="menu-item">{{ icon('trash') }}<span class="grow">Remove this forum</span></button>
-          </form>
-        </div>
-      </details>
+      {{ forum_menu(forum.id, node.title, refresh=false) }}
       {% endif %}
     </div>
   </div>

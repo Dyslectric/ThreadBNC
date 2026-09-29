@@ -256,7 +256,17 @@ def start_defaults(conn: Conn, links: Iterable[str]) -> list[str]:
     if new:
         conn.execute("INSERT INTO app_settings(key, value) VALUES (?, ?) "
                      "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (ADDED_KEY, json.dumps(sorted(done | set(new)))))
-    return new
+    return [link for link in new if not _kept(conn, link)]
+
+
+def _kept(conn: Conn, link: str) -> bool:
+    """Whether the forum a link points at was added already (or the link doesn't point at one)."""
+    try:
+        where = parse_link(link)
+    except ForumError:
+        return True
+    return conn.execute("SELECT 1 FROM forums WHERE host=? AND kind=? AND COALESCE(name, '')=?",
+                        (where.host, where.kind, where.name or "")).fetchone() is not None
 
 
 def adding(conn: Conn) -> list[Link]:

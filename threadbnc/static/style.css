@@ -1437,8 +1437,10 @@ a.article-link.dived, a[data-dive].dived, a.video-link.dived, a.live-link.dived 
 .i.ext { width: 0.8em; height: 0.8em; color: var(--muted); vertical-align: -0.05em; }
 
 .forum-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; margin: 14px 0 16px; }
-.forum-card { padding: 0; overflow: hidden; display: flex; flex-direction: column; margin: 0; }
-.forum-card-banner { display: block; height: 110px; background: var(--bg); border-bottom: 1px solid var(--line); }
+/* Not overflow: hidden, which would cut off the ⋯ menu: the banners have the card's corners instead. */
+.forum-card { padding: 0; display: flex; flex-direction: column; margin: 0; }
+.forum-card-banner { display: block; height: 110px; background: var(--bg); border-bottom: 1px solid var(--line);
+  border-radius: 11px 11px 0 0; overflow: hidden; }
 .forum-card-banner img, .forum-banner img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .forum-card-body { padding: 14px 16px 16px; display: flex; flex-direction: column; gap: 10px; }
 .forum-card-banner + .forum-card-body .f-icon { margin-top: -38px; box-shadow: 0 0 0 3px var(--card); }
@@ -1456,14 +1458,17 @@ a.article-link.dived, a[data-dive].dived, a.video-link.dived, a.live-link.dived 
 .card.hero .forum-add + p { margin-bottom: 0; }
 .section-head { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: baseline; justify-content: space-between; }
 
-.forum-head { padding: 0; overflow: hidden; }
-.forum-banner { height: 150px; background: var(--bg); border-bottom: 1px solid var(--line); }
+.forum-head { padding: 0; }
+.forum-banner { height: 150px; background: var(--bg); border-bottom: 1px solid var(--line);
+  border-radius: 11px 11px 0 0; overflow: hidden; }
+.forum-menu > summary { list-style: none; }
+.forum-menu .menu-note { margin-top: 2px; }
 .forum-head-main { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; padding: 16px 18px; }
 .forum-head.has-banner .forum-head-main > .f-icon { margin-top: -46px; box-shadow: 0 0 0 4px var(--card); }
 .forum-head-main > .grow { min-width: 200px; }
 .forum-head h1 { margin: 0; }
 .forum-head-main p { margin: 3px 0 0; }
-.forum-actions { gap: 6px; }
+.forum-actions { gap: 6px; margin-left: auto; }  /* at the right, on a line of their own too, so the ⋯ menu opens on screen */
 .forum-desc { border-top: 1px solid var(--line); padding: 12px 18px 14px; font-size: 0.94em; }
 .forum-desc > :first-child { margin-top: 0; }
 .forum-desc > :last-child { margin-bottom: 0; }
@@ -1502,6 +1507,8 @@ a.forum-row.forum-more:hover { background: var(--hover); color: var(--text); tex
     min-width: 0; text-align: left; }
   .forum-row-act { grid-column: 3; min-width: 0; }
   .forum-banner { height: 96px; }
+  details.menu.forum-menu .menu-panel { position: absolute; left: auto; right: 0; top: calc(100% + 6px);
+    width: min(290px, calc(100vw - 48px)); max-width: none; }
   .forum-cards { grid-template-columns: minmax(0, 1fr); }
 }
 .forum-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }

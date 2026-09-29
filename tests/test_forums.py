@@ -217,3 +217,27 @@ def test_default_forums_setting():
     assert _forums(None) == DEFAULT_FORUMS == ("https://piefed.social/f/forumverse",)
     assert _forums("off") == _forums("") == ()
     assert _forums("https://a.test/f/x, ~y@b.test") == ("https://a.test/f/x", "~y@b.test")
+
+
+def test_default_forum_already_added_isnt_added_again(settings, bouncer):
+    import dataclasses
+    settings = dataclasses.replace(settings, default_forums=(f"https://{HOST}/f/bigtree",))
+    client = client_for(settings, bouncer)
+    client.post("/forums", data={"link": f"~bigtree@{HOST}"})
+    page = client.get("/forums").text
+    assert "Big Tree" in page and "being read from its server" not in page
+    with bouncer.db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM jobs WHERE kind=?", (forums.ADD_JOB,)).fetchone()[0] == 0
+
+
+def test_forum_menus(settings, bouncer):
+    client = client_for(settings, bouncer)
+    fid = int(client.post("/forums", data={"link": f"https://{HOST}/f/bigtree"},
+                          follow_redirects=False).headers["location"].rsplit("/", 1)[-1])
+    index = client.get("/forums").text
+    assert f'action="/forums/{fid}/remove"' in index and f'action="/forums/{fid}/refresh"' in index
+    page = client.get(f"/forums/{fid}").text
+    assert f'action="/forums/{fid}/remove"' in page
+    assert 'action="/forums/%d/remove"' % fid not in client.get(f"/forums/{fid}/animals").text  # only at its top
+    r = client.post(f"/forums/{fid}/remove", headers={"referer": "http://testserver/forums"}, follow_redirects=False)
+    assert r.headers["location"] == "/forums"
