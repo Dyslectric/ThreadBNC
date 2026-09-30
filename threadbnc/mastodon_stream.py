@@ -502,8 +502,11 @@ class MastodonStream:
         sorted and replied to as your Mastodon account. It's read from its own
         server, as that shows it to anyone, and filed under whoever posted it."""
         uri = payload["uri"]
+        retention = payload.get("retention", "auto")  # "manual": Keep, from Trending
         existing = self.bouncer._existing_thread(uri)
         if existing:
+            if retention == "manual":
+                self.bouncer._keep_existing(existing)
             return {"thread_id": existing["id"]}
         sid = status_id(uri)
         if sid is None:
@@ -518,7 +521,9 @@ class MastodonStream:
         post = replace(post, community=account_community(
             actor, f"Posts by {who} on the fediverse, saved here from Trending."))
         tid = self.bouncer._ingest_post(post, TAG_DOMAIN, post.local_id, self.bouncer.tag_adapter, source_url=uri,
-                                        retention="auto")
+                                        retention=retention)
+        if retention == "manual":
+            self.bouncer.open_threads([tid])  # kept: its article and videos too
         return {"thread_id": tid}
 
     # -- a post's replies, read when it's expanded on Trending ------------------------
