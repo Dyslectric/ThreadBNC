@@ -29,6 +29,22 @@
   {% for d, label in periods.items() %}<a href="/traffic?days={{ d }}" class="{{ 'on' if r.days == d }}"{% if r.days == d %} aria-current="page"{% endif %}>{{ label }}</a>{% endfor %}
 </nav>
 
+<section class="card">
+  <h2>Live API requests</h2>
+  <div class="stat-row">
+    <div class="stat">
+      <div class="stat-label">Twitch API</div>
+      <div class="stat-value">{{ n(r.api_requests['Twitch']) }}</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">YouTube Data API</div>
+      <div class="stat-value">{{ n(r.api_requests['YouTube']) }}</div>
+    </div>
+  </div>
+  <p class="small muted">Twitch includes stream checks and access-token requests. YouTube counts Data API calls;
+    video pages, comments, thumbnails and downloads are in the site totals below.</p>
+</section>
+
 <div class="stat-row">
   <section class="card stat">
     <div class="stat-label">Requests to others</div>

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+import re
 
 import httpx
 import pytest
@@ -164,3 +166,29 @@ def test_traffic_page(settings, bouncer):
     assert "math" in page.text and "Saving pictures, videos and audio" in page.text
     assert "jetstream2.us-east.bsky.network" in page.text
     assert 'href="/traffic"' in web.get("/").text  # in the menu
+
+
+def test_live_api_request_counts_follow_the_selected_period(settings, bouncer):
+    now = datetime.now(timezone.utc)
+    with bouncer.db.transaction() as conn:
+        for age, host, direction, requests in (
+            (0, "api.twitch.tv", "out", 2), (0, "id.twitch.tv", "out", 1),
+            (0, "www.googleapis.com", "out", 4),
+            (2, "api.twitch.tv", "out", 5), (2, "www.googleapis.com", "out", 6),
+            (10, "api.twitch.tv", "out", 7), (10, "www.googleapis.com", "out", 8),
+            (0, "static-cdn.jtvnw.net", "out", 50), (0, "www.youtube.com", "out", 50),
+            (0, "api.twitch.tv", "in", 50),
+            (31, "api.twitch.tv", "out", 50), (31, "www.googleapis.com", "out", 50),
+        ):
+            hour = (now - timedelta(days=age)).strftime(traffic.HOUR)
+            conn.execute("INSERT INTO traffic(hour, direction, host, requests) VALUES (?, ?, ?, ?)",
+                         (hour, direction, host, requests))
+
+    web = TestClient(create_app(settings, bouncer))
+    web.post("/login", data={"password": "pw"})
+    for days, twitch, youtube in ((1, 3, 4), (7, 8, 10), (30, 15, 18)):
+        r = report(bouncer.db, days)
+        assert r.api_requests == {"Twitch": twitch, "YouTube": youtube}
+        page = web.get(f"/traffic?days={days}").text
+        assert re.search(rf'Twitch API</div>\s*<div class="stat-value">{twitch}</div>', page)
+        assert re.search(rf'YouTube Data API</div>\s*<div class="stat-value">{youtube}</div>', page)
