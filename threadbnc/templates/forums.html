@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% from "_macros.html" import icon %}
-{% from "_forum.html" import badge, num, forum_menu %}
+{% from "_forum.html" import badge, num, forum_menu, rail %}
 {% block title %}Forums{% endblock %}
 {% block content %}
 <div class="feed-head">
@@ -25,7 +25,7 @@
 {% if forums or adding %}
 <div class="forum-cards">
   {% for f in forums %}
-  <article class="card forum-card">
+  <article class="card forum-card forum-item">
     {% if f.banner %}<a class="forum-card-banner" href="/forums/{{ f.id }}" tabindex="-1" aria-hidden="true"><img src="{{ f.banner }}" alt=""></a>{% endif %}
     <div class="forum-card-body">
       <div class="forum-card-title">
@@ -42,6 +42,16 @@
         {% for title, href in f.sections %}<a class="pill src" href="{{ href }}">{{ title }}</a>{% endfor %}
         {% if f.forums > f.sections | length %}<a class="small" href="/forums/{{ f.id }}">and {{ f.forums - f.sections | length }} more →</a>{% endif %}</p>{% endif %}
       <p class="small muted">{% if f.followed %}You follow {{ f.followed }} of its communities.{% else %}You don't follow any of its communities yet.{% endif %}</p>
+    </div>
+    <div class="forum-row forum-card-open">
+      <button type="button" class="forum-expand js-only" aria-expanded="false" data-part="/forums/{{ f.id }}?part=1&amp;depth=0"
+        title="Browse {{ f.title }} here">{{ icon('chevron-right') }}<span class="sr-only">Browse {{ f.title }} here</span></button>
+      <span class="small muted js-only">Browse its sections and communities here</span>
+      <a class="small" href="/forums/{{ f.id }}">Open its page</a>
+    </div>
+    <div class="forum-fold d0" hidden>
+      {{ rail(f.title) }}
+      <div class="forum-fold-body"><p class="muted small forum-loading">Opening {{ f.title }}…</p></div>
     </div>
   </article>
   {% endfor %}

@@ -258,3 +258,7 @@ def test_forum_opened_in_place(settings, bouncer):
     assert "data-forum-follow" in part and 'id="fc-' in part
     # a part with forums in it has its sections, coloured by how far down it is
     assert 'class="forum-topic d1"' in client.get(f"/forums/{fid}/animals?part=1&depth=1").text
+    # each forum on the index opens in place too; a forum's own communities open by themselves (part=2)
+    assert f'data-part="/forums/{fid}?part=1&amp;depth=0"' in client.get("/forums").text
+    own = client.get(f"/forums/{fid}/animals?part=2&depth=1").text
+    assert 'class="forum-topic' not in own and 'data-forum-src="/forums/%d/animals?part=2&amp;depth=1"' % fid in own

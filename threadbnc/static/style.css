@@ -1450,6 +1450,10 @@ a.article-link.dived, a[data-dive].dived, a.video-link.dived, a.live-link.dived 
 .forum-card-title p, .forum-card-body > p { margin: 0; }
 .forum-card-desc { color: var(--muted); font-size: 0.92em; }
 .forum-card-sections { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.forum-cards > .forum-item.open { grid-column: 1 / -1; }
+.forum-card-open { border-top: 1px solid var(--line); padding: 8px 16px; gap: 8px; }
+.forum-card-open .small:last-child { margin-left: auto; }
+.forum-card > .forum-fold { border-top: 1px solid var(--line); }
 .forum-add-card { margin: 0 0 16px; padding: 12px 16px; }
 .forum-add-card > summary { list-style: none; cursor: pointer; display: inline-flex; }
 .forum-add-card > summary::-webkit-details-marker { display: none; }
