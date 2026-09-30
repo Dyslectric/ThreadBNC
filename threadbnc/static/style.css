@@ -55,7 +55,7 @@ nav.primary > a:hover { color: var(--text); background: var(--hover); text-decor
 nav.primary > a.on { color: var(--text); font-weight: 600; background: var(--hover); }
 nav.primary > a .i { opacity: .85; }
 .top-inner.primary-compact nav.primary { --nav-square: clamp(24px, 7vw, 36px); flex: 1 1 auto; min-width: 0;
-  justify-content: space-between; gap: 0; }
+  justify-content: flex-start; gap: clamp(0px, calc(12.5vw - 40px), 8px); }
 .top-inner.primary-compact nav.primary > a { flex: 0 0 var(--nav-square); width: var(--nav-square); height: var(--nav-square);
   padding: 4px; justify-content: center; }
 .top-inner.primary-compact nav.primary > a .label { display: none; }
@@ -918,7 +918,7 @@ dialog.shortcuts::backdrop { background: rgba(0, 0, 0, .35); }
 @media (max-width: 720px) {
   html:not(.js) nav.primary > a .label { display: none; }
   html:not(.js) nav.primary { --nav-square: clamp(24px, 7vw, 36px); flex: 1 1 auto; min-width: 0;
-    justify-content: space-between; gap: 0; }
+    justify-content: flex-start; gap: clamp(0px, calc(12.5vw - 40px), 8px); }
   html:not(.js) nav.primary > a { flex: 0 0 var(--nav-square); width: var(--nav-square); height: var(--nav-square);
     padding: 4px; justify-content: center; }
   html:not(.js) nav.primary > a .count { position: absolute; top: -5px; right: -5px; }
