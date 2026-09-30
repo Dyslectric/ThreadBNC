@@ -9,6 +9,29 @@ document.documentElement.classList.add("js");
   const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
   const shown = (el) => !!el && el.offsetParent !== null;
 
+  // The header has seven destinations plus search and the account menu. Let
+  // their rendered widths, rather than a viewport breakpoint, decide when the
+  // navigation needs icon buttons.
+  const primaryNav = $("#site-nav");
+  if (primaryNav) {
+    const topInner = primaryNav.parentElement;
+    const fitPrimaryNav = () => {
+      topInner.classList.remove("primary-compact");
+      topInner.classList.toggle("primary-compact", topInner.scrollWidth > topInner.clientWidth + 1);
+    };
+    let fitQueued = false;
+    const queueFitPrimaryNav = () => {
+      if (fitQueued) return;
+      fitQueued = true;
+      requestAnimationFrame(() => { fitQueued = false; fitPrimaryNav(); });
+    };
+    fitPrimaryNav();
+    window.addEventListener("resize", queueFitPrimaryNav);
+    if (window.ResizeObserver) new ResizeObserver(queueFitPrimaryNav).observe(topInner);
+    new MutationObserver(queueFitPrimaryNav).observe(primaryNav, { childList: true, characterData: true, subtree: true });
+    if (document.fonts) document.fonts.ready.then(queueFitPrimaryNav);
+  }
+
   // Keep all six Kept tabs on one row. Measure the labelled bar each time so
   // browser zoom, fonts and the actual available width decide when icons fit better.
   const keptTabs = $(".kept-tabs");

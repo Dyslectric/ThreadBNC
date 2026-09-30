@@ -50,10 +50,20 @@ header.top { position: sticky; top: 0; z-index: 20; border-bottom: 1px solid var
 .brand-mark { color: var(--accent); width: 0.95em; height: 0.95em; }
 nav.primary { display: flex; gap: 2px; align-items: center; }
 nav.primary > a { color: var(--muted); padding: 6px 10px; border-radius: 8px; font-size: 0.93em; display: inline-flex;
-  align-items: center; gap: 6px; transition: color .12s, background .12s; white-space: nowrap; }
+  align-items: center; gap: 6px; position: relative; transition: color .12s, background .12s; white-space: nowrap; }
 nav.primary > a:hover { color: var(--text); background: var(--hover); text-decoration: none; }
 nav.primary > a.on { color: var(--text); font-weight: 600; background: var(--hover); }
 nav.primary > a .i { opacity: .85; }
+.top-inner.primary-compact nav.primary > a { padding: 8px 6px; }
+.top-inner.primary-compact nav.primary > a .label { display: none; }
+.top-inner.primary-compact nav.primary > a .count { position: absolute; top: -5px; right: -5px; }
+nav.primary > a::after { content: attr(data-nav-label); display: none; position: absolute; top: calc(100% + 9px); left: 50%;
+  transform: translateX(-50%); z-index: 25; padding: 4px 8px; border-radius: 6px; background: var(--text); color: var(--card);
+  font-size: 0.85rem; font-weight: 500; white-space: nowrap; box-shadow: var(--shadow-pop); pointer-events: none; }
+nav.primary > a:first-child::after { left: 0; transform: none; }
+nav.primary > a:last-child::after { left: auto; right: 0; transform: none; }
+.top-inner.primary-compact nav.primary > a:hover::after,
+.top-inner.primary-compact nav.primary > a:focus-visible::after { display: block; }
 .count { display: inline-block; min-width: 1.6em; text-align: center; font-size: 0.72em; line-height: 1.6; font-weight: 700;
   padding: 0 6px; border-radius: 999px; background: var(--accent); color: var(--on-accent);
   font-variant-numeric: tabular-nums; }
@@ -903,8 +913,10 @@ dialog.shortcuts::backdrop { background: rgba(0, 0, 0, .35); }
   .feed-controls .act .label { display: none; }
 }
 @media (max-width: 720px) {
-  nav.primary > a .label { display: none; }
-  nav.primary > a { padding: 8px 10px; }
+  html:not(.js) nav.primary > a .label { display: none; }
+  html:not(.js) nav.primary > a { padding: 8px 6px; }
+  html:not(.js) nav.primary > a .count { position: absolute; top: -5px; right: -5px; }
+  html:not(.js) nav.primary > a:hover::after, html:not(.js) nav.primary > a:focus-visible::after { display: block; }
   .top-search { display: none; }
   .search-link { display: inline-flex; }
   .brand { margin-right: 4px; }
@@ -927,6 +939,10 @@ dialog.shortcuts::backdrop { background: rgba(0, 0, 0, .35); }
   .menu-panel { position: fixed; left: 8px; right: 8px; top: calc(var(--header-h) + 4px); max-width: none; }
   details.menu.dropdown .menu-panel, .feed-controls .menu-panel { position: absolute; left: auto; right: 0; top: calc(100% + 6px); }
   details.menu.dropdown .menu-panel { left: 0; right: auto; }
+}
+@media (max-width: 380px) {
+  .top-inner.primary-compact nav.primary > a { padding-inline: 3px; }
+  html:not(.js) nav.primary > a { padding-inline: 3px; }
 }
 .account-menu { margin-left: auto; }
 .top-search ~ .account-menu, .search-link ~ .account-menu { margin-left: 0; }

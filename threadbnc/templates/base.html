@@ -30,8 +30,8 @@
                                      ('/inbox', 'Inbox', 'inbox', path.startswith('/inbox')),
                                      ('/kept', 'Kept', 'star', path.startswith('/kept')),
                                      ('/post', 'New post', 'pencil', path == '/post')] %}
-        <a href="{{ href }}" class="{{ 'on' if on }}"{% if on %} aria-current="page"{% endif %} title="{{ name }}">{{ icon(ico) }}<span class="label">{{ name }}</span>
-          {%- if href == '/inbox' and ic %} <span class="count" aria-label="{{ ic }} unread">{{ ic }}</span>{% endif %}</a>
+        <a href="{{ href }}" class="{{ 'on' if on }}"{% if on %} aria-current="page"{% endif %} data-nav-label="{{ name }}" aria-label="{{ name }}{{ ', ' ~ ic ~ ' unread' if href == '/inbox' and ic }}">{{ icon(ico) }}<span class="label" aria-hidden="true">{{ name }}</span>
+          {%- if href == '/inbox' and ic %} <span class="count" aria-hidden="true">{{ ic }}</span>{% endif %}</a>
       {% endfor %}
     </nav>
     {% set scoped = community if community is defined and community else none %}
