@@ -53,6 +53,8 @@ import re
 import threading
 import time
 import traceback
+from collections import OrderedDict
+from hashlib import blake2b, sha256
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -77,6 +79,8 @@ log = logging.getLogger(__name__)
 
 JOB = "bluesky_tagged"
 CURSOR = "jetstream_cursor"  # setting: the time (microseconds) of the last event seen
+SOURCES = "jetstream_sources"  # JSON list of Jetstream /subscribe addresses
+DEDUP_WINDOW = 3600 * 1_000_000
 RESUME_WITHIN = 3600 * 1_000_000  # microseconds: an older place isn't gone back to
 FIRST_TRY = timedelta(seconds=15)  # the AppView may be a moment behind the stream
 RETRY_AFTER = timedelta(minutes=2)
@@ -185,11 +189,68 @@ def count(event: dict[str, Any], tally: trends.Tally) -> None:
             tally.repost(subject, at)
 
 
+def source_urls(db: Any, default: str | None) -> tuple[str, ...]:
+    """Saved endpoints, or the original environment setting until first edit."""
+    # Read through the database: a separate web process can edit the list while
+    # the bouncer runs, and Database.get_setting caches local reads.
+    with db.connect() as conn:
+        row = conn.execute("SELECT value FROM app_settings WHERE key=?", (SOURCES,)).fetchone()
+    saved = row["value"] if row else None
+    return tuple(json.loads(saved)) if saved is not None else ((default,) if default else ())
+
+
+def parse_sources(raw: str) -> tuple[str, ...]:
+    """One legacy Jetstream /subscribe WebSocket URL per line."""
+    urls = tuple(dict.fromkeys(line.strip() for line in raw.splitlines() if line.strip()))
+    if len(urls) > 12:
+        raise ValueError("Use at most 12 Jetstream endpoints.")
+    for url in urls:
+        parsed = urlparse(url)
+        try:
+            parsed.port  # Reject malformed ports before saving the address.
+        except ValueError:
+            raise ValueError(f"Invalid Jetstream address: {url}.") from None
+        if (parsed.scheme not in ("wss", "ws") or not parsed.hostname or parsed.path != "/subscribe"
+                or parsed.username or parsed.password or parsed.query or parsed.fragment
+                or (parsed.scheme == "ws" and parsed.hostname not in ("localhost", "127.0.0.1", "::1"))):
+            raise ValueError(f"Invalid Jetstream address: {url}. Use a wss://…/subscribe address "
+                             "(ws:// is allowed for localhost).")
+    return urls
+
+
+class EventDeduper:
+    """Suppress overlapping relay events while retaining independent coverage."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.seen: OrderedDict[bytes, int] = OrderedDict()
+
+    def new(self, event: dict[str, Any]) -> bool:
+        commit = event.get("commit")
+        if not isinstance(commit, dict) or not event.get("did"):
+            return True
+        # A record's URI and revision identify the same update across relays.
+        key = blake2b(json.dumps((event["did"], commit.get("collection"), commit.get("rkey"),
+                                  commit.get("operation"), commit.get("rev")),
+                                 separators=(",", ":")).encode(), digest_size=16).digest()
+        now = time.monotonic_ns() // 1000
+        with self.lock:
+            while self.seen and next(iter(self.seen.values())) < now - DEDUP_WINDOW:
+                self.seen.popitem(last=False)
+            if key in self.seen:
+                return False
+            self.seen[key] = now
+            return True
+
+
 class BlueskyStream:
-    def __init__(self, bouncer: Bouncer, url: str, user_agent: str):
+    def __init__(self, bouncer: Bouncer, url: str, user_agent: str, *,
+                 cursor_key: str = CURSOR, tally: trends.Tally | None = None,
+                 deduper: EventDeduper | None = None, register: bool = True):
         self.bouncer, self.db, self.url, self.user_agent = bouncer, bouncer.db, url, user_agent
+        self.cursor_key, self.deduper = cursor_key, deduper
         self.wake = threading.Event()  # the hashtags followed, or what's counted, changed
-        self.tally = trends.Tally("bluesky")
+        self.tally = tally if tally is not None else trends.Tally("bluesky")
         self._counted_to = 0  # the time (microseconds) of the last event counted: one read again isn't
         self._stop = threading.Event()
         self._noted: dict[str, str] = {}  # at:// address -> hashtag, not yet asked for
@@ -199,9 +260,10 @@ class BlueskyStream:
         self.last_error_at: str | None = None
         self.dictionary: Any = load_dictionary()  # None: events are read uncompressed
         self._bad = 0  # events in a row that wouldn't decompress
-        bouncer.follow_hooks.append(self._changed)
-        bouncer.unfollow_hooks.append(self._changed)
-        bouncer.job_handlers[JOB] = self.capture
+        if register:
+            bouncer.follow_hooks.append(self._changed)
+            bouncer.unfollow_hooks.append(self._changed)
+            bouncer.job_handlers[JOB] = self.capture
 
     def _changed(self, community_id: int) -> None:
         self.wake.set()
@@ -306,6 +368,8 @@ class BlueskyStream:
         event = _event(text)
         if event is None:
             return
+        if self.deduper is not None and not self.deduper.new(event):
+            return
         hit = tagged(event, tags)
         if hit:
             self._noted[hit[0]] = hit[1]
@@ -355,7 +419,7 @@ class BlueskyStream:
         return data.decode("utf-8", "replace")
 
     def _resume_from(self) -> int | None:
-        saved = self.db.get_setting(CURSOR)
+        saved = self.db.get_setting(self.cursor_key)
         if not saved or not saved.isdigit():
             return None
         return int(saved) if time.time() * 1_000_000 - int(saved) < RESUME_WITHIN else None
@@ -366,7 +430,7 @@ class BlueskyStream:
             return
         with self.db.transaction(exclusive=False) as conn:
             conn.execute("INSERT INTO app_settings(key, value) VALUES (?, ?) "
-                         "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (CURSOR, m.group(1)))
+                         "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (self.cursor_key, m.group(1)))
 
     def _flush(self) -> None:
         """Ask for the posts noted, GET_POSTS to a job, and write what was counted."""
@@ -409,3 +473,107 @@ class BlueskyStream:
         if missing and not payload.get("again"):
             self.bouncer.enqueue(JOB, {"posts": missing, "again": True}, delay=RETRY_AFTER)
         return {"captured": captured, "missing": len(missing)}
+
+
+class BlueskyStreams:
+    """One listener and resume cursor per configured Jetstream endpoint."""
+
+    def __init__(self, bouncer: Bouncer, default: str | None, user_agent: str):
+        self.bouncer, self.db = bouncer, bouncer.db
+        self.default, self.user_agent = default, user_agent
+        self.tally = trends.Tally("bluesky")
+        self.deduper = EventDeduper()
+        self.streams: dict[str, BlueskyStream] = {}
+        self._capture_stream: BlueskyStream | None = None
+        self._stop = threading.Event()
+        self._started = False
+        self._lock = threading.RLock()
+        self.wake = threading.Event()
+        bouncer.follow_hooks.append(self._changed)
+        bouncer.unfollow_hooks.append(self._changed)
+        bouncer.job_handlers[JOB] = self.capture
+        self.refresh()
+
+    def __bool__(self) -> bool:
+        with self._lock:
+            return bool(self.streams)
+
+    def snapshot(self) -> tuple[BlueskyStream, ...]:
+        with self._lock:
+            return tuple(self.streams.values())
+
+    def _changed(self, community_id: int) -> None:
+        self.notify()
+
+    def notify(self) -> None:
+        self.wake.set()
+        with self._lock:
+            for stream in self.streams.values():
+                stream.wake.set()
+
+    @property
+    def urls(self) -> tuple[str, ...]:
+        return source_urls(self.db, self.default)
+
+    @property
+    def connected_since(self) -> str | None:
+        with self._lock:
+            return next((s.connected_since for s in self.streams.values() if s.connected_since), None)
+
+    @property
+    def last_error(self) -> str | None:
+        with self._lock:
+            return next((s.last_error for s in self.streams.values() if s.last_error), None)
+
+    @property
+    def last_error_at(self) -> str | None:
+        with self._lock:
+            return next((s.last_error_at for s in self.streams.values() if s.last_error_at), None)
+
+    def refresh(self) -> None:
+        with self._lock:
+            wanted = self.urls
+            for url in tuple(self.streams):
+                if url not in wanted:
+                    self.streams.pop(url).stop()
+            for url in wanted:
+                if url not in self.streams:
+                    key = CURSOR + ":" + sha256(url.encode()).hexdigest()[:16]
+                    # Preserve the original single-listener cursor on upgrade.
+                    if url == self.default and self.db.get_setting(key) is None:
+                        old = self.db.get_setting(CURSOR)
+                        if old:
+                            with self.db.transaction(exclusive=False) as conn:
+                                conn.execute("INSERT INTO app_settings(key, value) VALUES (?, ?) ON CONFLICT DO NOTHING",
+                                             (key, old))
+                    stream = BlueskyStream(self.bouncer, url, self.user_agent, cursor_key=key,
+                                           tally=self.tally, deduper=self.deduper, register=False)
+                    self.streams[url] = stream
+                    self._capture_stream = stream
+                    if self._started and not self._stop.is_set():
+                        stream.start_thread()
+            self.bouncer.tag_adapter.bluesky = bool(self.streams)
+
+    def start_thread(self) -> threading.Thread:
+        self._started = True
+        thread = threading.Thread(target=self.run_forever, name="jetstreams", daemon=True)
+        thread.start()
+        return thread
+
+    def run_forever(self) -> None:
+        while not self._stop.is_set():
+            self.refresh()
+            self.wake.wait(5)
+            self.wake.clear()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self.wake.set()
+        with self._lock:
+            for stream in self.streams.values():
+                stream.stop()
+
+    def capture(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            stream = next(iter(self.streams.values()), self._capture_stream)
+        return stream.capture(payload) if stream else {"captured": 0}

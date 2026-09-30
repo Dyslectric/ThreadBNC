@@ -65,7 +65,7 @@ from .sso import CALLBACK_PATH, SingleSignOn, callback_url
 PROXY_SECRET_HEADER = "X-ThreadBNC-Proxy-Secret"
 from .config import Settings, load_settings
 from .federation import Federation, InboxRelay, summarize
-from .jetstream import BlueskyStream
+from .jetstream import SOURCES as JETSTREAM_SOURCES, BlueskyStreams, parse_sources
 from .mastodon_stream import OPEN_JOB as MASTODON_OPEN_JOB, RESOLVE_EACH, RESOLVE_EVERY, SCOPES as MASTODON_SCOPES, MastodonStream
 from .fedibuzz import FediBuzzStream
 from .mastodon_stream import feed_closed as mastodon_feed_closed
@@ -391,7 +391,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     # ...and following people on Mastodon and the like, whose servers send it their posts.
     people = PeopleFollows(bouncer, bouncer.actor) if bouncer.actor else None
     # ...and on Bluesky, picked out of its Jetstream, which also counts what's posted there for Trending.
-    bluesky_stream = BlueskyStream(bouncer, settings.jetstream_url, settings.user_agent) if settings.jetstream_url else None
+    bluesky_stream = BlueskyStreams(bouncer, settings.jetstream_url, settings.user_agent)
     if tags:  # a live feed found off (or on again): follow the relays again (or stop) now, not in half an hour
         mastodon_stream.closed_hooks.append(lambda: tags.housekeeping(now=True))
 
@@ -417,16 +417,14 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             bouncer.start_thread()
             if federation:
                 federation.start_thread()
-            if bluesky_stream:
-                bluesky_stream.start_thread()
+            bluesky_stream.start_thread()
             mastodon_stream.start_thread()
             fedibuzz.start_thread()
         yield
         bouncer.stop()
         if federation:
             federation.stop()
-        if bluesky_stream:
-            bluesky_stream.stop()
+        bluesky_stream.stop()
         mastodon_stream.stop()
         fedibuzz.stop()
         traffic_mod.METER.flush()
@@ -1256,7 +1254,9 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     def trending_status() -> dict[str, Any]:
         """What the Trending page says of where its counts come from, and offers to change."""
         chosen = trends_mod.settings(db)
-        return {"chosen": chosen, "bluesky": bluesky_stream, "embedded": settings.embedded_bouncer,
+        return {"chosen": chosen, "bluesky": bluesky_stream if bluesky_stream else None,
+                "jetstream_urls": bluesky_stream.urls, "jetstream_status": bluesky_stream.snapshot(),
+                "embedded": settings.embedded_bouncer,
                 "mastodon": mastodon_stream, "mastodon_account": mastodon_stream.account(),
                 "mastodon_accounts": mastodon_stream.accounts(), "mastodon_closed": mastodon_stream.closed(),
                 "fedibuzz": fedibuzz, "resolve_each": RESOLVE_EACH, "resolve_every": f"{RESOLVE_EVERY / 60:g}",
@@ -1733,8 +1733,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                                      "page, and choose it here.", "error")
                 scope = None
         mastodon_subscribe(db, scope, which["id"] if scope and which else None)
-        if bluesky_stream:
-            bluesky_stream.wake.set()
+        bluesky_stream.notify()
         mastodon_stream.wake.set()
         fedibuzz.wake.set()
         ranked.clear()
@@ -1745,6 +1744,22 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                                    if tag_streaming() and not before else
                                    " Hashtag posts come from the relays again." if before and not tag_streaming() and tags
                                    else ""))
+        return RedirectResponse(back(request, "/trending"), status_code=303)
+
+    @app.post("/trending/jetstreams")
+    def trending_jetstreams(request: Request, jetstreams: str = Form("")):
+        try:
+            urls = parse_sources(jetstreams)
+        except ValueError as exc:
+            flash(request, str(exc), "error")
+            return RedirectResponse(back(request, "/trending"), status_code=303)
+        with db.transaction(exclusive=False) as conn:
+            conn.execute("INSERT INTO app_settings(key, value) VALUES (?, ?) "
+                         "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                         (JETSTREAM_SOURCES, json.dumps(urls)))
+        bluesky_stream.refresh()
+        bluesky_stream.notify()
+        flash(request, f"Saved {len(urls)} Jetstream endpoint{'s' if len(urls) != 1 else ''}.")
         return RedirectResponse(back(request, "/trending"), status_code=303)
 
     # ---- kept (the archive) ---------------------------------------------
@@ -2822,7 +2837,9 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         days = days if days in TRAFFIC_PERIODS else 1
         traffic_mod.METER.flush()  # this process's latest; a bouncer running on its own adds its own each minute
         return render(request, "traffic.html", r=traffic_mod.report(db, days), periods=TRAFFIC_PERIODS,
-                      jetstream=bluesky_stream, jetstream_host=urlparse(settings.jetstream_url or "").hostname,
+                      jetstream=bluesky_stream if bluesky_stream else None,
+                      jetstreams=bluesky_stream.snapshot(),
+                      jetstream_hosts={urlparse(url).hostname for url in bluesky_stream.urls},
                       timeline_stream=mastodon_stream if mastodon_subscription(db) else None,
                       fedibuzz=fedibuzz if trends_mod.settings(db)["fedibuzz"] and settings.embedded_bouncer else None)
 

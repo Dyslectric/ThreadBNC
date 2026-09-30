@@ -12,7 +12,7 @@ from compression import zstd
 from fastapi.testclient import TestClient
 
 from threadbnc import jetstream, trends
-from threadbnc.jetstream import BAD_FRAMES, CURSOR, JOB, BlueskyStream, match
+from threadbnc.jetstream import BAD_FRAMES, CURSOR, JOB, BlueskyStream, BlueskyStreams, match
 from threadbnc.web import create_app
 
 from .test_bluesky import ALICE, bsky, one, post_view, signed_in, thread  # noqa: F401
@@ -264,8 +264,60 @@ def test_a_hashtags_page_says_its_listening_to_bluesky(settings, bouncer, bsky):
     client.post("/login", data={"password": "pw"})
     cid = bouncer.follow_community("#cats", None, 30, False)
     assert "Connecting" in client.get(f"/c/{cid}").text
-    app.state.bluesky_stream.connected_since = stamp()
+    stream = next(iter(app.state.bluesky_stream.streams.values()))
+    stream.connected_since = stamp()
     page = client.get(f"/c/{cid}").text
     assert "From Bluesky" in page and "posts tagged #cats are kept" in page
-    app.state.bluesky_stream.connected_since, app.state.bluesky_stream.last_error = None, "Connection refused"
+    stream.connected_since, stream.last_error = None, "Connection refused"
     assert "can&#39;t be reached" in client.get(f"/c/{cid}").text or "can't be reached" in client.get(f"/c/{cid}").text
+
+
+def test_multiple_jetstreams_can_be_saved_and_removed_from_sources(settings, bouncer, bsky):  # noqa: F811
+    app = create_app(settings, bouncer)
+    client = TestClient(app)
+    client.post("/login", data={"password": "pw"})
+    urls = ("wss://first.test/subscribe", "wss://second.test/subscribe")
+    page = client.post("/trending/jetstreams", data={"jetstreams": "\n".join(urls)}, follow_redirects=True)
+    assert page.status_code == 200 and all(url in page.text for url in urls)
+    manager = app.state.bluesky_stream
+    assert isinstance(manager, BlueskyStreams) and manager.urls == urls
+    assert len(manager.streams) == 2
+    assert len({s.cursor_key for s in manager.streams.values()}) == 2
+    first = manager.streams[urls[0]]
+    second = manager.streams[urls[1]]
+    first._save(event("one", "one", time_us=123456789))
+    assert first._resume_from() is None  # too old to replay, but stored separately
+    assert bouncer.db.get_setting(first.cursor_key) == "123456789"
+    assert bouncer.db.get_setting(second.cursor_key) is None
+    client.post("/trending/jetstreams", data={"jetstreams": urls[1]})
+    assert manager.urls == (urls[1],) and tuple(manager.streams) == (urls[1],)
+    client.post("/trending/jetstreams", data={"jetstreams": ""})
+    assert not manager and not bouncer.tag_adapter.bluesky
+
+
+def test_overlapping_jetstream_events_are_counted_once(bouncer):
+    manager = BlueskyStreams(bouncer, "wss://first.test/subscribe", "test")
+    second_url = "wss://second.test/subscribe"
+    with bouncer.db.transaction() as conn:
+        conn.execute("INSERT INTO app_settings(key, value) VALUES (?, ?)",
+                     (jetstream.SOURCES, json.dumps([manager.default, second_url])))
+    manager.refresh()
+    first, second = manager.streams.values()
+    message = event("same", "#cats", ["cats"])
+    first._take(message, {"cats"}, True)
+    second._take(message, {"cats"}, True)
+    assert sum(len(s._noted) for s in manager.streams.values()) == 1
+    assert manager.tally.looked and sum(manager.tally.looked.values()) == 1
+    second._take(event("independent", "#cats", ["cats"]), {"cats"}, True)
+    assert sum(len(s._noted) for s in manager.streams.values()) == 2
+    assert sum(manager.tally.looked.values()) == 2
+
+
+def test_jetstream_addresses_are_validated(settings, bouncer, bsky):  # noqa: F811
+    client = TestClient(create_app(settings, bouncer))
+    client.post("/login", data={"password": "pw"})
+    for bad in ("https://relay.test/xrpc/com.atproto.sync.subscribeRepos",
+                "wss://relay.test/xrpc/com.atproto.sync.subscribeRepos",
+                "ws://remote.test/subscribe"):
+        page = client.post("/trending/jetstreams", data={"jetstreams": bad}, follow_redirects=True)
+        assert "Invalid Jetstream address" in page.text

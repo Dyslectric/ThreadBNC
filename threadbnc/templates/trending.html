@@ -167,6 +167,23 @@
           </fieldset>
           <button class="small">Save</button>
         </form>
+        <form method="post" action="/trending/jetstreams" class="stack small">
+          <fieldset>
+            <legend>Jetstream endpoints</legend>
+            <label for="jetstreams">Listen to these endpoints (one /subscribe WebSocket address per line)</label>
+            <textarea id="jetstreams" name="jetstreams" rows="4" spellcheck="false">{{ st.jetstream_urls | join('\n') }}</textarea>
+            <p class="muted">Independent endpoints can carry different parts of the network. Overlapping events are counted once. Each connection uses traffic; remove all addresses to stop Bluesky streaming.</p>
+            {% if st.embedded %}
+              {% for stream in st.jetstream_status %}
+              <p class="muted">{{ stream.url }}:
+                {% if stream.connected_since %}connected since {{ when(stream.connected_since) }}
+                {% elif stream.last_error %}<span class="bad-text">{{ stream.last_error }}</span>
+                {% else %}waiting to connect{% endif %}</p>
+              {% endfor %}
+            {% endif %}
+          </fieldset>
+          <button class="small">Save endpoints</button>
+        </form>
       </div>
     </details>
   </div>

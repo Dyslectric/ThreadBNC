@@ -9,7 +9,7 @@
 {%- endmacro %}
 {% macro stream_name(g) -%}
   {%- set host = g.label %}
-  {%- if jetstream_host and host == jetstream_host %}<strong>Bluesky Jetstream</strong>
+  {%- if host in jetstream_hosts %}<strong>Bluesky Jetstream</strong>
     <div class="small muted">{{ host }}: every new post on Bluesky, sifted for followed hashtags</div>
   {%- elif g.community and g.community.canonical_ap_id.startswith('tag:') %}<strong>Relay for {{ community(g) }}</strong>
     <div class="small muted">{{ host }}</div>
@@ -104,11 +104,13 @@
     a relay's deliveries of posts with a followed hashtag, and deliveries to your own servers passed on
     through ThreadBNC.</p>
   {% if jetstream %}
+  {% for stream in jetstreams %}
   <p class="small">
-    {% if jetstream.connected_since %}<span class="pill good">connected</span> Jetstream since {{ when(jetstream.connected_since) }}{{ ', compressed' if jetstream.dictionary is not none }}.
-    {% else %}<span class="pill muted">not connected</span> Jetstream: {{ 'it connects while a hashtag is followed, or Bluesky is counted for Trending.' if not jetstream.last_error else '' }}{% endif %}
-    {% if jetstream.last_error %}<span class="bad-text">Last trouble {{ when(jetstream.last_error_at) }}: {{ jetstream.last_error }}</span>{% endif %}
+    {% if stream.connected_since %}<span class="pill good">connected</span> {{ stream.url }} since {{ when(stream.connected_since) }}{{ ', compressed' if stream.dictionary is not none }}.
+    {% else %}<span class="pill muted">not connected</span> {{ stream.url }}: {{ 'it connects while a hashtag is followed, or Bluesky is counted for Trending.' if not stream.last_error else '' }}{% endif %}
+    {% if stream.last_error %}<span class="bad-text">Last trouble {{ when(stream.last_error_at) }}: {{ stream.last_error }}</span>{% endif %}
   </p>
+  {% endfor %}
   {% endif %}
   {% if timeline_stream %}
   <p class="small">

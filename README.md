@@ -515,14 +515,14 @@ public Mastodon API when you open them.
 
 ### On Bluesky
 
-Bluesky can't follow a hashtag either, and has nothing to subscribe to for one: everything posted on it goes out
-on one public stream instead. [Jetstream](https://github.com/bluesky-social/jetstream) serves that stream over a
-WebSocket, and ThreadBNC asks it for new posts only (no likes, follows or reposts). It needs no account, and no
+Bluesky can't follow a hashtag either, and has nothing to subscribe to for one: relays offer streams of the posts
+they see instead. [Jetstream](https://github.com/bluesky-social/jetstream) serves such a stream over a
+WebSocket, and ThreadBNC asks it for new posts (and optionally reposts or likes for Trending). It needs no account, and no
 ActivityPub actor: without `THREADBNC_ACTOR_DOMAIN`, hashtags come from Bluesky alone.
 
-- **While any hashtag is followed, or Bluesky is counted for [Trending](#trending)**, one connection stays open
-  and every post made on Bluesky passes through it: about 25 a second. Compressed, that's about 9 KB/s or 0.75 GB
-  a day, half what it is uncompressed (measured September 2026). Counting reposts, as it does unless turned
+- **While any hashtag is followed, or Bluesky is counted for [Trending](#trending)**, a connection stays open
+  to each configured endpoint. On Bluesky's default stream, about 25 posts a second pass through it. Compressed,
+  that's about 9 KB/s or 0.75 GB a day per endpoint, half what it is uncompressed (measured September 2026). Counting reposts, as it does unless turned
   off, adds about 45 a second, some 0.6 times as much again; counting likes from the stream adds about 150 a
   second, 3.4 GB a day. With neither hashtags nor counting, it's closed.
 - **Compression** is zstd, each event on its own, with a dictionary Jetstream publishes. ThreadBNC keeps a copy
@@ -538,8 +538,14 @@ ActivityPub actor: without `THREADBNC_ACTOR_DOMAIN`, hashtags come from Bluesky 
   reply to it as that account, whatever the hashtag's other posts are done as.
 - The hashtag's **Following** menu says whether it's listening to Bluesky. Where the stream got to is saved every
   half minute, so after a restart or a dropped connection it carries on from there, if that's under an hour ago.
-- `THREADBNC_JETSTREAM` picks another Jetstream (`wss://jetstream1.us-west.bsky.network/subscribe`, say), or
-  `off` for fediverse hashtags only.
+- `THREADBNC_JETSTREAM` chooses the initial Jetstream endpoint (`wss://jetstream1.us-west.bsky.network/subscribe`,
+  say), or `off` for no initial endpoint. Under **Trending → Sources → Jetstream endpoints**, enter one compatible
+  `/subscribe` WebSocket address per line to listen to several independent instances. The saved list takes precedence
+  over the environment default and can be changed without restarting the bouncer. Each endpoint gets its own resume
+  cursor; overlapping records are counted once while the bouncer runs. Empty the list to stop Bluesky streaming.
+  These are Jetstream JSON endpoints, not raw `com.atproto.sync.subscribeRepos` firehoses.
+  Posts seen only by an independent relay can affect Trending counts; ThreadBNC can add one to a hashtag feed only
+  if Bluesky's AppView returns that post when asked for it.
 
 ### Setting it up on a domain Lemmy already uses
 
@@ -827,7 +833,7 @@ API (each call with `Authorization: Bearer $THREADBNC_API_TOKEN`):
 | `THREADBNC_ACTOR_DOMAIN` | unset | The domain of ThreadBNC's own ActivityPub actor, for following hashtags and people on the fediverse (see [Hashtags](#hashtags) and [People on Mastodon](#people-on-mastodon)). Unset: hashtags come from Bluesky alone |
 | `THREADBNC_TAG_RELAY` | `https://relay.fedi.buzz/tag/{tag}` | The relay actor followed for each hashtag, `{tag}` standing for it |
 | `THREADBNC_DEFAULT_FORUMS` | `https://piefed.social/f/forumverse` | Forums added by themselves the first time the Forums page is opened, their links separated by commas, or `off`. One you remove isn't added again |
-| `THREADBNC_JETSTREAM` | `wss://jetstream2.us-east.bsky.network/subscribe` | The Jetstream hashtags are picked out of, and Trending counts, on Bluesky (see [On Bluesky](#on-bluesky)); `off`: fediverse hashtags only, and Bluesky isn't counted |
+| `THREADBNC_JETSTREAM` | `wss://jetstream2.us-east.bsky.network/subscribe` | Initial Jetstream endpoint, editable with additional endpoints under Trending → Sources (see [On Bluesky](#on-bluesky)); `off`: no initial Bluesky stream |
 | `THREADBNC_TWITCH_CLIENT_ID` | unset | Twitch application client ID. Required with the client secret to verify linked Twitch channels through Helix and show current viewers and thumbnails in Live. You can also enter both in Accounts; saved values take precedence. |
 | `THREADBNC_TWITCH_CLIENT_SECRET` | unset | Twitch application client secret, used to obtain an app access token for those checks. Keep it private. You can also enter both in Accounts; the saved secret is encrypted. |
 | `THREADBNC_YOUTUBE_API_KEY` | unset | Google Cloud API key with YouTube Data API v3 enabled. Checks known video IDs from livestream posts with `videos.list` for live status and concurrent viewers while Live is used. You can also save a key on the YouTube page; that key takes precedence. Without either key, checks use YouTube's watch pages. Keep it private. |

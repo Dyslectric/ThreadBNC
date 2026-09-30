@@ -95,13 +95,11 @@ def main() -> None:
 
         # FediBuzz's firehose: followed hashtags and Trending, sharing the timeline's tally.
         FediBuzzStream(bouncer, timeline.tally, settings.user_agent).start_thread()
-        counting = False
-        if settings.jetstream_url:  # hashtags on Bluesky, and what's posted there counted for Trending
-            from .jetstream import BlueskyStream
+        from .jetstream import BlueskyStreams
 
-            BlueskyStream(bouncer, settings.jetstream_url, settings.user_agent).start_thread()
-            counting = True
-        trends.Trends(bouncer, lambda: trends.archive_skips(counting and trends.settings(bouncer.db)["bluesky"],
+        streams = BlueskyStreams(bouncer, settings.jetstream_url, settings.user_agent)
+        streams.start_thread()
+        trends.Trends(bouncer, lambda: trends.archive_skips(bool(streams) and trends.settings(bouncer.db)["bluesky"],
                                                             timeline.active() or trends.settings(bouncer.db)["fedibuzz"]))
         bouncer.run_forever()
     elif args.cmd == "archive":
