@@ -35,15 +35,14 @@
 </div>
 
 <nav class="kept-tabs" aria-label="Kept">
-  {# (tab, label, shorter label for narrow screens, icon, count) #}
-  {% for key, label, short, glyph, count in [('threads', 'Threads', 'Threads', 'star', counts.threads),
-                                             ('videos', 'Videos', 'Videos', 'video', counts.videos),
-                                             ('audio', 'Audio', 'Audio', 'audio', counts.audio),
-                                             ('articles', 'Articles', 'Articles', 'article', counts.articles),
-                                             ('changed', 'Recently changed', 'Changed', 'refresh', none),
-                                             ('log', 'Changes log', 'Log', 'clock', none)] %}
-    <a href="/kept{{ '?tab=' ~ key if key != 'threads' }}" class="{{ 'on' if tab == key }}"{% if tab == key %} aria-current="page"{% endif %}>
-      {{ icon(glyph) }}{% if short != label %}<span class="tab-long">{{ label }}</span><span class="tab-short" aria-hidden="true">{{ short }}</span>{% else %}<span>{{ label }}</span>{% endif %}{% if count is not none %}<span class="count muted" aria-label="{{ count }} kept">{{ count }}</span>{% endif %}</a>
+  {% for key, label, glyph, count in [('threads', 'Threads', 'star', counts.threads),
+                                      ('videos', 'Videos', 'video', counts.videos),
+                                      ('audio', 'Audio', 'audio', counts.audio),
+                                      ('articles', 'Articles', 'article', counts.articles),
+                                      ('changed', 'Recently changed', 'refresh', none),
+                                      ('log', 'Changes log', 'clock', none)] %}
+    <a href="/kept{{ '?tab=' ~ key if key != 'threads' }}" class="{{ 'on' if tab == key }}" data-tab-label="{{ label }}" aria-label="{{ label }}{{ ', ' ~ count ~ ' kept' if count is not none }}"{% if tab == key %} aria-current="page"{% endif %}>
+      {{ icon(glyph) }}<span class="tab-label" aria-hidden="true">{{ label }}</span>{% if count is not none %}<span class="count muted" aria-hidden="true">{{ count }}</span>{% endif %}</a>
   {% endfor %}
 </nav>
 

@@ -1291,6 +1291,16 @@ a.article-link.dived, a[data-dive].dived, a.video-link.dived, a.live-link.dived 
 .kept-tabs a.on { background: var(--new-bg); color: var(--text); font-weight: 650; }
 .kept-tabs a.on .i { color: var(--accent); }
 .kept-tabs a.on .count.muted { background: var(--card); color: var(--text); }
+.kept-tabs.is-compact { overflow: visible; }
+.kept-tabs.is-compact a { position: relative; flex: 1 1 0; min-width: 0; padding: 8px 2px; }
+.kept-tabs.is-compact .tab-label, .kept-tabs.is-compact .count { display: none; }
+.kept-tabs.is-compact a::after { content: attr(data-tab-label); position: absolute; top: calc(100% + 10px); left: 50%;
+  transform: translateX(-50%); z-index: 5; padding: 4px 8px; border-radius: 6px; background: var(--text); color: var(--card);
+  font-size: 0.85rem; font-weight: 500; white-space: nowrap; box-shadow: var(--shadow-pop); pointer-events: none;
+  opacity: 0; visibility: hidden; }
+.kept-tabs.is-compact a:first-child::after { left: 0; transform: none; }
+.kept-tabs.is-compact a:last-child::after { left: auto; right: 0; transform: none; }
+.kept-tabs.is-compact a:hover::after, .kept-tabs.is-compact a:focus-visible::after { opacity: 1; visibility: visible; }
 .tab-note { margin: 10px 2px 12px; }
 
 .article-card .thumb { width: 150px; height: 100px; }
@@ -1395,13 +1405,7 @@ a.article-link.dived, a[data-dive].dived, a.video-link.dived, a.live-link.dived 
 .log-row.tone-new .log-dot { background: var(--accent); }
 .log-body { min-width: 0; }
 .log-title { display: block; color: var(--text); font-weight: 550; line-height: 1.35; margin: 2px 0 1px; overflow-wrap: anywhere; }
-.kept-tabs .tab-short { display: none; }
 @media (max-width: 600px) {
-  .kept-tabs { gap: 2px; flex-wrap: wrap; }  /* six tabs: two rows rather than scrolling */
-  .kept-tabs a { flex: 1 0 auto; padding: 7px 8px; gap: 4px; font-size: 0.85em; }
-  .kept-tabs .tab-long { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-  .kept-tabs .tab-short { display: inline; }
-  .kept-tabs a > .i { display: none; }
   .article-card .thumb { width: 88px; height: 66px; }
   .article-card { gap: 12px; }
   .log-row { grid-template-columns: 2.8em 12px minmax(0, 1fr); gap: 0 8px; }

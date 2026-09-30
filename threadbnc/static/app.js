@@ -9,6 +9,26 @@ document.documentElement.classList.add("js");
   const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
   const shown = (el) => !!el && el.offsetParent !== null;
 
+  // Keep all six Kept tabs on one row. Measure the labelled bar each time so
+  // browser zoom, fonts and the actual available width decide when icons fit better.
+  const keptTabs = $(".kept-tabs");
+  if (keptTabs) {
+    const fitKeptTabs = () => {
+      keptTabs.classList.remove("is-compact");
+      keptTabs.classList.toggle("is-compact", keptTabs.scrollWidth > keptTabs.clientWidth + 1);
+    };
+    let fitQueued = false;
+    const queueFitKeptTabs = () => {
+      if (fitQueued) return;
+      fitQueued = true;
+      requestAnimationFrame(() => { fitQueued = false; fitKeptTabs(); });
+    };
+    fitKeptTabs();
+    window.addEventListener("resize", queueFitKeptTabs);
+    if (window.ResizeObserver) new ResizeObserver(queueFitKeptTabs).observe(keptTabs);
+    if (document.fonts) document.fonts.ready.then(queueFitKeptTabs);
+  }
+
   // ---- messages ------------------------------------------------------------
   function toast(m, onUndo) {
     const box = $("#toasts");
