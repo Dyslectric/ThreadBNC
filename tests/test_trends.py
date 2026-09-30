@@ -1319,7 +1319,7 @@ def test_likely_live_streams_are_recent_ranked_and_searchable(settings, bouncer)
     assert more_first and first[0]["key"] != second[0]["key"]
 
     web_client = TestClient(create_app(settings, bouncer))
-    bouncer.twitch.client_id, bouncer.twitch.client_secret = "test", "test"
+    bouncer.twitch_credentials.save("test", "test")
     web_client.post("/login", data={"password": "pw"})
     trend = web_client.get("/trending/livestreams", params={"sort": "replies"}).text
     assert "Livestreams" in trend and "past six hours" in trend

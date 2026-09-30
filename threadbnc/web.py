@@ -1189,7 +1189,28 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
 
     @app.get("/settings", response_class=HTMLResponse)
     def settings_page(request: Request):
-        return render(request, "settings.html", markers=UNREAD_MARKERS)
+        configured = bouncer.twitch.configured
+        return render(request, "settings.html", markers=UNREAD_MARKERS,
+                      twitch_id=bouncer.twitch.client_id if configured else "",
+                      twitch_source=bouncer.twitch.source)
+
+    @app.post("/settings/twitch")
+    def set_twitch_credentials(request: Request, client_id: str = Form(""), client_secret: str = Form("")):
+        try:
+            bouncer.twitch_credentials.save(client_id, client_secret)
+        except ValueError as exc:
+            flash(request, str(exc), "error")
+        else:
+            bouncer.wake.set()
+            flash(request, "Twitch credentials saved. Live checks can now use them.")
+        return RedirectResponse("/settings", status_code=303)
+
+    @app.post("/settings/twitch/remove")
+    def remove_twitch_credentials(request: Request):
+        bouncer.twitch_credentials.remove()
+        bouncer.wake.set()
+        flash(request, "Twitch app credentials removed. Environment defaults apply if set.")
+        return RedirectResponse("/settings", status_code=303)
 
     @app.post("/settings/unread-marker")
     def set_unread_marker(request: Request, marker: str = Form("")):

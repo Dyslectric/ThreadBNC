@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -11,6 +12,41 @@ import httpx
 from .adapters.base import RemotePaused, RemoteUnavailable
 from .adapters.http import HostThrottle
 from .traffic import metered
+from .db import Database
+from .vault import TokenVault
+
+
+CREDENTIALS_SETTING = "twitch_credentials"
+
+
+class TwitchCredentials:
+    """App credentials saved for all processes, with environment defaults."""
+
+    def __init__(self, db: Database, vault: TokenVault, client_id: str | None, client_secret: str | None):
+        self.db, self.vault = db, vault
+        self.defaults = (client_id, client_secret)
+
+    def current(self) -> tuple[str | None, str | None, str]:
+        # Read directly: Database.get_setting caches SQLite values in each process.
+        with self.db.connect() as conn:
+            row = conn.execute("SELECT value FROM app_settings WHERE key=?", (CREDENTIALS_SETTING,)).fetchone()
+        if row is None:
+            return *self.defaults, "environment" if all(self.defaults) else "none"
+        saved = json.loads(row["value"])
+        return saved["client_id"], self.vault.decrypt(saved["secret_enc"]), "app"
+
+    def save(self, client_id: str, client_secret: str) -> None:
+        client_id, client_secret = client_id.strip(), client_secret.strip()
+        if not client_id or not client_secret:
+            raise ValueError("Enter both the Twitch client ID and client secret.")
+        value = json.dumps({"client_id": client_id, "secret_enc": self.vault.encrypt(client_secret)})
+        with self.db.transaction() as conn:
+            conn.execute("INSERT INTO app_settings(key, value) VALUES (?, ?) "
+                         "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (CREDENTIALS_SETTING, value))
+
+    def remove(self) -> None:
+        with self.db.transaction() as conn:
+            conn.execute("DELETE FROM app_settings WHERE key=?", (CREDENTIALS_SETTING,))
 
 
 @dataclass(frozen=True)
@@ -25,8 +61,11 @@ class TwitchLive:
 class TwitchClient:
     def __init__(self, client_id: str | None, client_secret: str | None, user_agent: str,
                  timeout: float = 20.0, throttle: HostThrottle | None = None,
-                 transport: httpx.BaseTransport | None = None):
+                 transport: httpx.BaseTransport | None = None,
+                 credentials: TwitchCredentials | None = None):
         self.client_id, self.client_secret = client_id, client_secret
+        self.credentials = credentials
+        self.source = "environment" if client_id and client_secret else "none"
         self.throttle = throttle or HostThrottle(1.0)
         self.client = httpx.Client(timeout=timeout, transport=metered(transport),
                                    headers={"User-Agent": user_agent})
@@ -35,7 +74,17 @@ class TwitchClient:
 
     @property
     def configured(self) -> bool:
+        self._sync_credentials()
         return bool(self.client_id and self.client_secret)
+
+    def _sync_credentials(self) -> None:
+        if self.credentials is None:
+            return
+        client_id, client_secret, source = self.credentials.current()
+        if (client_id, client_secret) != (self.client_id, self.client_secret):
+            self.client_id, self.client_secret = client_id, client_secret
+            self._token, self._token_until = None, 0.0
+        self.source = source
 
     def _request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
         host = httpx.URL(url).host

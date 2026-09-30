@@ -824,8 +824,8 @@ API (each call with `Authorization: Bearer $THREADBNC_API_TOKEN`):
 | `THREADBNC_TAG_RELAY` | `https://relay.fedi.buzz/tag/{tag}` | The relay actor followed for each hashtag, `{tag}` standing for it |
 | `THREADBNC_DEFAULT_FORUMS` | `https://piefed.social/f/forumverse` | Forums added by themselves the first time the Forums page is opened, their links separated by commas, or `off`. One you remove isn't added again |
 | `THREADBNC_JETSTREAM` | `wss://jetstream2.us-east.bsky.network/subscribe` | The Jetstream hashtags are picked out of, and Trending counts, on Bluesky (see [On Bluesky](#on-bluesky)); `off`: fediverse hashtags only, and Bluesky isn't counted |
-| `THREADBNC_TWITCH_CLIENT_ID` | unset | Twitch application client ID. Required with the client secret to verify linked Twitch channels through Helix and show current viewers and thumbnails in Live and Trending. |
-| `THREADBNC_TWITCH_CLIENT_SECRET` | unset | Twitch application client secret, used to obtain an app access token for those checks. Keep it private. |
+| `THREADBNC_TWITCH_CLIENT_ID` | unset | Twitch application client ID. Required with the client secret to verify linked Twitch channels through Helix and show current viewers and thumbnails in Live and Trending. You can also enter both in Settings; saved values take precedence. |
+| `THREADBNC_TWITCH_CLIENT_SECRET` | unset | Twitch application client secret, used to obtain an app access token for those checks. Keep it private. You can also enter both in Settings; the saved secret is encrypted. |
 | `THREADBNC_ARTICLES` | `1` | Read the web pages posts link to and keep the article, for **Read article** (see [Linked articles](#linked-articles)); `0` turns it off |
 | `THREADBNC_DISCUSSIONS` | `1` | Look for where an article is discussed elsewhere when it's opened (see [Discussions](#discussions)); `0` turns it off |
 | `THREADBNC_PROXY_AUTH_HEADER` | unset | Header in which a signing-in reverse proxy passes the user's name, e.g. `X-authentik-username` |

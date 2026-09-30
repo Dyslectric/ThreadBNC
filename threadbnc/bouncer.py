@@ -148,8 +148,11 @@ class Bouncer:
         self.reddit = reddit or RedditConnection(
             db, vault, timeout=settings.http_timeout, min_interval=settings.reddit_min_request_interval)
         self.youtube = YouTubeSession(db, vault)
+        self.twitch_credentials = twitch.TwitchCredentials(db, vault, settings.twitch_client_id,
+                                                           settings.twitch_client_secret)
         self.twitch = twitch.TwitchClient(settings.twitch_client_id, settings.twitch_client_secret,
-                                          settings.user_agent, settings.http_timeout, self.http.throttle)
+                                          settings.user_agent, settings.http_timeout, self.http.throttle,
+                                          credentials=self.twitch_credentials)
         self.reddit_adapter = RedditAdapter(self.reddit)
         self.rss_adapter = RssAdapter(FeedFetcher(settings.user_agent, settings.http_timeout, self.http.throttle))
         # ThreadBNC's own ActivityPub identity, and the posts hashtags bring (tags.py).

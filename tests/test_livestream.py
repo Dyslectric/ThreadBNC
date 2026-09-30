@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from urllib.parse import parse_qs
 
 import httpx
 import pytest
@@ -16,6 +17,8 @@ from threadbnc.livestream import Stream, stream_of
 from threadbnc.render import render_markdown
 from threadbnc.web import create_app
 from threadbnc.db import utcnow
+from threadbnc.db import open_database
+from threadbnc.vault import TokenVault
 
 CHANNEL = "UCS0N5baNlQWJCUrhCEo8WlA"
 VIDEO = "dQw4w9WgXcQ"
@@ -60,6 +63,45 @@ def test_twitch_helix_requires_credentials_and_reports_current_viewers():
     assert len([r for r in requests if r.url.host == "id.twitch.tv"]) == 1
     assert requests[-1].headers["client-id"] == "client-id"
     assert requests[-1].headers["authorization"] == "Bearer secret-token"
+
+
+def test_twitch_credentials_can_be_saved_in_settings_and_refreshed_across_processes(settings, bouncer):
+    client = TestClient(create_app(settings, bouncer))
+    assert client.post("/settings/twitch", data={"client_id": "x", "client_secret": "private"},
+                       follow_redirects=False).status_code == 303  # sign-in required
+    client.post("/login", data={"password": "pw"})
+    assert "Twitch" in client.get("/settings").text
+    assert client.post("/settings/twitch", data={"client_id": " ", "client_secret": "private"}).status_code == 200
+    assert not bouncer.twitch.configured
+
+    response = client.post("/settings/twitch", data={"client_id": "first", "client_secret": "private"})
+    assert response.status_code == 200
+    assert bouncer.twitch.configured
+    assert 'value="first"' in response.text and "private" not in response.text
+    with bouncer.db.connect() as conn:
+        raw = conn.execute("SELECT value FROM app_settings WHERE key='twitch_credentials'").fetchone()["value"]
+    assert "private" not in raw and "first" in raw
+
+    # Simulate a separate bouncer process with its own DB handle and cached token.
+    other_db = open_database(settings)
+    other = twitch.TwitchCredentials(other_db, TokenVault(settings.credentials_key, settings.data_dir), None, None)
+    tokens = []
+
+    def handle(request):
+        if request.url.host == "id.twitch.tv":
+            tokens.append(parse_qs(request.content.decode())["client_id"][0])
+            return httpx.Response(200, json={"access_token": tokens[-1], "expires_in": 3600})
+        assert request.headers["client-id"] == tokens[-1]
+        return httpx.Response(200, json={"data": []})
+
+    checker = twitch.TwitchClient(None, None, "test", throttle=HostThrottle(0),
+                                  transport=httpx.MockTransport(handle), credentials=other)
+    assert checker.configured and checker.check("vinesauce") == twitch.TwitchLive(False)
+    client.post("/settings/twitch", data={"client_id": "second", "client_secret": "new-secret"})
+    assert checker.check("vinesauce") == twitch.TwitchLive(False)
+    assert tokens == ["first", "second"]
+    client.post("/settings/twitch/remove")
+    assert not checker.configured and not bouncer.twitch.configured
 
 
 def test_links_that_are_livestreams():
