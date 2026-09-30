@@ -16,7 +16,7 @@ thread) and quotes, and reposts: about 45 a second, some 0.6 times as much
 again as the posts (a choice on the Trending page, on unless turned off);
 with likes counted from the stream too (another choice there), likes come as
 well: about 150 a second, another 3.4 GB a day.
-Of the posts themselves it keeps only those with a followed hashtag:
+Of the full posts themselves it keeps only those with a followed hashtag:
 
 1. A new post (not a reply: replies belong under their post) with a followed
    hashtag, in its text or beside it, is noted with the first such hashtag.
@@ -30,6 +30,9 @@ Of the posts themselves it keeps only those with a followed hashtag:
 3. Where the stream got to is saved now and then. Reconnecting, or starting
    again, carries on from there if that's under an hour ago, so a short
    outage misses nothing.
+
+Likely livestream links are also kept briefly for Live, without fetching the
+post or waiting for it to trend.
 
 The events are asked for compressed (zstd, each one on its own, with a
 dictionary Jetstream publishes, which roughly halves the traffic). ThreadBNC
@@ -298,21 +301,33 @@ class BlueskyStream:
                     self._save(last)
 
     def _take(self, text: str, tags: set[str], counting: bool) -> None:
-        """One event: noted if it's a post with a followed hashtag, and counted."""
-        if not counting and "#tag" not in text and '"tags"' not in text:  # most have no hashtag: not worth reading
-            return
+        """One event: note stream links and followed hashtags, and count it."""
         event = _event(text)
         if event is None:
             return
         hit = tagged(event, tags)
         if hit:
             self._noted[hit[0]] = hit[1]
+        when = event.get("time_us")
+        if counting and isinstance(when, int):
+            if when <= self._counted_to:  # read again, after connecting again
+                return
+            self._counted_to = when
+        made = _created(event, POST)
+        if made is not None:
+            commit, record = made
+            text_body = record.get("text") if isinstance(record.get("text"), str) else ""
+            links = trends.bluesky_links(record)
+            if links or "http" in text_body:
+                uri = f"at://{event['did']}/{POST}/{commit['rkey']}"
+                view = {"url": web_url(uri), "text": text_body[:3000], "handle": event["did"],
+                        "author_url": f"https://bsky.app/profile/{event['did']}",
+                        "link": links[0][0] if links else None,
+                        "link_title": links[0][1] if links else None, "lang": trends.record_lang(record)}
+                created = parse_ts(record.get("createdAt")) if isinstance(record.get("createdAt"), str) else None
+                trends.record_live_mention(self.db, "bluesky", uri,
+                                           trends.fmt_ts(created) if created else trends.post_time(uri), view, links)
         if counting:
-            when = event.get("time_us")
-            if isinstance(when, int):
-                if when <= self._counted_to:  # read again, after connecting again
-                    return
-                self._counted_to = when
             count(event, self.tally)
 
     def _decode(self, raw: str | bytes) -> str | None:

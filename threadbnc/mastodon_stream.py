@@ -20,6 +20,8 @@ What arrives is used for:
    totals (likes, replies, boosts) of the posts most replied to and boosted
    are read from your server now and then, CHECK_POSTS at a time in one
    request, CHECK_EVERY apart.
+3. Live: likely livestream links are kept briefly as they arrive, including
+   posts too quiet to have their totals read for Trending.
 
 Whether or not you listen, the server of the first Mastodon account signed in
 (the one that likes and replies) is asked:
@@ -455,7 +457,11 @@ class MastodonStream:
         account = status.get("account") if isinstance(status.get("account"), dict) else {}
         author = account.get("url") or account.get("acct")
         lang = languages.normalize(status.get("language"))
-        self.tally.post(status_links(status), status_tags(status), author, lang)
+        links = status_links(status)
+        self.tally.post(links, status_tags(status), author, lang)
+        if status.get("id") and (links or "http" in (status.get("content") or "")):
+            trends.record_live_mention(self.bouncer.db, "mastodon", f"{domain}/{status['id']}",
+                                       fmt_created(status), status_view(status, domain), links)
         if not reply_to and status.get("visibility", "public") == "public":
             tag = next((t for t in status_tags(status) if t in tags), None)
             if tag and not self.bouncer._existing_thread(status["uri"]):

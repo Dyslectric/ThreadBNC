@@ -759,6 +759,20 @@ CREATE INDEX IF NOT EXISTS stream_posts_by_likes ON stream_posts(COALESCE(likes,
 CREATE INDEX IF NOT EXISTS stream_posts_by_replies ON stream_posts(COALESCE(replies, replies_seen) DESC, created_at DESC) WHERE view_json IS NOT NULL AND gone=0;
 CREATE INDEX IF NOT EXISTS stream_posts_by_reposts ON stream_posts(COALESCE(reposts, reposts_seen) DESC, created_at DESC) WHERE view_json IS NOT NULL AND gone=0;
 
+-- Stream links noticed directly in the public firehoses, including posts too
+-- quiet to be fetched for Trending. Kept separately from Trending's post ranks.
+CREATE TABLE IF NOT EXISTS live_mentions (
+    source TEXT NOT NULL,
+    ref TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    key TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    view_json TEXT NOT NULL,
+    lang TEXT,
+    PRIMARY KEY (source, ref, kind, key)
+);
+CREATE INDEX IF NOT EXISTS live_mentions_recent ON live_mentions(created_at DESC);
+
 -- Mastodon posts' refs on your server, by ActivityPub id: a boost FediBuzz
 -- carries names the post by that alone, and is counted under its ref once known.
 CREATE TABLE IF NOT EXISTS stream_refs (

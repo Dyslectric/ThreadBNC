@@ -468,6 +468,7 @@ def tidy(db: Database, now: str | None = None) -> int:
                    "AND first_seen_at < ? AND checked_at IS NULL)",
                    (fmt_ts(moment - KEEP_POSTS), QUIET_SEEN, fmt_ts(moment - QUIET_AFTER)), also=("stream_post_media",))
     with db.transaction(exclusive=False) as conn:  # (a few hundred: the posts your server was asked about)
+        conn.execute("DELETE FROM live_mentions WHERE created_at < ?", (fmt_ts(moment - STREAM_RECENT),))
         conn.execute("DELETE FROM stream_refs WHERE NOT EXISTS (SELECT 1 FROM stream_posts p "
                      "WHERE p.source=stream_refs.source AND p.ref=stream_refs.ref)")
     return gone
@@ -1373,6 +1374,39 @@ def likely_live_stream(view: dict[str, Any], owncast_hosts: set[str],
     return None
 
 
+def record_live_mention(db: Database, source: str, ref: str, created_at: str | None,
+                        view: dict[str, Any], links: list[tuple[str, str | None, str | None]]) -> None:
+    """Keep a likely stream link straight from a public stream, regardless of engagement."""
+    if not created_at or not ref or source not in SOURCES:
+        return
+    urls = [*links, *((url, None, None) for url in _TEXT_URL.findall(view.get("text") or ""))]
+    for url, title, _ in urls:
+        if not isinstance(url, str):
+            continue
+        candidate = {**view, "link": url,
+                     "link_title": title or (view.get("link_title") if url == view.get("link") else None)}
+        try:
+            stream = likely_live_stream(candidate, set(), check_twitch=True)
+            if stream is None and _LIVE_WORDS.search(f"{candidate.get('text') or ''} {title or ''}"):
+                host = urlparse(url).hostname
+                if host:
+                    with db.connect() as conn:
+                        row = conn.execute("SELECT 1 FROM owncast_hosts WHERE host=? AND is_owncast=1",
+                                           (host.lower(),)).fetchone()
+                    if row:
+                        stream = likely_live_stream(candidate, {host.lower()}, check_twitch=True)
+        except ValueError:  # an invalid URL in a public post must not stop its firehose
+            continue
+        if stream is None or stream.kind == "twitch-video":
+            continue
+        with db.transaction(exclusive=False) as conn:
+            conn.execute("INSERT INTO live_mentions(source, ref, kind, key, created_at, view_json, lang) "
+                         "VALUES (?,?,?,?,?,?,?) ON CONFLICT(source, ref, kind, key) DO UPDATE SET "
+                         "view_json=excluded.view_json, lang=excluded.lang",
+                         (source, ref, stream.kind, stream.key, created_at, json.dumps(candidate),
+                          languages.normalize(candidate.get("lang"))))
+
+
 def live_posts(conn: Conn, sort: str = "likes", source: str | None = None, page: int = 1,
                per_page: int = 25, now: str | None = None, query: str = "", newest: bool = False,
                codes: list[str] | tuple[str, ...] = (), twitch_enabled: bool = False,
@@ -1390,8 +1424,10 @@ def live_posts(conn: Conn, sort: str = "likes", source: str | None = None, page:
     if source in SOURCES:
         where += " AND source=?"
         params.append(source)
-    rows = conn.execute("SELECT * FROM stream_posts WHERE view_json IS NOT NULL AND gone=0 "
-                        f"AND created_at >= ?{where}", params).fetchall()
+    rows = [*conn.execute("SELECT * FROM stream_posts WHERE view_json IS NOT NULL AND gone=0 "
+                          f"AND created_at >= ?{where}", params).fetchall(),
+            *conn.execute("SELECT * FROM live_mentions WHERE created_at >= ?" + where,
+                          params).fetchall()]
     hosts = {r["host"] for r in conn.execute("SELECT host FROM owncast_hosts WHERE is_owncast=1")}
     checked = livestream.current_statuses(conn, fmt_ts(moment))
     needle = query.strip().casefold()[:100]
@@ -1402,7 +1438,9 @@ def live_posts(conn: Conn, sort: str = "likes", source: str | None = None, page:
             view = json.loads(r["view_json"])
         except (TypeError, ValueError):
             continue
-        stream = likely_live_stream(view, hosts, check_twitch=twitch_enabled)
+        item = dict(r)
+        stream = (livestream.from_key(item["kind"], item["key"]) if "kind" in item else
+                  likely_live_stream(view, hosts, check_twitch=twitch_enabled))
         if not stream or stream.kind not in selected:
             continue
         if stream.kind == "twitch":
@@ -1428,16 +1466,15 @@ def live_posts(conn: Conn, sort: str = "likes", source: str | None = None, page:
                     continue
             elif needle not in haystack:
                 continue
-        item = dict(r)
         item["view"], item["stream"] = view, stream
         item["verified"] = bool(status and status["status"] == "live")
         item["viewer_count"] = status["viewer_count"] if item["verified"] else None
         item["thumbnail"] = livestream_thumbnail(stream, status)
         if item["verified"] and status["video_id"]:
             item["stream"] = livestream.Stream("youtube", status["video_id"])
-        item["likes"] = r["likes"] if r["likes"] is not None else r["likes_seen"]
-        item["replies"] = r["replies"] if r["replies"] is not None else r["replies_seen"]
-        item["reposts"] = r["reposts"] if r["reposts"] is not None else r["reposts_seen"]
+        item["likes"] = item.get("likes") if item.get("likes") is not None else item.get("likes_seen", 0)
+        item["replies"] = item.get("replies") if item.get("replies") is not None else item.get("replies_seen", 0)
+        item["reposts"] = item.get("reposts") if item.get("reposts") is not None else item.get("reposts_seen", 0)
         item["key"] = post_key(r["source"], r["ref"])
         matches.append(item)
     if newest:

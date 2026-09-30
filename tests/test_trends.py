@@ -1354,6 +1354,36 @@ def test_likely_live_streams_are_recent_ranked_and_searchable(settings, bouncer)
     assert 'href="/live/youtube/bcdefghijkl"' in web_client.get("/live").text
 
 
+def test_firehoses_keep_quiet_stream_links_for_live(settings, bouncer, listening):  # noqa: F811
+    from threadbnc.fedibuzz import FediBuzzStream
+
+    listening._take(event(POST, post("We're live", link="https://www.youtube.com/live/abcdefghijk")),
+                    set(), False)
+    mastodon = mastodon_stream.MastodonStream.__new__(mastodon_stream.MastodonStream)
+    mastodon.bouncer, mastodon.tally = bouncer, trends.Tally("mastodon")
+    mastodon.take(update(masto_status("901", 'On air <a href="https://www.youtube.com/live/bcdefghijkl">watch</a>')),
+                  set(), HOME)
+    buzz = FediBuzzStream(bouncer, mastodon.tally, "test")
+    buzz.take(json.dumps(masto_status("902", 'Streaming <a href="https://youtu.be/cdefghijklm">here</a>')))
+
+    assert rows(bouncer, "SELECT * FROM stream_posts") == []  # none needed Trending's detail fetch
+    assert len(rows(bouncer, "SELECT * FROM live_mentions")) == 3
+    with bouncer.db.connect() as conn:
+        found, more = trends.live_posts(conn)
+    assert not more
+    assert {p["stream"].key for p in found} == {"abcdefghijk", "bcdefghijkl", "cdefghijklm"}
+    assert all(p["likes"] == 0 for p in found)
+    page = TestClient(create_app(settings, bouncer))
+    page.post("/login", data={"password": "pw"})
+    assert "abcdefghijk" in page.get("/live").text
+    assert "cdefghijklm" in page.get("/live").text and "on FediBuzz" in page.get("/live").text
+
+    with bouncer.db.transaction(exclusive=False) as conn:
+        livestream.save_live_check(conn, "youtube-video", "bcdefghijkl", livestream.OwncastLive(False), fmt_ts(datetime.now(timezone.utc)))
+        hidden, _ = trends.live_posts(conn)
+    assert "bcdefghijkl" not in {p["stream"].key for p in hidden}
+
+
 def test_offline_shared_streams_are_queued_to_check_again(bouncer):  # noqa: F811
     now = fmt_ts(datetime.now(timezone.utc))
     with bouncer.db.transaction(exclusive=False) as conn:

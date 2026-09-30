@@ -16,8 +16,9 @@ once. Boosts are counted for the post boosted, named by its ActivityPub id
 asked about the most boosted (mastodon_stream.MastodonStream.resolve) for
 their likes and replies. Replies aren't counted: the post one answers is
 named only by an id on whichever server FediBuzz heard it from, which it
-doesn't say. Nothing is captured or kept, and posts made while it's down are
-missed (Mastodon's streams can't carry on from where they left off)."""
+doesn't say. Likely livestream links are kept briefly for Live; other posts
+aren't captured. Posts made while it's down are missed (Mastodon's streams
+can't carry on from where they left off)."""
 
 from __future__ import annotations
 
@@ -34,7 +35,7 @@ import httpx
 
 from . import languages, trends
 from .db import utcnow
-from .mastodon_stream import fmt_created, status_links, status_tags
+from .mastodon_stream import fmt_created, status_links, status_tags, status_view
 from .traffic import record
 
 log = logging.getLogger(__name__)
@@ -171,7 +172,12 @@ class FediBuzzStream:
         account = status.get("account") if isinstance(status.get("account"), dict) else {}
         author = account.get("url") or account.get("uri") or account.get("acct")
         lang = languages.normalize(status.get("language"))
-        self.tally.post(status_links(status), status_tags(status), author, lang)
+        links = status_links(status)
+        self.tally.post(links, status_tags(status), author, lang)
+        if links or "http" in (status.get("content") or ""):
+            trends.record_live_mention(self.db, "mastodon", status["uri"], fmt_created(status),
+                                       {**status_view(status, urlparse(status["uri"]).netloc), "via": "FediBuzz"},
+                                       links)
 
     def start_thread(self) -> threading.Thread:
         t = threading.Thread(target=self.run_forever, name="fedibuzz-stream", daemon=True)

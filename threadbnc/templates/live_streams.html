@@ -5,7 +5,7 @@
 <div class="articles-page">
   <header class="feed-head articles-head">
     <h1>{{ icon('video', 'title-icon') }} Live streams</h1>
-    <p class="muted">Live YouTube channels you follow, plus streams linked in recent posts. Broadcast status and viewer counts are checked while you use this page.</p>
+    <p class="muted">Live YouTube channels you follow, plus streams linked in recent Bluesky, Mastodon, and FediBuzz posts from sources you're listening to. Choose them under <a href="/trending">Trending → Sources</a>. Broadcast status and viewer counts are checked while you use this page.</p>
     {% if not twitch_configured and 'twitch' in services %}<p class="small muted">Add a Twitch client ID and secret in <a href="/accounts#twitch">Accounts</a> to show Twitch streams here.</p>{% endif %}
   </header>
   <form method="get" action="/live" role="search" class="feed-controls">
@@ -43,7 +43,7 @@
         <span class="pill {{ 'good' if p.verified }}">{{ 'Verified live' if p.verified else 'Likely live' }}</span>
         <span class="pill">{{ p.stream.site }}</span>
         {% if p.viewer_count is not none %}<span>{{ '{:,}'.format(p.viewer_count) }} watching</span>{% endif %}
-        <span class="muted">{{ when(p.created_at) }} on {{ 'Bluesky' if p.source == 'bluesky' else 'Mastodon' }}</span>
+        <span class="muted">{{ when(p.created_at) }} on {{ v.via or ('Bluesky' if p.source == 'bluesky' else 'Mastodon') }}</span>
       </div>
       <h2 class="pc-title"><a href="{{ p.stream.href }}">{{ v.link_title or v.text or p.stream.key }}</a></h2>
       {% if v.link_title and v.text %}<p class="pc-excerpt">{{ v.text }}</p>{% endif %}
