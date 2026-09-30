@@ -1411,9 +1411,9 @@ def live_posts(conn: Conn, sort: str = "likes", source: str | None = None, page:
                per_page: int = 25, now: str | None = None, query: str = "", newest: bool = False,
                codes: list[str] | tuple[str, ...] = (), twitch_enabled: bool = False,
                services: set[str] | None = None) -> tuple[list[dict[str, Any]], bool]:
-    """Likely active streams linked by posts from the last day.
+    """Verified active streams linked by posts from the last day.
 
-    Trending ranks each stream by its strongest post; Live shows its newest mention.
+    Candidate broadcasts are queued for checking even before they can be shown.
     Filtering and pagination follow detection, so sparse pages are not skipped.
     """
     moment = parse_ts(now or utcnow()) or datetime.now(timezone.utc)
@@ -1446,16 +1446,12 @@ def live_posts(conn: Conn, sort: str = "likes", source: str | None = None, page:
         if stream.kind == "twitch":
             if not twitch_enabled:
                 continue
-            livestream.register_live_checks(conn, [("twitch", stream.key)])
         kind = ("youtube-channel" if stream.is_channel else "youtube-video") if stream.kind == "youtube" \
             else "owncast" if stream.kind == "owncast" else "twitch" if stream.kind == "twitch" else None
-        status = checked.get((kind, stream.key)) if kind else None
-        if status and status["status"] == "offline" and kind in ("youtube-channel", "youtube-video", "owncast"):
-            # An offline answer hides the post, so the page cannot queue this stream later.
+        if kind:
             livestream.register_live_checks(conn, [(kind, stream.key)])
-        if stream.kind == "twitch" and (not status or status["status"] != "live"):
-            continue
-        if status and status["status"] == "offline":
+        status = checked.get((kind, stream.key)) if kind else None
+        if not status or status["status"] != "live":
             continue
         if needle:
             haystack = f"{view.get('text') or ''} {view.get('link_title') or ''} {stream.key} " \
@@ -1467,8 +1463,8 @@ def live_posts(conn: Conn, sort: str = "likes", source: str | None = None, page:
             elif needle not in haystack:
                 continue
         item["view"], item["stream"] = view, stream
-        item["verified"] = bool(status and status["status"] == "live")
-        item["viewer_count"] = status["viewer_count"] if item["verified"] else None
+        item["verified"] = True
+        item["viewer_count"] = status["viewer_count"]
         item["thumbnail"] = livestream_thumbnail(stream, status)
         if item["verified"] and status["video_id"]:
             item["stream"] = livestream.Stream("youtube", status["video_id"])
@@ -1477,7 +1473,10 @@ def live_posts(conn: Conn, sort: str = "likes", source: str | None = None, page:
         item["reposts"] = item.get("reposts") if item.get("reposts") is not None else item.get("reposts_seen", 0)
         item["key"] = post_key(r["source"], r["ref"])
         matches.append(item)
-    if newest:
+    if sort == "viewers" and not newest:
+        matches.sort(key=lambda i: (i["viewer_count"] is not None, i["viewer_count"] or 0,
+                                    i["created_at"] or "", i["key"]), reverse=True)
+    elif newest:
         matches.sort(key=lambda i: (i["created_at"] or "", i["key"]), reverse=True)
     else:
         matches.sort(key=lambda i: (i.get(sort if sort in POST_SORTS else "likes") or 0,

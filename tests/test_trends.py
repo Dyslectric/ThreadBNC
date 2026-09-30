@@ -1369,6 +1369,10 @@ def test_likely_live_streams_are_recent_ranked_and_searchable(settings, bouncer)
             at("3kvod"): {"likes": 70, "replies": 70, "reposts": 70, "created_at": stamp(hours=-1),
                          "view": view("Live replay #art", "https://twitch.tv/videos/1234")}}, [], now)
         livestream.save_live_check(conn, "twitch", "alice", twitch.TwitchLive(True, viewer_count=17), now)
+        livestream.save_live_check(conn, "youtube-video", "abcdefghijk",
+                                   livestream.OwncastLive(True, viewer_count=8), now)
+        livestream.save_live_check(conn, "youtube-video", "bcdefghijkl",
+                                   livestream.OwncastLive(True, viewer_count=40), now)
         liked, more = trends.live_posts(conn, twitch_enabled=True)
         replied, _ = trends.live_posts(conn, sort="replies", twitch_enabled=True)
         searched, _ = trends.live_posts(conn, query="#art", twitch_enabled=True)
@@ -1382,22 +1386,20 @@ def test_likely_live_streams_are_recent_ranked_and_searchable(settings, bouncer)
     web_client = TestClient(create_app(settings, bouncer))
     bouncer.twitch_credentials.save("test", "test")
     web_client.post("/login", data={"password": "pw"})
-    trend = web_client.get("/trending/livestreams", params={"sort": "replies"}).text
-    assert "Livestreams" in trend and "past day" in trend
-    assert trend.index("Open Twitch stream") < trend.index("Open YouTube stream")
-    assert 'href="/live/youtube/bcdefghijkl"' in trend
-    assert 'src="/live/thumbnail/youtube/abcdefghijk"' in trend
-    only_youtube = web_client.get("/trending/livestreams", params={"yt": "1", "tw": "0", "oc": "0"}).text
-    assert "Open YouTube stream" in only_youtube and "Open Twitch stream" not in only_youtube
-    checked_youtube = web_client.get("/trending/livestreams", params=[("yt", "0"), ("yt", "1"),
-                                                                      ("tw", "0"), ("oc", "0")]).text
-    assert "Open YouTube stream" in checked_youtube  # hidden fallback precedes a checked box
+    assert web_client.get("/trending/livestreams").status_code == 404
+    assert 'href="/trending/livestreams"' not in web_client.get("/trending").text
     live = web_client.get("/live", params={"q": "#art"}).text
     assert 'aria-current="page"' in live and "We&#39;re live #art" in live
     assert "Live #music" not in live and "Stream ended" not in live
     assert "17 watching" in live
+    assert 'class="button secondary live-link live-toggle"' in live
+    assert 'aria-expanded="false"' in live
     assert "Twitch" not in web_client.get("/live", params={"q": "#art", "yt": "0", "tw": "0", "oc": "1"}).text.split("Shared streams", 1)[1]
-    assert 'href="/live/youtube/bcdefghijkl"' in web_client.get("/live").text
+    all_live = web_client.get("/live").text
+    assert 'href="/live/youtube/bcdefghijkl"' in all_live
+    assert all_live.index("Streaming now #news") < all_live.index("We&#39;re live #art") < all_live.index("Live #music")
+    newest = web_client.get("/live", params={"sort": "newest"}).text
+    assert newest.index("We&#39;re live #art") < newest.index("Live #music") < newest.index("Streaming now #news")
 
 
 def test_firehoses_keep_quiet_stream_links_for_live(settings, bouncer, listening):  # noqa: F811
@@ -1417,6 +1419,15 @@ def test_firehoses_keep_quiet_stream_links_for_live(settings, bouncer, listening
     with bouncer.db.connect() as conn:
         found, more = trends.live_posts(conn)
     assert not more
+    assert found == []  # words and links alone do not establish a live broadcast
+    with bouncer.db.connect() as conn:
+        assert {r["key"] for r in conn.execute("SELECT key FROM live_checks")} >= {
+            "abcdefghijk", "bcdefghijkl", "cdefghijklm"}
+    with bouncer.db.transaction(exclusive=False) as conn:
+        for video_id in ("abcdefghijk", "bcdefghijkl", "cdefghijklm"):
+            livestream.save_live_check(conn, "youtube-video", video_id,
+                                       livestream.OwncastLive(True), fmt_ts(datetime.now(timezone.utc)))
+        found, more = trends.live_posts(conn)
     assert {p["stream"].key for p in found} == {"abcdefghijk", "bcdefghijkl", "cdefghijklm"}
     assert all(p["likes"] == 0 for p in found)
     page = TestClient(create_app(settings, bouncer))

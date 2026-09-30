@@ -98,7 +98,6 @@
       <h1>{{ icon('trending', 'title-icon') }} Trending</h1>
       <p class="muted small">
         {%- if tab == 'loops' %} The videos posted on Bluesky and Mastodon that are liked and talked about most, one to a screen: scroll up to the next.
-        {%- elif tab == 'livestreams' %} Streams linked by the most liked, commented on, or reposted recent posts.
         {%- elif tab == 'posts' %} What's liked and talked about most on Bluesky and Mastodon, from their streams.
         {%- elif tab == 'tags' %} The hashtags used in the most posts on Bluesky and Mastodon, and those rising.
         {%- else %} The pages posted most on Bluesky, on Mastodon and in your archive, and those rising.{% endif %}</p>
@@ -175,7 +174,6 @@
   <nav class="tabs" aria-label="Trending">
     <a href="/trending" class="{{ 'on' if tab == 'posts' }}" {% if tab == 'posts' %}aria-current="page"{% endif %}>{{ icon('comment') }} Posts</a>
     <a href="/trending/loops" class="{{ 'on' if tab == 'loops' }}" {% if tab == 'loops' %}aria-current="page"{% endif %}>{{ icon('loops') }} Loops</a>
-    <a href="/trending/livestreams" class="{{ 'on' if tab == 'livestreams' }}" {% if tab == 'livestreams' %}aria-current="page"{% endif %}>{{ icon('video') }} Livestreams</a>
     <a href="/trending/articles" class="{{ 'on' if tab == 'articles' }}" {% if tab == 'articles' %}aria-current="page"{% endif %}>{{ icon('article') }} Articles</a>
     <a href="/trending/tags" class="{{ 'on' if tab == 'tags' }}" {% if tab == 'tags' %}aria-current="page"{% endif %}>{{ icon('communities') }} Tags</a>
   </nav>
@@ -203,8 +201,8 @@
     {% else %}<span class="pill muted">Mastodon</span> not subscribed.{% endif %}
   </p>
 
-{% if tab in ('posts', 'loops', 'livestreams') %}
-  {% set here = '/trending/loops' if tab == 'loops' else '/trending/livestreams' if tab == 'livestreams' else '/trending' %}
+{% if tab in ('posts', 'loops') %}
+  {% set here = '/trending/loops' if tab == 'loops' else '/trending' %}
   {% set base = q(here, {}) %}
   <div class="feed-controls article-controls">
     <nav class="seg" aria-label="Rank by">
@@ -214,13 +212,12 @@
            {% if sort == key %}aria-current="page"{% endif %}>{{ label }}</a>
       {% endfor %}
     </nav>
-    {% if tab == 'livestreams' %}<p class="small muted">Linked in the past day. Broadcast status is checked while this page is used.</p>
-    {% else %}<nav class="seg" aria-label="Posted in the past">
+    <nav class="seg" aria-label="Posted in the past">
       {% for key, label in [('hour', 'Hour'), ('day', 'Day'), ('week', 'Week')] %}
         <a href="{{ q(here, {'t': key}) }}" class="{{ 'on' if window == key }}"
            {% if window == key %}aria-current="page"{% endif %}>{{ label }}</a>
       {% endfor %}
-    </nav>{% endif %}
+    </nav>
     <nav class="seg" aria-label="Where">
       {% for key, label in [('all', 'Both'), ('bluesky', 'Bluesky'), ('mastodon', 'Mastodon')] %}
         <a href="{{ q(here, {'src': key}) }}" class="{{ 'on' if source == key }}"
@@ -229,20 +226,6 @@
     </nav>
     {{ language_seg(here) }}
   </div>
-  {% if tab == 'livestreams' %}
-  <form method="get" action="/trending/livestreams" class="feed-controls stream-filter">
-    <input type="hidden" name="sort" value="{{ sort }}"><input type="hidden" name="src" value="{{ source }}">
-    {% if langs.all %}<input type="hidden" name="lang" value="all">{% endif %}
-    <fieldset class="stream-services"><legend class="sr-only">Stream services</legend>
-      <input type="hidden" name="yt" value="0"><label><input type="checkbox" name="yt" value="1" {{ 'checked' if 'youtube' in services }}> YouTube</label>
-      <input type="hidden" name="tw" value="0"><label><input type="checkbox" name="tw" value="1" {{ 'checked' if 'twitch' in services }}> Twitch</label>
-      <input type="hidden" name="oc" value="0"><label><input type="checkbox" name="oc" value="1" {{ 'checked' if 'owncast' in services }}> Owncast</label>
-    </fieldset>
-    <button class="small secondary">Apply</button>
-  </form>
-  {% if 'twitch' in services and not twitch_configured %}<p class="small muted">Add a Twitch client ID and secret in <a href="/accounts#twitch">Accounts</a> to show Twitch streams.</p>{% endif %}
-  {% endif %}
-
   {# Each post as on Mastodon or Bluesky (the feed's timeline view): who posted it, then all of it. #}
   {% if tab == 'loops' and posts %}
   {# The Loops view (style.css, app.js watchLoops): a video to a screen, each one playing while it's the one shown. #}
@@ -299,10 +282,6 @@
             {% if p.created_at %}<span title="{{ p.created_at | absolute }}">{{ when(p.created_at) }}</span>{% endif %}</span>
         </div>
         {% set content %}
-        {% if tab == 'livestreams' %}
-        <p class="small"><span class="pill {{ 'good' if p.verified }}">{{ 'Verified live' if p.verified else 'Likely live' }}</span> <a href="{{ p.stream.href }}">Open {{ p.stream.site }} stream</a>{% if p.viewer_count is not none %} · {{ '{:,}'.format(p.viewer_count) }} watching{% endif %}</p>
-        {% if p.thumbnail and (not p.pictures or p.thumbnail.startswith('/live/thumbnail/')) %}<a class="trend-live-thumb" href="{{ p.stream.href }}"><img src="{{ p.thumbnail }}" alt="" loading="lazy"></a>{% endif %}
-        {% endif %}
         <p class="trend-text st-text">{{ v.text or '(no text)' }}</p>
         {% if v.link and v.link | safe_url %}
           {% set box = link_box(v.link) %}
@@ -370,7 +349,6 @@
   {% if not posts %}
     <section class="card empty"><p class="muted">
       {%- if not (st.bluesky and st.chosen.bluesky) and not st.mastodon_scope and not st.mastodon_account %}Nothing is counted: choose where from under Sources.
-      {%- elif tab == 'livestreams' %}No likely live streams were found in posts from the past day.
       {%- else %}Nothing yet. Posts show here once their likes and replies have been read, a few minutes after
       people start replying to them.{% endif %}</p></section>
   {% endif %}
