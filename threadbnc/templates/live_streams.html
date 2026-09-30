@@ -6,7 +6,7 @@
   <header class="feed-head articles-head">
     <h1>{{ icon('video', 'title-icon') }} Live streams</h1>
     <p class="muted">Live YouTube channels you follow, plus streams linked in recent posts. Broadcast status and viewer counts are checked while you use this page.</p>
-    {% if not twitch_configured and 'twitch' in services %}<p class="small muted">Twitch streams require <code>THREADBNC_TWITCH_CLIENT_ID</code> and <code>THREADBNC_TWITCH_CLIENT_SECRET</code> to appear here.</p>{% endif %}
+    {% if not twitch_configured and 'twitch' in services %}<p class="small muted">Add a Twitch client ID and secret in <a href="/settings">Settings</a> to show Twitch streams here.</p>{% endif %}
   </header>
   <form method="get" action="/live" role="search" class="feed-controls">
     <label for="live-query" class="sr-only">Search streams by keyword or tag</label>

@@ -240,7 +240,7 @@
     </fieldset>
     <button class="small secondary">Apply</button>
   </form>
-  {% if 'twitch' in services and not twitch_configured %}<p class="small muted">Twitch streams require <code>THREADBNC_TWITCH_CLIENT_ID</code> and <code>THREADBNC_TWITCH_CLIENT_SECRET</code>.</p>{% endif %}
+  {% if 'twitch' in services and not twitch_configured %}<p class="small muted">Add a Twitch client ID and secret in <a href="/settings">Settings</a> to show Twitch streams.</p>{% endif %}
   {% endif %}
 
   {# Each post as on Mastodon or Bluesky (the feed's timeline view): who posted it, then all of it. #}
