@@ -156,7 +156,9 @@ def test_inbox_pages(settings, server, bouncer):
     server.inboxes["dave"] = [reply_item(body="**Nice** post"), message_item()]
     r = client.post("/inbox/check", headers={"referer": "http://testserver/inbox"})
     assert "Checked. 2 new." in r.text
-    assert '<span class="count" aria-label="2 unread">2</span>' in client.get("/").text  # header count
+    home = client.get("/").text
+    assert 'aria-label="Inbox, 2 unread"' in home
+    assert '<span class="count" aria-hidden="true">2</span>' in home  # header count
     page = client.get("/inbox").text
     assert "<strong>Nice</strong> post" in page and "hey, got a minute?" in page
     assert f'href="/t/{tid}"' in page and "Reply to message" in page

@@ -1336,7 +1336,8 @@ _PAST_STREAM = re.compile(r"\b(?:replay|offline|stream ended|was live|recorded s
 _TEXT_URL = re.compile(r"https?://[^\s<>\"']+")
 
 
-def likely_live_stream(view: dict[str, Any], owncast_hosts: set[str]) -> livestream.Stream | None:
+def likely_live_stream(view: dict[str, Any], owncast_hosts: set[str],
+                       check_twitch: bool = False) -> livestream.Stream | None:
     """A recent post's stream link, when its address and words suggest a live broadcast.
 
     This is deliberately a heuristic: no remote player's current status is claimed.
@@ -1350,7 +1351,7 @@ def likely_live_stream(view: dict[str, Any], owncast_hosts: set[str]) -> livestr
         url = url.rstrip(".,;:!?)")
         stream = livestream.stream_of(url)
         if stream and stream.kind != "twitch-video":
-            if stream.kind == "youtube" or _LIVE_WORDS.search(words):
+            if stream.kind == "youtube" or (stream.kind == "twitch" and check_twitch) or _LIVE_WORDS.search(words):
                 return stream
         elif _LIVE_WORDS.search(words):
             host = urlparse(url).hostname
@@ -1361,7 +1362,8 @@ def likely_live_stream(view: dict[str, Any], owncast_hosts: set[str]) -> livestr
 
 def live_posts(conn: Conn, sort: str = "likes", source: str | None = None, page: int = 1,
                per_page: int = 25, now: str | None = None, query: str = "", newest: bool = False,
-               codes: list[str] | tuple[str, ...] = ()) -> tuple[list[dict[str, Any]], bool]:
+               codes: list[str] | tuple[str, ...] = (), twitch_enabled: bool = False,
+               services: set[str] | None = None) -> tuple[list[dict[str, Any]], bool]:
     """Likely active streams linked by posts from the last six hours.
 
     Trending ranks each stream by its strongest post; Live shows its newest mention.
@@ -1378,18 +1380,33 @@ def live_posts(conn: Conn, sort: str = "likes", source: str | None = None, page:
     rows = conn.execute("SELECT * FROM stream_posts WHERE view_json IS NOT NULL AND gone=0 "
                         f"AND created_at >= ?{where}", params).fetchall()
     hosts = {r["host"] for r in conn.execute("SELECT host FROM owncast_hosts WHERE is_owncast=1")}
+    checked = livestream.current_statuses(conn, fmt_ts(moment))
     needle = query.strip().casefold()[:100]
+    selected = services if services is not None else {"youtube", "twitch", "owncast"}
     matches = []
     for r in rows:
         try:
             view = json.loads(r["view_json"])
         except (TypeError, ValueError):
             continue
-        stream = likely_live_stream(view, hosts)
-        if not stream:
+        stream = likely_live_stream(view, hosts, check_twitch=twitch_enabled)
+        if not stream or stream.kind not in selected:
+            continue
+        if stream.kind == "twitch":
+            if not twitch_enabled:
+                continue
+            livestream.register_live_checks(conn, [("twitch", stream.key)])
+        kind = ("youtube-channel" if stream.is_channel else "youtube-video") if stream.kind == "youtube" \
+            else "owncast" if stream.kind == "owncast" else "twitch" if stream.kind == "twitch" else None
+        status = checked.get((kind, stream.key)) if kind else None
+        if stream.kind == "twitch" and (not status or status["status"] != "live"):
+            continue
+        if status and status["status"] == "offline":
             continue
         if needle:
-            haystack = f"{view.get('text') or ''} {view.get('link_title') or ''} {stream.key}".casefold()
+            haystack = f"{view.get('text') or ''} {view.get('link_title') or ''} {stream.key} " \
+                       f"{status['title'] if status else ''}"
+            haystack = haystack.casefold()
             if needle.startswith("#") and " " not in needle:
                 if not re.search(r"(?<!\w)" + re.escape(needle) + r"(?!\w)", haystack):
                     continue
@@ -1397,6 +1414,11 @@ def live_posts(conn: Conn, sort: str = "likes", source: str | None = None, page:
                 continue
         item = dict(r)
         item["view"], item["stream"] = view, stream
+        item["verified"] = bool(status and status["status"] == "live")
+        item["viewer_count"] = status["viewer_count"] if item["verified"] else None
+        item["thumbnail"] = livestream_thumbnail(stream, status)
+        if item["verified"] and status["video_id"]:
+            item["stream"] = livestream.Stream("youtube", status["video_id"])
         item["likes"] = r["likes"] if r["likes"] is not None else r["likes_seen"]
         item["replies"] = r["replies"] if r["replies"] is not None else r["replies_seen"]
         item["reposts"] = r["reposts"] if r["reposts"] is not None else r["reposts_seen"]
@@ -1418,10 +1440,26 @@ def live_posts(conn: Conn, sort: str = "likes", source: str | None = None, page:
     shown = pictures_of(conn, [(i["source"], i["ref"]) for i in out])
     for item in out:
         item["pictures"], item["pictures_waiting"] = shown.get((item["source"], item["ref"]), ([], False))
+        if not item["thumbnail"] and item["pictures"]:
+            item["thumbnail"] = f"/media/{item['pictures'][0]}"
         view = item["view"]
         item["pictures_waiting"] = item["pictures_waiting"] or not item["pictures"] and (
             bool(view.get("images")) or unread_pictures(view))
     return out, len(matches) > start + per_page
+
+
+def livestream_thumbnail(stream: livestream.Stream, status: dict[str, Any] | None) -> str | None:
+    if stream.kind == "youtube":
+        video_id = status["video_id"] if status and status["status"] == "live" else None
+        if video_id and livestream.from_key("youtube", video_id):
+            return f"/live/thumbnail/youtube/{video_id}"
+        if not stream.is_channel:
+            return f"/live/thumbnail/youtube/{stream.key}"
+    if status and status["status"] == "live" and stream.kind == "owncast":
+        return f"/live/thumbnail/owncast/{stream.key}"
+    if status and status["status"] == "live" and stream.kind == "twitch" and status["thumbnail_url"]:
+        return f"/live/thumbnail/{stream.kind}/{stream.key}"
+    return None
 
 
 def unread_pictures(view: dict[str, Any]) -> bool:

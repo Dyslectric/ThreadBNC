@@ -706,7 +706,8 @@ def test_videos_saved_from_links_are_under_kept_videos(settings, server, bouncer
     page = client.get("/kept?tab=videos").text
     assert "Saved from links" in page and "saving…" in page
     assert '<a class="video-link" href="/youtube/v/dQw4w9WgXcQ">Never Gonna Give You Up</a>' in page
-    assert '<span class="count muted" aria-label="1 kept">1</span>' in page
+    assert 'aria-label="Videos, 1 kept"' in page
+    assert '<span class="count muted" aria-hidden="true">1</span>' in page
     bouncer.media.fetch_pending()
     m = video_media(bouncer)
     page = client.get("/kept?tab=videos").text
@@ -719,7 +720,8 @@ def test_videos_saved_from_links_are_under_kept_videos(settings, server, bouncer
     bouncer.ingest_url(f"https://{DOMAIN}/post/1")
     page = client.get("/kept?tab=videos").text
     assert "Saved from links" not in page and "neat video" in page
-    assert '<span class="count muted" aria-label="1 kept">1</span>' in page
+    assert 'aria-label="Videos, 1 kept"' in page
+    assert '<span class="count muted" aria-hidden="true">1</span>' in page
 
 
 def video_post(bouncer):
@@ -752,7 +754,8 @@ def test_a_video_saved_from_a_link_is_kept_as_its_channels_post(settings, bounce
     assert [u for u, _, _ in downloads] == [VIDEO]  # once: the post's video is the one asked for
     page = client.get("/kept?tab=videos").text
     assert "Saved from links" not in page and "Hello, world from a 6502" in page
-    assert '<span class="count muted" aria-label="1 kept">1</span>' in page
+    assert 'aria-label="Videos, 1 kept"' in page
+    assert '<span class="count muted" aria-hidden="true">1</span>' in page
     assert f'href="/t/{t["id"]}"' in client.get("/youtube/v/dQw4w9WgXcQ?pane=1").text
 
     # Following its channel later finds the same post, not another.

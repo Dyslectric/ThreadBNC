@@ -1,24 +1,48 @@
 {% extends "base.html" %}
-{% from "_macros.html" import icon, when %}
+{% from "_macros.html" import icon, when, veil %}
 {% block title %}Live streams{% endblock %}
 {% block content %}
 <div class="articles-page">
   <header class="feed-head articles-head">
     <h1>{{ icon('video', 'title-icon') }} Live streams</h1>
-    <p class="muted">Streams linked in the past six hours that look live from their link and post wording. Playback status is not checked.</p>
+    <p class="muted">Live YouTube channels you follow, plus streams linked in recent posts. Broadcast status and viewer counts are checked while you use this page.</p>
+    {% if not twitch_configured and 'twitch' in services %}<p class="small muted">Twitch streams require <code>THREADBNC_TWITCH_CLIENT_ID</code> and <code>THREADBNC_TWITCH_CLIENT_SECRET</code> to appear here.</p>{% endif %}
   </header>
   <form method="get" action="/live" role="search" class="feed-controls">
     <label for="live-query" class="sr-only">Search streams by keyword or tag</label>
     <input id="live-query" type="search" name="q" value="{{ q }}" placeholder="Search by keyword or #tag" maxlength="100">
+    <fieldset class="stream-services"><legend class="sr-only">Stream services</legend>
+      <input type="hidden" name="yt" value="0"><label><input type="checkbox" name="yt" value="1" {{ 'checked' if yt == '1' }}> YouTube</label>
+      <input type="hidden" name="tw" value="0"><label><input type="checkbox" name="tw" value="1" {{ 'checked' if tw == '1' }}> Twitch</label>
+      <input type="hidden" name="oc" value="0"><label><input type="checkbox" name="oc" value="1" {{ 'checked' if oc == '1' }}> Owncast</label>
+    </fieldset>
     <button>{{ icon('search') }} Search</button>
   </form>
+  {% if followed %}
+  <h2>Live from channels you follow</h2>
+  <div class="cards">
+    {% for f in followed %}
+    <article class="post-card">
+      {% if f.thumbnail %}<a class="thumb" href="{{ f.stream.href }}"><img src="{{ f.thumbnail }}" alt="" loading="lazy"></a>{% endif %}
+      <div class="pc-main">
+      <div class="pc-meta small"><span class="pill good">Verified live</span><span class="pill">YouTube</span><span>{{ f.name }}</span>{% if f.viewer_count is not none %}<span>{{ '{:,}'.format(f.viewer_count) }} watching</span>{% endif %}</div>
+      <h3 class="pc-title"><a href="{{ f.stream.href }}">{{ f.title }}</a></h3>
+      <p><a class="button secondary" href="{{ f.stream.href }}">{{ icon('play') }} Open stream</a></p>
+    </div></article>
+    {% endfor %}
+  </div>
+  {% endif %}
+  <h2>Shared streams</h2>
   <div class="cards" id="items" data-items>
     {% for p in streams %}
     {% set v = p.view %}
-    <article class="post-card" data-entry><div class="pc-main">
+    <article class="post-card" data-entry>
+      {% if p.thumbnail %}<a class="thumb" href="{{ p.stream.href }}"{{ veil(('Spoiler' if v.warning else 'NSFW') if v.sensitive) }}><img src="{{ p.thumbnail }}" alt="" loading="lazy"></a>{% endif %}
+      <div class="pc-main">
       <div class="pc-meta small">
-        <span class="pill good">Likely live</span>
+        <span class="pill {{ 'good' if p.verified }}">{{ 'Verified live' if p.verified else 'Likely live' }}</span>
         <span class="pill">{{ p.stream.site }}</span>
+        {% if p.viewer_count is not none %}<span>{{ '{:,}'.format(p.viewer_count) }} watching</span>{% endif %}
         <span class="muted">{{ when(p.created_at) }} on {{ 'Bluesky' if p.source == 'bluesky' else 'Mastodon' }}</span>
       </div>
       <h2 class="pc-title"><a href="{{ p.stream.href }}">{{ v.link_title or v.text or p.stream.key }}</a></h2>
@@ -27,13 +51,13 @@
       <p><a class="button secondary" href="{{ p.stream.href }}">{{ icon('play') }} Open stream</a></p>
     </div></article>
     {% else %}
-    <section class="card empty"><p class="muted">No likely live streams found{% if q %} for “{{ q }}”{% endif %} in the past six hours.</p></section>
+    {% if not followed %}<section class="card empty"><p class="muted">No live streams found{% if q %} for “{{ q }}”{% endif %} yet{% if not services %}; select a service to show streams{% endif %}.</p></section>{% endif %}
     {% endfor %}
   </div>
   {% if page > 1 or more %}
   <nav class="pager" aria-label="Pages">
-    {% if page > 1 %}<a href="/live{% if q %}?q={{ q | urlencode }}&{% else %}?{% endif %}page={{ page - 1 }}">Previous</a>{% endif %}
-    {% if more %}<a href="/live{% if q %}?q={{ q | urlencode }}&{% else %}?{% endif %}page={{ page + 1 }}">More</a>{% endif %}
+    {% if page > 1 %}<a href="/live?q={{ q | urlencode }}&yt={{ yt }}&tw={{ tw }}&oc={{ oc }}&page={{ page - 1 }}">Previous</a>{% endif %}
+    {% if more %}<a href="/live?q={{ q | urlencode }}&yt={{ yt }}&tw={{ tw }}&oc={{ oc }}&page={{ page + 1 }}">More</a>{% endif %}
   </nav>
   {% endif %}
 </div>

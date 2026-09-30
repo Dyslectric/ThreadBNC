@@ -214,7 +214,7 @@
            {% if sort == key %}aria-current="page"{% endif %}>{{ label }}</a>
       {% endfor %}
     </nav>
-    {% if tab == 'livestreams' %}<p class="small muted">Linked in the past six hours; likely live based on the link and post wording. Playback status is not checked.</p>
+    {% if tab == 'livestreams' %}<p class="small muted">Linked in the past six hours. Broadcast status is checked while this page is used.</p>
     {% else %}<nav class="seg" aria-label="Posted in the past">
       {% for key, label in [('hour', 'Hour'), ('day', 'Day'), ('week', 'Week')] %}
         <a href="{{ q(here, {'t': key}) }}" class="{{ 'on' if window == key }}"
@@ -229,6 +229,19 @@
     </nav>
     {{ language_seg(here) }}
   </div>
+  {% if tab == 'livestreams' %}
+  <form method="get" action="/trending/livestreams" class="feed-controls stream-filter">
+    <input type="hidden" name="sort" value="{{ sort }}"><input type="hidden" name="src" value="{{ source }}">
+    {% if langs.all %}<input type="hidden" name="lang" value="all">{% endif %}
+    <fieldset class="stream-services"><legend class="sr-only">Stream services</legend>
+      <input type="hidden" name="yt" value="0"><label><input type="checkbox" name="yt" value="1" {{ 'checked' if 'youtube' in services }}> YouTube</label>
+      <input type="hidden" name="tw" value="0"><label><input type="checkbox" name="tw" value="1" {{ 'checked' if 'twitch' in services }}> Twitch</label>
+      <input type="hidden" name="oc" value="0"><label><input type="checkbox" name="oc" value="1" {{ 'checked' if 'owncast' in services }}> Owncast</label>
+    </fieldset>
+    <button class="small secondary">Apply</button>
+  </form>
+  {% if 'twitch' in services and not twitch_configured %}<p class="small muted">Twitch streams require <code>THREADBNC_TWITCH_CLIENT_ID</code> and <code>THREADBNC_TWITCH_CLIENT_SECRET</code>.</p>{% endif %}
+  {% endif %}
 
   {# Each post as on Mastodon or Bluesky (the feed's timeline view): who posted it, then all of it. #}
   {% if tab == 'loops' and posts %}
@@ -286,7 +299,10 @@
             {% if p.created_at %}<span title="{{ p.created_at | absolute }}">{{ when(p.created_at) }}</span>{% endif %}</span>
         </div>
         {% set content %}
-        {% if tab == 'livestreams' %}<p class="small"><span class="pill good">Likely live</span> <a href="{{ p.stream.href }}">Open {{ p.stream.site }} stream</a></p>{% endif %}
+        {% if tab == 'livestreams' %}
+        <p class="small"><span class="pill {{ 'good' if p.verified }}">{{ 'Verified live' if p.verified else 'Likely live' }}</span> <a href="{{ p.stream.href }}">Open {{ p.stream.site }} stream</a>{% if p.viewer_count is not none %} · {{ '{:,}'.format(p.viewer_count) }} watching{% endif %}</p>
+        {% if p.thumbnail and (not p.pictures or p.thumbnail.startswith('/live/thumbnail/')) %}<a class="trend-live-thumb" href="{{ p.stream.href }}"><img src="{{ p.thumbnail }}" alt="" loading="lazy"></a>{% endif %}
+        {% endif %}
         <p class="trend-text st-text">{{ v.text or '(no text)' }}</p>
         {% if v.link and v.link | safe_url %}
           {% set box = link_box(v.link) %}

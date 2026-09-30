@@ -17,14 +17,17 @@ import re
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
-from urllib.parse import quote, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
-from .db import parse_ts
+from .db import fmt_ts, parse_ts, utcnow
 from .youtube import _ID as _VIDEO_ID
 from .youtube import is_youtube_host
 
 LIVE_HREF = "/live/{}/{}"  # the box a livestream link opens (web.py, app.js)
 OWNCAST_RECHECK = timedelta(days=30)
+LIVE_RECHECK = timedelta(minutes=5)
+UNKNOWN_RECHECK = timedelta(minutes=15)
+LIVE_REQUEST_WINDOW = timedelta(minutes=30)
 
 _CHANNEL_ID = r"UC[A-Za-z0-9_-]{22}"
 _TWITCH_NAME = re.compile(r"^[A-Za-z0-9_]{2,25}$")
@@ -91,6 +94,27 @@ class Stream:
     @property
     def link_title(self) -> str:
         return f"{self.site} {'live stream' if self.is_channel else 'video'}: watch it here"
+
+
+@dataclass(frozen=True)
+class OwncastLive:
+    live: bool
+    title: str | None = None
+    viewer_count: int | None = None
+    video_id: str | None = None
+    thumbnail_url: str | None = None
+
+
+def parse_owncast_live(data: Any) -> OwncastLive | None:
+    if not owncast_status_ok(data):
+        return None
+    count = data.get("viewerCount")
+    viewers = count if isinstance(count, int) and not isinstance(count, bool) and count >= 0 else None
+    title = data.get("streamTitle")
+    thumbnail = data.get("thumbnailUrl")
+    return OwncastLive(data["online"] is True, title if isinstance(title, str) else None,
+                       viewers if data["online"] is True else None, None,
+                       thumbnail if isinstance(thumbnail, str) and thumbnail.startswith("https://") else None)
 
 
 def from_key(kind: str, key: str) -> Stream | None:
@@ -164,3 +188,85 @@ def save_owncast(conn: Any, host: str, is_owncast: bool, now: str) -> None:
     conn.execute("INSERT INTO owncast_hosts(host, is_owncast, checked_at) VALUES (?,?,?) "
                  "ON CONFLICT(host) DO UPDATE SET is_owncast=excluded.is_owncast, checked_at=excluded.checked_at",
                  (host, 1 if is_owncast else 0, now))
+
+
+def followed_youtube(conn: Any) -> list[dict[str, str]]:
+    """Active YouTube channel follows, including older /user/ feed addresses."""
+    rows = conn.execute("SELECT c.name, c.canonical_ap_id FROM community_follows f "
+                        "JOIN communities c ON c.id=f.community_id WHERE f.active=1 "
+                        "AND c.canonical_ap_id LIKE ?", ("rss:https://www.youtube.com/feeds/videos.xml%",))
+    out = []
+    for row in rows:
+        feed = urlparse(row["canonical_ap_id"][4:])
+        q = parse_qs(feed.query)
+        channel = (q.get("channel_id") or [""])[0]
+        user = (q.get("user") or [""])[0]
+        if re.fullmatch(_CHANNEL_ID, channel):
+            out.append({"kind": "youtube-channel", "key": channel, "name": row["name"]})
+        elif re.fullmatch(r"[\w.-]+", user):
+            out.append({"kind": "youtube-user", "key": user, "name": row["name"]})
+    return out
+
+
+def register_live_checks(conn: Any, items: list[tuple[str, str]]) -> None:
+    now = utcnow()
+    for kind, key in set(items):
+        if (kind == "youtube-video" and re.fullmatch(_VIDEO_ID, key) or
+                kind == "youtube-channel" and re.fullmatch(_CHANNEL_ID, key) or
+                kind == "youtube-user" and re.fullmatch(r"[\w.-]+", key) or
+                kind == "owncast" and is_host(key) or
+                kind == "twitch" and _TWITCH_NAME.fullmatch(key)):
+            conn.execute("INSERT INTO live_checks(kind, key, requested_at) VALUES (?, ?, ?) "
+                         "ON CONFLICT(kind, key) DO UPDATE SET requested_at=excluded.requested_at",
+                         (kind, key, now))
+
+
+def due_live_check(conn: Any, now: str) -> tuple[str, str] | None:
+    fresh = fmt_ts(parse_ts(now) - LIVE_RECHECK)
+    unknown = fmt_ts(parse_ts(now) - UNKNOWN_RECHECK)
+    requested = fmt_ts(parse_ts(now) - LIVE_REQUEST_WINDOW)
+    row = conn.execute("SELECT kind, key FROM live_checks WHERE requested_at>=? AND "
+                       "(checked_at IS NULL OR (status='unknown' AND checked_at<=?) OR "
+                       "(status<>'unknown' AND checked_at<=?)) "
+                       "ORDER BY CASE WHEN kind='youtube-video' THEN 1 ELSE 0 END, "
+                       "COALESCE(checked_at, ''), key LIMIT 1", (requested, unknown, fresh)).fetchone()
+    return (row["kind"], row["key"]) if row else None
+
+
+def save_live_check(conn: Any, kind: str, key: str, result: Any, now: str,
+                    error: str | None = None) -> None:
+    conn.execute("INSERT INTO live_checks(kind, key, status, video_id, title, viewer_count, thumbnail_url, checked_at, error) "
+                 "VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(kind, key) DO UPDATE SET "
+                 "status=excluded.status, video_id=excluded.video_id, title=excluded.title, "
+                 "viewer_count=excluded.viewer_count, thumbnail_url=excluded.thumbnail_url, "
+                 "checked_at=excluded.checked_at, error=excluded.error",
+                 (kind, key, "live" if result and result.live else "offline" if result else "unknown",
+                  getattr(result, "video_id", None), getattr(result, "title", None),
+                  getattr(result, "viewer_count", None), getattr(result, "thumbnail_url", None), now, error))
+
+
+def current_statuses(conn: Any, now: str) -> dict[tuple[str, str], dict[str, Any]]:
+    """Fresh live checks, plus offline answers until a later check changes them."""
+    cutoff = fmt_ts(parse_ts(now) - LIVE_RECHECK)
+    return {(r["kind"], r["key"]): dict(r) for r in conn.execute(
+        "SELECT * FROM live_checks WHERE (checked_at>=? AND status='live') OR status='offline'", (cutoff,))}
+
+
+def followed_live(conn: Any, now: str, query: str = "") -> list[dict[str, Any]]:
+    statuses = current_statuses(conn, now)
+    needle = query.strip().casefold()
+    out = []
+    for follow in followed_youtube(conn):
+        status = statuses.get((follow["kind"], follow["key"]))
+        if not status or status["status"] != "live":
+            continue
+        vid = status["video_id"]
+        if not vid or not re.fullmatch(_VIDEO_ID, vid):
+            continue
+        title = status["title"] or follow["name"]
+        if needle and needle not in f"{title} {follow['name']}".casefold():
+            continue
+        out.append({"name": follow["name"], "title": title, "stream": Stream("youtube", vid),
+                    "checked_at": status["checked_at"], "viewer_count": status["viewer_count"],
+                    "thumbnail": f"/live/thumbnail/youtube/{vid}"})
+    return out

@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 
 from urllib.parse import quote
 
-from threadbnc import articles, jetstream, languages, mastodon_stream, trends
+from threadbnc import articles, jetstream, languages, livestream, mastodon_stream, trends, twitch
 from threadbnc.db import fmt_ts
 from threadbnc.jetstream import BlueskyStream
 from threadbnc.web import create_app
@@ -1283,6 +1283,8 @@ def test_likely_live_streams_are_recent_ranked_and_searchable(settings, bouncer)
                                      {"cast.example"}).kind == "owncast"
     assert trends.likely_live_stream({"text": "Live replay", "link": "https://twitch.tv/alice"}, set()) is None
     assert trends.likely_live_stream({"text": "Just a link", "link": "https://twitch.tv/alice"}, set()) is None
+    assert trends.likely_live_stream({"text": "Just a link", "link": "https://twitch.tv/alice"},
+                                     set(), check_twitch=True).key == "alice"
     assert trends.likely_live_stream({"text": "I live in Boston", "link": "https://twitch.tv/alice"}, set()) is None
 
     def view(text, link, title=""):
@@ -1305,24 +1307,34 @@ def test_likely_live_streams_are_recent_ranked_and_searchable(settings, bouncer)
                              "view": view("Live #art", "https://twitch.tv/oldchannel")},
             at("3kvod"): {"likes": 70, "replies": 70, "reposts": 70, "created_at": stamp(hours=-1),
                          "view": view("Live replay #art", "https://twitch.tv/videos/1234")}}, [], now)
-        liked, more = trends.live_posts(conn)
-        replied, _ = trends.live_posts(conn, sort="replies")
-        searched, _ = trends.live_posts(conn, query="#art")
-        first, more_first = trends.live_posts(conn, per_page=1)
-        second, _ = trends.live_posts(conn, page=2, per_page=1)
+        livestream.save_live_check(conn, "twitch", "alice", twitch.TwitchLive(True, viewer_count=17), now)
+        liked, more = trends.live_posts(conn, twitch_enabled=True)
+        replied, _ = trends.live_posts(conn, sort="replies", twitch_enabled=True)
+        searched, _ = trends.live_posts(conn, query="#art", twitch_enabled=True)
+        first, more_first = trends.live_posts(conn, per_page=1, twitch_enabled=True)
+        second, _ = trends.live_posts(conn, page=2, per_page=1, twitch_enabled=True)
     assert [p["stream"].key for p in liked] == ["abcdefghijk", "alice"] and not more
     assert [p["stream"].key for p in replied] == ["alice", "abcdefghijk"]
     assert [p["stream"].key for p in searched] == ["alice"]
     assert more_first and first[0]["key"] != second[0]["key"]
 
     web_client = TestClient(create_app(settings, bouncer))
+    bouncer.twitch.client_id, bouncer.twitch.client_secret = "test", "test"
     web_client.post("/login", data={"password": "pw"})
     trend = web_client.get("/trending/livestreams", params={"sort": "replies"}).text
     assert "Livestreams" in trend and "past six hours" in trend
     assert trend.index("Open Twitch stream") < trend.index("Open YouTube stream")
+    assert 'src="/live/thumbnail/youtube/abcdefghijk"' in trend
+    only_youtube = web_client.get("/trending/livestreams", params={"yt": "1", "tw": "0", "oc": "0"}).text
+    assert "Open YouTube stream" in only_youtube and "Open Twitch stream" not in only_youtube
+    checked_youtube = web_client.get("/trending/livestreams", params=[("yt", "0"), ("yt", "1"),
+                                                                      ("tw", "0"), ("oc", "0")]).text
+    assert "Open YouTube stream" in checked_youtube  # hidden fallback precedes a checked box
     live = web_client.get("/live", params={"q": "#art"}).text
     assert 'aria-current="page"' in live and "We&#39;re live #art" in live
     assert "Live #music" not in live and "Stream ended" not in live
+    assert "17 watching" in live
+    assert "Twitch" not in web_client.get("/live", params={"q": "#art", "yt": "0", "tw": "0", "oc": "1"}).text.split("Shared streams", 1)[1]
 
 
 def test_videos_read_before_their_files_were_kept_are_read_again(bouncer):  # noqa: F811

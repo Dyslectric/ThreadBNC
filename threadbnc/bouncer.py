@@ -25,7 +25,7 @@ import traceback
 from datetime import timedelta
 from typing import Any, Callable
 
-from . import articles, avatars, forums, livestream, media, store, thumbs, traffic, youtube
+from . import articles, avatars, forums, livestream, media, store, thumbs, traffic, twitch, youtube
 from . import feed as feed_mod
 from . import hidden as hidden_mod
 from .adapters import (
@@ -148,6 +148,8 @@ class Bouncer:
         self.reddit = reddit or RedditConnection(
             db, vault, timeout=settings.http_timeout, min_interval=settings.reddit_min_request_interval)
         self.youtube = YouTubeSession(db, vault)
+        self.twitch = twitch.TwitchClient(settings.twitch_client_id, settings.twitch_client_secret,
+                                          settings.user_agent, settings.http_timeout, self.http.throttle)
         self.reddit_adapter = RedditAdapter(self.reddit)
         self.rss_adapter = RssAdapter(FeedFetcher(settings.user_agent, settings.http_timeout, self.http.throttle))
         # ThreadBNC's own ActivityPub identity, and the posts hashtags bring (tags.py).
@@ -1311,6 +1313,37 @@ class Bouncer:
         seen = parse_ts(self.db.get_setting("last_active_at"))
         return seen is not None and parse_ts(utcnow()) - seen < ACTIVE_WINDOW  # type: ignore[operator]
 
+    def request_live_checks(self) -> None:
+        """A Live page was opened: keep YouTube checks going while it is in use."""
+        with self.db.transaction() as conn:
+            conn.execute("INSERT INTO app_settings(key, value) VALUES ('last_live_at', ?) "
+                         "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (utcnow(),))
+        self.wake.set()
+
+    def check_live_once(self) -> bool:
+        seen = parse_ts(self.db.get_setting("last_live_at"))
+        if seen is None or parse_ts(utcnow()) - seen >= ACTIVE_WINDOW:  # type: ignore[operator]
+            return False
+        with self.db.transaction(exclusive=False) as conn:
+            livestream.register_live_checks(conn, [(f["kind"], f["key"])
+                                                  for f in livestream.followed_youtube(conn)])
+        now = utcnow()
+        with self.db.connect() as conn:
+            due = livestream.due_live_check(conn, now)
+        if due is None:
+            return False
+        kind, key = due
+        error = None
+        try:
+            result = (self.rss_adapter.fetcher.owncast_live(key) if kind == "owncast" else
+                      self.twitch.check(key) if kind == "twitch" else
+                      self.rss_adapter.fetcher.youtube_live(kind, key))
+        except RemoteError as exc:
+            result, error = None, str(exc)
+        with self.db.transaction(exclusive=False) as conn:
+            livestream.save_live_check(conn, kind, key, result, utcnow(), error)
+        return True
+
     @staticmethod
     def paced_kind(follow: Any) -> str | None:
         """"reddit" or "youtube" for follows only checked while you're using
@@ -1592,6 +1625,8 @@ class Bouncer:
                     log.info("community %s: auto-captured %d posts", cid, n)
             except RemoteError as exc:
                 log.warning("poll of community %s failed: %s", cid, exc)
+        if not self._stop.is_set():
+            self.check_live_once()
         # Comments are never checked in the background: they're read when a
         # post is opened (open_threads, a job), or a Lemmy or PieFed post is
         # scrolled to in a feed (fetch_previews), like a browser would. Votes are

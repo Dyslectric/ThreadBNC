@@ -96,6 +96,9 @@ class Settings:
     # Forums added by themselves the first time the Forums page is opened (forums.py);
     # load_settings starts with DEFAULT_FORUMS. One you remove isn't added again.
     default_forums: tuple[str, ...] = ()
+    # Twitch Get Streams uses an app access token obtained from these credentials.
+    twitch_client_id: str | None = None
+    twitch_client_secret: str | None = None
 
 
 DEFAULT_FORUMS = ("https://piefed.social/f/forumverse",)
@@ -180,4 +183,6 @@ def load_settings() -> Settings:
         tag_relay=os.environ.get("THREADBNC_TAG_RELAY", "").strip() or "https://relay.fedi.buzz/tag/{tag}",
         jetstream_url=_jetstream(os.environ.get("THREADBNC_JETSTREAM", "")),
         default_forums=_forums(os.environ.get("THREADBNC_DEFAULT_FORUMS")),
+        twitch_client_id=os.environ.get("THREADBNC_TWITCH_CLIENT_ID") or None,
+        twitch_client_secret=os.environ.get("THREADBNC_TWITCH_CLIENT_SECRET") or None,
     )

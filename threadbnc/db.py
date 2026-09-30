@@ -273,6 +273,22 @@ CREATE TABLE IF NOT EXISTS owncast_hosts (
     checked_at TEXT NOT NULL
 );
 
+-- Short-lived checks of YouTube, Twitch and Owncast broadcasts. Followed YouTube
+-- channels and links discovered on Live/Trending are checked by the bouncer.
+CREATE TABLE IF NOT EXISTS live_checks (
+    kind TEXT NOT NULL,       -- youtube-video, youtube-channel, youtube-user, twitch, owncast
+    key TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'unknown', -- live, offline, unknown
+    video_id TEXT,
+    title TEXT,
+    viewer_count BIGINT,
+    thumbnail_url TEXT,
+    checked_at TEXT,
+    requested_at TEXT,
+    error TEXT,
+    PRIMARY KEY (kind, key)
+);
+
 -- Web pages posts link to, read by the bouncer (see articles.py). Keyed by the
 -- link as posted; content_html is the extracted article, already sanitised.
 CREATE TABLE IF NOT EXISTS articles (
@@ -865,6 +881,9 @@ COLUMN_MIGRATIONS = [
     ("actors", "avatar_url", "TEXT"),
     ("actors", "avatar_checked_at", "TEXT"),
     ("actors", "avatar_media_id", "INTEGER"),
+    ("live_checks", "viewer_count", "BIGINT"),
+    ("live_checks", "thumbnail_url", "TEXT"),
+    ("live_checks", "requested_at", "TEXT"),
 ]
 
 # Tables with an integer `id` key: inserts into these get `RETURNING id` on

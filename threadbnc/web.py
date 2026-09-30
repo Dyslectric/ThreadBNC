@@ -641,6 +641,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             if "cache-control" not in resp.headers:  # (a stand-in for a smaller copy says for how long)
                 resp.headers["Cache-Control"] = "private, max-age=31536000, immutable"
             resp.headers["Content-Security-Policy"] = "default-src 'none'; sandbox"
+        elif path.startswith("/live/thumbnail/") and resp.status_code == 200:
+            resp.headers["Cache-Control"] = "private, max-age=120"
         elif not path.startswith("/static/"):
             resp.headers["Cache-Control"] = "no-store"
         elif "v" in request.query_params:  # addressed by its file's date (static_url): never changes
@@ -1309,9 +1311,11 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
 
     @app.get("/trending/livestreams", response_class=HTMLResponse)
     def trending_livestreams(request: Request, sort: str = "likes", src: str = "all", page: int = 1,
-                             lang: str = ""):
+                             lang: str = "", yt: str = "1", tw: str = "1", oc: str = "1"):
         """Likely live streams from posts made in the past six hours, ranked by response."""
-        return trending_page(request, "livestreams", sort, "six_hours", src, page, lang)
+        bouncer.request_live_checks()
+        services = {kind for kind, flag in (("youtube", yt), ("twitch", tw), ("owncast", oc)) if flag != "0"}
+        return trending_page(request, "livestreams", sort, "six_hours", src, page, lang, services)
 
     video_pds: dict[str, str] = {}
 
@@ -1362,7 +1366,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             threading.Thread(target=look, name="video-pds", daemon=True).start()
         return src
 
-    def trending_page(request: Request, tab: str, sort: str, t: str, src: str, page: int, lang: str):
+    def trending_page(request: Request, tab: str, sort: str, t: str, src: str, page: int, lang: str,
+                      services: set[str] | None = None):
         sort = sort if sort in trends_mod.POST_SORTS else "likes"
         window = "six_hours" if tab == "livestreams" else t if t in trends_mod.POST_WINDOWS else "day"
         source = src if src in trends_mod.SOURCES else "all"
@@ -1371,7 +1376,9 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         with db.connect() as conn:
             if tab == "livestreams":
                 items, has_more = trends_mod.live_posts(conn, sort, None if source == "all" else source,
-                                                       page, TRENDING_PAGE, codes=langs["codes"])
+                                                       page, TRENDING_PAGE, codes=langs["codes"],
+                                                       twitch_enabled=bouncer.twitch.configured,
+                                                       services=services)
             else:
                 items, has_more = trends_mod.trending_posts(conn, window, sort, None if source == "all" else source,
                                                             page, TRENDING_PAGE, codes=langs["codes"],
@@ -1411,23 +1418,84 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         for i in items:
             key = i["view"].get("url") if i["source"] == "bluesky" else i["view"].get("uri")
             i["liked"], i["reposted"] = key in mine["like"], key in mine["repost"]
+        if tab == "livestreams":
+            with db.transaction(exclusive=False) as conn:
+                livestream.register_live_checks(conn, [
+                    (("youtube-channel" if i["stream"].is_channel else "youtube-video")
+                     if i["stream"].kind == "youtube" else "owncast", i["stream"].key)
+                    for i in items if i["stream"].kind in ("youtube", "owncast")])
+            bouncer.wake.set()
+        service_params = ({"yt": "1" if "youtube" in services else "0",
+                           "tw": "1" if "twitch" in services else "0",
+                           "oc": "1" if "owncast" in services else "0"} if services is not None else {})
         return render(request, "trending.html", tab=tab, posts=items, sort=sort, window=window, source=source,
                       page=page, has_more=has_more, status=trending_status(), langs=langs,
+                      services=services, twitch_configured=bouncer.twitch.configured,
                       params=trend_params(sort=sort, t=None if tab == "livestreams" else window,
-                                          src=source, lang="all" if langs["all"] else None))
+                                          src=source, lang="all" if langs["all"] else None,
+                                          **service_params))
 
     @app.get("/live", response_class=HTMLResponse)
-    def live_streams(request: Request, q: str = "", page: int = 1):
+    def live_streams(request: Request, q: str = "", page: int = 1,
+                     yt: str = "1", tw: str = "1", oc: str = "1"):
         """Recently linked streams that look active, searchable by word or hashtag."""
         q = q.strip()[:100]
         page = max(1, page)
+        services = {kind for kind, flag in (("youtube", yt), ("twitch", tw), ("owncast", oc)) if flag != "0"}
+        bouncer.request_live_checks()
         with db.connect() as conn:
             items, more = trends_mod.live_posts(conn, page=page, per_page=TRENDING_PAGE,
-                                                query=q, newest=True)
+                                                query=q, newest=True, twitch_enabled=bouncer.twitch.configured,
+                                                services=services)
+            followed = livestream.followed_live(conn, utcnow(), q) if "youtube" in services else []
+        with db.transaction(exclusive=False) as conn:
+            livestream.register_live_checks(conn, [
+                (("youtube-channel" if i["stream"].is_channel else "youtube-video")
+                 if i["stream"].kind == "youtube" else "owncast", i["stream"].key)
+                for i in items if i["stream"].kind in ("youtube", "owncast")])
+        bouncer.wake.set()
         with db.connect() as conn:
             hidden_keys = hidden_mod.keys(conn)
         items = [i for i in items if (i["view"].get("author_uri") or i["view"].get("author_url")) not in hidden_keys]
-        return render(request, "live_streams.html", streams=items, q=q, page=page, more=more)
+        return render(request, "live_streams.html", streams=items, followed=followed, q=q, page=page, more=more,
+                      twitch_configured=bouncer.twitch.configured, services=services,
+                      yt="1" if "youtube" in services else "0",
+                      tw="1" if "twitch" in services else "0",
+                      oc="1" if "owncast" in services else "0")
+
+    @app.get("/live/thumbnail/{kind}/{key}")
+    def live_thumbnail(kind: str, key: str):
+        """Serve only known stream artwork through the authenticated app's image policy."""
+        stream = livestream.from_key(kind, key)
+        if not stream or (kind == "youtube" and stream.is_channel):
+            raise HTTPException(404)
+        if kind == "youtube":
+            url = youtube.thumbnail_url(key)
+        else:
+            with db.connect() as conn:
+                row = conn.execute("SELECT status, thumbnail_url FROM live_checks WHERE kind=? AND key=?",
+                                   (kind, key)).fetchone()
+                if not row or row["status"] != "live":
+                    raise HTTPException(404)
+                if kind == "owncast" and not conn.execute(
+                    "SELECT 1 FROM owncast_hosts WHERE host=? AND is_owncast=1", (key,)).fetchone():
+                    raise HTTPException(404)
+            if kind == "twitch":
+                url = row["thumbnail_url"]
+                if not url or urlparse(url).hostname != "static-cdn.jtvnw.net":
+                    raise HTTPException(404)
+            else:
+                url = row["thumbnail_url"]
+                if not url or urlparse(url).hostname != key:
+                    url = f"https://{key}/thumbnail.jpg"
+        try:
+            status, _, body, headers = bouncer.rss_adapter.fetcher._get(url, {"Accept": "image/*"})
+        except RemoteError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        media_type = headers.get("content-type", "").split(";", 1)[0].lower()
+        if status != 200 or media_type not in ("image/jpeg", "image/png", "image/webp", "image/gif"):
+            raise HTTPException(404)
+        return Response(body, media_type=media_type)
 
     @app.get("/trending/articles", response_class=HTMLResponse)
     def trending_articles(request: Request, t: str = "week", src: str = "all", page: int = 1, lang: str = "",

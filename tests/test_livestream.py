@@ -2,18 +2,64 @@
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from threadbnc import livestream
+from threadbnc import livestream, twitch, youtube
+from threadbnc.adapters import RSS_DOMAIN
 from threadbnc.adapters.http import HostThrottle
 from threadbnc.adapters.rss import FeedFetcher, RssAdapter
 from threadbnc.livestream import Stream, stream_of
 from threadbnc.render import render_markdown
 from threadbnc.web import create_app
+from threadbnc.db import utcnow
 
 CHANNEL = "UCS0N5baNlQWJCUrhCEo8WlA"
+VIDEO = "dQw4w9WgXcQ"
+
+
+def live_youtube_page(live=True):
+    player = {"videoDetails": {"videoId": VIDEO, "channelId": CHANNEL, "title": "Studio live",
+                               "isLiveContent": True, "isLive": live}}
+    data = {"contents": {"videoViewCountRenderer": {"viewCount": {"simpleText": "1,234 watching now"}}}}
+    return (f"<script>var ytInitialPlayerResponse = {json.dumps(player)};</script>"
+            f"<script>var ytInitialData = {json.dumps(data)};</script>")
+
+
+def test_live_status_parsers_do_not_mistake_a_recording_for_live():
+    live = youtube.parse_live_page(live_youtube_page(), channel_id=CHANNEL)
+    assert live.live and live.video_id == VIDEO and live.viewer_count == 1234
+    assert not youtube.parse_live_page(live_youtube_page(False), video_id=VIDEO).live
+    assert youtube.parse_live_page("<html>sign in</html>") is None
+    assert youtube.parse_live_page(live_youtube_page(), channel_id="UCxxxxxxxxxxxxxxxxxxxxxx") is None
+    assert livestream.parse_owncast_live({"online": True, "versionNumber": "0.2", "viewerCount": 3,
+                                          "streamTitle": "Hi"}).viewer_count == 3
+    assert livestream.parse_owncast_live({"status": "fine"}) is None
+
+
+def test_twitch_helix_requires_credentials_and_reports_current_viewers():
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        if request.url.host == "id.twitch.tv":
+            return httpx.Response(200, json={"access_token": "secret-token", "expires_in": 3600})
+        return httpx.Response(200, json={"data": [{"user_login": "vinesauce", "type": "live",
+                                                  "title": "Playing now", "viewer_count": 456,
+                                                  "thumbnail_url": "https://static-cdn.jtvnw.net/previews-ttv/live_user_vinesauce-{width}x{height}.jpg"}]})
+
+    client = twitch.TwitchClient("client-id", "client-secret", "test", throttle=HostThrottle(0),
+                                 transport=httpx.MockTransport(handle))
+    assert client.check("vinesauce") == twitch.TwitchLive(
+        True, "Playing now", 456, None,
+        "https://static-cdn.jtvnw.net/previews-ttv/live_user_vinesauce-320x180.jpg")
+    assert client.check("vinesauce").viewer_count == 456
+    assert len([r for r in requests if r.url.host == "id.twitch.tv"]) == 1
+    assert requests[-1].headers["client-id"] == "client-id"
+    assert requests[-1].headers["authorization"] == "Bearer secret-token"
 
 
 def test_links_that_are_livestreams():
@@ -67,8 +113,14 @@ class FakeSites:
         if request.url.host == "watch.owncast.online" and request.url.path == "/api/status":
             return httpx.Response(200, json={"online": True, "viewerCount": 3, "versionNumber": "0.2.0",
                                              "streamTitle": "hi"})
+        if request.url.host == "www.youtube.com" and request.url.path == f"/channel/{CHANNEL}/live":
+            return httpx.Response(200, text=live_youtube_page())
         if request.url.host == "blog.example" and request.url.path == "/api/status":
             return httpx.Response(200, json={"status": "fine"})
+        if request.url.host == "i.ytimg.com" and request.url.path == f"/vi/{VIDEO}/hqdefault.jpg":
+            return httpx.Response(200, content=b"jpeg", headers={"Content-Type": "image/jpeg"})
+        if request.url.host == "watch.owncast.online" and request.url.path == "/thumbnail.jpg":
+            return httpx.Response(200, content=b"jpeg", headers={"Content-Type": "image/jpeg"})
         return httpx.Response(404)
 
 
@@ -113,3 +165,33 @@ def test_the_box(settings, bouncer, sites):
     assert client.get("/live/nope/x").status_code == 404
     # Nothing asked of Twitch; of YouTube, only the video's title.
     assert [r.url.path for r in sites.requests] == ["/oembed"]
+
+
+def test_followed_youtube_channel_is_shown_with_checked_viewers(settings, bouncer, sites):
+    now = utcnow()
+    feed = f"https://www.youtube.com/feeds/videos.xml?channel_id={CHANNEL}"
+    with bouncer.db.transaction() as conn:
+        cid = conn.execute("INSERT INTO communities(canonical_ap_id, name, first_seen_at, last_seen_at) "
+                           "VALUES (?,?,?,?)", ("rss:" + feed, "Studio", now, now)).lastrowid
+        conn.execute("INSERT INTO community_follows(community_id, followed_at, capture_since, "
+                     "poll_interval_minutes, source_domain, source_ref) VALUES (?,?,?,?,?,?)",
+                     (cid, now, now, 30, RSS_DOMAIN, feed))
+    bouncer.request_live_checks()
+    assert bouncer.check_live_once()
+    page = logged_in(settings, bouncer).get("/live").text
+    assert "Live from channels you follow" in page
+    assert "Studio live" in page and "1,234 watching" in page
+    assert f'href="/live/youtube/{VIDEO}"' in page
+    assert f'src="/live/thumbnail/youtube/{VIDEO}"' in page
+    thumb = logged_in(settings, bouncer).get(f"/live/thumbnail/youtube/{VIDEO}")
+    assert thumb.status_code == 200 and thumb.content == b"jpeg" and thumb.headers["content-type"] == "image/jpeg"
+    with bouncer.db.connect() as conn:
+        livestream.register_live_checks(conn, [("owncast", "watch.owncast.online")])
+    assert bouncer.check_live_once()
+    with bouncer.db.connect() as conn:
+        status = livestream.current_statuses(conn, utcnow())[("owncast", "watch.owncast.online")]
+    assert status["status"] == "live" and status["viewer_count"] == 3
+    with bouncer.db.transaction() as conn:
+        livestream.save_owncast(conn, "watch.owncast.online", True, utcnow())
+    assert logged_in(settings, bouncer).get("/live/thumbnail/owncast/watch.owncast.online").content == b"jpeg"
+    assert logged_in(settings, bouncer).get("/live/thumbnail/owncast/blog.example").status_code == 404

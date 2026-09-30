@@ -260,6 +260,62 @@ def _player_response(html: str) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
+@dataclass(frozen=True)
+class LiveResult:
+    live: bool
+    video_id: str | None = None
+    title: str | None = None
+    channel_id: str | None = None
+    viewer_count: int | None = None
+    thumbnail_url: str | None = None
+
+
+def _watching_now(data: dict[str, Any] | None) -> int | None:
+    """Concurrent viewers only when the watch page explicitly says 'watching'."""
+    for _, view in _walk(data or {}, {"videoViewCountRenderer"}):
+        if not isinstance(view, dict):
+            continue
+        for field in ("viewCount", "shortViewCount"):
+            label = _text(view.get(field))
+            m = re.search(r"\b([\d,]+)\s+(?:watching|viewers)\b", label, re.I)
+            if m:
+                return int(m.group(1).replace(",", ""))
+    return None
+
+
+def parse_live_page(html: str, channel_id: str | None = None, video_id: str | None = None) -> LiveResult | None:
+    """Read current broadcast state from a YouTube page's player response.
+
+    `isLiveContent` stays true for recordings, so only `isLive` or
+    `liveBroadcastDetails.isLiveNow` confirms an active broadcast. Missing
+    player data is inconclusive, rather than evidence that a stream ended.
+    """
+    player = _player_response(html)
+    if not player:
+        return None
+    details = player.get("videoDetails") or {}
+    if not isinstance(details, dict):
+        return None
+    found_id = details.get("videoId")
+    found_channel = details.get("channelId")
+    if video_id and found_id != video_id:
+        return None
+    if channel_id and found_channel != channel_id:
+        return None
+    live_details = ((player.get("microformat") or {}).get("playerMicroformatRenderer") or {}).get(
+        "liveBroadcastDetails") or {}
+    ended = bool(live_details.get("endTimestamp") or live_details.get("actualEndTime"))
+    playable = (player.get("playabilityStatus") or {}).get("status") in (None, "OK")
+    live = not ended and playable and (details.get("isLive") is True or live_details.get("isLiveNow") is True)
+    title = details.get("title")
+    return LiveResult(live, found_id if isinstance(found_id, str) and re.fullmatch(_ID, found_id) else None,
+                      title if isinstance(title, str) else None,
+                      found_channel if isinstance(found_channel, str) else None,
+                      _watching_now(_initial_data(html)) if live else None,
+                      thumbnail_url(found_id) if live and isinstance(found_id, str) and re.fullmatch(_ID, found_id)
+                      else None)
+
+
 _LIKES_LABEL = re.compile(r"along with ([\d,.\s]+) other", re.I)
 
 

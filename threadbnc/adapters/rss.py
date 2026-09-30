@@ -533,6 +533,25 @@ class FeedFetcher:
         post in the feed."""
         return self._watch_page(vid)[1]
 
+    def youtube_live(self, kind: str, key: str) -> youtube.LiveResult | None:
+        """Check a YouTube video's or followed channel's current player state."""
+        if kind == "youtube-video" and re.fullmatch(youtube._ID, key):
+            page = youtube.watch_url(key)
+        elif kind == "youtube-channel" and re.fullmatch(r"UC[\w-]{22}", key):
+            page = f"https://www.youtube.com/channel/{key}/live"
+        elif kind == "youtube-user" and re.fullmatch(r"[\w.-]+", key):
+            page = f"https://www.youtube.com/user/{key}/live"
+        else:
+            raise ValueError("invalid YouTube live check")
+        status, _, body, _ = self._get(page, {"Accept": "text/html", "Accept-Language": "en"})
+        if status == 404:
+            return youtube.LiveResult(False)
+        if status != 200:
+            raise RemoteUnavailable(f"{page}: HTTP {status}")
+        return youtube.parse_live_page(body.decode("utf-8", "replace"),
+                                       channel_id=key if kind == "youtube-channel" else None,
+                                       video_id=key if kind == "youtube-video" else None)
+
     def youtube_title(self, vid: str) -> tuple[str, str | None] | None:
         """A video's title and channel, from YouTube's oEmbed endpoint (small,
         and no watch page), for links to it. None if YouTube has no such
@@ -562,6 +581,16 @@ class FeedFetcher:
             return livestream.owncast_status_ok(json.loads(body))
         except ValueError:
             return False
+
+    def owncast_live(self, host: str) -> livestream.OwncastLive | None:
+        """An Owncast server's public online state and current viewer count."""
+        status, _, body, _ = self._get(f"https://{host}/api/status", {"Accept": "application/json"})
+        if status != 200:
+            raise RemoteUnavailable(f"{host}: HTTP {status}")
+        try:
+            return livestream.parse_owncast_live(json.loads(body))
+        except ValueError:
+            return None
 
     def _youtube_api(self, context: dict[str, Any], token: str) -> youtube.CommentPage:
         """One page from YouTube's comments API, asked as the video's page would."""
