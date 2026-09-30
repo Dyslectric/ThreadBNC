@@ -2084,10 +2084,11 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                     "icon": n["icon"] if not n["nsfw"] else None, "nsfw": n["nsfw"], "total": n["total"],
                     "followed": mine, "unread": unread, "letter": (n["title"] or "?")[:1].upper(),
                     "hue": forums_mod.hue(n["url"]), "own": len(n["communities"]),
+                    "own_names": [c["title"] or c["name"] for c in n["communities"][:6]],
                     "children": [(ch["title"], forum_href(fid, [*p, ch["name"]])) for ch in n["children"]]}
 
         categories, loose = [], []
-        for child in node["children"]:
+        for child in node["children"] if part != 2 else []:  # part=2: only the communities in it
             p = [*parts, child["name"]]
             if child["children"]:
                 categories.append({"head": row(child, p), "rows": [row(g, [*p, g["name"]]) for g in child["children"]]})
@@ -2117,7 +2118,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         head = row(node, parts)
         view = {"title": node["title"], "href": head["href"], "categories": categories, "loose": loose,
                 "communities": communities, "waiting": pictures_waiting or asking,
-                "src": f"{head['href']}?part=1&depth={depth}"}
+                "src": f"{head['href']}?part={part or 1}&depth={depth}"}
         if part:
             return render(request, "forum_part.html", v=view, pic=pic, depth=depth)
         return render(request, "forum.html", forum=forum, node=node, head=head, parts=parts, v=view,

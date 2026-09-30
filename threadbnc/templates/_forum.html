@@ -64,6 +64,27 @@
 </div>
 {%- endmacro %}
 
+{# The communities in a forum itself (not in the forums in it), a few named, opened
+   right there like a forum is (?part=2: just those). #}
+{% macro own_item(h, depth) -%}
+<div class="forum-item own-communities">
+  <div class="forum-row">
+    <button type="button" class="forum-expand js-only" aria-expanded="false"
+      data-part="{{ h.href }}?part=2&amp;depth={{ depth }}" title="Open the communities in {{ h.title }} here">{{ icon('chevron-right') }}<span class="sr-only">Open the communities in {{ h.title }} here</span></button>
+    <span class="f-icon small" aria-hidden="true">{{ icon('communities') }}</span>
+    <div class="forum-row-main">
+      <a class="forum-row-title" href="{{ h.href }}#communities">{{ num(h.own) }} communit{{ 'y' if h.own == 1 else 'ies' }} in {{ h.title }} itself</a>
+      <p class="forum-subs">{% for name in h.own_names %}<span class="forum-sub">{{ name }}</span>{% endfor %}
+        {%- if h.own > h.own_names | length %}<span class="forum-sub muted">and {{ num(h.own - h.own_names | length) }} more</span>{% endif %}</p>
+    </div>
+  </div>
+  <div class="forum-fold d{{ depth % 6 }}" hidden>
+    {{ rail('the communities in ' ~ h.title) }}
+    <div class="forum-fold-body"><p class="muted small forum-loading">Opening the communities…</p></div>
+  </div>
+</div>
+{%- endmacro %}
+
 {# A section's heading: it opens and closes the section (a <details>), as does the
    bar down the section's left. `r`: a forum's view, for its counts. #}
 {% macro topic_head(title, href=none, icon_src=none, letter='', hue=0, description='', nsfw=false, r=none, count=none) -%}
@@ -98,8 +119,7 @@
     {{ rail(h.title) }}
     <div class="forum-fold-body">
       {% for r in cat.rows %}{{ forum_item(r, pic, depth + 1) }}{% endfor %}
-      {% if h.own %}<a class="forum-row forum-more" href="{{ h.href }}#communities">
-        {{ icon('communities') }}<span class="grow">{{ num(h.own) }} communit{{ 'y' if h.own == 1 else 'ies' }} in {{ h.title }} itself</span>{{ icon('chevron-right') }}</a>{% endif %}
+      {% if h.own %}{{ own_item(h, depth + 1) }}{% endif %}
     </div>
   </div>
 {% endcall %}
