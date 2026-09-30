@@ -75,6 +75,7 @@ from .db import Database, fmt_ts, parse_ts, utcnow
 from .reddit import RedditConnection
 from .vault import TokenVault
 from .youtube import YouTubeSession, is_youtube_feed
+from .youtube_api import YouTubeDataClient
 
 log = logging.getLogger("threadbnc.bouncer")
 
@@ -153,6 +154,8 @@ class Bouncer:
         self.twitch = twitch.TwitchClient(settings.twitch_client_id, settings.twitch_client_secret,
                                           settings.user_agent, settings.http_timeout, self.http.throttle,
                                           credentials=self.twitch_credentials)
+        self.youtube_api = YouTubeDataClient(settings.youtube_api_key, settings.user_agent,
+                                              settings.http_timeout, self.http.throttle)
         self.reddit_adapter = RedditAdapter(self.reddit)
         self.rss_adapter = RssAdapter(FeedFetcher(settings.user_agent, settings.http_timeout, self.http.throttle))
         # ThreadBNC's own ActivityPub identity, and the posts hashtags bring (tags.py).
@@ -1340,6 +1343,7 @@ class Bouncer:
         try:
             result = (self.rss_adapter.fetcher.owncast_live(key) if kind == "owncast" else
                       self.twitch.check(key) if kind == "twitch" else
+                      self.youtube_api.check(key) if kind == "youtube-video" and self.youtube_api.configured else
                       self.rss_adapter.fetcher.youtube_live(kind, key))
         except RemoteError as exc:
             result, error = None, str(exc)

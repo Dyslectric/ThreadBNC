@@ -99,6 +99,8 @@ class Settings:
     # Twitch Get Streams uses an app access token obtained from these credentials.
     twitch_client_id: str | None = None
     twitch_client_secret: str | None = None
+    # Public video live status and concurrent viewers through videos.list.
+    youtube_api_key: str | None = None
 
 
 DEFAULT_FORUMS = ("https://piefed.social/f/forumverse",)
@@ -185,4 +187,5 @@ def load_settings() -> Settings:
         default_forums=_forums(os.environ.get("THREADBNC_DEFAULT_FORUMS")),
         twitch_client_id=os.environ.get("THREADBNC_TWITCH_CLIENT_ID") or None,
         twitch_client_secret=os.environ.get("THREADBNC_TWITCH_CLIENT_SECRET") or None,
+        youtube_api_key=os.environ.get("THREADBNC_YOUTUBE_API_KEY") or None,
     )
