@@ -74,8 +74,9 @@ def test_youtube_data_api_checks_known_video_ids_and_current_viewers(settings, b
         requests.append(request)
         return httpx.Response(200, json=response)
 
-    bouncer.youtube_api = YouTubeDataClient("api-key", "test", throttle=HostThrottle(0),
+    bouncer.youtube_api = YouTubeDataClient(None, "test", throttle=HostThrottle(0),
                                              transport=httpx.MockTransport(handle))
+    bouncer.youtube.save_api_key("api-key")
     bouncer.request_live_checks()
     with bouncer.db.transaction() as conn:
         livestream.register_live_checks(conn, [("youtube-video", VIDEO)])

@@ -566,6 +566,7 @@ class YouTubeSession:
         """What the YouTube page shows; secrets left out."""
         cfg = self.config()
         return {"has_cookies": bool(cfg.get("cookies_enc")), "has_po_token": bool(cfg.get("po_token_enc")),
+                "has_api_key": bool(cfg.get("api_key_enc")),
                 "cookie_count": cfg.get("cookie_count", 0), "saved_at": cfg.get("saved_at"),
                 "last_error": cfg.get("last_error"), "last_ok_at": cfg.get("last_ok_at"),
                 "max_mb": cfg.get("max_mb", DEFAULT_MAX_MB), "max_height": cfg.get("max_height", DEFAULT_MAX_HEIGHT),
@@ -595,6 +596,28 @@ class YouTubeSession:
         for k in ("cookies_enc", "po_token_enc", "cookie_count", "saved_at", "last_error", "last_ok_at"):
             cfg.pop(k, None)
         self._save(cfg)
+
+    def save_api_key(self, api_key: str) -> None:
+        key = api_key.strip()
+        if not key or len(key) > 512 or any(ord(c) < 33 or ord(c) > 126 for c in key):
+            raise YouTubeError("Enter a YouTube Data API key without spaces or line breaks.")
+        cfg = self.config()
+        cfg["api_key_enc"] = self.vault.encrypt(key)
+        self._save(cfg)
+
+    def forget_api_key(self) -> None:
+        cfg = self.config()
+        cfg.pop("api_key_enc", None)
+        self._save(cfg)
+
+    def api_key(self) -> str | None:
+        cfg = self.config()
+        if not cfg.get("api_key_enc"):
+            return None
+        try:
+            return self.vault.decrypt(cfg["api_key_enc"])
+        except VaultError:
+            return None
 
     def save_limits(self, max_mb: int, max_height: int) -> None:
         cfg = self.config()

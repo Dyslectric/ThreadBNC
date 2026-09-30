@@ -1338,6 +1338,8 @@ class Bouncer:
         kind, key = due
         error = None
         try:
+            if kind == "youtube-video":
+                self.youtube_api.api_key = self.youtube.api_key() or self.settings.youtube_api_key
             result = (self.rss_adapter.fetcher.owncast_live(key) if kind == "owncast" else
                       self.twitch.check(key) if kind == "twitch" else
                       self.youtube_api.check(key) if kind == "youtube-video" and self.youtube_api.configured else

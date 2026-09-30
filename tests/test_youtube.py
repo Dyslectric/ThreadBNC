@@ -395,6 +395,26 @@ def test_session_form_checks_what_was_pasted(settings, bouncer):
     assert (bouncer.youtube.status()["max_mb"], bouncer.youtube.status()["max_height"]) == (500, 720)
 
 
+def test_youtube_api_key_can_be_saved_and_forgotten_in_ui(settings, bouncer):
+    client = logged_in(settings, bouncer)
+    assert "No API key saved" in client.get("/youtube").text
+    assert "Enter a YouTube Data API key" in client.post("/youtube/api-key", data={"api_key": "  "}).text
+
+    key = "AIzaSecretKeyForTesting"
+    page = client.post("/youtube/api-key", data={"api_key": key}).text
+    assert "API key saved" in page and key not in page
+    assert bouncer.youtube.api_key() == key
+    stored = one(bouncer, "SELECT value FROM app_settings WHERE key='youtube_session'")[0]
+    assert key not in stored
+
+    bouncer.youtube.save_session("SID=secret1", "")
+    settings.youtube_api_key = "environment-key"
+    page = client.post("/youtube/api-key/forget").text
+    assert "From <code>THREADBNC_YOUTUBE_API_KEY</code>" in page
+    assert key not in page and bouncer.youtube.api_key() is None
+    assert bouncer.youtube.status()["has_cookies"]
+
+
 def test_youtube_links_in_other_posts_are_saved_when_kept(server, bouncer, downloads):
     from .conftest import DOMAIN
     server.add_post("1", "neat video", "")

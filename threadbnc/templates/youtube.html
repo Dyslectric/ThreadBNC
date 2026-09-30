@@ -23,6 +23,31 @@
   </p>
 </section>
 
+<section class="card narrow-form">
+  <h2>Live stream status</h2>
+  <p>When you open Live or Trending livestreams, ThreadBNC checks YouTube video IDs shared in recent posts for
+    live status and current viewers. A <a href="https://developers.google.com/youtube/v3/getting-started" target="_blank" rel="noreferrer noopener">YouTube Data API key</a>
+    enables these checks through <code>videos.list</code>.</p>
+  {% if yt.has_api_key %}<p><span class="pill good">API key saved</span> <span class="small muted">Stored encrypted here{% if api_key_from_env %}; used ahead of the environment key{% endif %}.</span></p>
+  {% elif api_key_from_env %}<p><span class="pill good">API key configured</span> <span class="small muted">From <code>THREADBNC_YOUTUBE_API_KEY</code>.</span></p>
+  {% else %}<p class="small muted">No API key saved. Live checks use YouTube's watch pages.</p>{% endif %}
+  <form method="post" action="/youtube/api-key" class="stack" autocomplete="off">
+    <label>YouTube Data API key
+      <input type="password" name="api_key" autocomplete="new-password" spellcheck="false" required maxlength="512" placeholder="Paste API key"></label>
+    <p class="small muted">Enable YouTube Data API v3 for the key's Google Cloud project. The key is used only by the server for live stream checks.</p>
+    <button>{{ 'Replace API key' if yt.has_api_key else 'Save API key' }}</button>
+  </form>
+  {% if yt.has_api_key %}
+  <details class="reply-box">
+    <summary class="small">Forget API key…</summary>
+    <form method="post" action="/youtube/api-key/forget">
+      <p class="small muted">After forgetting it, checks use {% if api_key_from_env %}the key from the environment{% else %}YouTube's watch pages{% endif %}.</p>
+      <button class="small danger">Forget API key</button>
+    </form>
+  </details>
+  {% endif %}
+</section>
+
 <section class="card">
   <h2>Downloader</h2>
   {% if not yt.downloader %}

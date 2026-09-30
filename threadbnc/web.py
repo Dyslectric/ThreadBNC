@@ -3663,7 +3663,25 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                 "WHERE f.active=1 AND c.canonical_ap_id LIKE ? ORDER BY lower(c.name)",
                 (youtube.FEED_PREFIX + "%",)).fetchall()
         return render(request, "youtube.html", yt=bouncer.youtube.status(), counts=counts, channels=channels,
-                      heights=youtube.HEIGHTS)
+                      heights=youtube.HEIGHTS, api_key_from_env=bool(settings.youtube_api_key))
+
+    @app.post("/youtube/api-key")
+    def youtube_api_key(request: Request, api_key: str = Form("")):
+        try:
+            bouncer.youtube.save_api_key(api_key)
+        except youtube.YouTubeError as exc:
+            flash(request, str(exc), "error")
+            return RedirectResponse("/youtube", status_code=303)
+        bouncer.wake.set()
+        flash(request, "Saved YouTube Data API key for live stream checks.")
+        return RedirectResponse("/youtube", status_code=303)
+
+    @app.post("/youtube/api-key/forget")
+    def youtube_api_key_forget(request: Request):
+        bouncer.youtube.forget_api_key()
+        bouncer.wake.set()
+        flash(request, "Forgot the saved YouTube Data API key.")
+        return RedirectResponse("/youtube", status_code=303)
 
     @app.post("/youtube/session")
     def youtube_session(request: Request, cookies: str = Form(""), po_token: str = Form("")):
