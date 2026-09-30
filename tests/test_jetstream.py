@@ -295,6 +295,23 @@ def test_multiple_jetstreams_can_be_saved_and_removed_from_sources(settings, bou
     assert not manager and not bouncer.tag_adapter.bluesky
 
 
+def test_manager_starts_configured_and_later_added_streams(bouncer, monkeypatch):
+    first, second = "wss://first.test/subscribe", "wss://second.test/subscribe"
+    started = []
+    monkeypatch.setattr(BlueskyStream, "start_thread", lambda stream: started.append(stream.url))
+    manager = BlueskyStreams(bouncer, first, "test")
+    assert started == []  # constructing the web app does not start its listeners
+    monkeypatch.setattr(manager, "run_forever", lambda: None)
+    manager.start_thread().join()
+    assert started == [first]
+    with bouncer.db.transaction() as conn:
+        conn.execute("INSERT INTO app_settings(key, value) VALUES (?, ?)",
+                     (jetstream.SOURCES, json.dumps([first, second])))
+    manager.refresh()
+    assert started == [first, second]
+    manager.stop()
+
+
 def test_overlapping_jetstream_events_are_counted_once(bouncer):
     manager = BlueskyStreams(bouncer, "wss://first.test/subscribe", "test")
     second_url = "wss://second.test/subscribe"

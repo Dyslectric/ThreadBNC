@@ -544,6 +544,8 @@ ActivityPub actor: without `THREADBNC_ACTOR_DOMAIN`, hashtags come from Bluesky 
   over the environment default and can be changed without restarting the bouncer. Each endpoint gets its own resume
   cursor; overlapping records are counted once while the bouncer runs. Empty the list to stop Bluesky streaming.
   These are Jetstream JSON endpoints, not raw `com.atproto.sync.subscribeRepos` firehoses.
+  Public Jetstream subscriptions need no Bluesky login. ThreadBNC does not send your Bluesky credentials to these
+  endpoints, and it does not currently support endpoints that require their own authentication.
   Posts seen only by an independent relay can affect Trending counts; ThreadBNC can add one to a hashtag feed only
   if Bluesky's AppView returns that post when asked for it.
 

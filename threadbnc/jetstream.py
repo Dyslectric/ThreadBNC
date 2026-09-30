@@ -555,7 +555,10 @@ class BlueskyStreams:
             self.bouncer.tag_adapter.bluesky = bool(self.streams)
 
     def start_thread(self) -> threading.Thread:
-        self._started = True
+        with self._lock:
+            self._started = True
+            for stream in self.streams.values():
+                stream.start_thread()
         thread = threading.Thread(target=self.run_forever, name="jetstreams", daemon=True)
         thread.start()
         return thread

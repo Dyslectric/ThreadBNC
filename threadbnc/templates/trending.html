@@ -172,7 +172,7 @@
             <legend>Jetstream endpoints</legend>
             <label for="jetstreams">Listen to these endpoints (one /subscribe WebSocket address per line)</label>
             <textarea id="jetstreams" name="jetstreams" rows="4" spellcheck="false">{{ st.jetstream_urls | join('\n') }}</textarea>
-            <p class="muted">Independent endpoints can carry different parts of the network. Overlapping events are counted once. Each connection uses traffic; remove all addresses to stop Bluesky streaming.</p>
+            <p class="muted">Independent endpoints can carry different parts of the network. Overlapping events are counted once. Each connection uses traffic; remove all addresses to stop Bluesky streaming. Public Jetstream subscriptions need no login: your Bluesky credentials are never sent to these endpoints. Endpoints requiring their own authentication aren't supported.</p>
             {% if st.embedded %}
               {% for stream in st.jetstream_status %}
               <p class="muted">{{ stream.url }}:
