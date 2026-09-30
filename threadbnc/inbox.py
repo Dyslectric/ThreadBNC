@@ -2,9 +2,9 @@
 private messages.
 
 The bouncer checks each account's server every few minutes (Reddit less
-often) and keeps what it finds in `inbox_items`. Read state is the server's:
-marking something read here marks it read there, and something read in
-another app shows as read here after the next check.
+often) and keeps what it finds in `inbox_items`. Most servers have per-item
+read state. Bluesky and Mastodon only have a timeline marker, so individual
+read changes for those accounts are kept here.
 
 Replying happens on the account's own server, where the ids stored with each
 item are valid, so a reply works whether or not the thread is in the archive.
@@ -54,8 +54,6 @@ class Inbox:
         """Why this account's inbox can't be checked, or None."""
         if account.status != "ok":
             return f"{account.handle} needs to log in again (Accounts page)."
-        if account.is_mastodon:
-            return "Mastodon notifications don't come to the Inbox yet."
         if account.is_reddit:
             status = self.poster.bouncer.reddit.status()
             if not status or not status.get("can_inbox"):
@@ -103,8 +101,8 @@ class Inbox:
             new = 0
             for item in items:
                 new += (item.kind, item.remote_id) not in known
-                if account.is_bluesky and (item.kind, item.remote_id) in read_here:
-                    item.unread = False  # Bluesky can't mark one read, so what was read here stays read
+                if (account.is_bluesky or account.is_mastodon) and (item.kind, item.remote_id) in read_here:
+                    item.unread = False  # Neither server has a per-item read switch
                 self._store(conn, account, item, now)
             conn.execute("UPDATE accounts SET inbox_checked_at=?, inbox_error=NULL WHERE id=?", (now, account.id))
         return new
@@ -180,8 +178,6 @@ class Inbox:
                 "FROM accounts a")}
         out = []
         for account in self.poster.list():
-            if account.is_mastodon:  # not checked (can_check), so not listed either
-                continue
             r = rows.get(account.id)
             out.append({"account": account, "checked_at": r["inbox_checked_at"] if r else None,
                         "error": self.can_check(account) or (r["inbox_error"] if r else None),
@@ -220,6 +216,12 @@ class Inbox:
             if account is None:
                 continue
             pairs = [(r["kind"], r["remote_id"]) for r in group]
+            if account.is_mastodon:
+                # Its marker covers the whole notification timeline, including items
+                # already marked read locally one at a time.
+                with self.db.connect() as conn:
+                    pairs = [(r["kind"], r["remote_id"]) for r in conn.execute(
+                        "SELECT kind, remote_id FROM inbox_items WHERE account_id=?", (aid,))]
             try:
                 self.poster._run(account, lambda adapter, token: adapter.mark_all_inbox_read(token, pairs))
             except AccountError as exc:
@@ -241,7 +243,7 @@ class Inbox:
         if not body:
             raise AccountError("Write something first.")
         row, account = self._item(item_id)
-        if row["kind"] == "message":
+        if row["kind"] == "message" and not account.is_mastodon:
             if not row["author_local_id"] and not account.is_reddit:
                 raise AccountError("Can't tell who sent that message, so it can't be answered from here.")
             self.poster._run(account, lambda adapter, token: adapter.send_message(

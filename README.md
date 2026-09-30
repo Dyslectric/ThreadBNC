@@ -497,8 +497,8 @@ post with it.
 
   Each is found on your server by its address first, which fetches it there if your server hasn't seen it.
   Your server sends you back to `/accounts/mastodon/callback` on the address you opened ThreadBNC at, so
-  that address has to be reachable from your browser (it is, if you're using it). Replies and mentions of
-  your Mastodon account don't come to the Inbox yet. **Repost** works either way.
+  that address has to be reachable from your browser (it is, if you're using it). Replies, mentions and direct
+  messages to your Mastodon account appear in the [Inbox](#inbox). **Repost** works either way.
 
 ### From public fediverse streams
 
@@ -650,12 +650,12 @@ The **Inbox** collects replies to your posts and comments, mentions, and private
 Accounts page, including your Reddit account. The header shows how many are unread.
 
 - **Checking:** the bouncer checks each account every 5 minutes (`THREADBNC_INBOX_POLL_MINUTES`), and Reddit every 10 at most. **↻ Check now** checks straight away. Each check fetches about the newest 50 items; older ones keep the read state they had when last seen.
-- **Read state is the server's.** Marking something read (or unread) here marks it on the account's server, and anything you read in another app shows as read here after the next check. **Mark all read** does the same for every account, or for the one you're viewing.
+- **Read state:** for Lemmy, PieFed and Reddit, marking something read or unread also changes it on the server. Bluesky and Mastodon have no per-item read switch, so individual changes stay here. Mastodon's notification read marker is checked for changes made in another app. **Mark all read** advances the timeline marker on Mastodon and Bluesky; you can use it for every account or just the one you're viewing. Servers without Mastodon's marker API keep read state here.
 - **Replying:**
   - A reply goes under the comment or post, or a private message goes back to its sender. It's sent as the account the item came to, and the item is marked read.
   - This works whether or not the thread is in the archive. When it is, your reply appears there straight away. Otherwise **☆ Keep thread** saves the thread.
   - A Reddit reply needs a Reddit connection that can write.
-- **Where it's from:** Lemmy 0.19 and PieFed use their replies, mentions and messages lists. Lemmy 1.0 uses its notifications. Reddit uses its message inbox. Messages you sent aren't shown.
+- **Where it's from:** Lemmy 0.19 and PieFed use their replies, mentions and messages lists. Lemmy 1.0 and Mastodon use notifications; Mastodon's direct mentions appear as messages. Reddit uses its message inbox. Messages you sent aren't shown.
 - Removing an account removes its inbox here too. Nothing is deleted on the server.
 
 ### Moderating and administering

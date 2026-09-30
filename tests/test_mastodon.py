@@ -38,6 +38,8 @@ class FakeHome:
         self.favourites: list[str] = []
         self.posted: list[dict] = []
         self.deleted: list[str] = []
+        self.notifications: list[dict] = []
+        self.notification_marker = "0"
         self.context: list[dict] = []  # the replies to any post, for anyone asking
         self.live_feeds = {"local": "public", "remote": "public"}  # what it says of its live feeds
         self.trending: list[dict] = []  # /api/v1/trends/tags
@@ -79,6 +81,12 @@ class FakeHome:
             return httpx.Response(200, json=self.trending[:int(request.url.params.get("limit", 10))])
         if path == "/api/v1/accounts/verify_credentials":
             return httpx.Response(200, json=ME)
+        if path == "/api/v1/notifications" and method == "GET":
+            return httpx.Response(200, json=self.notifications[:int(request.url.params.get("limit", 40))])
+        if path == "/api/v1/markers":
+            if method == "POST":
+                self.notification_marker = body["notifications"]["last_read_id"]
+            return httpx.Response(200, json={"notifications": {"last_read_id": self.notification_marker}})
         if path == "/api/v2/search":
             q = request.url.params["q"]
             assert request.url.params["resolve"] == "true"
@@ -137,6 +145,43 @@ def sign_in(web, fedi):
     assert q["scope"] == "read write" and q["code_challenge_method"] == "S256"
     fedi.home.challenge = q["code_challenge"]
     return q["state"]
+
+
+def test_mastodon_inbox_checks_replies_mentions_and_private_messages(web, tagged, fedi):
+    b, _ = tagged
+    web.get("/accounts/mastodon/callback", params={"state": sign_in(web, fedi), "code": "good"})
+    reply = status("9201", "https://other.test/users/bob/statuses/9201", "bob@other.test",
+                   "A reply", in_reply_to_account_id=ME["id"])
+    mention = status("9202", "https://other.test/users/bob/statuses/9202", "bob@other.test", "A mention")
+    private = status("9203", "https://other.test/users/bob/statuses/9203", "bob@other.test",
+                     "A private message", visibility="direct")
+    for sid, s in (("103", private), ("102", mention), ("101", reply)):
+        fedi.home.statuses[s["id"]] = s
+        fedi.home.notifications.append({"id": sid, "type": "mention", "created_at": s["created_at"],
+                                        "account": s["account"], "status": s})
+    fedi.home.notifications.append({"id": "100", "type": "favourite", "status": reply})
+    r = web.post("/inbox/check", follow_redirects=False)
+    assert r.status_code == 303
+    with b.db.connect() as conn:
+        items = conn.execute("SELECT id, kind, remote_id, unread FROM inbox_items ORDER BY remote_id").fetchall()
+    assert [(i["kind"], i["remote_id"], i["unread"]) for i in items] == [
+        ("reply", "101", 1), ("mention", "102", 1), ("message", "103", 1)]
+    page = web.get("/inbox").text
+    assert "A reply" in page and "A mention" in page and "A private message" in page
+
+    web.post(f"/inbox/{items[2]['id']}/reply", data={"body": "Privately back"})
+    assert fedi.home.posted[-1]["in_reply_to_id"] == "9203"
+    assert fedi.home.posted[-1]["visibility"] == "direct"
+    assert fedi.home.notification_marker == "0"  # one item read locally does not advance the whole timeline
+    web.post("/inbox/read-all", data={"confirmed": "1"})
+    assert fedi.home.notification_marker == "103"
+    assert "Nothing unread" in web.get("/inbox").text
+    web.post("/inbox/check")
+    assert "Nothing unread" in web.get("/inbox").text
+    fedi.home.notification_marker = "200"  # read further ahead in another client
+    web.post(f"/inbox/{items[0]['id']}/read", data={"read": "0"})
+    web.post("/inbox/read-all", data={"confirmed": "1"})
+    assert fedi.home.notification_marker == "200"
 
 
 def captured(b, relays_client, fedi) -> int:

@@ -27,7 +27,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 from .activitypub import account_avatar, status_post, with_quote
-from .base import (NActor, NComment, NPost, RemoteNotFound, RemoteRejected, ThreadiverseAdapter,
+from .base import (NActor, NComment, NInboxItem, NPost, RemoteNotFound, RemoteRejected, ThreadiverseAdapter,
                    UnsupportedSoftware, host_of)
 from .rss import html_to_markdown
 
@@ -123,6 +123,58 @@ class MastodonAdapter(ThreadiverseAdapter):
                                       account.get("display_name") or None, account_avatar(account)),
                         score=s.get("favourites_count") or 0, upvotes=s.get("favourites_count") or 0,
                         reply_count=s.get("replies_count") or 0)
+
+    # -- inbox ----------------------------------------------------------------------
+    def inbox(self, token: str, me_ap_id: str) -> list[NInboxItem]:
+        """Recent mentions, replies and direct statuses addressed to this account."""
+        me = self._call("GET", "/api/v1/accounts/verify_credentials", token)
+        notifications = self._call("GET", "/api/v1/notifications", token, limit=50)
+        try:
+            marker = self._call("GET", "/api/v1/markers", token, **{"timeline[]": "notifications"})
+        except RemoteNotFound:  # some servers with Mastodon's client API have no markers
+            marker = {}
+        last_read = str((marker.get("notifications") or {}).get("last_read_id") or "0")
+        out = []
+        for n in notifications:
+            if n.get("type") != "mention" or not isinstance(n.get("status"), dict):
+                continue
+            s = n["status"]
+            actor = n.get("account") or s.get("account") or {}
+            uri = actor.get("uri") or actor.get("url") or ""
+            sid, nid = str(s.get("id") or ""), str(n.get("id") or "")
+            if not sid or not nid or not uri:
+                continue
+            direct = s.get("visibility") == "direct"
+            reply = str(s.get("in_reply_to_account_id") or "") == str(me.get("id") or "")
+            kind = "message" if direct else "reply" if reply else "mention"
+            body = html_to_markdown(s.get("content"), s.get("uri"))
+            if s.get("spoiler_text"):
+                body = f"**CW: {s['spoiler_text']}**\n\n{body}"
+            body = with_quote(body, s) or ""
+            ap_id = s.get("uri") or s.get("url")
+            out.append(NInboxItem(
+                kind=kind, remote_id=nid, unread=int(nid) > int(last_read),
+                author=NActor(uri, actor.get("username") or "?", host_of(uri) or self.domain,
+                              actor.get("display_name") or None, account_avatar(actor)),
+                body=body, created_at=n.get("created_at") or s.get("created_at"),
+                object_type="message" if direct else "post", object_ap_id=ap_id,
+                object_local_id=sid, author_local_id=str(actor.get("id") or ""),
+                post_ap_id=None if direct else ap_id, post_local_id=sid))
+        return out
+
+    def mark_inbox_read(self, token: str, kind: str, remote_id: str, read: bool = True) -> None:
+        """Mastodon has a timeline marker, but no per-notification read switch."""
+
+    def mark_all_inbox_read(self, token: str, pairs: list[tuple[str, str]]) -> None:
+        if pairs:
+            newest = max(int(remote_id) for _, remote_id in pairs)
+            try:
+                marker = self._call("GET", "/api/v1/markers", token, **{"timeline[]": "notifications"})
+                current = int((marker.get("notifications") or {}).get("last_read_id") or 0)
+                self._call("POST", "/api/v1/markers", token,
+                           notifications={"last_read_id": str(max(newest, current))})
+            except RemoteNotFound:
+                pass  # the inbox still marks its locally held items read
 
     # -- writing ---------------------------------------------------------------------
     def create_comment(self, token: str, post_local_id: str, body: str,
