@@ -1309,14 +1309,6 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         """The same, only those with a video, to scroll through one at a time (the Loops view)."""
         return trending_page(request, "loops", sort, t, src, page, lang)
 
-    @app.get("/trending/livestreams", response_class=HTMLResponse)
-    def trending_livestreams(request: Request, sort: str = "likes", src: str = "all", page: int = 1,
-                             lang: str = "", yt: str = "1", tw: str = "1", oc: str = "1"):
-        """Likely live streams from posts made in the past day, ranked by response."""
-        bouncer.request_live_checks()
-        services = {kind for kind, flag in (("youtube", yt), ("twitch", tw), ("owncast", oc)) if flag != "0"}
-        return trending_page(request, "livestreams", sort, "day", src, page, lang, services)
-
     video_pds: dict[str, str] = {}
 
     @app.get("/trending/video")
@@ -1366,23 +1358,16 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             threading.Thread(target=look, name="video-pds", daemon=True).start()
         return src
 
-    def trending_page(request: Request, tab: str, sort: str, t: str, src: str, page: int, lang: str,
-                      services: set[str] | None = None):
+    def trending_page(request: Request, tab: str, sort: str, t: str, src: str, page: int, lang: str):
         sort = sort if sort in trends_mod.POST_SORTS else "likes"
-        window = "day" if tab == "livestreams" else t if t in trends_mod.POST_WINDOWS else "day"
+        window = t if t in trends_mod.POST_WINDOWS else "day"
         source = src if src in trends_mod.SOURCES else "all"
         page = max(1, page)
         langs = trend_languages(lang)
         with db.connect() as conn:
-            if tab == "livestreams":
-                items, has_more = trends_mod.live_posts(conn, sort, None if source == "all" else source,
-                                                       page, TRENDING_PAGE, codes=langs["codes"],
-                                                       twitch_enabled=bouncer.twitch.configured,
-                                                       services=services)
-            else:
-                items, has_more = trends_mod.trending_posts(conn, window, sort, None if source == "all" else source,
-                                                            page, TRENDING_PAGE, codes=langs["codes"],
-                                                            videos=tab == "loops")
+            items, has_more = trends_mod.trending_posts(conn, window, sort, None if source == "all" else source,
+                                                        page, TRENDING_PAGE, codes=langs["codes"],
+                                                        videos=tab == "loops")
             ap_ids = [i["view"].get("uri") or i["view"].get("url") for i in items]
             here = {r["canonical_ap_id"]: r for r in conn.execute(
                 f"SELECT o.canonical_ap_id, t.id, t.root_object_id, t.retention, t.trashed_at FROM objects o "
@@ -1418,46 +1403,33 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         for i in items:
             key = i["view"].get("url") if i["source"] == "bluesky" else i["view"].get("uri")
             i["liked"], i["reposted"] = key in mine["like"], key in mine["repost"]
-        if tab == "livestreams":
-            with db.transaction(exclusive=False) as conn:
-                livestream.register_live_checks(conn, [
-                    (("youtube-channel" if i["stream"].is_channel else "youtube-video")
-                     if i["stream"].kind == "youtube" else "owncast", i["stream"].key)
-                    for i in items if i["stream"].kind in ("youtube", "owncast")])
-            bouncer.wake.set()
-        service_params = ({"yt": "1" if "youtube" in services else "0",
-                           "tw": "1" if "twitch" in services else "0",
-                           "oc": "1" if "owncast" in services else "0"} if services is not None else {})
         return render(request, "trending.html", tab=tab, posts=items, sort=sort, window=window, source=source,
                       page=page, has_more=has_more, status=trending_status(), langs=langs,
-                      services=services, twitch_configured=bouncer.twitch.configured,
-                      params=trend_params(sort=sort, t=None if tab == "livestreams" else window,
-                                          src=source, lang="all" if langs["all"] else None,
-                                          **service_params))
+                      params=trend_params(sort=sort, t=window, src=source,
+                                          lang="all" if langs["all"] else None))
 
     @app.get("/live", response_class=HTMLResponse)
-    def live_streams(request: Request, q: str = "", page: int = 1,
+    def live_streams(request: Request, q: str = "", page: int = 1, sort: str = "viewers",
                      yt: str = "1", tw: str = "1", oc: str = "1"):
-        """Recently linked streams that look active, searchable by word or hashtag."""
+        """Verified live streams, searchable by word or hashtag."""
         q = q.strip()[:100]
         page = max(1, page)
+        sort = sort if sort in ("viewers", "newest") else "viewers"
         services = {kind for kind, flag in (("youtube", yt), ("twitch", tw), ("owncast", oc)) if flag != "0"}
         bouncer.request_live_checks()
         with db.connect() as conn:
-            items, more = trends_mod.live_posts(conn, page=page, per_page=TRENDING_PAGE,
-                                                query=q, newest=True, twitch_enabled=bouncer.twitch.configured,
+            items, more = trends_mod.live_posts(conn, sort=sort, page=page, per_page=TRENDING_PAGE,
+                                                query=q, newest=sort == "newest", twitch_enabled=bouncer.twitch.configured,
                                                 services=services)
             followed = livestream.followed_live(conn, utcnow(), q) if "youtube" in services else []
-        with db.transaction(exclusive=False) as conn:
-            livestream.register_live_checks(conn, [
-                (("youtube-channel" if i["stream"].is_channel else "youtube-video")
-                 if i["stream"].kind == "youtube" else "owncast", i["stream"].key)
-                for i in items if i["stream"].kind in ("youtube", "owncast")])
+        followed.sort(key=lambda i: (i["viewer_count"] is not None, i["viewer_count"] or 0,
+                                     i["checked_at"] or ""), reverse=True)
         bouncer.wake.set()
         with db.connect() as conn:
             hidden_keys = hidden_mod.keys(conn)
         items = [i for i in items if (i["view"].get("author_uri") or i["view"].get("author_url")) not in hidden_keys]
-        return render(request, "live_streams.html", streams=items, followed=followed, q=q, page=page, more=more,
+        return render(request, "live_streams.html", streams=items, followed=followed, q=q, sort=sort,
+                      page=page, more=more,
                       twitch_configured=bouncer.twitch.configured, services=services,
                       yt="1" if "youtube" in services else "0",
                       tw="1" if "twitch" in services else "0",

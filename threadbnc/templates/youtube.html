@@ -25,7 +25,7 @@
 
 <section class="card narrow-form">
   <h2>Live stream status</h2>
-  <p>When you open Live or Trending livestreams, ThreadBNC checks YouTube video IDs shared in recent posts for
+  <p>When you open Live, ThreadBNC checks YouTube video IDs shared in recent posts for
     live status and current viewers. A <a href="https://developers.google.com/youtube/v3/getting-started" target="_blank" rel="noreferrer noopener">YouTube Data API key</a>
     enables these checks through <code>videos.list</code>.</p>
   {% if yt.has_api_key %}<p><span class="pill good">API key saved</span> <span class="small muted">Stored encrypted here{% if api_key_from_env %}; used ahead of the environment key{% endif %}.</span></p>
