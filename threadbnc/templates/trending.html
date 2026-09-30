@@ -98,6 +98,7 @@
       <h1>{{ icon('trending', 'title-icon') }} Trending</h1>
       <p class="muted small">
         {%- if tab == 'loops' %} The videos posted on Bluesky and Mastodon that are liked and talked about most, one to a screen: scroll up to the next.
+        {%- elif tab == 'livestreams' %} Streams linked by the most liked, commented on, or reposted recent posts.
         {%- elif tab == 'posts' %} What's liked and talked about most on Bluesky and Mastodon, from their streams.
         {%- elif tab == 'tags' %} The hashtags used in the most posts on Bluesky and Mastodon, and those rising.
         {%- else %} The pages posted most on Bluesky, on Mastodon and in your archive, and those rising.{% endif %}</p>
@@ -174,6 +175,7 @@
   <nav class="tabs" aria-label="Trending">
     <a href="/trending" class="{{ 'on' if tab == 'posts' }}" {% if tab == 'posts' %}aria-current="page"{% endif %}>{{ icon('comment') }} Posts</a>
     <a href="/trending/loops" class="{{ 'on' if tab == 'loops' }}" {% if tab == 'loops' %}aria-current="page"{% endif %}>{{ icon('loops') }} Loops</a>
+    <a href="/trending/livestreams" class="{{ 'on' if tab == 'livestreams' }}" {% if tab == 'livestreams' %}aria-current="page"{% endif %}>{{ icon('video') }} Livestreams</a>
     <a href="/trending/articles" class="{{ 'on' if tab == 'articles' }}" {% if tab == 'articles' %}aria-current="page"{% endif %}>{{ icon('article') }} Articles</a>
     <a href="/trending/tags" class="{{ 'on' if tab == 'tags' }}" {% if tab == 'tags' %}aria-current="page"{% endif %}>{{ icon('communities') }} Tags</a>
   </nav>
@@ -201,8 +203,8 @@
     {% else %}<span class="pill muted">Mastodon</span> not subscribed.{% endif %}
   </p>
 
-{% if tab in ('posts', 'loops') %}
-  {% set here = '/trending/loops' if tab == 'loops' else '/trending' %}
+{% if tab in ('posts', 'loops', 'livestreams') %}
+  {% set here = '/trending/loops' if tab == 'loops' else '/trending/livestreams' if tab == 'livestreams' else '/trending' %}
   {% set base = q(here, {}) %}
   <div class="feed-controls article-controls">
     <nav class="seg" aria-label="Rank by">
@@ -212,12 +214,13 @@
            {% if sort == key %}aria-current="page"{% endif %}>{{ label }}</a>
       {% endfor %}
     </nav>
-    <nav class="seg" aria-label="Posted in the past">
+    {% if tab == 'livestreams' %}<p class="small muted">Linked in the past six hours; likely live based on the link and post wording. Playback status is not checked.</p>
+    {% else %}<nav class="seg" aria-label="Posted in the past">
       {% for key, label in [('hour', 'Hour'), ('day', 'Day'), ('week', 'Week')] %}
         <a href="{{ q(here, {'t': key}) }}" class="{{ 'on' if window == key }}"
            {% if window == key %}aria-current="page"{% endif %}>{{ label }}</a>
       {% endfor %}
-    </nav>
+    </nav>{% endif %}
     <nav class="seg" aria-label="Where">
       {% for key, label in [('all', 'Both'), ('bluesky', 'Bluesky'), ('mastodon', 'Mastodon')] %}
         <a href="{{ q(here, {'src': key}) }}" class="{{ 'on' if source == key }}"
@@ -283,6 +286,7 @@
             {% if p.created_at %}<span title="{{ p.created_at | absolute }}">{{ when(p.created_at) }}</span>{% endif %}</span>
         </div>
         {% set content %}
+        {% if tab == 'livestreams' %}<p class="small"><span class="pill good">Likely live</span> <a href="{{ p.stream.href }}">Open {{ p.stream.site }} stream</a></p>{% endif %}
         <p class="trend-text st-text">{{ v.text or '(no text)' }}</p>
         {% if v.link and v.link | safe_url %}
           {% set box = link_box(v.link) %}
@@ -350,6 +354,7 @@
   {% if not posts %}
     <section class="card empty"><p class="muted">
       {%- if not (st.bluesky and st.chosen.bluesky) and not st.mastodon_scope and not st.mastodon_account %}Nothing is counted: choose where from under Sources.
+      {%- elif tab == 'livestreams' %}No likely live streams were found in posts from the past six hours.
       {%- else %}Nothing yet. Posts show here once their likes and replies have been read, a few minutes after
       people start replying to them.{% endif %}</p></section>
   {% endif %}

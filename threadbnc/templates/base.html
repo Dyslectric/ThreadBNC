@@ -25,6 +25,7 @@
       {# A community's page is a feed narrowed to it (the Following list leads there), so it's under Feeds. #}
       {% for href, name, ico, on in [('/', 'Feeds', 'feed', path == '/' or path.startswith(('/c/', '/f/', '/feed'))),
                                      ('/trending', 'Trending', 'trending', path.startswith('/trending') or path.startswith('/articles')),
+                                     ('/live', 'Live', 'video', path == '/live' or path.startswith('/live/')),
                                      ('/forums', 'Forums', 'communities', path.startswith('/forums')),
                                      ('/inbox', 'Inbox', 'inbox', path.startswith('/inbox')),
                                      ('/kept', 'Kept', 'star', path.startswith('/kept')),

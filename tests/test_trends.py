@@ -1278,6 +1278,53 @@ def test_trending_videos_play_on_the_page_and_in_loops(settings, bouncer):  # no
     assert web_client.get("/trending/video", params={"did": "did:web:evil.test", "cid": cid}).status_code == 404
 
 
+def test_likely_live_streams_are_recent_ranked_and_searchable(settings, bouncer):  # noqa: F811
+    assert trends.likely_live_stream({"text": "Live from the studio", "link": "https://cast.example/"},
+                                     {"cast.example"}).kind == "owncast"
+    assert trends.likely_live_stream({"text": "Live replay", "link": "https://twitch.tv/alice"}, set()) is None
+    assert trends.likely_live_stream({"text": "Just a link", "link": "https://twitch.tv/alice"}, set()) is None
+    assert trends.likely_live_stream({"text": "I live in Boston", "link": "https://twitch.tv/alice"}, set()) is None
+
+    def view(text, link, title=""):
+        return {"text": text, "link": link, "link_title": title, "handle": "alice.test",
+                "name": "Alice", "author_url": "https://bsky.app/profile/alice.test",
+                "url": "https://bsky.app/profile/alice.test/post/1"}
+
+    now = fmt_ts(datetime.now(timezone.utc))
+    with bouncer.db.transaction(exclusive=False) as conn:
+        trends.record_totals(conn, "bluesky", {
+            at("3kliveone"): {"likes": 4, "replies": 12, "reposts": 2, "created_at": stamp(hours=-1),
+                             "view": view("We're live #art", "https://twitch.tv/alice")},
+            at("3klivedup"): {"likes": 1, "replies": 1, "reposts": 1, "created_at": stamp(hours=-3),
+                             "view": view("Live again #art", "https://twitch.tv/alice")},
+            at("3klivetwo"): {"likes": 20, "replies": 1, "reposts": 5, "created_at": stamp(hours=-2),
+                             "view": view("Live #music", "https://www.youtube.com/live/abcdefghijk")},
+            at("3koffline"): {"likes": 99, "replies": 99, "reposts": 99, "created_at": stamp(hours=-1),
+                             "view": view("Stream ended #art", "https://twitch.tv/offline")},
+            at("3koldlive"): {"likes": 80, "replies": 80, "reposts": 80, "created_at": stamp(hours=-7),
+                             "view": view("Live #art", "https://twitch.tv/oldchannel")},
+            at("3kvod"): {"likes": 70, "replies": 70, "reposts": 70, "created_at": stamp(hours=-1),
+                         "view": view("Live replay #art", "https://twitch.tv/videos/1234")}}, [], now)
+        liked, more = trends.live_posts(conn)
+        replied, _ = trends.live_posts(conn, sort="replies")
+        searched, _ = trends.live_posts(conn, query="#art")
+        first, more_first = trends.live_posts(conn, per_page=1)
+        second, _ = trends.live_posts(conn, page=2, per_page=1)
+    assert [p["stream"].key for p in liked] == ["abcdefghijk", "alice"] and not more
+    assert [p["stream"].key for p in replied] == ["alice", "abcdefghijk"]
+    assert [p["stream"].key for p in searched] == ["alice"]
+    assert more_first and first[0]["key"] != second[0]["key"]
+
+    web_client = TestClient(create_app(settings, bouncer))
+    web_client.post("/login", data={"password": "pw"})
+    trend = web_client.get("/trending/livestreams", params={"sort": "replies"}).text
+    assert "Livestreams" in trend and "past six hours" in trend
+    assert trend.index("Open Twitch stream") < trend.index("Open YouTube stream")
+    live = web_client.get("/live", params={"q": "#art"}).text
+    assert 'aria-current="page"' in live and "We&#39;re live #art" in live
+    assert "Live #music" not in live and "Stream ended" not in live
+
+
 def test_videos_read_before_their_files_were_kept_are_read_again(bouncer):  # noqa: F811
     now = fmt_ts(datetime.now(timezone.utc))
     old = {"text": "Old clip", "video": True}

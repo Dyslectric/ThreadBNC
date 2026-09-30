@@ -1307,6 +1307,12 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         """The same, only those with a video, to scroll through one at a time (the Loops view)."""
         return trending_page(request, "loops", sort, t, src, page, lang)
 
+    @app.get("/trending/livestreams", response_class=HTMLResponse)
+    def trending_livestreams(request: Request, sort: str = "likes", src: str = "all", page: int = 1,
+                             lang: str = ""):
+        """Likely live streams from posts made in the past six hours, ranked by response."""
+        return trending_page(request, "livestreams", sort, "six_hours", src, page, lang)
+
     video_pds: dict[str, str] = {}
 
     @app.get("/trending/video")
@@ -1358,14 +1364,18 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
 
     def trending_page(request: Request, tab: str, sort: str, t: str, src: str, page: int, lang: str):
         sort = sort if sort in trends_mod.POST_SORTS else "likes"
-        window = t if t in trends_mod.POST_WINDOWS else "day"
+        window = "six_hours" if tab == "livestreams" else t if t in trends_mod.POST_WINDOWS else "day"
         source = src if src in trends_mod.SOURCES else "all"
         page = max(1, page)
         langs = trend_languages(lang)
         with db.connect() as conn:
-            items, has_more = trends_mod.trending_posts(conn, window, sort, None if source == "all" else source,
-                                                        page, TRENDING_PAGE, codes=langs["codes"],
-                                                        videos=tab == "loops")
+            if tab == "livestreams":
+                items, has_more = trends_mod.live_posts(conn, sort, None if source == "all" else source,
+                                                       page, TRENDING_PAGE, codes=langs["codes"])
+            else:
+                items, has_more = trends_mod.trending_posts(conn, window, sort, None if source == "all" else source,
+                                                            page, TRENDING_PAGE, codes=langs["codes"],
+                                                            videos=tab == "loops")
             ap_ids = [i["view"].get("uri") or i["view"].get("url") for i in items]
             here = {r["canonical_ap_id"]: r for r in conn.execute(
                 f"SELECT o.canonical_ap_id, t.id, t.root_object_id, t.retention, t.trashed_at FROM objects o "
@@ -1403,7 +1413,21 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             i["liked"], i["reposted"] = key in mine["like"], key in mine["repost"]
         return render(request, "trending.html", tab=tab, posts=items, sort=sort, window=window, source=source,
                       page=page, has_more=has_more, status=trending_status(), langs=langs,
-                      params=trend_params(sort=sort, t=window, src=source, lang="all" if langs["all"] else None))
+                      params=trend_params(sort=sort, t=None if tab == "livestreams" else window,
+                                          src=source, lang="all" if langs["all"] else None))
+
+    @app.get("/live", response_class=HTMLResponse)
+    def live_streams(request: Request, q: str = "", page: int = 1):
+        """Recently linked streams that look active, searchable by word or hashtag."""
+        q = q.strip()[:100]
+        page = max(1, page)
+        with db.connect() as conn:
+            items, more = trends_mod.live_posts(conn, page=page, per_page=TRENDING_PAGE,
+                                                query=q, newest=True)
+        with db.connect() as conn:
+            hidden_keys = hidden_mod.keys(conn)
+        items = [i for i in items if (i["view"].get("author_uri") or i["view"].get("author_url")) not in hidden_keys]
+        return render(request, "live_streams.html", streams=items, q=q, page=page, more=more)
 
     @app.get("/trending/articles", response_class=HTMLResponse)
     def trending_articles(request: Request, t: str = "week", src: str = "all", page: int = 1, lang: str = "",

@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon, when %}
+{% block title %}Live streams{% endblock %}
+{% block content %}
+<div class="articles-page">
+  <header class="feed-head articles-head">
+    <h1>{{ icon('video', 'title-icon') }} Live streams</h1>
+    <p class="muted">Streams linked in the past six hours that look live from their link and post wording. Playback status is not checked.</p>
+  </header>
+  <form method="get" action="/live" role="search" class="feed-controls">
+    <label for="live-query" class="sr-only">Search streams by keyword or tag</label>
+    <input id="live-query" type="search" name="q" value="{{ q }}" placeholder="Search by keyword or #tag" maxlength="100">
+    <button>{{ icon('search') }} Search</button>
+  </form>
+  <div class="cards" id="items" data-items>
+    {% for p in streams %}
+    {% set v = p.view %}
+    <article class="post-card" data-entry><div class="pc-main">
+      <div class="pc-meta small">
+        <span class="pill good">Likely live</span>
+        <span class="pill">{{ p.stream.site }}</span>
+        <span class="muted">{{ when(p.created_at) }} on {{ 'Bluesky' if p.source == 'bluesky' else 'Mastodon' }}</span>
+      </div>
+      <h2 class="pc-title"><a href="{{ p.stream.href }}">{{ v.link_title or v.text or p.stream.key }}</a></h2>
+      {% if v.link_title and v.text %}<p class="pc-excerpt">{{ v.text }}</p>{% endif %}
+      <p class="small muted">Shared by @{{ v.handle or 'unknown' }} · {{ p.likes }} likes · {{ p.replies }} comments · {{ p.reposts }} reposts</p>
+      <p><a class="button secondary" href="{{ p.stream.href }}">{{ icon('play') }} Open stream</a></p>
+    </div></article>
+    {% else %}
+    <section class="card empty"><p class="muted">No likely live streams found{% if q %} for “{{ q }}”{% endif %} in the past six hours.</p></section>
+    {% endfor %}
+  </div>
+  {% if page > 1 or more %}
+  <nav class="pager" aria-label="Pages">
+    {% if page > 1 %}<a href="/live{% if q %}?q={{ q | urlencode }}&{% else %}?{% endif %}page={{ page - 1 }}">Previous</a>{% endif %}
+    {% if more %}<a href="/live{% if q %}?q={{ q | urlencode }}&{% else %}?{% endif %}page={{ page + 1 }}">More</a>{% endif %}
+  </nav>
+  {% endif %}
+</div>
+{% endblock %}

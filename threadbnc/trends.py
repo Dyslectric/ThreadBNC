@@ -50,7 +50,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 from urllib.parse import urlparse
 
-from . import articles, languages, links as links_mod
+from . import articles, languages, links as links_mod, livestream
 from . import media as media_mod
 from . import thumbs
 from .adapters import BSKY_DOMAIN, TAG_DOMAIN, TAG_PREFIX, RemoteError, normalize_tag
@@ -65,6 +65,7 @@ SOURCES = {"bluesky": "Bluesky", "mastodon": "Mastodon"}
 ARTICLE_SOURCES = {**SOURCES, "archive": "Archive"}  # articles are also counted from the archive
 WINDOWS = {"day": timedelta(days=1), "week": timedelta(days=7), "month": timedelta(days=30)}
 POST_WINDOWS = {"hour": timedelta(hours=1), "day": timedelta(days=1), "week": timedelta(days=7)}
+STREAM_RECENT = timedelta(hours=6)
 RANKINGS = ("rising", *WINDOWS)  # the articles' rankings, and the hashtags'
 POST_SORTS = ("likes", "replies", "reposts")  # reposts: boosts, on Mastodon
 # App setting (JSON): {"bluesky": count what's posted on Bluesky (Jetstream stays connected),
@@ -1326,6 +1327,101 @@ def trending_posts(conn: Conn, window: str = "day", sort: str = "likes", source:
         item["pictures_waiting"] = item["pictures_waiting"] or not item["pictures"] and (
             bool(view.get("images")) or (unread_pictures(view)))
     return out, len(rows) > per_page
+
+
+_LIVE_WORDS = re.compile(
+    r"\b(?:livestream(?:ing)?|streaming|on air|going live|we're live|we are live|i'm live|i am live|is live|"
+    r"live now|live stream)\b|(?:^|[.!?]\s*)live\b|#live\b", re.I)
+_PAST_STREAM = re.compile(r"\b(?:replay|offline|stream ended|was live|recorded stream)\b", re.I)
+_TEXT_URL = re.compile(r"https?://[^\s<>\"']+")
+
+
+def likely_live_stream(view: dict[str, Any], owncast_hosts: set[str]) -> livestream.Stream | None:
+    """A recent post's stream link, when its address and words suggest a live broadcast.
+
+    This is deliberately a heuristic: no remote player's current status is claimed.
+    VODs and ordinary video links are excluded. Owncast needs a previously identified host.
+    """
+    words = f"{view.get('text') or ''} {view.get('link_title') or ''}"
+    if _PAST_STREAM.search(words):
+        return None
+    urls = [view.get("link") or "", *_TEXT_URL.findall(view.get("text") or "")]
+    for url in urls:
+        url = url.rstrip(".,;:!?)")
+        stream = livestream.stream_of(url)
+        if stream and stream.kind != "twitch-video":
+            if stream.kind == "youtube" or _LIVE_WORDS.search(words):
+                return stream
+        elif _LIVE_WORDS.search(words):
+            host = urlparse(url).hostname
+            if host and host.lower() in owncast_hosts:
+                return livestream.from_key("owncast", host.lower())
+    return None
+
+
+def live_posts(conn: Conn, sort: str = "likes", source: str | None = None, page: int = 1,
+               per_page: int = 25, now: str | None = None, query: str = "", newest: bool = False,
+               codes: list[str] | tuple[str, ...] = ()) -> tuple[list[dict[str, Any]], bool]:
+    """Likely active streams linked by posts from the last six hours.
+
+    Trending ranks each stream by its strongest post; Live shows its newest mention.
+    Filtering and pagination follow detection, so sparse pages are not skipped.
+    """
+    moment = parse_ts(now or utcnow()) or datetime.now(timezone.utc)
+    since = fmt_ts(moment - STREAM_RECENT)
+    shown_lang, lang_params = languages.shown_sql(list(codes), "lang")
+    where = f" AND {shown_lang}"
+    params: list[Any] = [since, *lang_params]
+    if source in SOURCES:
+        where += " AND source=?"
+        params.append(source)
+    rows = conn.execute("SELECT * FROM stream_posts WHERE view_json IS NOT NULL AND gone=0 "
+                        f"AND created_at >= ?{where}", params).fetchall()
+    hosts = {r["host"] for r in conn.execute("SELECT host FROM owncast_hosts WHERE is_owncast=1")}
+    needle = query.strip().casefold()[:100]
+    matches = []
+    for r in rows:
+        try:
+            view = json.loads(r["view_json"])
+        except (TypeError, ValueError):
+            continue
+        stream = likely_live_stream(view, hosts)
+        if not stream:
+            continue
+        if needle:
+            haystack = f"{view.get('text') or ''} {view.get('link_title') or ''} {stream.key}".casefold()
+            if needle.startswith("#") and " " not in needle:
+                if not re.search(r"(?<!\w)" + re.escape(needle) + r"(?!\w)", haystack):
+                    continue
+            elif needle not in haystack:
+                continue
+        item = dict(r)
+        item["view"], item["stream"] = view, stream
+        item["likes"] = r["likes"] if r["likes"] is not None else r["likes_seen"]
+        item["replies"] = r["replies"] if r["replies"] is not None else r["replies_seen"]
+        item["reposts"] = r["reposts"] if r["reposts"] is not None else r["reposts_seen"]
+        item["key"] = post_key(r["source"], r["ref"])
+        matches.append(item)
+    if newest:
+        matches.sort(key=lambda i: (i["created_at"] or "", i["key"]), reverse=True)
+    else:
+        matches.sort(key=lambda i: (i.get(sort if sort in POST_SORTS else "likes") or 0,
+                                    i["created_at"] or "", i["key"]), reverse=True)
+    unique = {}
+    for item in matches:
+        stream = item["stream"]
+        unique.setdefault((stream.kind, stream.key), item)
+    matches = list(unique.values())
+    page = max(1, page)
+    start = (page - 1) * per_page
+    out = matches[start:start + per_page]
+    shown = pictures_of(conn, [(i["source"], i["ref"]) for i in out])
+    for item in out:
+        item["pictures"], item["pictures_waiting"] = shown.get((item["source"], item["ref"]), ([], False))
+        view = item["view"]
+        item["pictures_waiting"] = item["pictures_waiting"] or not item["pictures"] and (
+            bool(view.get("images")) or unread_pictures(view))
+    return out, len(matches) > start + per_page
 
 
 def unread_pictures(view: dict[str, Any]) -> bool:
