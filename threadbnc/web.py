@@ -1333,10 +1333,10 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     @app.get("/trending/livestreams", response_class=HTMLResponse)
     def trending_livestreams(request: Request, sort: str = "likes", src: str = "all", page: int = 1,
                              lang: str = "", yt: str = "1", tw: str = "1", oc: str = "1"):
-        """Likely live streams from posts made in the past six hours, ranked by response."""
+        """Likely live streams from posts made in the past day, ranked by response."""
         bouncer.request_live_checks()
         services = {kind for kind, flag in (("youtube", yt), ("twitch", tw), ("owncast", oc)) if flag != "0"}
-        return trending_page(request, "livestreams", sort, "six_hours", src, page, lang, services)
+        return trending_page(request, "livestreams", sort, "day", src, page, lang, services)
 
     video_pds: dict[str, str] = {}
 
@@ -1390,7 +1390,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     def trending_page(request: Request, tab: str, sort: str, t: str, src: str, page: int, lang: str,
                       services: set[str] | None = None):
         sort = sort if sort in trends_mod.POST_SORTS else "likes"
-        window = "six_hours" if tab == "livestreams" else t if t in trends_mod.POST_WINDOWS else "day"
+        window = "day" if tab == "livestreams" else t if t in trends_mod.POST_WINDOWS else "day"
         source = src if src in trends_mod.SOURCES else "all"
         page = max(1, page)
         langs = trend_languages(lang)

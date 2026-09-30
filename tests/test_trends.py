@@ -1292,6 +1292,13 @@ def test_likely_live_streams_are_recent_ranked_and_searchable(settings, bouncer)
     assert trends.likely_live_stream({"text": "Just a link", "link": "https://twitch.tv/alice"},
                                      set(), check_twitch=True).key == "alice"
     assert trends.likely_live_stream({"text": "I live in Boston", "link": "https://twitch.tv/alice"}, set()) is None
+    assert trends.likely_live_stream({"text": "We're live", "link": "https://www.youtube.com/watch?v=abcdefghijk"},
+                                     set()).key == "abcdefghijk"
+    assert trends.likely_live_stream({"text": "Streaming now https://youtu.be/abcdefghijk"},
+                                     set()).key == "abcdefghijk"
+    assert trends.likely_live_stream({"text": "New video", "link": "https://youtu.be/abcdefghijk"}, set()) is None
+    assert trends.likely_live_stream({"text": "Live replay", "link": "https://youtube.com/watch?v=abcdefghijk"},
+                                     set()) is None
 
     def view(text, link, title=""):
         return {"text": text, "link": link, "link_title": title, "handle": "alice.test",
@@ -1307,9 +1314,11 @@ def test_likely_live_streams_are_recent_ranked_and_searchable(settings, bouncer)
                              "view": view("Live again #art", "https://twitch.tv/alice")},
             at("3klivetwo"): {"likes": 20, "replies": 1, "reposts": 5, "created_at": stamp(hours=-2),
                              "view": view("Live #music", "https://www.youtube.com/live/abcdefghijk")},
+            at("3kliveolder"): {"likes": 10, "replies": 1, "reposts": 1, "created_at": stamp(hours=-7),
+                               "view": view("Streaming now #news", "https://youtu.be/bcdefghijkl")},
             at("3koffline"): {"likes": 99, "replies": 99, "reposts": 99, "created_at": stamp(hours=-1),
                              "view": view("Stream ended #art", "https://twitch.tv/offline")},
-            at("3koldlive"): {"likes": 80, "replies": 80, "reposts": 80, "created_at": stamp(hours=-7),
+            at("3koldlive"): {"likes": 80, "replies": 80, "reposts": 80, "created_at": stamp(hours=-25),
                              "view": view("Live #art", "https://twitch.tv/oldchannel")},
             at("3kvod"): {"likes": 70, "replies": 70, "reposts": 70, "created_at": stamp(hours=-1),
                          "view": view("Live replay #art", "https://twitch.tv/videos/1234")}}, [], now)
@@ -1319,8 +1328,8 @@ def test_likely_live_streams_are_recent_ranked_and_searchable(settings, bouncer)
         searched, _ = trends.live_posts(conn, query="#art", twitch_enabled=True)
         first, more_first = trends.live_posts(conn, per_page=1, twitch_enabled=True)
         second, _ = trends.live_posts(conn, page=2, per_page=1, twitch_enabled=True)
-    assert [p["stream"].key for p in liked] == ["abcdefghijk", "alice"] and not more
-    assert [p["stream"].key for p in replied] == ["alice", "abcdefghijk"]
+    assert [p["stream"].key for p in liked] == ["abcdefghijk", "bcdefghijkl", "alice"] and not more
+    assert [p["stream"].key for p in replied] == ["alice", "abcdefghijk", "bcdefghijkl"]
     assert [p["stream"].key for p in searched] == ["alice"]
     assert more_first and first[0]["key"] != second[0]["key"]
 
@@ -1328,8 +1337,9 @@ def test_likely_live_streams_are_recent_ranked_and_searchable(settings, bouncer)
     bouncer.twitch_credentials.save("test", "test")
     web_client.post("/login", data={"password": "pw"})
     trend = web_client.get("/trending/livestreams", params={"sort": "replies"}).text
-    assert "Livestreams" in trend and "past six hours" in trend
+    assert "Livestreams" in trend and "past day" in trend
     assert trend.index("Open Twitch stream") < trend.index("Open YouTube stream")
+    assert 'href="/live/youtube/bcdefghijkl"' in trend
     assert 'src="/live/thumbnail/youtube/abcdefghijk"' in trend
     only_youtube = web_client.get("/trending/livestreams", params={"yt": "1", "tw": "0", "oc": "0"}).text
     assert "Open YouTube stream" in only_youtube and "Open Twitch stream" not in only_youtube
@@ -1341,6 +1351,22 @@ def test_likely_live_streams_are_recent_ranked_and_searchable(settings, bouncer)
     assert "Live #music" not in live and "Stream ended" not in live
     assert "17 watching" in live
     assert "Twitch" not in web_client.get("/live", params={"q": "#art", "yt": "0", "tw": "0", "oc": "1"}).text.split("Shared streams", 1)[1]
+    assert 'href="/live/youtube/bcdefghijkl"' in web_client.get("/live").text
+
+
+def test_offline_shared_streams_are_queued_to_check_again(bouncer):  # noqa: F811
+    now = fmt_ts(datetime.now(timezone.utc))
+    with bouncer.db.transaction(exclusive=False) as conn:
+        trends.record_totals(conn, "bluesky", {
+            at("3kcomingback"): {"likes": 3, "replies": 0, "reposts": 0, "created_at": stamp(hours=-2),
+                                  "view": {"text": "Live again", "link": "https://youtu.be/abcdefghijk"}}}, [], now)
+        livestream.save_live_check(conn, "youtube-video", "abcdefghijk", livestream.OwncastLive(False),
+                                   stamp(hours=-1))
+    with bouncer.db.connect() as conn:
+        shown, _ = trends.live_posts(conn)
+        due = livestream.due_live_check(conn, now)
+    assert shown == []
+    assert due == ("youtube-video", "abcdefghijk")
 
 
 def test_videos_read_before_their_files_were_kept_are_read_again(bouncer):  # noqa: F811

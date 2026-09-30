@@ -214,7 +214,7 @@
            {% if sort == key %}aria-current="page"{% endif %}>{{ label }}</a>
       {% endfor %}
     </nav>
-    {% if tab == 'livestreams' %}<p class="small muted">Linked in the past six hours. Broadcast status is checked while this page is used.</p>
+    {% if tab == 'livestreams' %}<p class="small muted">Linked in the past day. Broadcast status is checked while this page is used.</p>
     {% else %}<nav class="seg" aria-label="Posted in the past">
       {% for key, label in [('hour', 'Hour'), ('day', 'Day'), ('week', 'Week')] %}
         <a href="{{ q(here, {'t': key}) }}" class="{{ 'on' if window == key }}"
@@ -370,7 +370,7 @@
   {% if not posts %}
     <section class="card empty"><p class="muted">
       {%- if not (st.bluesky and st.chosen.bluesky) and not st.mastodon_scope and not st.mastodon_account %}Nothing is counted: choose where from under Sources.
-      {%- elif tab == 'livestreams' %}No likely live streams were found in posts from the past six hours.
+      {%- elif tab == 'livestreams' %}No likely live streams were found in posts from the past day.
       {%- else %}Nothing yet. Posts show here once their likes and replies have been read, a few minutes after
       people start replying to them.{% endif %}</p></section>
   {% endif %}

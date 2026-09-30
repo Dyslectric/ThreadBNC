@@ -48,7 +48,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from . import articles, languages, links as links_mod, livestream, youtube
 from . import media as media_mod
@@ -65,7 +65,7 @@ SOURCES = {"bluesky": "Bluesky", "mastodon": "Mastodon"}
 ARTICLE_SOURCES = {**SOURCES, "archive": "Archive"}  # articles are also counted from the archive
 WINDOWS = {"day": timedelta(days=1), "week": timedelta(days=7), "month": timedelta(days=30)}
 POST_WINDOWS = {"hour": timedelta(hours=1), "day": timedelta(days=1), "week": timedelta(days=7)}
-STREAM_RECENT = timedelta(hours=6)
+STREAM_RECENT = timedelta(days=1)
 RANKINGS = ("rising", *WINDOWS)  # the articles' rankings, and the hashtags'
 POST_SORTS = ("likes", "replies", "reposts")  # reposts: boosts, on Mastodon
 # App setting (JSON): {"bluesky": count what's posted on Bluesky (Jetstream stays connected),
@@ -1350,6 +1350,17 @@ def likely_live_stream(view: dict[str, Any], owncast_hosts: set[str],
     for url in urls:
         url = url.rstrip(".,;:!?)")
         stream = livestream.stream_of(url)
+        if not stream and _LIVE_WORDS.search(words):
+            # Broadcasts are often shared as ordinary watch or short URLs rather than /live URLs.
+            parsed = urlparse(url)
+            if parsed.scheme in ("http", "https") and parsed.hostname:
+                host = parsed.hostname.lower()
+                video_id = (parse_qs(parsed.query).get("v") or [None])[0] if (
+                    livestream.is_youtube_host(host) and parsed.path == "/watch") else (
+                    parsed.path.strip("/") if host in ("youtu.be", "www.youtu.be") else None)
+                candidate = livestream.from_key("youtube", video_id or "")
+                if candidate and not candidate.is_channel:
+                    stream = candidate
         if stream and stream.kind != "twitch-video":
             if stream.kind == "youtube" or (stream.kind == "twitch" and check_twitch) or _LIVE_WORDS.search(words):
                 return stream
@@ -1366,7 +1377,7 @@ def live_posts(conn: Conn, sort: str = "likes", source: str | None = None, page:
                per_page: int = 25, now: str | None = None, query: str = "", newest: bool = False,
                codes: list[str] | tuple[str, ...] = (), twitch_enabled: bool = False,
                services: set[str] | None = None) -> tuple[list[dict[str, Any]], bool]:
-    """Likely active streams linked by posts from the last six hours.
+    """Likely active streams linked by posts from the last day.
 
     Trending ranks each stream by its strongest post; Live shows its newest mention.
     Filtering and pagination follow detection, so sparse pages are not skipped.
@@ -1401,6 +1412,9 @@ def live_posts(conn: Conn, sort: str = "likes", source: str | None = None, page:
         kind = ("youtube-channel" if stream.is_channel else "youtube-video") if stream.kind == "youtube" \
             else "owncast" if stream.kind == "owncast" else "twitch" if stream.kind == "twitch" else None
         status = checked.get((kind, stream.key)) if kind else None
+        if status and status["status"] == "offline" and kind in ("youtube-channel", "youtube-video", "owncast"):
+            # An offline answer hides the post, so the page cannot queue this stream later.
+            livestream.register_live_checks(conn, [(kind, stream.key)])
         if stream.kind == "twitch" and (not status or status["status"] != "live"):
             continue
         if status and status["status"] == "offline":
