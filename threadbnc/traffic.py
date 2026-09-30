@@ -73,6 +73,12 @@ SERVICES = (
     ("Twitch", ("twitch.tv", "jtvnw.net")),
     ("FediBuzz", ("fedi.buzz",)),
 )
+# The live-status APIs have distinct hosts. Keep their request counts separate
+# from each service's pages, thumbnails, and video downloads.
+API_HOSTS = {
+    "Twitch": {"api.twitch.tv", "id.twitch.tv"},
+    "YouTube": {"www.googleapis.com"},
+}
 _SECOND_LEVEL = {"co", "com", "org", "net", "ac", "gov", "edu", "ne", "or"}  # example.co.uk
 
 _purpose: ContextVar[str] = ContextVar("traffic_purpose", default="")
@@ -347,6 +353,7 @@ class Report:
     services: Group
     communities: Group
     purposes: Group
+    api_requests: dict[str, int]
     timeline: list[tuple[str, Tally, Tally]]  # (hour, or day for longer periods; out, in), oldest first
 
 
@@ -369,6 +376,7 @@ def report(db: Any, days: int) -> Report:
             ids)} if ids else {}
     out, streams = Group("Asked of others"), Group("Pushed to ThreadBNC")
     services, by_community, purposes = Group("Services"), Group("Communities"), Group("Why")
+    api_requests = {name: 0 for name in API_HOSTS}
     buckets = {k: (Tally(), Tally()) for k in keys}
     for r in rows:
         cid = r["community_id"] or 0
@@ -382,6 +390,9 @@ def report(db: Any, days: int) -> Report:
             continue
         out.tally.add(r)
         pair[0].add(r)
+        for name, hosts in API_HOSTS.items():
+            if r["host"] in hosts:
+                api_requests[name] += int(r["requests"])
         svc = services.part(service(r["host"]))
         svc.tally.add(r)
         svc.part(r["host"]).tally.add(r)
@@ -390,4 +401,4 @@ def report(db: Any, days: int) -> Report:
         c.tally.add(r)
         purposes.part(r["purpose"], PURPOSES.get(r["purpose"], r["purpose"])).tally.add(r)
     timeline = [(k, *buckets[k]) for k in keys]
-    return Report(days, since, out, streams, services, by_community, purposes, timeline)
+    return Report(days, since, out, streams, services, by_community, purposes, api_requests, timeline)
