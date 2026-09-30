@@ -66,16 +66,17 @@ def test_twitch_helix_requires_credentials_and_reports_current_viewers():
     assert requests[-1].headers["authorization"] == "Bearer secret-token"
 
 
-def test_twitch_credentials_can_be_saved_in_settings_and_refreshed_across_processes(settings, bouncer):
+def test_twitch_credentials_can_be_saved_in_accounts_and_refreshed_across_processes(settings, bouncer):
     client = TestClient(create_app(settings, bouncer))
-    assert client.post("/settings/twitch", data={"client_id": "x", "client_secret": "private"},
+    assert client.post("/accounts/twitch", data={"client_id": "x", "client_secret": "private"},
                        follow_redirects=False).status_code == 303  # sign-in required
     client.post("/login", data={"password": "pw"})
-    assert "Twitch" in client.get("/settings").text
-    assert client.post("/settings/twitch", data={"client_id": " ", "client_secret": "private"}).status_code == 200
+    assert 'action="/accounts/twitch"' in client.get("/accounts").text
+    assert 'action="/accounts/twitch"' not in client.get("/settings").text
+    assert client.post("/accounts/twitch", data={"client_id": " ", "client_secret": "private"}).status_code == 200
     assert not bouncer.twitch.configured
 
-    response = client.post("/settings/twitch", data={"client_id": "first", "client_secret": "private"})
+    response = client.post("/accounts/twitch", data={"client_id": "first", "client_secret": "private"})
     assert response.status_code == 200
     assert bouncer.twitch.configured
     assert 'value="first"' in response.text and "private" not in response.text
@@ -98,10 +99,10 @@ def test_twitch_credentials_can_be_saved_in_settings_and_refreshed_across_proces
     checker = twitch.TwitchClient(None, None, "test", throttle=HostThrottle(0),
                                   transport=httpx.MockTransport(handle), credentials=other)
     assert checker.configured and checker.check("vinesauce") == twitch.TwitchLive(False)
-    client.post("/settings/twitch", data={"client_id": "second", "client_secret": "new-secret"})
+    client.post("/accounts/twitch", data={"client_id": "second", "client_secret": "new-secret"})
     assert checker.check("vinesauce") == twitch.TwitchLive(False)
     assert tokens == ["first", "second"]
-    client.post("/settings/twitch/remove")
+    client.post("/accounts/twitch/remove")
     assert not checker.configured and not bouncer.twitch.configured
 
 

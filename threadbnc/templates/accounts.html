@@ -142,6 +142,21 @@
     session if you give it one. <a href="/youtube">YouTube settings →</a></p>
 </section>
 
+<section class="card narrow-form" id="twitch">
+  <h2>Twitch</h2>
+  <p class="muted small">Client credentials let ThreadBNC check whether linked Twitch channels are live and show their viewers and thumbnails. Create an application in the Twitch developer console.</p>
+  {% if twitch_source != 'none' %}<p class="small">Using {{ 'saved app credentials' if twitch_source == 'app' else 'environment credentials' }}{% if twitch_id %} for <code>{{ twitch_id }}</code>{% endif %}.</p>{% endif %}
+  <form method="post" action="/accounts/twitch" class="stack" autocomplete="off">
+    <label>Client ID <input name="client_id" value="{{ twitch_id }}" required autocomplete="off"></label>
+    <label>Client secret <input name="client_secret" type="password" required autocomplete="new-password"></label>
+    <p class="muted small">Enter both values to save. The secret is encrypted and is never shown here.</p>
+    <button>Save Twitch credentials</button>
+  </form>
+  {% if twitch_source == 'app' %}<form method="post" action="/accounts/twitch/remove">
+    <button class="secondary small">Remove saved credentials</button>
+  </form>{% endif %}
+</section>
+
 <section class="card narrow-form">
   <h2>{{ 'Add another account' if accounts else 'Add an account' }}</h2>
   <form method="post" action="/accounts" class="stack" autocomplete="off">
