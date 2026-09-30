@@ -1,4 +1,4 @@
-"""FediBuzz's firehose, counted for Trending.
+"""FediBuzz's firehose, counted for Trending and filtered for followed tags.
 
 FediBuzz (fedi.buzz, which also runs the hashtag relays tags.py follows)
 gathers what's posted publicly across the fediverse and serves it as one
@@ -16,9 +16,9 @@ once. Boosts are counted for the post boosted, named by its ActivityPub id
 asked about the most boosted (mastodon_stream.MastodonStream.resolve) for
 their likes and replies. Replies aren't counted: the post one answers is
 named only by an id on whichever server FediBuzz heard it from, which it
-doesn't say. Likely livestream links are kept briefly for Live; other posts
-aren't captured. Posts made while it's down are missed (Mastodon's streams
-can't carry on from where they left off)."""
+doesn't say. Likely livestream links are kept briefly for Live; posts with
+followed hashtags are captured. Posts made while it's down are missed
+(Mastodon's streams can't carry on from where they left off)."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ import httpx
 
 from . import languages, trends
 from .db import utcnow
-from .mastodon_stream import fmt_created, status_links, status_tags, status_view
+from .mastodon_stream import FOLLOWED_SQL, capture_tagged_status, fmt_created, status_links, status_tags, status_view
 from .traffic import record
 
 log = logging.getLogger(__name__)
@@ -45,6 +45,7 @@ FLUSH_EVERY = 5.0
 REFRESH_EVERY = 60.0  # seconds: whether it's still wanted is read again this often
 READ_TIMEOUT = 90.0  # seconds without a byte (it sends a comment now and then) before connecting again
 MAX_BACKOFF = 300.0
+TAG_JOB = "fedibuzz_tagged"
 
 
 def events(chunks: Iterable[bytes]) -> Iterator[tuple[str, str]]:
@@ -75,8 +76,10 @@ class FediBuzzStream:
         """`tally`: your Mastodon server's timeline's (mastodon_stream.py), so
         what arrives both ways counts once. `open_stream` (tests): () -> a
         context manager giving the stream's bytes."""
-        self.db, self.tally, self.user_agent, self.url = bouncer.db, tally, user_agent, url
+        self.bouncer, self.db, self.tally, self.user_agent, self.url = bouncer, bouncer.db, tally, user_agent, url
         self.open_stream = open_stream or self._open
+        bouncer.job_handlers[TAG_JOB] = self.capture
+        bouncer.tag_adapter.fedibuzz = self.wanted
         self.wake = threading.Event()  # turned on or off
         self._stop = threading.Event()
         # What the Trending and Traffic pages say of it.
@@ -129,7 +132,7 @@ class FediBuzzStream:
 
         with self.open_stream() as chunks:
             self.connected_since, self.last_error = utcnow(), None
-            log.info("FediBuzz stream: counting from %s", self.url)
+            log.info("FediBuzz stream: reading from %s", self.url)
             flushed = refreshed = time.monotonic()
             messages = 0
             try:
@@ -155,8 +158,7 @@ class FediBuzzStream:
                 record("in", host, requests=messages, bytes_in=received[0])
 
     def take(self, data: str) -> None:
-        """One post from the stream: its hashtags and links counted, or the
-        post it boosts."""
+        """Count one post, and capture it when it has a followed hashtag."""
         try:
             status = json.loads(data)
         except ValueError:
@@ -173,11 +175,23 @@ class FediBuzzStream:
         author = account.get("url") or account.get("uri") or account.get("acct")
         lang = languages.normalize(status.get("language"))
         links = status_links(status)
-        self.tally.post(links, status_tags(status), author, lang)
+        tags = status_tags(status)
+        self.tally.post(links, tags, author, lang)
         if links or "http" in (status.get("content") or ""):
             trends.record_live_mention(self.db, "mastodon", status["uri"], fmt_created(status),
                                        {**status_view(status, urlparse(status["uri"]).netloc), "via": "FediBuzz"},
                                        links)
+        if tags and self.wanted() and status.get("visibility", "public") == "public" and not status.get("in_reply_to_id"):
+            with self.db.connect() as conn:
+                followed = {r["name"] for r in conn.execute(FOLLOWED_SQL)}
+            # FediBuzz's tag relay also delivers #name123 to followers of #name.
+            tag = next((match for t in tags for match in (t, t.rstrip("0123456789")) if match in followed), None)
+            if tag and not self.bouncer._existing_thread(status["uri"]):
+                self.bouncer.enqueue(TAG_JOB, {"status": status, "tag": tag})
+
+    def capture(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Save a matched status, checking that its tag is still followed."""
+        return capture_tagged_status(self.bouncer, payload)
 
     def start_thread(self) -> threading.Thread:
         t = threading.Thread(target=self.run_forever, name="fedibuzz-stream", daemon=True)

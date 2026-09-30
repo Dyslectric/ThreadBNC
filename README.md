@@ -5,7 +5,7 @@ A private, feed-first reader for Lemmy, PieFed, RSS/Atom feeds, podcasts, Bluesk
 **Following and reading:**
 - Follow communities. Lemmy and PieFed posts arrive as they're made, pushed through your own Lemmy server (see [Pushes from your own server](#pushes-from-your-own-server)); feeds are checked on a schedule.
 - Follow **Pixelfed** and **Loops** accounts: pictures and short videos from the fediverse, checked on a schedule (see [Pixelfed and Loops](#pixelfed-and-loops)).
-- Follow **#hashtags**: public posts with them arrive from Mastodon and the rest of the fediverse through a tag relay (or your Mastodon server's public timeline, once you subscribe to it), and from Bluesky through its Jetstream (see [Hashtags](#hashtags)).
+- Follow **#hashtags**: public posts with them arrive from the fediverse through a tag relay, FediBuzz's firehose when enabled, or your Mastodon server's subscribed public timeline; Bluesky posts come through Jetstream (see [Hashtags](#hashtags)).
 - Follow **people on Mastodon** (and GoToSocial, Akkoma, Misskey...) by `@name@server`: their server sends ThreadBNC their public posts as they're made (see [People on Mastodon](#people-on-mastodon)).
 - **Trending** shows the posts most liked and most replied to on Bluesky and Mastodon, the articles posted most there and in your archive, and the hashtags used most (see [Trending](#trending)).
 - Your **feed** is built from the saved copy. Posts you haven't opened stand out, opened posts show "N new comments", and you can sort by New, Active, Top or Most comments.
@@ -64,10 +64,10 @@ ThreadBNC behaves like one more subscribed server, or like your own browser, nev
 - **Fetched when you open it.** A post's comments, its linked article and its full videos are fetched when you open or keep it, and reopening within 5 minutes uses the saved copy.
 - **Discussions elsewhere, when you open it.** Opening a post with a linked article, or the article, asks your own Lemmy server, Reddit (when connected) and Bluesky (when you're signed in) for other posts of it, and a blog that federates or takes webmentions for its replies: once, then not again for an hour (see [Discussions](#discussions)).
 - **Votes, cheaply.** Votes are updated every 5 minutes for a post's first half hour, then every 10, every 30 until 6 hours, hourly until a day, daily until a week, and then not at all (opening a post still updates them). A pushed community's come from your own server; a checked community's from one listing covering all its posts; only a post kept on its own is asked about by itself.
-- **Hashtags through a relay.** A followed hashtag is one Follow to its relay. Each post it passes on is read once from its own server, a signed request like any receiving server makes, and its votes aren't checked in the background at all; opening it reads it again with its replies.
+- **Hashtags through a relay.** When neither public stream is selected, a followed hashtag is one Follow to its relay. Each post it passes on is read once from its own server, a signed request like any receiving server makes, and its votes aren't checked in the background at all; opening it reads it again with its replies.
 - **People on Mastodon, pushed by their server.** Following someone is a WebFinger lookup, a read of their actor and one Follow; after that their server sends each post with its text, so nothing is fetched for it. Their server is never checked in the background unless you turn it on for them.
 - **Hashtags on Bluesky, from its public stream.** Bluesky offers nothing to subscribe to for a hashtag, only one stream of everything posted there. While any hashtag is followed, or Bluesky is counted for Trending (on unless you turn it off), ThreadBNC listens to it (Jetstream, new posts only, compressed: about 25 a second, about 0.75 GB a day), keeps the posts with a followed hashtag, and asks Bluesky for those alone, up to 25 in one request.
-- **Your Mastodon server's public timeline, when you subscribe.** One streaming connection to your own server, as your account. Posts with a followed hashtag are kept from it (instead of through the relays); the rest are only counted.
+- **Public fediverse streams, when selected.** One streaming connection to your Mastodon server as your account, or FediBuzz's public firehose without an account. Posts with a followed hashtag are kept from either stream instead of through the relays; the rest are only counted.
 - **Trending's pictures when you scroll to them.** A trending post's pictures are downloaded once it's on your screen, like a feed post's article.
 - **Trending's videos, from where they're posted.** A video in Trending's Posts or Loops plays from the server that has it (a Bluesky video from its author's server, found through their DID document), fetched by your browser once it's near the screen: the video isn't downloaded here.
 - **Trending's totals, a few at a time.** Likes and replies of the posts replied to most are read from Bluesky's AppView (up to 100 posts every 5 minutes, 25 to a request) and from your Mastodon server (20 to a request, at most one a minute; its trending posts every 15 minutes; and 20 searches every 5 minutes for the posts boosted most in FediBuzz's firehose, while it's counted). Only the 12 articles at the top of each ranking (day, week, month and rising, on each network) are read, each once.
@@ -385,7 +385,8 @@ server's public timeline once you subscribe to it. Apart from posts with a follo
   its replies and boosts are counted. Some servers (mastodon.social among them) have turned their live feeds off,
   so nothing arrives from them.
 - **FediBuzz**, off until chosen: [FediBuzz](https://fedi.buzz)'s firehose of what's posted publicly across the
-  fediverse (no account needed; about 3 GB a day). Its hashtags, links and boosts are counted as Mastodon's; a
+  fediverse (no account needed; about 3 GB a day). It also supplies followed hashtags in place of their relays.
+  Its hashtags, links and boosts are counted as Mastodon's; a
   post that also arrives from your server's timeline counts once. Its replies can't be: each names the post it
   answers only by an id on a server FediBuzz doesn't say.
 
@@ -465,7 +466,7 @@ site. On a server that's been counting for a while, the first days kept are thos
 Follow a hashtag (`#selfhosted` in the Subscriptions box) and public posts with it arrive in your feed from across
 the fediverse, Mastodon and other microblogging servers included, and from Bluesky, as they're made (see
 [On Bluesky](#on-bluesky) below). ActivityPub has no way to follow a hashtag, so ThreadBNC gets fediverse posts
-from a **tag relay**. [FediBuzz](https://relay.fedi.buzz) watches public posts on
+from a **tag relay** unless you select a public stream under Trending's **Sources**. [FediBuzz](https://relay.fedi.buzz) watches public posts on
 many servers and offers an actor for each hashtag, `https://relay.fedi.buzz/tag/<name>`, that passes on every
 post with it.
 
@@ -499,16 +500,18 @@ post with it.
   that address has to be reachable from your browser (it is, if you're using it). Replies and mentions of
   your Mastodon account don't come to the Inbox yet. **Repost** works either way.
 
-### From your Mastodon server's public timeline
+### From public fediverse streams
 
 Signed in to your Mastodon account, you can subscribe to your server's public timeline under **Sources** on the
-[Trending](#trending) page. While you are, hashtags' fediverse posts come from it instead of the relays:
-ThreadBNC unfollows them, and follows them again when you unsubscribe. A public post (not a reply) with a
-followed hashtag is kept as it arrives, under the first followed hashtag it lists. The federated timeline has
-what your server hears of, which for a big server is a lot and for a small one less than a relay; the local
-one only what's posted on your server. Mastodon's stream can't carry on from where it left off, so posts made
-while it's disconnected are missed. Hashtags can be followed this way without `THREADBNC_ACTOR_DOMAIN`, and posts
-are then read again from their own server's public Mastodon API when you open them.
+[Trending](#trending) page. You can also enable FediBuzz's public stream there without a Mastodon account.
+While either stream is selected, hashtags' fediverse posts come from the selected streams instead of the relays:
+ThreadBNC unfollows them, and follows them again when neither stream is selected. A public post (not a reply) with a
+followed hashtag is kept as it arrives, under the first followed hashtag it lists. Your server's federated timeline
+has what that server hears of, which for a big server is a lot and for a small one less than a relay; the local
+timeline has only what's posted on your server. FediBuzz's firehose hears from many servers and costs about 3 GB a
+day to listen to. Neither stream can resume after a disconnect, so posts made while it's down are missed. Hashtags
+can be followed from either stream without `THREADBNC_ACTOR_DOMAIN`, and posts are read again from their own server's
+public Mastodon API when you open them.
 
 ### On Bluesky
 

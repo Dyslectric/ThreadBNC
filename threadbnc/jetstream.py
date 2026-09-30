@@ -22,9 +22,10 @@ Of the full posts themselves it keeps only those with a followed hashtag:
    hashtag, in its text or beside it, is noted with the first such hashtag.
 2. Every few seconds the posts noted are read from Bluesky's AppView, up to
    25 in one request (a job, so the one worker keeps its pace), and captured
-   into their hashtag's feed, beside those the relay brings from the
-   fediverse (tags.py). They expire like any other auto-captured post unless
-   you keep them. A post the AppView doesn't have yet is asked for once more
+   into their hashtag's feed, beside those arriving from the fediverse
+   (tags.py, mastodon_stream.py or fedibuzz.py). They expire like any
+   auto-captured post unless you keep them. A post the AppView doesn't have
+   yet is asked for once more
    a little later; one it still doesn't show (deleted, or hidden by
    Bluesky's moderation) is left out.
 3. Where the stream got to is saved now and then. Reconnecting, or starting

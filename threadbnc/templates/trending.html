@@ -127,8 +127,8 @@
           <fieldset>
             <legend>FediBuzz</legend>
             <label><input type="checkbox" name="fedibuzz" value="1" {{ 'checked' if st.chosen.fedibuzz }}>
-              Count hashtags, links and boosts from FediBuzz's firehose: what's posted publicly across the fediverse,
-              as fedi.buzz gathers it (no account needed; about 3 GB a day)</label>
+              Read FediBuzz's public firehose for followed hashtags, and count its hashtags, links and boosts for Trending
+              (no account needed; about 3 GB a day)</label>
             <p class="muted">Counted as Mastodon's, with your server's timeline if you listen to one too: a post that
               arrives both ways counts once. Signed in to Mastodon, the posts boosted most are looked up on your
               server (a search each, {{ st.resolve_each }} every {{ st.resolve_every }} minutes) for their likes and replies. Its replies
@@ -188,8 +188,8 @@
       {% else %}<span class="pill warn">Bluesky</span> connecting.{% endif %}
     {% else %}<span class="pill muted">Bluesky</span> not counted.{% endif %}
     {% if st.chosen.fedibuzz %}
-      {% if not st.embedded %}<span class="pill">FediBuzz</span> counted by the bouncer.
-      {% elif st.fedibuzz.connected_since %}<span class="pill good">FediBuzz</span> counting since {{ when(st.fedibuzz.connected_since) }}.
+      {% if not st.embedded %}<span class="pill">FediBuzz</span> read by the bouncer.
+      {% elif st.fedibuzz.connected_since %}<span class="pill good">FediBuzz</span> reading since {{ when(st.fedibuzz.connected_since) }}.
       {% elif st.fedibuzz.last_error %}<span class="pill bad">FediBuzz</span> <span class="bad-text">{{ st.fedibuzz.last_error }}</span>
       {% else %}<span class="pill warn">FediBuzz</span> connecting.{% endif %}
     {% endif %}

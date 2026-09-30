@@ -93,7 +93,7 @@ def main() -> None:
         timeline.start_thread()
         from .fedibuzz import FediBuzzStream
 
-        # FediBuzz's firehose, when counted for Trending: in the same tally, so what arrives both ways counts once.
+        # FediBuzz's firehose: followed hashtags and Trending, sharing the timeline's tally.
         FediBuzzStream(bouncer, timeline.tally, settings.user_agent).start_thread()
         counting = False
         if settings.jetstream_url:  # hashtags on Bluesky, and what's posted there counted for Trending

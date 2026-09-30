@@ -286,9 +286,9 @@ class ActivityPubAdapter(ThreadiverseAdapter):
         self.actor = actor
         self.http = actor.http if actor else http
         self.bluesky = bluesky
-        # () -> whether hashtags come from your Mastodon server's public
-        # timeline (mastodon_stream.py sets it), which needs no actor either.
+        # Public streams can supply hashtags without ThreadBNC's own actor.
         self.mastodon: Callable[[], bool] = lambda: False
+        self.fedibuzz: Callable[[], bool] = lambda: False
         self._people: dict[str, tuple[dict[str, Any], float]] = {}  # name or address -> (actor document, when)
 
     def _need_actor(self, what: str = "hashtags") -> Actor:
@@ -359,10 +359,11 @@ class ActivityPubAdapter(ThreadiverseAdapter):
     def fetch_community(self, ref: CommunityRef) -> NCommunity:
         if is_fedi_account_ref(ref):
             return person_community(self.person(ref.name))
-        timeline = self.mastodon()
-        if not self.bluesky and not timeline:
+        timeline, firehose = self.mastodon(), self.fedibuzz()
+        if not self.bluesky and not timeline and not firehose:
             self._need_actor()
-        fediverse = ("your Mastodon server's public timeline" if timeline
+        fediverse = ("FediBuzz's public stream" if firehose
+                     else "your Mastodon server's public timeline" if timeline
                      else "across the fediverse, as a relay passes them on" if self.actor else None)
         where = " and ".join(x for x in (fediverse,
                                          "Bluesky, picked out of everything posted there" if self.bluesky else None) if x)

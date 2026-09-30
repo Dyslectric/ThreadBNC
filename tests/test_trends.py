@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from urllib.parse import quote
 
 from threadbnc import articles, jetstream, languages, livestream, mastodon_stream, trends, twitch
+from threadbnc.adapters import parse_community_ref
 from threadbnc.db import fmt_ts
 from threadbnc.jetstream import BlueskyStream
 from threadbnc.web import create_app
@@ -892,6 +893,51 @@ def test_fedibuzz_hashtags_and_links_are_counted_once(settings, bouncer):
     key = trends.countable("https://news.test/story")
     assert rows(bouncer, "SELECT source, posts FROM link_counts WHERE key=?", key) == [{"source": "mastodon", "posts": 1}]
     assert trends.archive_skips(False, trends.settings(bouncer.db)["fedibuzz"]) == (trends.TAG_DOMAIN,)
+
+
+def test_fedibuzz_captures_followed_tags_without_an_actor(settings, bouncer):
+    from threadbnc.fedibuzz import FediBuzzStream
+
+    buzz = FediBuzzStream(bouncer, trends.Tally("mastodon"), "test")
+    trends.save_settings(bouncer.db, fedibuzz=True)
+    cid = bouncer.follow_community("#SelfHosted", None, 30, False)
+    tagged_post = masto_status("601", "A new rack #SelfHosted", tags=["SelfHosted"], created=stamp(minutes=1))
+    buzz.take(json.dumps(tagged_post))
+    buzz.take(json.dumps(tagged_post))  # a repeated stream event cannot make another thread
+    dated_tag = masto_status("605", "Dated event #SelfHosted2026", tags=["SelfHosted2026"], created=stamp(minutes=1))
+    buzz.take(json.dumps(dated_tag))  # FediBuzz's relay also delivers tags ending in digits
+    buzz.take(json.dumps(masto_status("602", "A reply #selfhosted", tags=["selfhosted"], reply_to="601")))
+    buzz.take(json.dumps(masto_status("603", "A different tag", tags=["other"])))
+    run_jobs(bouncer)
+    assert rows(bouncer, "SELECT o.canonical_ap_id, t.retention FROM archived_threads t "
+                "JOIN objects o ON o.id=t.root_object_id WHERE t.community_id=? ORDER BY o.canonical_ap_id", cid) == [
+                    {"canonical_ap_id": tagged_post["uri"], "retention": "auto"},
+                    {"canonical_ap_id": dated_tag["uri"], "retention": "auto"}]
+    assert "FediBuzz's public stream" in bouncer.tag_adapter.fetch_community(
+        parse_community_ref("#SelfHosted")).description
+
+    trends.save_settings(bouncer.db, fedibuzz=False)
+    buzz.take(json.dumps(masto_status("604", "Another #selfhosted", tags=["selfhosted"])))
+    run_jobs(bouncer)
+    assert len(rows(bouncer, "SELECT id FROM archived_threads")) == 2
+
+
+def test_fedibuzz_switches_tag_relays_off_and_back_on(web, tagged, fedi):  # noqa: F811
+    b, _ = tagged
+    relays = web.app.state.tags
+    cid = follow(b, relays)
+    assert one(b, "SELECT push_actor FROM community_follows WHERE community_id=?", cid)["push_actor"]
+
+    web.post("/trending/settings", data={"bluesky": "1", "fedibuzz": "1"})
+    relays.housekeeping(now=True)
+    assert one(b, "SELECT push_actor FROM community_follows WHERE community_id=?", cid)["push_actor"] is None
+    assert fedi.posted[-1][1]["type"] == "Undo"
+    assert "From FediBuzz" in web.get(f"/c/{cid}").text
+
+    web.post("/trending/settings", data={"bluesky": "1"})
+    relays.housekeeping(now=True)
+    assert one(b, "SELECT push_actor FROM community_follows WHERE community_id=?", cid)["push_actor"]
+    assert fedi.posted[-1][1]["type"] == "Follow"
 
 
 def test_mastodon_posts_are_read_without_listening_and_boosts_are_counted(web, tagged, fedi):  # noqa: F811

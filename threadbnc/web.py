@@ -383,14 +383,15 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     federation = Federation(poster, settings.relay_inboxes) if settings.relay_inboxes else None
     # Your Mastodon server's public timeline, once subscribed to on the Trending page.
     mastodon_stream = MastodonStream(bouncer, poster.vault, settings.user_agent)
-    # ThreadBNC's own ActivityPub identity, following hashtags through a relay (unless they come from that timeline).
-    tags = TagRelays(bouncer, bouncer.actor, settings.tag_relay, mastodon_stream.active) if bouncer.actor else None
+    # FediBuzz's firehose, filtered for followed hashtags when enabled and counted for Trending.
+    fedibuzz = FediBuzzStream(bouncer, mastodon_stream.tally, settings.user_agent)
+    tag_streaming = lambda: mastodon_stream.active() or fedibuzz.wanted()
+    # ThreadBNC's own ActivityPub identity, following tag relays when neither public stream is selected.
+    tags = TagRelays(bouncer, bouncer.actor, settings.tag_relay, tag_streaming) if bouncer.actor else None
     # ...and following people on Mastodon and the like, whose servers send it their posts.
     people = PeopleFollows(bouncer, bouncer.actor) if bouncer.actor else None
     # ...and on Bluesky, picked out of its Jetstream, which also counts what's posted there for Trending.
     bluesky_stream = BlueskyStream(bouncer, settings.jetstream_url, settings.user_agent) if settings.jetstream_url else None
-    # ...and FediBuzz's firehose of the fediverse, counted with that timeline once turned on on the Trending page.
-    fedibuzz = FediBuzzStream(bouncer, mastodon_stream.tally, settings.user_agent)
     if tags:  # a live feed found off (or on again): follow the relays again (or stop) now, not in half an hour
         mastodon_stream.closed_hooks.append(lambda: tags.housekeeping(now=True))
 
@@ -1739,7 +1740,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                           mastodon_scope: str = Form(""), mastodon_account: str = Form(""),
                           mastodon_tags: str | None = Form(None), fedibuzz_on: str | None = Form(None, alias="fedibuzz")):
         """What's counted, and whether a Mastodon server's public timeline is subscribed to, as which account."""
-        before = mastodon_stream.active()
+        before = tag_streaming()
         signed_in = mastodon_stream.accounts()
         changes: dict[str, Any] = {}
         if signed_in:  # (the choice is only offered then)
@@ -1765,12 +1766,13 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         mastodon_stream.wake.set()
         fedibuzz.wake.set()
         ranked.clear()
-        if tags and mastodon_stream.active() != before:  # follow the relays again, or stop: not while you wait
+        if tags and tag_streaming() != before:  # follow the relays again, or stop: not while you wait
             threading.Thread(target=tags.housekeeping, kwargs={"now": True}, name="relays", daemon=True).start()
-        flash(request, "Saved." + (f" Listening to your Mastodon server's {'local' if scope == 'public:local' else 'federated'} "
-                                   "timeline; hashtags' posts come from there instead of the relays." if scope and not before
-                                   else " Stopped listening to your Mastodon server's timeline; hashtags' posts come "
-                                        "from the relays again." if before and not scope and tags else ""))
+        source = "FediBuzz's stream" if fedibuzz.wanted() else "your Mastodon server's public timeline"
+        flash(request, "Saved." + (f" Hashtag posts now come from {source} instead of the relays."
+                                   if tag_streaming() and not before else
+                                   " Hashtag posts come from the relays again." if before and not tag_streaming() and tags
+                                   else ""))
         return RedirectResponse(back(request, "/trending"), status_code=303)
 
     # ---- kept (the archive) ---------------------------------------------
@@ -2580,6 +2582,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                       jetstream=bluesky_stream if settings.embedded_bouncer else None, bluesky_last=bluesky_last,
                       timeline=mastodon_stream.account() if mastodon_stream.active() else None,
                       timeline_stream=mastodon_stream if settings.embedded_bouncer else None,
+                      fedibuzz_tags=fedibuzz.wanted(), fedibuzz_stream=fedibuzz if settings.embedded_bouncer else None,
                       snapshot=snapshot)
 
     def media_choices(form: Any) -> tuple[dict[str, dict[str, Any]], str | None]:

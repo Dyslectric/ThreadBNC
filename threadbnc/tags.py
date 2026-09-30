@@ -21,8 +21,9 @@ Relays pass on new posts only: edits and deletions after that are seen when
 the post is opened, as for a subreddit.
 
 While you're subscribed to your Mastodon server's public timeline
-(mastodon_stream.py), hashtags' posts come from there instead: the relays
-are unfollowed, and followed again when you unsubscribe."""
+(mastodon_stream.py) or FediBuzz's firehose (fedibuzz.py), hashtags' posts
+come from the stream instead: the relays are unfollowed, and followed again
+when neither stream is selected."""
 
 from __future__ import annotations
 
@@ -59,8 +60,8 @@ def _id(value: Any) -> str | None:
 class TagRelays:
     def __init__(self, bouncer: Bouncer, actor: Actor, relay_template: str,
                  timeline: Callable[[], bool] | None = None):
-        """`timeline`: () -> whether hashtags come from your Mastodon server's
-        public timeline instead, so the relays aren't followed."""
+        """`timeline`: () -> whether a public stream supplies hashtags,
+        so the relays aren't followed."""
         self.bouncer, self.db, self.actor = bouncer, bouncer.db, actor
         self.template = relay_template
         self.timeline = timeline or (lambda: False)
@@ -116,8 +117,8 @@ class TagRelays:
         return "pending"
 
     def unsubscribe(self, community_id: int) -> None:
-        """Stop following a hashtag's relay (an unfollow hook, and while
-        hashtags come from your Mastodon server's public timeline)."""
+        """Stop following a hashtag's relay (an unfollow hook, or while
+        hashtags come from a public stream)."""
         row = self._follow_row(community_id)
         if row is None or not is_tag(row["canonical_ap_id"]):
             return
@@ -143,8 +144,8 @@ class TagRelays:
     def housekeeping(self, now: bool = False) -> None:
         """Now and then (a bouncer hook), or `now`: send again the Follows a
         relay hasn't accepted, or that couldn't be sent, and tidy old
-        deliveries. While hashtags come from your Mastodon server's public
-        timeline, unfollow the relays instead."""
+        deliveries. While a public stream supplies hashtags, unfollow the
+        relays instead."""
         if not now and time.monotonic() - self._housekept < HOUSEKEEPING_EVERY:
             return
         self._housekept = time.monotonic()

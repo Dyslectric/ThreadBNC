@@ -25,7 +25,7 @@
           {% set federated = not is_rss(c.canonical_ap_id) and not is_reddit(c.canonical_ap_id) and not from_fediverse(c.canonical_ap_id)
                              and not is_bluesky(c.canonical_ap_id) %}
           {% set person = is_fedi_account(c.canonical_ap_id) and not is_media_account(c.canonical_ap_id) %}
-          <summary class="button secondary small" title="{{ ('From their server' if follow.push_state == 'subscribed' else 'Checked every ' ~ follow.poll_interval_minutes ~ ' min' if follow.polling else 'Waiting for them to accept' if follow.push_state == 'pending' else 'Not arriving') if person else ('From your Mastodon server' ~ (' and Bluesky' if jetstream else '')) if is_tag(c.canonical_ap_id) and timeline else ('From the relay and Bluesky' if follow.push_state == 'subscribed' else 'From Bluesky') if is_tag(c.canonical_ap_id) and jetstream else 'From the relay' if is_tag(c.canonical_ap_id) and follow.push_state == 'subscribed' else 'Pushed' if follow.push_state == 'subscribed' else ('Checked every ' ~ follow.poll_interval_minutes ~ ' min' if follow.polling else 'Not arriving') }} · unkept posts kept {{ (follow.retention_days ~ ' days') if follow.retention_days is not none else 'forever' }}">{{ icon('check') }} Following{{ icon('chevron-down', 'chev') }}</summary>
+          <summary class="button secondary small" title="{{ ('From their server' if follow.push_state == 'subscribed' else 'Checked every ' ~ follow.poll_interval_minutes ~ ' min' if follow.polling else 'Waiting for them to accept' if follow.push_state == 'pending' else 'Not arriving') if person else ('From FediBuzz' ~ (' and Bluesky' if jetstream else '')) if is_tag(c.canonical_ap_id) and fedibuzz_tags else ('From your Mastodon server' ~ (' and Bluesky' if jetstream else '')) if is_tag(c.canonical_ap_id) and timeline else ('From the relay and Bluesky' if follow.push_state == 'subscribed' else 'From Bluesky') if is_tag(c.canonical_ap_id) and jetstream else 'From the relay' if is_tag(c.canonical_ap_id) and follow.push_state == 'subscribed' else 'Pushed' if follow.push_state == 'subscribed' else ('Checked every ' ~ follow.poll_interval_minutes ~ ' min' if follow.polling else 'Not arriving') }} · unkept posts kept {{ (follow.retention_days ~ ' days') if follow.retention_days is not none else 'forever' }}">{{ icon('check') }} Following{{ icon('chevron-down', 'chev') }}</summary>
           <div class="card settings-card">
             <form method="post" action="/c/{{ c.id }}/follow-settings" class="stack">
               {% if is_tag(c.canonical_ap_id) or person and not follow.polling %}<input type="hidden" name="poll_interval_minutes" value="{{ follow.poll_interval_minutes }}">
@@ -98,7 +98,16 @@
             </div>
             {% elif is_tag(c.canonical_ap_id) %}
             <div class="push-status small">
-              {% if timeline %}
+              {% if fedibuzz_tags %}
+                {% if fedibuzz_stream and fedibuzz_stream.last_error and not fedibuzz_stream.connected_since %}
+                <p><span class="pill bad">FediBuzz</span> Its public stream can't be reached:
+                  <span class="bad-text">{{ fedibuzz_stream.last_error }}</span>. It's tried again in a few minutes at most.</p>
+                {% else %}
+                <p><span class="pill good">{{ icon('refresh') }} From FediBuzz</span> Public posts tagged #{{ c.name }}
+                  are kept as they arrive from its stream instead of through a relay
+                  (<a href="/trending">Trending</a>, Sources). Replies are read when you open a post.</p>
+                {% endif %}
+              {% elif timeline %}
                 {% if timeline_stream and timeline_stream.last_error and not timeline_stream.connected_since %}
                 <p><span class="pill bad">Mastodon</span> Your server's public timeline can't be reached:
                   <span class="bad-text">{{ timeline_stream.last_error }}</span>. It's tried again in a few minutes at most.</p>

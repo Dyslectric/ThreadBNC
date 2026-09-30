@@ -13,8 +13,8 @@ What arrives is used for:
    into its feed, as they arrive, and expire like any other auto-captured
    post unless you keep them. While subscribed, this takes the place of the
    tag relays (tags.py): ThreadBNC stops following them, and follows them
-   again when you unsubscribe. A post is filed under the first followed
-   hashtag it lists.
+   again when neither this timeline nor FediBuzz's stream is selected. A
+   post is filed under the first followed hashtag it lists.
 2. Trending (trends.py): each post's links are counted, and so are the
    replies and boosts each post gets. Mastodon streams no likes, so the
    totals (likes, replies, boosts) of the posts most replied to and boosted
@@ -43,7 +43,8 @@ Its admins can turn a server's live feeds off (mastodon.social has): the
 stream still connects, but sends no one its new posts, only deletions. What
 the server says of them (/api/v2/instance, configuration.timelines_access) is
 read before listening, and again every ACCESS_EVERY: while the feed chosen
-is off, nothing is listened to and hashtags keep coming from the relays. You
+is off, nothing is listened to and hashtags keep coming from the relays or
+FediBuzz when selected. You
 can be signed in to more than one Mastodon account, so the timeline can be
 another server's than the one you like and reply from (accounts.py uses the
 first one signed in).
@@ -236,6 +237,30 @@ def totals(status: dict[str, Any], domain: str) -> dict[str, Any]:
     return {"likes": status.get("favourites_count"), "replies": status.get("replies_count"),
             "reposts": status.get("reblogs_count"), "created_at": fmt_ts(created) if created else None,
             "view": status_view(status, domain)}
+
+
+def capture_tagged_status(bouncer: Bouncer, payload: dict[str, Any]) -> dict[str, Any]:
+    """Capture a Mastodon-shaped status from either public stream."""
+    status, tag = payload["status"], payload["tag"]
+    existing = bouncer._existing_thread(status["uri"])
+    if existing:
+        return {"thread_id": existing["id"]}
+    with bouncer.db.connect() as conn:
+        followed = {r["name"]: r["capture_since"] for r in conn.execute(FOLLOWED_SQL)}
+    if tag not in followed:
+        tag = next((t for t in status_tags(status) if t in followed), None)
+        if tag is None:
+            return {"skipped": "no longer following its hashtag"}
+    post = status_post(status, tag)
+    created, since = parse_ts(post.created_at), parse_ts(followed[tag])
+    if created and since and created < since:
+        return {"skipped": "older than the follow"}
+    if bouncer.hidden(post):
+        return {"skipped": "by someone you've hidden"}
+    adapter = bouncer.tag_adapter
+    tid = bouncer._ingest_post(post, TAG_DOMAIN, post.local_id, adapter, capture=True,
+                               source_url=post.ap_id, retention="auto")
+    return {"thread_id": tid}
 
 
 class MastodonStream:
@@ -478,28 +503,9 @@ class MastodonStream:
 
     # -- capturing -------------------------------------------------------------------
     def capture(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """A job: capture a status from the stream into its hashtag's feed,
-        unless it's older than the follow, or no longer followed."""
-        status, tag = payload["status"], payload["tag"]
-        existing = self.bouncer._existing_thread(status["uri"])
-        if existing:
-            return {"thread_id": existing["id"]}
-        with self.db.connect() as conn:
-            followed = {r["name"]: r["capture_since"] for r in conn.execute(FOLLOWED_SQL)}
-        if tag not in followed:
-            tag = next((t for t in status_tags(status) if t in followed), None)
-            if tag is None:
-                return {"skipped": "no longer following its hashtag"}
-        post = status_post(status, tag)
-        created, since = parse_ts(post.created_at), parse_ts(followed[tag])
-        if created and since and created < since:
-            return {"skipped": "older than the follow"}
-        if self.bouncer.hidden(post):
-            return {"skipped": "by someone you've hidden"}
-        adapter = self.bouncer.tag_adapter
-        tid = self.bouncer._ingest_post(post, TAG_DOMAIN, post.local_id, adapter, capture=True,
-                                        source_url=post.ap_id, retention="auto")
-        return {"thread_id": tid}
+        """A job: capture a status from the stream into its hashtag's feed."""
+        return capture_tagged_status(self.bouncer, payload)
+
 
     # -- a post from Trending, saved to read and reply to -----------------------------
     def save_post(self, payload: dict[str, Any]) -> dict[str, Any]:
