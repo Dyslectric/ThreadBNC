@@ -4,6 +4,7 @@ streams, ranked with the archive's own links; the most posted articles read."""
 from __future__ import annotations
 
 import json
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -404,7 +405,7 @@ def test_the_trending_page(settings, bouncer, bsky):  # noqa: F811
     peek = f"/trending/peek?source=bluesky&ref={quote(at(busy), safe='/')}"
     assert f'data-peek="{peek}"' in page and 'class="trend-meter trend-peek' in page
     assert 'data-open="/trending/open" data-source="bluesky"' in page
-    assert 'action="/archive"' in page and 'action="/trending/act"' in page
+    assert 'action="/trending/keep"' in page and 'action="/trending/act"' in page and "Kept here, with its replies" not in page
     view = bsky.author_feed[0]["post"]
     bsky.threads[view["uri"]] = thread(view, thread(post_view("re1", "Cute!", did="did:plc:bob",
                                                                handle="bob.bsky.social", reply_to=view["uri"])))
@@ -422,6 +423,13 @@ def test_the_trending_page(settings, bouncer, bsky):  # noqa: F811
     assert web_client.post("/trending/open", data={"source": "bluesky", "ref": at(busy)}, headers=fetch).json() == {
         "thread_id": saved}
     assert f'class="trend-meter inline-comments' in web_client.get("/trending").text  # its comments are here now
+    # Kept from the list: no longer expiring, and the list says so.
+    web_client.post("/trending/keep", data={"source": "bluesky", "ref": at(busy)})
+    run_due_now(bouncer)
+    assert rows(bouncer, "SELECT retention FROM archived_threads WHERE id=?", saved) == [{"retention": "manual"}]
+    kept = web_client.get("/trending").text
+    assert f'href="/t/{saved}" title="Kept here, with its replies"' in kept and 'action="/trending/keep"' not in kept
+    assert web_client.post("/trending/keep", data={"source": "bluesky", "ref": "at://nobody"}).status_code == 404
     # Articles are read here, where they're listed: saved ones from the archive, others on the way.
     articles_page = web_client.get("/trending/articles?t=day").text
     assert "Big news" in articles_page and "What happened" in articles_page and "Bluesky 1" in articles_page
@@ -442,6 +450,48 @@ def test_the_trending_page(settings, bouncer, bsky):  # noqa: F811
     assert "Sign in to your Mastodon account" in page and mastodon_stream.subscription(bouncer.db) is None
 
 
+def until(check, seconds=10.0):
+    """What `check` returns once it's truthy (things done on threads of their own)."""
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        got = check()
+        if got:
+            return got
+        time.sleep(0.02)
+    raise AssertionError("it didn't happen in time")
+
+
+def test_pictures_are_taken_last_asked_first_and_announced(settings, abouncer):  # noqa: F811
+    import asyncio
+
+    from threadbnc.pictures import PictureDesk
+
+    fetched = []
+    desk = PictureDesk(abouncer.db, abouncer.media, lambda *a: None, workers=1)
+    gate = threading.Event()
+
+    def held(source, ref):
+        if not fetched:
+            gate.wait(5)  # the one thread is busy with "a" while the rest are asked for
+        fetched.append(ref)
+        desk.announce(source, ref)
+
+    desk._fetch = held  # type: ignore[method-assign]
+
+    async def run():
+        queue = desk.listen()
+        desk.request([("bluesky", "a")])
+        await asyncio.sleep(0.1)
+        desk.request([("bluesky", "old1"), ("bluesky", "old2")])
+        desk.request([("bluesky", "new1"), ("bluesky", "new2")])  # the page scrolled to, in front of those
+        desk.request([("bluesky", "hovered")])  # and the one pointed at, in front of them all
+        gate.set()
+        return [(await asyncio.wait_for(queue.get(), 5))[1] for _ in range(6)]
+
+    assert asyncio.run(run()) == ["a", "hovered", "new1", "new2", "old1", "old2"]
+    assert fetched == ["a", "hovered", "new1", "new2", "old1", "old2"]
+
+
 def test_trending_posts_pictures_are_downloaded_once_shown(settings, abouncer, bsky):  # noqa: F811
     busy = tid()
     images = {"$type": "app.bsky.embed.images#view", "images": [
@@ -459,12 +509,15 @@ def test_trending_posts_pictures_are_downloaded_once_shown(settings, abouncer, b
     assert rows(abouncer, "SELECT id FROM media") == []  # nothing until it's shown
     # Shown on screen, it asks for them; they're downloaded, then shown in it.
     post_ = f"bluesky {at(busy)}"
+    waits, spaced = [], abouncer.media.throttle.wait
+    abouncer.media.throttle.wait = lambda host, interval=None: (waits.append((host, interval)), spaced(host, interval))[1]
     got = web_client.post("/trending/pictures", data={"post": post_}).json()
-    assert got == {"ready": {key: []}, "waiting": [key]}
-    abouncer.media.fetch_pending()
-    got = web_client.get("/trending/pictures", params={"post": post_}).json()
+    assert got == {"ready": {key: []}}  # (answered at once; the picture is fetched on the desk's own thread)
+    got = until(lambda: web_client.get("/trending/pictures", params={"post": post_}).json()["ready"][key] and
+                web_client.get("/trending/pictures", params={"post": post_}).json())
     (pic,) = got["ready"][key]
-    assert got["waiting"] == [] and pic["full"] == f"/media/{pic['id']}"
+    assert pic["full"] == f"/media/{pic['id']}"
+    assert waits == [("news.test", 0.25)]  # four a second from a site, not the usual one
     page = web_client.get("/trending").text
     assert f'data-full="/media/{pic["id"]}"' in page and "data-pictures" not in page and "1 picture" not in page
     assert 'class="trend-pic" data-full' in page and 'title="Show it whole"' in page  # shown full size, at once
@@ -513,10 +566,9 @@ def test_trending_posts_links_open_here(settings, abouncer, bsky):  # noqa: F811
     old_key = trends.post_key("bluesky", at(old))
     assert "data-pictures" in page.split(f'id="tp-{old_key}"')[1].split(">")[0]
     bsky.requests.clear()
-    got = web_client.post("/trending/pictures", data={"post": f"bluesky {at(old)}"}).json()
-    assert got["waiting"] == [old_key] and bsky.requests[0][0] == "app.bsky.feed.getPosts"
-    abouncer.media.fetch_pending()
-    assert len(web_client.get("/trending/pictures", params={"post": f"bluesky {at(old)}"}).json()["ready"][old_key]) == 1
+    web_client.post("/trending/pictures", data={"post": f"bluesky {at(old)}"})
+    until(lambda: web_client.get("/trending/pictures", params={"post": f"bluesky {at(old)}"}).json()["ready"][old_key])
+    assert bsky.requests[0][0] == "app.bsky.feed.getPosts"
     # The article, read where it's listed.
     r = web_client.get("/read", params={"url": "https://news.test/story", "pane": "1"})
     assert r.status_code == 200 and "Harbour wall to be rebuilt" in r.text
@@ -668,7 +720,7 @@ def test_subscribing_to_your_mastodon_servers_public_timeline(web, tagged, fedi,
     assert liked[0]["view"]["handle"] == "carol@home.test"
     assert parent  # (the thread's first post, as the server returns it)
     page = web.get("/trending?src=mastodon").text
-    assert f"data-peek=\"/trending/peek?source=mastodon&ref={HOME}/300\"" in page and "Keep</span>" not in page
+    assert f"data-peek=\"/trending/peek?source=mastodon&ref={HOME}/300\"" in page and 'action="/trending/keep"' in page
     shown = web.get("/trending/peek", params={"source": "mastodon", "ref": f"{HOME}/300"}).text
     assert "A reply here" in shown and "carol@home.test" in shown
     # Opened to reply to: saved from its own server, filed under whoever posted it, replied to as your account.
@@ -682,6 +734,14 @@ def test_subscribing_to_your_mastodon_servers_public_timeline(web, tagged, fedi,
     assert (saved["source_domain"], saved["retention"], saved["canonical_ap_id"]) == (
         "hashtag", "auto", f"https://{HOME}/users/carol")
     assert "Comment as @dave@home.test" in web.get(f"/t/{tid}?inline=1").text
+    # Kept, it doesn't expire: one saved by opening it is kept where it is, and any other is saved kept.
+    web.post("/trending/keep", data={"source": "mastodon", "ref": f"{HOME}/300"})
+    fedi.home.statuses["400"] = masto_status("400", "Everyone liked this")
+    web.post("/trending/keep", data={"source": "mastodon", "ref": f"{HOME}/400"})
+    run_jobs(b)
+    assert [r["retention"] for r in rows(b, "SELECT t.retention FROM archived_threads t WHERE t.id=?", tid)] == ["manual"]
+    assert rows(b, "SELECT COUNT(*) AS n FROM archived_threads WHERE retention='manual'") == [{"n": 2}]
+    assert "Kept here, with its replies" in web.get("/trending?src=mastodon").text
     # Liked and boosted as your account, on your server.
     fedi.home.statuses["300"] = masto_status("300", "A thread")
     web.post("/trending/act", data={"source": "mastodon", "ref": f"{HOME}/300", "what": "like", "on": "1"})
@@ -1195,7 +1255,12 @@ def test_trending_videos_play_on_the_page_and_in_loops(settings, bouncer):  # no
     web_client = TestClient(create_app(settings, bouncer))
     web_client.post("/login", data={"password": "pw"})
     page = web_client.get("/trending").text
+    bouncer.bluesky_adapter._pds_of = lambda did: "https://pds.test"
     assert f'src="/trending/video?did={ALICE}&amp;cid={cid}"' in page and 'src="https://files.test/clip.mp4"' in page
+    # Where its author's server is, once found, the page plays the file from there itself: nothing goes through here.
+    direct = until(lambda: f'src="https://pds.test/xrpc/com.atproto.sync.getBlob?did={ALICE.replace(":", "%3A")}&amp;cid={cid}"'
+                   in web_client.get("/trending").text)
+    assert direct
     loops = web_client.get("/trending/loops").text
     assert 'aria-current="page">' in loops and "Words only" not in loops
     assert loops.count('class="loop trending-loop"') == 2 and 'id="items" class="loops"' in loops

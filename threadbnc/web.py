@@ -3,6 +3,7 @@ assets requires an authenticated session (or API bearer token)."""
 
 from __future__ import annotations
 
+import asyncio
 import difflib
 import hmac
 import html
@@ -22,7 +23,7 @@ from urllib.parse import parse_qsl, quote, urlencode, urlparse
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import (
-    FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response,
+    FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response, StreamingResponse,
 )
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -44,6 +45,7 @@ from . import traffic as traffic_mod
 from . import trends as trends_mod
 from . import hidden as hidden_mod
 from . import avatars as avatars_mod
+from .pictures import PictureDesk
 from . import sidebar as sidebar_mod
 from .actor import ActorEndpoints
 from .adapters import (BSKY_DOMAIN, MEDIA_SOFTWARE, RSS_PREFIX, CommunityRef, RemoteError, from_fediverse, host_of,
@@ -1313,7 +1315,7 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         only videos of posts seen here are sent on)."""
         if not (trends_mod.VIDEO_DID.fullmatch(did) and trends_mod.VIDEO_CID.fullmatch(cid)):
             raise HTTPException(404)
-        src = f"/trending/video?did={did}&cid={cid}"
+        src = f"/trending/video?did={did}&cid={cid}"  # (pages address the file itself once it's known: video_address)
         with db.connect() as conn:
             known = conn.execute("SELECT 1 FROM stream_posts WHERE source='bluesky' AND view_json LIKE ? LIMIT 1",
                                  (f'%"video_src": "{src}"%',)).fetchone()
@@ -1324,8 +1326,35 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                 video_pds[did] = bouncer.bluesky_adapter._pds_of(did)
             except RemoteError as exc:
                 raise HTTPException(404, str(exc)) from exc
-        return RedirectResponse(f"{video_pds[did]}/xrpc/com.atproto.sync.getBlob?" + urlencode({"did": did, "cid": cid}),
-                                status_code=302)
+        return RedirectResponse(video_blob(did, cid), status_code=302)
+
+    def video_blob(did: str, cid: str) -> str:
+        return f"{video_pds[did]}/xrpc/com.atproto.sync.getBlob?" + urlencode({"did": did, "cid": cid})
+
+    video_wanted: set[str] = set()
+
+    def video_address(src: str | None) -> str | None:
+        """Where a video plays from: a Bluesky one's file on its author's server itself once that's known
+        (else /trending/video, which finds it and sends the browser there; the next page needs no detour),
+        so nothing goes through here."""
+        m = re.fullmatch(r"/trending/video\?did=([^&]+)&cid=([^&]+)", src or "")
+        if not m:
+            return src
+        did, cid = m.groups()
+        if did in video_pds:
+            return video_blob(did, cid)
+        if did not in video_wanted:
+            video_wanted.add(did)
+
+            def look() -> None:
+                try:
+                    video_pds[did] = bouncer.bluesky_adapter._pds_of(did)
+                except Exception as exc:  # (it's asked for again with the next page)
+                    log.info("finding where %s lives: %s", did, exc)
+                finally:
+                    video_wanted.discard(did)
+            threading.Thread(target=look, name="video-pds", daemon=True).start()
+        return src
 
     def trending_page(request: Request, tab: str, sort: str, t: str, src: str, page: int, lang: str):
         sort = sort if sort in trends_mod.POST_SORTS else "likes"
@@ -1338,8 +1367,9 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                                                         page, TRENDING_PAGE, codes=langs["codes"],
                                                         videos=tab == "loops")
             ap_ids = [i["view"].get("uri") or i["view"].get("url") for i in items]
-            here = {r["canonical_ap_id"]: r["id"] for r in conn.execute(
-                f"SELECT o.canonical_ap_id, t.id FROM objects o JOIN archived_threads t ON t.root_object_id=o.id "
+            here = {r["canonical_ap_id"]: r for r in conn.execute(
+                f"SELECT o.canonical_ap_id, t.id, t.root_object_id, t.retention, t.trashed_at FROM objects o "
+                f"JOIN archived_threads t ON t.root_object_id=o.id "
                 f"WHERE o.canonical_ap_id IN ({','.join('?' * len(ap_ids))})", ap_ids)} if ap_ids else {}
             pictured = avatars_mod.trend_avatars(conn, [(i["source"], i["ref"]) for i in items])
         for i in items:
@@ -1351,8 +1381,21 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             keep = [(i, a) for i, a in zip(items, ap_ids)
                     if (i["view"].get("author_uri") or i["view"].get("author_url")) not in hidden_keys]
             items, ap_ids = [i for i, _ in keep], [a for _, a in keep]
-        for i, ap_id in zip(items, ap_ids):
-            i["here"] = here.get(ap_id)  # opened (or captured) here already
+        with db.connect() as conn:
+            for i, ap_id in zip(items, ap_ids):
+                thread = here.get(ap_id)
+                i["here"] = thread["id"] if thread else None  # opened (or captured) here already
+                i["kept"] = bool(thread and thread["retention"] == "manual" and not thread["trashed_at"])
+                view = i["view"]
+                if i["kept"] and view.get("video_src"):  # a kept post's video plays from its saved copy
+                    saved = conn.execute(
+                        "SELECT m.id FROM media_refs mr JOIN media m ON m.id=mr.media_id WHERE mr.object_id=? "
+                        "AND m.status='ok' AND m.content_type LIKE 'video/%' ORDER BY m.id LIMIT 1",
+                        (thread["root_object_id"],)).fetchone()
+                    if saved:
+                        view["video_src"] = f"/media/{saved['id']}"
+                        continue
+                view["video_src"] = video_address(view.get("video_src"))  # else from its own server
         mine = poster.stream_mine([(i["source"], i["view"].get("url") if i["source"] == "bluesky"
                                     else i["view"].get("uri")) for i in items])
         for i in items:
@@ -1461,53 +1504,66 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
 
     TRENDING_PICTURES_ASKED = 50  # posts asked about at once, at most
 
-    def trending_pictures_answer(posts: list[str]) -> JSONResponse:
-        """What app.js is told of trending posts' pictures: those downloaded,
-        by post, and the posts with some still to come."""
+    def trending_pictures_ready(posts: list[str]) -> dict[str, Any]:
+        """What app.js is told of trending posts' pictures: those downloaded, by post."""
         pairs = [(s_, r_) for s_, _, r_ in (p_.partition(" ") for p_ in posts[:TRENDING_PICTURES_ASKED]) if r_]
         with db.connect() as conn:
             got = trends_mod.pictures_of(conn, pairs)
-        ready, waiting = {}, []
+        ready = {}
         for source, ref in pairs:
-            ids, pending = got.get((source, ref), ([], False))
-            key = trends_mod.post_key(source, ref)
-            ready[key] = [{"id": mid, "src": thumb(mid, "picture"), "full": f"/media/{mid}"} for mid in ids]
-            if pending:
-                waiting.append(key)
-        return JSONResponse({"ready": ready, "waiting": waiting})
+            ids, _ = got.get((source, ref), ([], False))
+            ready[trends_mod.post_key(source, ref)] = [
+                {"id": mid, "src": thumb(mid, "picture"), "full": f"/media/{mid}"} for mid in ids]
+        return {"ready": ready}
+
+    def read_again(source: str, ref: str, now: str) -> None:
+        """A trending post read again, for the addresses of its pictures (pictures.py)."""
+        with traffic_mod.tagged("trends"):
+            if source == "bluesky":
+                trend_upkeep.read_bluesky([ref], now)
+            elif (wanted := mastodon_stream.wanted()):
+                mastodon_stream.read(wanted, [ref], now)
+
+    picture_desk = PictureDesk(db, bouncer.media, read_again)
+    app.state.pictures = picture_desk
 
     @app.post("/trending/pictures")
     def trending_pictures_wanted(post: list[str] = Form([])):
-        """Trending posts shown on screen (app.js): their pictures are downloaded.
-        Ones last read before their pictures' addresses were kept are read again first."""
-        now = utcnow()
+        """Trending posts shown on screen, or under the pointer (app.js): their pictures are downloaded,
+        the last asked for first (pictures.py), and each is sent down /trending/pictures/stream as it
+        arrives. What's here already is answered now."""
         asked = [(s_, r_) for s_, _, r_ in (p_.partition(" ") for p_ in post[:TRENDING_PICTURES_ASKED]) if r_]
-        with db.connect() as conn:
-            stale: dict[str, list[str]] = {}
-            for source, ref in asked:
-                row = conn.execute("SELECT view_json FROM stream_posts WHERE source=? AND ref=?",
-                                   (source, ref)).fetchone()
-                if row and row["view_json"] and trends_mod.unread_pictures(json.loads(row["view_json"])):
-                    stale.setdefault(source, []).append(ref)
-        try:
-            with traffic_mod.tagged("trends"):
-                if stale.get("bluesky"):
-                    trend_upkeep.read_bluesky(stale["bluesky"], now)
-                wanted = mastodon_stream.wanted() if stale.get("mastodon") else None
-                if wanted:
-                    mastodon_stream.read(wanted, stale["mastodon"], now)
-        except RemoteError as exc:  # those are shown without, this time
-            log.info("reading trending posts again for their pictures: %s", exc)
-        with db.transaction() as conn:
-            for source, ref in asked:
-                if source in trends_mod.SOURCES:
-                    trends_mod.want_pictures(conn, source, ref, now)
-        bouncer.wake.set()
-        return trending_pictures_answer(post)
+        picture_desk.request([(s_, r_) for s_, r_ in asked if s_ in trends_mod.SOURCES])
+        return JSONResponse(trending_pictures_ready(post))
 
     @app.get("/trending/pictures")
     def trending_pictures(post: list[str] = Query([])):
-        return trending_pictures_answer(post)
+        return JSONResponse(trending_pictures_ready(post))
+
+    @app.get("/trending/pictures/stream")
+    async def trending_pictures_stream(request: Request):
+        """Server-sent events: each trending post that has a picture newly downloaded, as
+        /trending/pictures answers it. app.js listens for the posts on its page."""
+        queue = picture_desk.listen()
+
+        async def events():
+            try:
+                yield "retry: 2000\n\n"
+                while True:
+                    try:
+                        source, ref = await asyncio.wait_for(queue.get(), 15)
+                    except asyncio.TimeoutError:
+                        if await request.is_disconnected():
+                            return
+                        yield ": still here\n\n"
+                        continue
+                    answer = await asyncio.to_thread(trending_pictures_ready, [f"{source} {ref}"])
+                    yield f"data: {json.dumps(answer)}\n\n"
+            finally:
+                picture_desk.unlisten(queue)
+
+        return StreamingResponse(events(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
 
     # ---- who posted what: their pictures, once a post of theirs is on screen (avatars.py) ----
     def avatars_answer(keys: list[str]) -> JSONResponse:
@@ -1555,6 +1611,29 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                else bouncer.enqueue(MASTODON_OPEN_JOB, {"uri": ap_id}))
         return JSONResponse({"job": job}) if is_fetch(request) else \
             RedirectResponse(f"/jobs/{job}/wait", status_code=303)
+
+    @app.post("/trending/keep")
+    def trending_keep(request: Request, source: str = Form(...), ref: str = Form(...)):
+        """Keep a trending post: saved here with its replies, its pictures and video, and it doesn't
+        expire. One saved by opening it is kept where it is."""
+        with db.connect() as conn:
+            row = conn.execute("SELECT view_json FROM stream_posts WHERE source=? AND ref=?", (source, ref)).fetchone()
+        if row is None or not row["view_json"]:
+            raise HTTPException(404)
+        view = json.loads(row["view_json"])
+        ap_id = view.get("url") if source == "bluesky" else view.get("uri")
+        if not ap_id:
+            raise HTTPException(404)
+        here = bouncer._existing_thread(ap_id)
+        if here is not None:
+            bouncer._keep_existing(here)
+            bouncer.enqueue("open", {"thread_ids": [here["id"]]})  # its comments, article and videos, to keep with it
+        elif source == "bluesky":
+            bouncer.enqueue("ingest", {"url": ap_id, "retention": "manual"})
+        else:
+            bouncer.enqueue(MASTODON_OPEN_JOB, {"uri": ap_id, "retention": "manual"})
+        flash(request, "Kept permanently. Its replies and media are being saved.")
+        return RedirectResponse(back(request, "/trending"), status_code=303)
 
     @app.get("/articles")
     def old_articles_page(t: str = "week"):

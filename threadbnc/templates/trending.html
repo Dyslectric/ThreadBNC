@@ -82,6 +82,16 @@
             title="{{ 'Repost' if p.source == 'bluesky' else 'Boost' }} it as your {{ site }} account">{{ icon('repost') }} <span class="n">{{ p.reposts or 0 }}</span></button>
   </form>
 {% endmacro %}
+{#- Keep a trending post: saved here with its replies and media, and it doesn't expire. Kept, it links to its saved copy. -#}
+{% macro keep_button(p) %}
+  {% if p.kept %}
+    <a class="act" href="/t/{{ p.here }}" title="Kept here, with its replies">{{ icon('star') }}<span>Kept</span></a>
+  {% else %}
+    <form method="post" action="/trending/keep" class="inline" data-inplace="tp-{{ p.key }}">
+      <input type="hidden" name="source" value="{{ p.source }}"><input type="hidden" name="ref" value="{{ p.ref }}">
+      <button class="act" title="Save it here with its replies, pictures and video, and keep it">{{ icon('star') }}<span>Keep</span></button></form>
+  {% endif %}
+{% endmacro %}
 <div class="articles-page trending-page">
   <div class="feed-head articles-head">
     <div>
@@ -246,6 +256,7 @@
         <p class="pc-excerpt">{{ v.text or '' }}</p>
         <div class="pc-actions actions small">
           {{ trend_counts(p) }}
+          {{ keep_button(p) }}
           {% if v.url | safe_url %}<a class="act" href="{{ v.url | safe_url }}" target="_blank" rel="noreferrer noopener nofollow">{{ icon('external') }}<span>Original</span></a>{% endif %}
         </div>
       </div>
@@ -327,10 +338,7 @@
             <a class="act read-article" href="/read?url={{ v.link | urlencode }}" aria-expanded="false"
                title="Read the linked article here">{{ icon('article') }}<span>Read article</span></a>
           {% endif %}
-          {% if not p.here and p.source == 'bluesky' %}
-            <form method="post" action="/archive" class="inline" data-inplace="tp-{{ p.key }}"><input type="hidden" name="url" value="{{ v.url }}">
-              <button class="act" title="Save it here with its replies, and keep it">{{ icon('star') }}<span>Keep</span></button></form>
-          {% endif %}
+          {{ keep_button(p) }}
           {% if v.url | safe_url %}<a class="act" href="{{ v.url | safe_url }}" target="_blank" rel="noreferrer noopener nofollow">{{ icon('external') }}<span>Original</span></a>{% endif %}
         </div>
       </div>

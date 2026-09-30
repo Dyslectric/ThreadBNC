@@ -98,13 +98,15 @@ class HostThrottle:
             self._paused[host] = max(until, self._paused.get(host, 0.0))
         log.warning("%s answered HTTP %d; not contacting it for %.0f s", host, status, pause)
 
-    def wait(self, host: str) -> None:
+    def wait(self, host: str, interval: float | None = None) -> None:
+        """`interval`: the spacing this request asks for, in place of `min_interval` (trending pictures'
+        downloads are spaced more closely than the rest: media.FAST_INTERVAL)."""
         self.check(host)
         if host in self.exempt:
             return
         with self._lock:
             now = time.monotonic()
-            slot = max(now, self._last.get(host, float("-inf")) + self.min_interval)
+            slot = max(now, self._last.get(host, float("-inf")) + (self.min_interval if interval is None else interval))
             self._last[host] = slot
         if slot > now:
             time.sleep(slot - now)

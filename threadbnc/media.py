@@ -60,6 +60,7 @@ from .traffic import metered
 log = logging.getLogger(__name__)
 
 MAX_ATTEMPTS = 5
+FAST_INTERVAL = 0.25  # seconds between a trending post's pictures from one host (4 a second), not the usual 1
 # Podcast enclosure URLs can legitimately pass through several independent
 # attribution services before reaching the host's CDN. ART19 feeds in
 # particular can need seven hops. Each destination is still checked by
@@ -690,8 +691,10 @@ class MediaFetcher:
             return max(kp.keep_bytes, self.source_max_bytes)
         return kp.keep_bytes
 
-    def _download(self, url: str, policy: MediaPolicy | None = None, wanted: bool = True) -> Downloaded:
-        """`wanted` False: a video is held (MediaHeld) as soon as the server says it's one."""
+    def _download(self, url: str, policy: MediaPolicy | None = None, wanted: bool = True,
+                  interval: float | None = None) -> Downloaded:
+        """`wanted` False: a video is held (MediaHeld) as soon as the server says it's one.
+        `interval`: seconds to leave between requests to a host, when not the usual."""
         policy = policy or self.default_policy
         # Until the server says what it is, the most any kind archived here allows.
         cap = max((self._cap(policy.kind(k)) for k in KINDS if policy.kind(k).save), default=0)
@@ -702,7 +705,7 @@ class MediaFetcher:
             if self.check_host:
                 _assert_public_host(current)
             host = (urlparse(current).hostname or "").lower()
-            self.throttle.wait(host)
+            self.throttle.wait(host, interval)
             with self.client.stream("GET", current) as resp:
                 self.throttle.note(host, resp.status_code, resp.headers)
                 if resp.status_code in (301, 302, 303, 307, 308) and "location" in resp.headers:
@@ -970,6 +973,10 @@ class MediaFetcher:
             else:
                 wanted = wanted or bool(conn.execute(f"SELECT {WANTED_SQL} FROM media WHERE id=?",
                                                      (row["id"],)).fetchone()[0])
+            # a trending post's picture, or its author's (pictures.py): from Bluesky's and Mastodon's servers, which
+            # serve far more than this, four a second
+            interval = FAST_INTERVAL if conn.execute(
+                "SELECT 1 FROM stream_post_media WHERE media_id=? LIMIT 1", (row["id"],)).fetchone() else None
         try:
             if not policy.saves_any and not asked:
                 raise MediaSkipped(f"archiving is off {POLICY_SUFFIX}")
@@ -986,7 +993,7 @@ class MediaFetcher:
             else:
                 if not wanted and (row["episode"] or looks_like_video(row["url"]) or looks_like_audio(row["url"])):
                     raise MediaHeld()
-                dl = self._download(row["url"], policy, wanted)
+                dl = self._download(row["url"], policy, wanted, interval)
                 kp = policy.for_type(dl.content_type)
                 if kp is not None:
                     dl = self._fit(dl, kp, media_id=row["id"])

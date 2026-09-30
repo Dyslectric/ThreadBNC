@@ -2512,16 +2512,20 @@ document.documentElement.classList.add("js");
     }
   }
 
-  // ---- trending posts' pictures, downloaded as they're scrolled to --------------------
-  // A post whose pictures aren't here yet asks for them once it's on screen,
-  // then checks back until they're downloaded, and shows them in its card.
-  // A picture pressed shows whole, at full size, in place; pressed again, as it was.
+  // ---- trending posts' pictures, downloaded as they're scrolled to or pointed at ----------
+  // A post whose pictures aren't here yet asks for them as it comes on screen (after 25 ms, so the
+  // posts scrolled past in that time go together), or at once when the pointer goes over it. The
+  // server downloads the last asked for first, so the page in front of you comes before anything
+  // else, and sends each picture down one stream (/trending/pictures/stream) the moment it's
+  // here: nothing asks again. A picture pressed shows whole, at full size, in place; pressed
+  // again, as it was.
+  const PICTURE_DEBOUNCE = 25;
   const pictureQueue = new Set();
-  const pictureWaiting = new Set();
+  const pictureAsked = new Set();
+  const pictureHovered = new Set();
   let pictureTimer = null;
-  let pictureCheck = null;
-  let pictureUntil = 0;
   let pictureObserver = null;
+  let pictureStream = null;
 
   function watchTrendPictures(root) {
     if (!("IntersectionObserver" in window)) return;
@@ -2531,12 +2535,24 @@ document.documentElement.classList.add("js");
         pictureObserver.unobserve(e.target);
         pictureQueue.add(e.target.dataset.post);
       }
-      if (pictureQueue.size && !pictureTimer) pictureTimer = setTimeout(askTrendPictures, 300);
+      if (pictureQueue.size && !pictureTimer) pictureTimer = setTimeout(askTrendPictures, PICTURE_DEBOUNCE);
     }, { rootMargin: "200px 0px" });
     const cards = $$(".trending-post[data-pictures]", root);
     if (root.matches && root.matches(".trending-post[data-pictures]")) cards.push(root);  // one "Load more" added
     for (const card of cards) pictureObserver.observe(card);
   }
+
+  // The pointer over a post whose pictures aren't here: they're asked for now, ahead of the rest.
+  document.addEventListener("pointerover", (ev) => {
+    const card = ev.target.closest && ev.target.closest(".trending-post[data-pictures]");
+    if (!card || !card.dataset.post || pictureHovered.has(card.dataset.post)) return;
+    const box = document.getElementById("pics-" + card.id.slice(3));
+    if (box && box.childElementCount) return;  // shown already
+    pictureHovered.add(card.dataset.post);
+    if (pictureObserver) pictureObserver.unobserve(card);
+    pictureQueue.delete(card.dataset.post);
+    askTrendPictures([card.dataset.post]);
+  });
 
   function showTrendPictures(ready) {
     for (const [key, pics] of Object.entries(ready || {})) {
@@ -2564,35 +2580,45 @@ document.documentElement.classList.add("js");
     }
   }
 
-  async function askTrendPictures() {
-    pictureTimer = null;
-    const posts = [...pictureQueue];
-    pictureQueue.clear();
+  async function askTrendPictures(only) {
+    let posts = only;
+    if (!Array.isArray(posts)) {
+      pictureTimer = null;
+      posts = [...pictureQueue];
+      pictureQueue.clear();
+    }
+    if (!posts.length) return;
+    listenTrendPictures();
+    for (const p of posts) pictureAsked.add(p);
     try {
       const data = await post("/trending/pictures", { post: posts });
       showTrendPictures(data.ready);
-      for (const p of posts) if (data.waiting.includes(keyOfPost(p))) pictureWaiting.add(p);
-    } catch (e) { return; }
-    // Pictures are downloaded one a second from each site, so a page of them can take a few minutes.
-    pictureUntil = Date.now() + 300000;
-    if (pictureWaiting.size && !pictureCheck) pictureCheck = setTimeout(checkTrendPictures, 2500);
+    } catch (e) {
+      for (const p of posts) pictureAsked.delete(p);  // asked again the next time it's pointed at or on screen
+      for (const p of posts) pictureHovered.delete(p);
+    }
   }
 
-  const keyOfPost = (p) => (($$(".trending-post").find((c) => c.dataset.post === p) || {}).id || "").slice(3);
-
-  async function checkTrendPictures() {
-    pictureCheck = null;
-    const posts = [...pictureWaiting];
-    if (!posts.length) return;
-    try {
-      const url = new URL("/trending/pictures", location.href);
-      for (const p of posts) url.searchParams.append("post", p);
-      const r = await fetch(url, { credentials: "same-origin" });
-      const data = await r.json();
-      showTrendPictures(data.ready);
-      for (const p of posts) if (!data.waiting.includes(keyOfPost(p))) pictureWaiting.delete(p);
-    } catch (e) { /* tried again below */ }
-    if (pictureWaiting.size && Date.now() < pictureUntil) pictureCheck = setTimeout(checkTrendPictures, 3000);
+  // The stream the server sends each picture down as it arrives. If it drops, the browser
+  // reconnects by itself, and what was asked for meanwhile is asked about again.
+  function listenTrendPictures() {
+    if (pictureStream || !("EventSource" in window)) return;
+    pictureStream = new EventSource("/trending/pictures/stream");
+    pictureStream.onmessage = (ev) => {
+      try { showTrendPictures(JSON.parse(ev.data).ready); } catch (e) { /* the next one */ }
+    };
+    let opened = false;
+    pictureStream.onopen = () => {
+      if (opened) {
+        const lost = [...pictureAsked].filter((p) => {
+          const card = $$(".trending-post").find((c) => c.dataset.post === p);
+          const box = card && document.getElementById("pics-" + card.id.slice(3));
+          return box && !box.childElementCount;
+        });
+        if (lost.length) askTrendPictures(lost);
+      }
+      opened = true;
+    };
   }
 
   document.addEventListener("click", (ev) => {
