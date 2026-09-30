@@ -50,7 +50,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 from urllib.parse import urlparse
 
-from . import articles, languages, links as links_mod, livestream
+from . import articles, languages, links as links_mod, livestream, youtube
 from . import media as media_mod
 from . import thumbs
 from .adapters import BSKY_DOMAIN, TAG_DOMAIN, TAG_PREFIX, RemoteError, normalize_tag
@@ -1353,6 +1353,8 @@ def likely_live_stream(view: dict[str, Any], owncast_hosts: set[str],
         if stream and stream.kind != "twitch-video":
             if stream.kind == "youtube" or (stream.kind == "twitch" and check_twitch) or _LIVE_WORDS.search(words):
                 return stream
+        elif _LIVE_WORDS.search(words) and (video_id := youtube.video_id(url)):
+            return livestream.Stream("youtube", video_id)
         elif _LIVE_WORDS.search(words):
             host = urlparse(url).hostname
             if host and host.lower() in owncast_hosts:

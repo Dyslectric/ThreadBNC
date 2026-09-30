@@ -1279,6 +1279,12 @@ def test_trending_videos_play_on_the_page_and_in_loops(settings, bouncer):  # no
 
 
 def test_likely_live_streams_are_recent_ranked_and_searchable(settings, bouncer):  # noqa: F811
+    assert trends.likely_live_stream({"text": "We're live", "link": "https://youtu.be/abcdefghijk"},
+                                     set()) == livestream.Stream("youtube", "abcdefghijk")
+    assert trends.likely_live_stream({"text": "We're live", "link": "https://www.youtube.com/watch?v=abcdefghijk"},
+                                     set()) == livestream.Stream("youtube", "abcdefghijk")
+    assert trends.likely_live_stream({"text": "New video", "link": "https://www.youtube.com/watch?v=abcdefghijk"},
+                                     set()) is None
     assert trends.likely_live_stream({"text": "Live from the studio", "link": "https://cast.example/"},
                                      {"cast.example"}).kind == "owncast"
     assert trends.likely_live_stream({"text": "Live replay", "link": "https://twitch.tv/alice"}, set()) is None

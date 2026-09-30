@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from threadbnc import livestream, twitch, youtube
+from threadbnc.youtube_api import YouTubeDataClient
 from threadbnc.adapters import RSS_DOMAIN
 from threadbnc.adapters.http import HostThrottle
 from threadbnc.adapters.rss import FeedFetcher, RssAdapter
@@ -60,6 +61,41 @@ def test_twitch_helix_requires_credentials_and_reports_current_viewers():
     assert len([r for r in requests if r.url.host == "id.twitch.tv"]) == 1
     assert requests[-1].headers["client-id"] == "client-id"
     assert requests[-1].headers["authorization"] == "Bearer secret-token"
+
+
+def test_youtube_data_api_checks_known_video_ids_and_current_viewers(settings, bouncer):
+    requests = []
+    response = {"items": [{"id": VIDEO, "snippet": {"title": "Studio live", "channelId": CHANNEL,
+                                                "liveBroadcastContent": "live"},
+                           "liveStreamingDetails": {"actualStartTime": "2026-09-29T12:00:00Z",
+                                                    "concurrentViewers": "1234"}}]}
+
+    def handle(request):
+        requests.append(request)
+        return httpx.Response(200, json=response)
+
+    bouncer.youtube_api = YouTubeDataClient("api-key", "test", throttle=HostThrottle(0),
+                                             transport=httpx.MockTransport(handle))
+    bouncer.request_live_checks()
+    with bouncer.db.transaction() as conn:
+        livestream.register_live_checks(conn, [("youtube-video", VIDEO)])
+    assert bouncer.check_live_once()
+    with bouncer.db.connect() as conn:
+        status = livestream.current_statuses(conn, utcnow())[("youtube-video", VIDEO)]
+    assert status["status"] == "live" and status["viewer_count"] == 1234
+    assert status["title"] == "Studio live"
+    assert len(requests) == 1
+    assert requests[0].url.path == "/youtube/v3/videos"
+    assert requests[0].url.params["id"] == VIDEO
+    assert requests[0].url.params["part"] == "snippet,liveStreamingDetails"
+    assert requests[0].headers["x-goog-api-key"] == "api-key"
+    assert "api-key" not in str(requests[0].url)
+
+    response["items"][0]["snippet"]["liveBroadcastContent"] = "none"
+    assert not bouncer.youtube_api.check(VIDEO).live
+    response["items"][0]["snippet"]["liveBroadcastContent"] = "live"
+    response["items"][0]["liveStreamingDetails"] = {"actualEndTime": "2026-09-29T13:00:00Z"}
+    assert not bouncer.youtube_api.check(VIDEO).live
 
 
 def test_links_that_are_livestreams():
