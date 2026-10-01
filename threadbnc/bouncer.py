@@ -25,7 +25,7 @@ import traceback
 from datetime import timedelta
 from typing import Any, Callable
 
-from . import articles, avatars, forums, livestream, media, store, thumbs, traffic, twitch, youtube
+from . import articles, avatars, forums, livestream, media, store, thumbs, traffic, twitch, youtube, youtube_api
 from . import feed as feed_mod
 from . import hidden as hidden_mod
 from .adapters import (
@@ -108,6 +108,8 @@ REDDIT_MIN_SPACING = 30.0  # seconds
 YOUTUBE_TITLES_AT_ONCE = 12
 # Sites asked whether they're Owncast servers in one go (owncast_hosts), likewise.
 OWNCAST_ASKED_AT_ONCE = 8
+# A Twitch or YouTube API batch of live checks that isn't full waits this long after the last.
+LIVE_BATCH_GAP = 60.0
 
 
 def _plus(ts: str, **delta: float) -> str:
@@ -201,6 +203,7 @@ class Bouncer:
         self.live_wake = threading.Event()
         self._urgent_thread: threading.Thread | None = None
         self._live_thread: threading.Thread | None = None
+        self._live_batch_at: dict[str, float] = {}  # "twitch" / "youtube-video" -> monotonic time
         self._stop = threading.Event()
 
     # -- adapters ----------------------------------------------------------
@@ -1338,25 +1341,49 @@ class Bouncer:
         with self.db.transaction(exclusive=False) as conn:
             livestream.register_live_checks(conn, [(f["kind"], f["key"])
                                                   for f in livestream.followed_youtube(conn)])
-        now = utcnow()
+        self.youtube_api.api_key = self.youtube.api_key() or self.settings.youtube_api_key
+        # Twitch and YouTube's API answer for many channels or videos at once:
+        # one request per batch, and only once the batch is full or has waited
+        # LIVE_BATCH_GAP, so links trickling in don't each cost a request.
+        batched = {"twitch": twitch.BATCH if self.twitch.configured else 0,
+                   "youtube-video": youtube_api.BATCH if self.youtube_api.configured else 0}
+        limits = {"twitch": batched["twitch"], "youtube-video": batched["youtube-video"] or 1,
+                  "youtube-channel": 1, "youtube-user": 1, "owncast": 1}
         with self.db.connect() as conn:
-            due = livestream.due_live_check(conn, now)
-        if due is None:
-            return False
-        kind, key = due
-        error = None
-        try:
-            if kind == "youtube-video":
-                self.youtube_api.api_key = self.youtube.api_key() or self.settings.youtube_api_key
-            result = (self.rss_adapter.fetcher.owncast_live(key) if kind == "owncast" else
-                      self.twitch.check(key) if kind == "twitch" else
-                      self.youtube_api.check(key) if kind == "youtube-video" and self.youtube_api.configured else
-                      self.rss_adapter.fetcher.youtube_live(kind, key))
-        except RemoteError as exc:
-            result, error = None, str(exc)
-        with self.db.transaction(exclusive=False) as conn:
-            livestream.save_live_check(conn, kind, key, result, utcnow(), error)
-        return True
+            due = livestream.due_live_checks(conn, utcnow(), limits)
+        moment = self._clock()
+        for kind, size in batched.items():
+            last = self._live_batch_at.get(kind)
+            waited = last is None or moment - last >= LIVE_BATCH_GAP
+            if size and kind in due and len(due[kind]) < size and not waited:
+                del due[kind]
+        for kind, keys in due.items():
+            if self._stop.is_set():
+                break
+            if batched.get(kind):
+                self._live_batch_at[kind] = moment
+            try:
+                results, error = self._live_results(kind, keys), None
+            except RemoteError as exc:
+                results, error = {}, str(exc)
+            with self.db.transaction(exclusive=False) as conn:
+                for key in keys:
+                    livestream.save_live_check(conn, kind, key, results.get(key), utcnow(), error)
+        return bool(due)
+
+    def _live_results(self, kind: str, keys: list[str]) -> dict[str, Any]:
+        if kind == "twitch":
+            return self.twitch.check_many(keys)
+        if kind == "youtube-video" and self.youtube_api.configured:
+            return self.youtube_api.check_many(keys)
+        key, = keys
+        if kind == "owncast":
+            # Links from the firehoses are to any site: each is asked once a
+            # month whether it's an Owncast server at all (owncast_hosts).
+            if not self.owncast_hosts([key]):
+                return {key: livestream.OwncastLive(False)}
+            return {key: self.rss_adapter.fetcher.owncast_live(key)}
+        return {key: self.rss_adapter.fetcher.youtube_live(kind, key)}
 
     @staticmethod
     def paced_kind(follow: Any) -> str | None:

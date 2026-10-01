@@ -1337,14 +1337,20 @@ _LIVE_WORDS = re.compile(
     r"live now|live stream)\b|(?:^|[.!?]\s*)live\b|#live\b", re.I)
 _PAST_STREAM = re.compile(r"\b(?:replay|offline|stream ended|was live|recorded stream)\b", re.I)
 _TEXT_URL = re.compile(r"https?://[^\s<>\"']+")
+# Front pages linked with live words that are surely not Owncast servers.
+_NOT_OWNCAST = {"twitch.tv", "www.twitch.tv", "m.twitch.tv", "bsky.app", "kick.com", "www.kick.com",
+                "tiktok.com", "www.tiktok.com", "instagram.com", "www.instagram.com", "facebook.com",
+                "www.facebook.com", "x.com", "twitter.com"}
 
 
 def likely_live_stream(view: dict[str, Any], owncast_hosts: set[str],
-                       check_twitch: bool = False) -> livestream.Stream | None:
+                       check_twitch: bool = False, any_owncast: bool = False) -> livestream.Stream | None:
     """A recent post's stream link, when its address and words suggest a live broadcast.
 
     This is deliberately a heuristic: no remote player's current status is claimed.
-    VODs and ordinary video links are excluded. Owncast needs a previously identified host.
+    VODs and ordinary video links are excluded. Owncast needs a previously identified
+    host, or with `any_owncast`, a link to a site's front page (what Owncast servers
+    post when they go live): the live check asks that site whether it's Owncast.
     """
     words = f"{view.get('text') or ''} {view.get('link_title') or ''}"
     if _PAST_STREAM.search(words):
@@ -1370,9 +1376,11 @@ def likely_live_stream(view: dict[str, Any], owncast_hosts: set[str],
         elif _LIVE_WORDS.search(words) and (video_id := youtube.video_id(url)):
             return livestream.Stream("youtube", video_id)
         elif _LIVE_WORDS.search(words):
-            host = urlparse(url).hostname
-            if host and host.lower() in owncast_hosts:
-                return livestream.from_key("owncast", host.lower())
+            parsed = urlparse(url)
+            host = (parsed.hostname or "").lower()
+            if host in owncast_hosts or (any_owncast and host and parsed.path in ("", "/") and
+                                         host not in _NOT_OWNCAST and not livestream.is_youtube_host(host)):
+                return livestream.from_key("owncast", host)
     return None
 
 
@@ -1388,19 +1396,15 @@ def record_live_mention(db: Database, source: str, ref: str, created_at: str | N
         candidate = {**view, "link": url,
                      "link_title": title or (view.get("link_title") if url == view.get("link") else None)}
         try:
-            stream = likely_live_stream(candidate, set(), check_twitch=True)
-            if stream is None and _LIVE_WORDS.search(f"{candidate.get('text') or ''} {title or ''}"):
-                host = urlparse(url).hostname
-                if host:
-                    with db.connect() as conn:
-                        row = conn.execute("SELECT 1 FROM owncast_hosts WHERE host=? AND is_owncast=1",
-                                           (host.lower(),)).fetchone()
-                    if row:
-                        stream = likely_live_stream(candidate, {host.lower()}, check_twitch=True)
+            stream = likely_live_stream(candidate, set(), check_twitch=True, any_owncast=True)
         except ValueError:  # an invalid URL in a public post must not stop its firehose
             continue
         if stream is None or stream.kind == "twitch-video":
             continue
+        if stream.kind == "owncast":
+            with db.connect() as conn:
+                if livestream.owncast_known(conn, [stream.key]).get(stream.key) is False:
+                    continue
         with db.transaction(exclusive=False) as conn:
             conn.execute("INSERT INTO live_mentions(source, ref, kind, key, created_at, view_json, lang) "
                          "VALUES (?,?,?,?,?,?,?) ON CONFLICT(source, ref, kind, key) DO UPDATE SET "
@@ -1448,7 +1452,7 @@ def live_posts(conn: Conn, sort: str = "likes", source: str | None = None, page:
             continue
         item = dict(r)
         stream = (livestream.from_key(item["kind"], item["key"]) if "kind" in item else
-                  likely_live_stream(view, hosts, check_twitch=twitch_enabled))
+                  likely_live_stream(view, hosts, check_twitch=twitch_enabled, any_owncast=True))
         if not stream or stream.kind not in selected:
             continue
         if stream.kind == "twitch":
@@ -1482,7 +1486,10 @@ def live_posts(conn: Conn, sort: str = "likes", source: str | None = None, page:
         item["key"] = post_key(r["source"], r["ref"])
         matches.append(item)
     if candidates:
-        livestream.register_live_checks(conn, candidates)
+        # Sites already found not to be Owncast servers aren't checked again.
+        known = livestream.owncast_known(conn, list({key for kind, key in candidates if kind == "owncast"}))
+        livestream.register_live_checks(conn, [(kind, key) for kind, key in candidates
+                                               if kind != "owncast" or known.get(key) is not False])
     if sort == "viewers" and not newest:
         matches.sort(key=lambda i: (i["viewer_count"] is not None, i["viewer_count"] or 0,
                                     i["created_at"] or "", i["key"]), reverse=True)

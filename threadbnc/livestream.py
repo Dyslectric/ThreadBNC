@@ -26,6 +26,7 @@ from .youtube import is_youtube_host
 LIVE_HREF = "/live/{}/{}"  # the box a livestream link opens (web.py, app.js)
 OWNCAST_RECHECK = timedelta(days=30)
 LIVE_RECHECK = timedelta(minutes=5)
+LIVE_SHOWN = timedelta(minutes=10)  # a live answer is shown this long, so a late recheck doesn't hide it
 UNKNOWN_RECHECK = timedelta(minutes=15)
 LIVE_REQUEST_WINDOW = timedelta(minutes=30)
 
@@ -223,16 +224,36 @@ def register_live_checks(conn: Any, items: list[tuple[str, str]]) -> None:
                          (kind, key, now, refresh_before))
 
 
+_DUE = ("requested_at>=? AND (checked_at IS NULL OR (status='unknown' AND checked_at<=?) OR "
+        "(status<>'unknown' AND checked_at<=?))")
+
+
+def _due_params(now: str) -> tuple[str, str, str]:
+    moment = parse_ts(now)
+    return (fmt_ts(moment - LIVE_REQUEST_WINDOW), fmt_ts(moment - UNKNOWN_RECHECK),
+            fmt_ts(moment - LIVE_RECHECK))
+
+
 def due_live_check(conn: Any, now: str) -> tuple[str, str] | None:
-    fresh = fmt_ts(parse_ts(now) - LIVE_RECHECK)
-    unknown = fmt_ts(parse_ts(now) - UNKNOWN_RECHECK)
-    requested = fmt_ts(parse_ts(now) - LIVE_REQUEST_WINDOW)
-    row = conn.execute("SELECT kind, key FROM live_checks WHERE requested_at>=? AND "
-                       "(checked_at IS NULL OR (status='unknown' AND checked_at<=?) OR "
-                       "(status<>'unknown' AND checked_at<=?)) "
-                       "ORDER BY CASE WHEN kind='youtube-video' THEN 1 ELSE 0 END, "
-                       "COALESCE(checked_at, ''), key LIMIT 1", (requested, unknown, fresh)).fetchone()
+    """Any check that's due: whether the Live page is still waiting on some."""
+    row = conn.execute(f"SELECT kind, key FROM live_checks WHERE {_DUE} "
+                       "ORDER BY COALESCE(checked_at, ''), key LIMIT 1", _due_params(now)).fetchone()
     return (row["kind"], row["key"]) if row else None
+
+
+def due_live_checks(conn: Any, now: str, limits: dict[str, int]) -> dict[str, list[str]]:
+    """The checks due, longest waiting first, up to limits[kind] of each kind.
+    Each kind gets its own turn, so a long queue of one (Twitch links from the
+    firehoses) can't keep the others (YouTube, Owncast) from being checked."""
+    out = {}
+    for kind, limit in limits.items():
+        if limit > 0:
+            keys = [r["key"] for r in conn.execute(
+                f"SELECT key FROM live_checks WHERE kind=? AND {_DUE} "
+                "ORDER BY COALESCE(checked_at, ''), key LIMIT ?", (kind, *_due_params(now), limit))]
+            if keys:
+                out[kind] = keys
+    return out
 
 
 def save_live_check(conn: Any, kind: str, key: str, result: Any, now: str,
@@ -249,7 +270,7 @@ def save_live_check(conn: Any, kind: str, key: str, result: Any, now: str,
 
 def current_statuses(conn: Any, now: str) -> dict[tuple[str, str], dict[str, Any]]:
     """Only recently verified live results needed by the Live page."""
-    cutoff = fmt_ts(parse_ts(now) - LIVE_RECHECK)
+    cutoff = fmt_ts(parse_ts(now) - LIVE_SHOWN)
     return {(r["kind"], r["key"]): dict(r) for r in conn.execute(
         "SELECT * FROM live_checks WHERE status='live' AND checked_at>=?", (cutoff,))}
 

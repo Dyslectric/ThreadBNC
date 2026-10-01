@@ -17,6 +17,7 @@ from .vault import TokenVault
 
 
 CREDENTIALS_SETTING = "twitch_credentials"
+BATCH = 100  # Get Streams takes up to 100 user_login values
 
 
 class TwitchCredentials:
@@ -118,10 +119,19 @@ class TwitchClient:
         return token
 
     def check(self, login: str) -> TwitchLive:
-        """An empty Get Streams result means the channel is offline."""
+        return self.check_many([login])[login.lower()]
+
+    def check_many(self, logins: list[str]) -> dict[str, TwitchLive]:
+        """Up to BATCH channels in one Get Streams request, by lowercased login.
+        A channel missing from the result is offline."""
+        logins = list(dict.fromkeys(login.lower() for login in logins))
+        if not logins:
+            return {}
+        if len(logins) > BATCH:
+            raise ValueError(f"at most {BATCH} Twitch channels per request")
         token = self._access_token()
         response = self._request("GET", "https://api.twitch.tv/helix/streams",
-                                 params={"user_login": login},
+                                 params=[*(("user_login", login) for login in logins), ("first", str(BATCH))],
                                  headers={"Client-Id": self.client_id, "Authorization": f"Bearer {token}"})
         try:
             rows = response.json()["data"]
@@ -129,14 +139,16 @@ class TwitchClient:
             raise RemoteUnavailable("Twitch did not return stream data") from exc
         if not isinstance(rows, list):
             raise RemoteUnavailable("Twitch returned invalid stream data")
-        stream = next((r for r in rows if isinstance(r, dict) and r.get("user_login", "").lower() == login.lower()
-                       and r.get("type") == "live"), None)
-        if stream is None:
-            return TwitchLive(False)
-        count = stream.get("viewer_count")
-        viewers = count if isinstance(count, int) and not isinstance(count, bool) and count >= 0 else None
-        title = stream.get("title")
-        thumb = stream.get("thumbnail_url")
-        thumbnail = thumb.replace("{width}", "320").replace("{height}", "180") if isinstance(thumb, str) and \
-            thumb.startswith("https://static-cdn.jtvnw.net/") else None
-        return TwitchLive(True, title if isinstance(title, str) else None, viewers, None, thumbnail)
+        found = {r["user_login"].lower(): r for r in rows if isinstance(r, dict)
+                 and isinstance(r.get("user_login"), str) and r.get("type") == "live"}
+        return {login: _live(found[login]) if login in found else TwitchLive(False) for login in logins}
+
+
+def _live(stream: dict[str, Any]) -> TwitchLive:
+    count = stream.get("viewer_count")
+    viewers = count if isinstance(count, int) and not isinstance(count, bool) and count >= 0 else None
+    title = stream.get("title")
+    thumb = stream.get("thumbnail_url")
+    thumbnail = thumb.replace("{width}", "320").replace("{height}", "180") if isinstance(thumb, str) and \
+        thumb.startswith("https://static-cdn.jtvnw.net/") else None
+    return TwitchLive(True, title if isinstance(title, str) else None, viewers, None, thumbnail)

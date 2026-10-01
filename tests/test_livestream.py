@@ -10,7 +10,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from threadbnc import livestream, twitch, youtube
+from threadbnc import livestream, trends, twitch, youtube
 from threadbnc.youtube_api import YouTubeDataClient
 from threadbnc.adapters import RSS_DOMAIN
 from threadbnc.adapters.http import HostThrottle
@@ -319,3 +319,89 @@ def test_empty_live_page_stays_current_after_checks_finish(settings, bouncer):
     page = logged_in(settings, bouncer).get("/live").text
     assert 'data-live-pending="0"' in page
     assert 'data-live-refresh="60"' in page
+
+
+def test_twitch_is_asked_a_hundred_channels_at_a_time_without_holding_up_the_rest(bouncer, sites):
+    asked = []
+
+    def handle(request):
+        if request.url.host == "id.twitch.tv":
+            return httpx.Response(200, json={"access_token": "token", "expires_in": 3600})
+        asked.append(request.url.params.get_list("user_login"))
+        return httpx.Response(200, json={"data": [{"user_login": "Channel007", "type": "live",
+                                                  "title": "On now", "viewer_count": 9}]})
+
+    bouncer.twitch = twitch.TwitchClient("id", "secret", "test", throttle=HostThrottle(0),
+                                         transport=httpx.MockTransport(handle))
+    clock = [1000.0]
+    bouncer._clock = lambda: clock[0]
+    bouncer.request_live_checks()
+    with bouncer.db.transaction() as conn:
+        livestream.register_live_checks(conn, [*(("twitch", f"channel{i:03}") for i in range(150)),
+                                               ("owncast", "watch.owncast.online"), ("youtube-channel", CHANNEL)])
+    assert bouncer.check_live_once()
+    assert [len(logins) for logins in asked] == [100]
+    with bouncer.db.connect() as conn:
+        statuses = livestream.current_statuses(conn, utcnow())
+        offline = conn.execute("SELECT COUNT(*) AS n FROM live_checks WHERE kind='twitch' AND status='offline'"
+                               ).fetchone()["n"]
+    assert statuses[("twitch", "channel007")]["viewer_count"] == 9 and offline == 99
+    # The same round reached YouTube and Owncast, rather than waiting for all of Twitch.
+    assert ("owncast", "watch.owncast.online") in statuses and ("youtube-channel", CHANNEL) in statuses
+
+    # The other 50 wait for a full batch or a minute, rather than costing a request each.
+    assert not bouncer.check_live_once()
+    clock[0] += 61
+    assert bouncer.check_live_once()
+    assert [len(logins) for logins in asked] == [100, 50]
+    assert not bouncer.check_live_once()
+
+
+def test_youtube_data_api_is_asked_fifty_videos_at_a_time(bouncer):
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        ids = request.url.params["id"].split(",")
+        return httpx.Response(200, json={"items": [
+            {"id": ids[0], "snippet": {"title": "Live", "liveBroadcastContent": "live"},
+             "liveStreamingDetails": {"concurrentViewers": "5"}},
+            {"id": ids[1], "snippet": {"title": "Odd", "liveBroadcastContent": "maybe"}}]})
+
+    bouncer.youtube_api = YouTubeDataClient(None, "test", throttle=HostThrottle(0),
+                                             transport=httpx.MockTransport(handle))
+    bouncer.youtube.save_api_key("api-key")
+    videos = [f"video{i:06}" for i in range(60)]
+    bouncer.request_live_checks()
+    with bouncer.db.transaction() as conn:
+        livestream.register_live_checks(conn, [("youtube-video", v) for v in videos])
+    assert bouncer.check_live_once()
+    assert len(requests) == 1 and requests[0].url.params["id"] == ",".join(videos[:50])
+    with bouncer.db.connect() as conn:
+        status = {r["key"]: r["status"] for r in conn.execute("SELECT key, status FROM live_checks")}
+    assert status[videos[0]] == "live" and status[videos[1]] == "unknown" and status[videos[2]] == "offline"
+    assert status[videos[55]] == "unknown"  # not asked yet
+
+
+def test_owncast_servers_going_live_in_the_firehoses_are_found(bouncer, sites):
+    now = utcnow()
+    view = {"text": "We're live now, come hang out"}
+    for ref, url in (("1", "https://watch.owncast.online/"), ("2", "https://blog.example/")):
+        trends.record_live_mention(bouncer.db, "mastodon", f"https://social.example/{ref}", now, view,
+                                   [(url, None, None)])
+    bouncer.request_live_checks()
+    with bouncer.db.transaction(exclusive=False) as conn:
+        assert trends.live_posts(conn)[0] == []  # not checked yet
+    while bouncer.check_live_once():
+        pass
+    with bouncer.db.transaction(exclusive=False) as conn:
+        found, _ = trends.live_posts(conn)
+    assert [(p["stream"], p["viewer_count"]) for p in found] == [(Stream("owncast", "watch.owncast.online"), 3)]
+
+    # blog.example said it isn't an Owncast server: its links are let be.
+    with bouncer.db.connect() as conn:
+        assert livestream.owncast_known(conn, ["blog.example"]) == {"blog.example": False}
+    trends.record_live_mention(bouncer.db, "mastodon", "https://social.example/3", now, view,
+                               [("https://blog.example/", None, None)])
+    with bouncer.db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) AS n FROM live_mentions WHERE ref LIKE '%/3'").fetchone()["n"] == 0

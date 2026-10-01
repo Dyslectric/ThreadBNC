@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import httpx
 
 from .adapters.base import RemotePaused, RemoteUnavailable
 from .adapters.http import HostThrottle
 from .traffic import metered
 from .youtube import LiveResult, is_video_id, thumbnail_url
+
+BATCH = 50  # videos.list takes up to 50 IDs
 
 
 class YouTubeDataClient:
@@ -23,16 +27,29 @@ class YouTubeDataClient:
         return bool(self.api_key)
 
     def check(self, video_id: str) -> LiveResult:
-        """Check a public video's broadcast status without searching for its ID."""
+        result = self.check_many([video_id])[video_id]
+        if result is None:
+            raise RemoteUnavailable("YouTube returned invalid broadcast data")
+        return result
+
+    def check_many(self, video_ids: list[str]) -> dict[str, LiveResult | None]:
+        """Up to BATCH public videos' broadcast status in one request (one unit
+        of quota, however many), without searching for their IDs. A video
+        missing from the answer is gone or private: not live. None: YouTube's
+        answer about it didn't make sense."""
         if not self.configured:
             raise RemoteUnavailable("YouTube Data API key is not configured")
-        if not is_video_id(video_id):
-            raise ValueError("invalid YouTube video ID")
+        video_ids = list(dict.fromkeys(video_ids))
+        if not video_ids:
+            return {}
+        if len(video_ids) > BATCH or not all(is_video_id(v) for v in video_ids):
+            raise ValueError("invalid YouTube video IDs")
         host = "www.googleapis.com"
         self.throttle.wait(host)
         try:
             response = self.client.get(f"https://{host}/youtube/v3/videos",
-                                       params={"part": "snippet,liveStreamingDetails", "id": video_id},
+                                       params={"part": "snippet,liveStreamingDetails", "id": ",".join(video_ids),
+                                               "maxResults": str(BATCH)},
                                        headers={"X-Goog-Api-Key": self.api_key})
         except httpx.HTTPError as exc:
             raise RemoteUnavailable(f"{host}: {type(exc).__name__}: {exc}") from exc
@@ -47,25 +64,29 @@ class YouTubeDataClient:
             raise RemoteUnavailable("YouTube did not return video data") from exc
         if not isinstance(items, list):
             raise RemoteUnavailable("YouTube returned invalid video data")
-        if not items:
-            return LiveResult(False)
-        video = items[0]
-        if not isinstance(video, dict) or video.get("id") != video_id:
-            raise RemoteUnavailable("YouTube returned the wrong video")
-        snippet = video.get("snippet")
-        details = video.get("liveStreamingDetails") or {}
-        if not isinstance(snippet, dict) or not isinstance(details, dict):
-            raise RemoteUnavailable("YouTube returned invalid broadcast data")
-        state = snippet.get("liveBroadcastContent")
-        if state not in ("live", "upcoming", "none"):
-            raise RemoteUnavailable("YouTube did not return broadcast status")
-        live = state == "live" and not details.get("actualEndTime")
-        title = snippet.get("title")
-        channel = snippet.get("channelId")
-        count = details.get("concurrentViewers") if live else None
-        valid_count = (isinstance(count, str) and count.isdecimal() or
-                       isinstance(count, int) and not isinstance(count, bool) and count >= 0)
-        viewers = int(count) if valid_count else None
-        return LiveResult(live, video_id, title if isinstance(title, str) else None,
-                          channel if isinstance(channel, str) else None, viewers,
-                          thumbnail_url(video_id) if live else None)
+        out: dict[str, LiveResult | None] = {v: LiveResult(False) for v in video_ids}
+        for video in items:
+            if isinstance(video, dict) and video.get("id") in out:
+                out[video["id"]] = _live(video)
+        return out
+
+
+def _live(video: dict[str, Any]) -> LiveResult | None:
+    video_id = video["id"]
+    snippet = video.get("snippet")
+    details = video.get("liveStreamingDetails") or {}
+    if not isinstance(snippet, dict) or not isinstance(details, dict):
+        return None
+    state = snippet.get("liveBroadcastContent")
+    if state not in ("live", "upcoming", "none"):
+        return None
+    live = state == "live" and not details.get("actualEndTime")
+    title = snippet.get("title")
+    channel = snippet.get("channelId")
+    count = details.get("concurrentViewers") if live else None
+    valid_count = (isinstance(count, str) and count.isdecimal() or
+                   isinstance(count, int) and not isinstance(count, bool) and count >= 0)
+    viewers = int(count) if valid_count else None
+    return LiveResult(live, video_id, title if isinstance(title, str) else None,
+                      channel if isinstance(channel, str) else None, viewers,
+                      thumbnail_url(video_id) if live else None)
