@@ -3858,6 +3858,18 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         bouncer.wake.set()
         return RedirectResponse(video.href, status_code=303)
 
+    @app.post("/video/delete")
+    def linked_video_delete(request: Request, mid: int = Form(...), next: str = Form("/kept?tab=videos")):
+        """Delete a video saved from a link's box (media.unwant_video), saved
+        or still being saved: it's off the Kept page's Videos tab, and its
+        copy goes unless a post still has it."""
+        with db.transaction() as conn:
+            files = media_mod.unwant_video(conn, mid, bouncer.media_dir)
+        for f in files:  # only after that committed
+            f.unlink(missing_ok=True)
+            thumbs_mod.remove_for(bouncer.media_dir, f.stem)
+        return RedirectResponse(local_path(next, "/kept?tab=videos"), status_code=303)
+
     # ---- Livestreams: the player a link opens (livestream.py, app.js) ---------------
     @app.get("/live/owncast")
     def owncast_link_hosts(hosts: list[str] = Query([])):

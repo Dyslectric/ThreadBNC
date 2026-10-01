@@ -615,6 +615,15 @@ def saved_from_links(conn: Conn) -> list[Any]:
                         "ORDER BY wanted_at DESC, id DESC").fetchall()
 
 
+def unwant_video(conn: Conn, mid: int, media_dir: Path) -> list[Path]:
+    """Delete a video saved from a link's box (want_youtube, want_video): not
+    asked for any more, so it goes now unless a post still has it (and goes
+    with that post). Its files, for the caller to unlink once committed."""
+    conn.execute("UPDATE media SET wanted_at=NULL, held=CASE WHEN status='pending' THEN 1 ELSE held END "
+                 "WHERE id=? AND episode=0", (mid,))
+    return collect_orphans(conn, media_dir, only=mid)
+
+
 def retry_youtube(conn: Conn) -> int:
     """YouTube downloads that failed, perhaps for want of a session: try them
     again (one was just saved)."""
@@ -1067,9 +1076,10 @@ class MediaFetcher:
 
 # --- garbage collection (only after purging expired auto threads) ----------
 
-def collect_orphans(conn: Conn, media_dir: Path) -> list[Path]:
+def collect_orphans(conn: Conn, media_dir: Path, only: int | None = None) -> list[Path]:
     """Delete media rows no object references; return files no row uses any more.
-    The caller unlinks those files after the transaction commits."""
+    The caller unlinks those files after the transaction commits. `only`: just
+    that row, if nothing references it."""
     orphans = conn.execute(
         "SELECT id, storage_path FROM media m WHERE NOT EXISTS (SELECT 1 FROM media_refs r WHERE r.media_id=m.id) "
         "AND NOT EXISTS (SELECT 1 FROM article_media a WHERE a.media_id=m.id) "
@@ -1077,6 +1087,7 @@ def collect_orphans(conn: Conn, media_dir: Path) -> list[Path]:
         "AND NOT EXISTS (SELECT 1 FROM actors a WHERE a.avatar_media_id=m.id) "  # someone's picture (avatars.py)
         "AND NOT EXISTS (SELECT 1 FROM forum_media f WHERE f.media_id=m.id) "  # a forum's icons (forums.py)
         "AND NOT (m.wanted_at IS NOT NULL AND m.episode=0)"  # a video saved from a link (want_youtube, want_video)
+        + ("" if only is None else " AND m.id=?"), () if only is None else (only,)
     ).fetchall()
     files: list[Path] = []
     for o in orphans:
