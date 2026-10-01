@@ -181,6 +181,9 @@ class Bouncer:
         # Called with the community id after following / unfollowing (federation.py subscribes).
         self.follow_hooks: list[Callable[[int], Any]] = []
         self.unfollow_hooks: list[Callable[[int], Any]] = []
+        # Finds a community whose home server ThreadBNC can't read through your own
+        # server instead (Poster.community_through_account); None without accounts.
+        self.via_own_server: Callable[[CommunityRef], CommunityRef] | None = None
         # (domain, community id) -> a member's session token, for communities only
         # members can read (see private.py). None: read anonymously, as usual.
         self.read_token: Callable[[str, int], str | None] | None = None
@@ -1046,14 +1049,29 @@ class Bouncer:
         try:
             community = self.adapter_for(ref.domain).fetch_community(ref)
         except UnsupportedSoftware as exc:
+            if ref.domain in (RSS_DOMAIN, TAG_DOMAIN):
+                raise
             # name@server on Mastodon and the like: a person to follow, not a community
             person = fedi_account_ref("@" + text.strip().lstrip("@"))
-            if person is None or text.strip().startswith("!") or ref.domain in (RSS_DOMAIN, TAG_DOMAIN):
+            if person is not None and not text.strip().startswith("!"):
+                try:
+                    ref, community = person, self.tag_adapter.fetch_community(person)
+                except RemoteError:
+                    pass
+                else:
+                    return self._account_ref(ref, community)
+            # A community on software we can't read (a booru that only speaks
+            # ActivityPub, say): read it through your own server, as for a home
+            # server that's down. It's pushed there like any other community.
+            if self.via_own_server is None:
                 raise
             try:
-                ref, community = person, self.tag_adapter.fetch_community(person)
-            except RemoteError:
-                raise exc from None
+                ref = self.via_own_server(ref)
+                community = self.adapter_for(ref.domain).fetch_community(ref)
+            except RemoteError as via:
+                raise UnsupportedSoftware(f"{exc}, and your server couldn't find it either: {via}") from None
+            log.info("%s isn't readable; reading !%s through %s", ref.home, ref.qualified, ref.domain)
+            return ref, community
         except (RemoteNotFound, RemoteAuthError):
             if not (is_fedi_account_ref(ref) and ref.name.startswith("https://")):
                 raise
@@ -1064,8 +1082,8 @@ class Bouncer:
             return CommunityRef(RSS_DOMAIN, community.local_id or ref.name, RSS_DOMAIN), community
         if ref.domain == BSKY_DOMAIN:  # by DID, which stays the same when a handle changes
             return CommunityRef(BSKY_DOMAIN, community.local_id or ref.name, BSKY_DOMAIN), community
-        if is_fedi_account_ref(ref):  # by their actor's address, whichever way they were named
-            return CommunityRef(TAG_DOMAIN, community.local_id or ref.name, TAG_DOMAIN), community
+        if is_fedi_account_ref(ref):
+            return self._account_ref(ref, community)
         home = community.domain
         if home and home != ref.domain:
             try:  # poll the community's home instance when it speaks a supported API
@@ -1075,6 +1093,11 @@ class Bouncer:
             except RemoteError as exc:
                 log.info("home instance %s unusable, polling via %s: %s", home, ref.domain, exc)
         return CommunityRef(ref.domain, community.name, home), community
+
+    @staticmethod
+    def _account_ref(ref: CommunityRef, community: NCommunity) -> tuple[CommunityRef, NCommunity]:
+        """Someone on the fediverse, by their actor's address, whichever way they were named."""
+        return CommunityRef(TAG_DOMAIN, community.local_id or ref.name, TAG_DOMAIN), community
 
     def _media_account(self, url: str) -> CommunityRef | None:
         """A Pixelfed or Loops account's profile link (followed as the account,

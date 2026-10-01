@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import itertools
 import json
+from dataclasses import replace
 
 import httpx
 import pytest
@@ -9,11 +10,14 @@ from fastapi.testclient import TestClient
 
 from threadbnc import federation
 from threadbnc.accounts import Poster
+from threadbnc.adapters import HttpClient, NCommunity, UnsupportedSoftware
+from threadbnc.bouncer import Bouncer
+from threadbnc.db import open_database
 from threadbnc.federation import Federation, InboxRelay, Target, describe
 from threadbnc.vault import TokenVault
 from threadbnc.web import create_app
 
-from .conftest import ALICE, COMMUNITY, DOMAIN
+from .conftest import ALICE, COMMUNITY, DOMAIN, FakeAdapter
 
 HOME = "home.test"  # your own server, whose inbox is relayed
 UPSTREAM = "http://lemmy-home:8536"
@@ -484,3 +488,63 @@ def test_unreadable_answers_and_nul_bytes_are_stored_safely(fed, bouncer):
     fed.refused(HOME, "/inbox", b'{"type": "Create", "x": "a\x00b"}', 400, federation.readable(b"\x00\xff"))
     row = one(bouncer, "SELECT status, body, outcome FROM ap_inbox")
     assert row["status"] == "refused" and "\x00" not in row["body"] and "bytes that aren't text" in row["outcome"]
+
+
+# --- communities on software ThreadBNC can't read ----------------------------------
+
+BOORU = "booru.test"
+
+
+def booru_bouncer(settings, server):
+    """A bouncer for which booru.test (fedbooru: ActivityPub only, no Lemmy API) is
+    unreadable, and whose WebFinger lookups find its community."""
+    def webfinger(request: httpx.Request) -> httpx.Response:
+        if request.url.host == BOORU and request.url.path == "/.well-known/webfinger":
+            assert request.url.params["resource"] == f"acct:booru@{BOORU}"
+            return httpx.Response(200, json={"subject": f"acct:booru@{BOORU}", "links": [
+                {"rel": "self", "type": "application/activity+json", "href": f"https://{BOORU}/c/booru"}]})
+        return httpx.Response(404)
+
+    def adapters(domain):
+        if domain == BOORU:
+            raise UnsupportedSoftware(f"{BOORU} runs 'fedbooru', which is not supported yet")
+        return FakeAdapter(domain, server)
+
+    http = HttpClient("test", 5, 0)
+    http._client = httpx.Client(transport=httpx.MockTransport(webfinger), follow_redirects=True)
+    server.communities["booru"] = NCommunity(ap_id=f"https://{BOORU}/c/booru", name="booru", domain=BOORU,
+                                             title="Booru")
+    return Bouncer(open_database(settings), settings, http=http, adapter_factory=adapters)
+
+
+def test_a_community_we_cant_read_is_followed_through_your_server(settings, server):
+    b = booru_bouncer(replace(settings, relay_inboxes={HOME: UPSTREAM}), server)
+    poster = Poster(b, TokenVault("test-key", settings.data_dir))
+    poster.add("elsewhere.test", "dave", "hunter2")
+    poster.add(HOME, "dave", "hunter2")
+    Federation(poster, {HOME: UPSTREAM})
+
+    cid = b.follow_community(f"!booru@{BOORU}", None, 30, False)
+    f = one(b, "SELECT f.*, c.canonical_ap_id FROM community_follows f JOIN communities c ON c.id=f.community_id "
+               "WHERE f.community_id=?", cid)
+    assert f["canonical_ap_id"] == f"https://{BOORU}/c/booru"
+    assert (f["source_domain"], f["source_ref"]) == (HOME, f"booru@{BOORU}"), "read through your server"
+    assert (f["push_domain"], f["push_state"]) == (HOME, "subscribed"), "and pushed there like any community"
+
+
+def test_without_your_server_it_still_says_why(settings, server):
+    b = booru_bouncer(settings, server)
+    with pytest.raises(UnsupportedSoftware, match="fedbooru"):
+        b.follow_community(f"!booru@{BOORU}", None, 30, False)
+
+    Poster(b, TokenVault("test-key", settings.data_dir))  # no account to look it up with
+    with pytest.raises(UnsupportedSoftware, match="fedbooru.*your server couldn't find it either.*no Lemmy"):
+        b.follow_community(f"!booru@{BOORU}", None, 30, False)
+
+
+def test_without_pushes_any_lemmy_account_finds_it(settings, server):
+    b = booru_bouncer(settings, server)
+    Poster(b, TokenVault("test-key", settings.data_dir)).add("elsewhere.test", "dave", "hunter2")
+    cid = b.follow_community(f"!booru@{BOORU}", None, 30, False)
+    f = one(b, "SELECT * FROM community_follows WHERE community_id=?", cid)
+    assert (f["source_domain"], f["source_ref"]) == ("elsewhere.test", f"booru@{BOORU}")

@@ -47,6 +47,7 @@ from .rss import html_to_markdown
 
 if TYPE_CHECKING:
     from ..actor import Actor
+    from .http import HttpClient
 
 # Where Mastodon-style servers put a status's API id in its address:
 # /users/name/statuses/123 (Mastodon, GoToSocial) or /@name/123 (its web page).
@@ -57,6 +58,20 @@ _CLASS = re.compile(r'class="([^"]*)"', re.I)
 TITLE_CHARS = 80
 PEOPLE = ("Person", "Service", "Application", "Organization")  # actors whose posts can be followed
 ACTOR_CACHE_SECONDS = 600.0  # following someone looks them up, then asks for their posts: once will do
+
+
+def webfinger_actor(http: HttpClient, name: str, server: str) -> str:
+    """The ActivityPub id of name@server (a person, or a community's Group), by WebFinger."""
+    try:
+        jrd = http.get_json(server, "/.well-known/webfinger", params={"resource": f"acct:{name}@{server}"})
+    except RemoteNotFound:
+        raise RemoteNotFound(f"{server} doesn't know {name}@{server}") from None
+    links = jrd.get("links") if isinstance(jrd, dict) else None
+    url = next((link["href"] for link in links or [] if isinstance(link, dict) and link.get("rel") == "self"
+                and "json" in str(link.get("type")) and isinstance(link.get("href"), str)), None)
+    if not url:
+        raise RemoteNotFound(f"{server} has no fediverse actor {name}@{server}")
+    return url
 
 
 def tag_community(tag: str, description: str | None = None) -> NCommunity:
@@ -311,15 +326,7 @@ class ActivityPubAdapter(ThreadiverseAdapter):
         url: str | None = name if handle is None else None
         if handle:
             user, _, server = handle[1:].partition("@")
-            try:
-                jrd = self.http.get_json(server, "/.well-known/webfinger", params={"resource": f"acct:{user}@{server}"})
-            except RemoteNotFound:
-                raise RemoteNotFound(f"{server} doesn't know {handle}") from None
-            links = jrd.get("links") if isinstance(jrd, dict) else None
-            url = next((link["href"] for link in links or [] if isinstance(link, dict) and link.get("rel") == "self"
-                        and "json" in str(link.get("type")) and isinstance(link.get("href"), str)), None)
-            if not url:
-                raise RemoteNotFound(f"{server} has no fediverse account {handle}")
+            url = webfinger_actor(self.http, user, server)
         doc = actor.fetch(url)  # type: ignore[arg-type]
         ap_id = _id(doc.get("id"))
         if ap_id is None or host_of(ap_id) != host_of(url or ""):

@@ -39,9 +39,10 @@ from urllib.parse import urlparse
 
 from . import store
 from .adapters import (
-    BSKY_DOMAIN, REDDIT_DOMAIN, TAG_DOMAIN, RemoteAuthError, RemoteError, RemoteNotFound, RemoteRejected,
-    ThreadiverseAdapter, host_of, is_bluesky, is_reddit_host, is_rss, media_software,
+    BSKY_DOMAIN, REDDIT_DOMAIN, TAG_DOMAIN, CommunityRef, RemoteAuthError, RemoteError, RemoteNotFound,
+    RemoteRejected, ThreadiverseAdapter, host_of, is_bluesky, is_reddit_host, is_rss, media_software,
 )
+from .adapters.activitypub import webfinger_actor
 from .adapters.bluesky import web_url
 from .bouncer import Bouncer
 from .db import parse_ts, utcnow
@@ -173,6 +174,30 @@ class Poster:
         self.vault = vault
         # Feeds only shown to someone signed in are read as your Bluesky account.
         bouncer.bluesky_adapter.reading_session = self.bluesky_token
+        # Communities on software ThreadBNC can't read are found through your server.
+        bouncer.via_own_server = self.community_through_account
+
+    def community_through_account(self, ref: CommunityRef) -> CommunityRef:
+        """A community on a server ThreadBNC can't read (a booru that only
+        speaks ActivityPub, say), as your Lemmy or PieFed server has it: your
+        account there fetches it over federation (servers only do that for
+        someone signed in), so it can be read there like any other community.
+        Your own servers (THREADBNC_RELAY_INBOXES) first, where it's pushed."""
+        own = self.bouncer.settings.relay_inboxes
+        candidates = [a for a in self.list() if a.status == "ok" and a.software in (None, "lemmy", "piefed")
+                      and not a.is_reddit and a.domain != BSKY_DOMAIN]
+        candidates.sort(key=lambda a: (a.domain not in own, not a.is_default))
+        if not candidates:
+            raise RemoteNotFound("there's no Lemmy or PieFed account here to look it up with")
+        account, home = candidates[0], ref.home or ref.domain
+        ap_id = webfinger_actor(self.bouncer.http, ref.name, home)
+        try:
+            found = self._run(account, lambda adapter, token: adapter.resolve_as(token, ap_id))
+        except AccountError as exc:
+            raise RemoteError(str(exc)) from exc
+        if not found.get("community"):
+            raise RemoteNotFound(f"{account.domain} found no community at {ap_id}")
+        return CommunityRef(account.domain, ref.name, home)
 
     # -- account management -------------------------------------------------
     def list(self) -> list[Account]:

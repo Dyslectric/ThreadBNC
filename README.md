@@ -925,6 +925,7 @@ If you run your own Lemmy server, ThreadBNC can get a followed community's chang
 - **Looked over, rarely:** every 6 hours, ThreadBNC reads a pushed community as your own server has it, to catch anything a delivery missed. That asks nothing of the community's home server.
 - **If ThreadBNC is down,** deliveries to your server fail, and senders retry them later (Lemmy keeps retrying for a while), so the pushes arrive when ThreadBNC is back. Your server's incoming federation also pauses meanwhile.
 - **Only your own servers:** pushes go to the server of the subscribing account. For an account on someone else's server, they arrive there, and ThreadBNC can't see them.
+- **Communities on software ThreadBNC can't read** (a booru like fedbooru, which only speaks ActivityPub): following `!name@server` asks your own server, as your account, to fetch the community over federation, and it's read and pushed there like any other. Without a relayed server, any Lemmy or PieFed account added here is used, and the community is read through it.
 
 To set it up, list the server in `THREADBNC_RELAY_INBOXES` as `domain=Lemmy's address` (comma-separated for several), add a Traefik router that sends that domain's inbox POSTs to ThreadBNC with a higher priority than Lemmy's own router, and add your account on that server on the Accounts page:
 
