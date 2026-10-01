@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from urllib.parse import parse_qs
 
 import httpx
@@ -275,3 +276,46 @@ def test_followed_youtube_channel_is_shown_with_checked_viewers(settings, bounce
         livestream.save_owncast(conn, "watch.owncast.online", True, utcnow())
     assert logged_in(settings, bouncer).get("/live/thumbnail/owncast/watch.owncast.online").content == b"jpeg"
     assert logged_in(settings, bouncer).get("/live/thumbnail/owncast/blog.example").status_code == 404
+
+
+def test_empty_live_page_retries_until_its_own_worker_checks_follows(settings, bouncer, monkeypatch):
+    now = utcnow()
+    feed = f"https://www.youtube.com/feeds/videos.xml?channel_id={CHANNEL}"
+    with bouncer.db.transaction() as conn:
+        cid = conn.execute("INSERT INTO communities(canonical_ap_id, name, first_seen_at, last_seen_at) "
+                           "VALUES (?,?,?,?)", ("rss:" + feed, "Studio", now, now)).lastrowid
+        conn.execute("INSERT INTO community_follows(community_id, followed_at, capture_since, "
+                     "poll_interval_minutes, source_domain, source_ref) VALUES (?,?,?,?,?,?)",
+                     (cid, now, now, 30, RSS_DOMAIN, feed))
+    client = logged_in(settings, bouncer)
+    first = client.get("/live").text
+    assert 'data-live-pending="1"' in first
+    assert 'data-live-refresh="10"' in first
+    assert "Checking recent links" in first
+
+    checked = threading.Event()
+
+    def youtube_live(kind, key):
+        assert (kind, key) == ("youtube-channel", CHANNEL)
+        checked.set()
+        return livestream.OwncastLive(True, "Studio live", 12, VIDEO)
+
+    monkeypatch.setattr(bouncer.rss_adapter.fetcher, "youtube_live", youtube_live)
+    worker = threading.Thread(target=bouncer.run_live_forever, kwargs={"idle_seconds": 0.01})
+    worker.start()
+    try:
+        assert checked.wait(2)
+    finally:
+        bouncer.stop()
+        worker.join(2)
+    assert not worker.is_alive()
+    page = client.get("/live").text
+    assert 'data-live-pending="0"' in page
+    assert 'data-live-refresh="0"' in page
+    assert "Studio live" in page and "12 watching" in page
+
+
+def test_empty_live_page_stays_current_after_checks_finish(settings, bouncer):
+    page = logged_in(settings, bouncer).get("/live").text
+    assert 'data-live-pending="0"' in page
+    assert 'data-live-refresh="60"' in page

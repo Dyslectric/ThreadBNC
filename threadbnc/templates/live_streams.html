@@ -2,7 +2,8 @@
 {% from "_macros.html" import icon, when, veil %}
 {% block title %}Live streams{% endblock %}
 {% block content %}
-<div class="articles-page">
+<div class="articles-page" data-live-pending="{{ '1' if pending and not streams and not followed else '0' }}"
+     data-live-refresh="{{ 10 if pending and not streams and not followed else 60 if services and not streams and not followed else 0 }}">
   <header class="feed-head articles-head">
     <h1>{{ icon('video', 'title-icon') }} Live streams</h1>
     <p class="muted">Live YouTube channels you follow, plus verified streams linked in recent Bluesky, Mastodon, and FediBuzz posts from sources you're listening to. Choose them under <a href="/trending">Trending → Sources</a>. Broadcast status and viewer counts are checked while you use this page.</p>
@@ -56,7 +57,7 @@
       <p><a class="button secondary live-link live-toggle" href="{{ p.stream.href }}" aria-expanded="false"><span class="when-closed">Watch here</span><span class="when-open">Collapse stream</span></a></p>
     </div></article>
     {% else %}
-    {% if not followed %}<section class="card empty"><p class="muted">No verified live streams found{% if q %} for “{{ q }}”{% endif %} yet{% if not services %}; select a service to show streams{% else %}. Recent links are checked while this page is open{% endif %}.</p></section>{% endif %}
+    {% if not followed %}<section class="card empty"><p class="muted">No verified live streams found{% if q %} for “{{ q }}”{% endif %} yet{% if not services %}; select a service to show streams{% elif pending %}. Checking recent links; this page will update shortly{% else %}. Recent links are checked while this page is open{% endif %}.</p></section>{% endif %}
     {% endfor %}
   </div>
   {% if page > 1 or more %}

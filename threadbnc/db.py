@@ -1098,6 +1098,8 @@ class Database:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {typ}")
             elif col not in {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+        conn.execute("CREATE INDEX IF NOT EXISTS live_checks_requested ON live_checks(requested_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS live_checks_status_checked ON live_checks(status, checked_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS objects_dupe ON objects(dupe_key)")
         conn.execute("CREATE INDEX IF NOT EXISTS article_links_key ON article_links(link_key)")
         conn.execute("CREATE INDEX IF NOT EXISTS articles_title_key ON articles(title_key)")

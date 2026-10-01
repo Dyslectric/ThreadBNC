@@ -467,6 +467,8 @@ def tidy(db: Database, now: str | None = None) -> int:
                    f"COALESCE(created_at, first_seen_at) < ? OR ({SEEN} < ? "
                    "AND first_seen_at < ? AND checked_at IS NULL)",
                    (fmt_ts(moment - KEEP_POSTS), QUIET_SEEN, fmt_ts(moment - QUIET_AFTER)), also=("stream_post_media",))
+    _forget(db, "live_checks", ["kind", "key"], "COALESCE(requested_at, checked_at, '') < ?",
+            (fmt_ts(moment - KEEP_POSTS),))
     with db.transaction(exclusive=False) as conn:  # (a few hundred: the posts your server was asked about)
         conn.execute("DELETE FROM live_mentions WHERE created_at < ?", (fmt_ts(moment - STREAM_RECENT),))
         conn.execute("DELETE FROM stream_refs WHERE NOT EXISTS (SELECT 1 FROM stream_posts p "
@@ -1424,7 +1426,12 @@ def live_posts(conn: Conn, sort: str = "likes", source: str | None = None, page:
     if source in SOURCES:
         where += " AND source=?"
         params.append(source)
+    # Most recent posts have no stream link. Filter their JSON in SQL before
+    # decoding it in Python; Owncast can use any host, but needs live wording.
     rows = [*conn.execute("SELECT * FROM stream_posts WHERE view_json IS NOT NULL AND gone=0 "
+                          "AND (view_json LIKE '%youtu%' OR view_json LIKE '%twitch.tv%' "
+                          "OR view_json LIKE '%live%' OR view_json LIKE '%stream%' "
+                          "OR view_json LIKE '%on air%') "
                           f"AND created_at >= ?{where}", params).fetchall(),
             *conn.execute("SELECT * FROM live_mentions WHERE created_at >= ?" + where,
                           params).fetchall()]
@@ -1433,6 +1440,7 @@ def live_posts(conn: Conn, sort: str = "likes", source: str | None = None, page:
     needle = query.strip().casefold()[:100]
     selected = services if services is not None else {"youtube", "twitch", "owncast"}
     matches = []
+    candidates = []
     for r in rows:
         try:
             view = json.loads(r["view_json"])
@@ -1449,7 +1457,7 @@ def live_posts(conn: Conn, sort: str = "likes", source: str | None = None, page:
         kind = ("youtube-channel" if stream.is_channel else "youtube-video") if stream.kind == "youtube" \
             else "owncast" if stream.kind == "owncast" else "twitch" if stream.kind == "twitch" else None
         if kind:
-            livestream.register_live_checks(conn, [(kind, stream.key)])
+            candidates.append((kind, stream.key))
         status = checked.get((kind, stream.key)) if kind else None
         if not status or status["status"] != "live":
             continue
@@ -1473,6 +1481,8 @@ def live_posts(conn: Conn, sort: str = "likes", source: str | None = None, page:
         item["reposts"] = item.get("reposts") if item.get("reposts") is not None else item.get("reposts_seen", 0)
         item["key"] = post_key(r["source"], r["ref"])
         matches.append(item)
+    if candidates:
+        livestream.register_live_checks(conn, candidates)
     if sort == "viewers" and not newest:
         matches.sort(key=lambda i: (i["viewer_count"] is not None, i["viewer_count"] or 0,
                                     i["created_at"] or "", i["key"]), reverse=True)

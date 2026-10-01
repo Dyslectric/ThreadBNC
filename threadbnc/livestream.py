@@ -210,6 +210,7 @@ def followed_youtube(conn: Any) -> list[dict[str, str]]:
 
 def register_live_checks(conn: Any, items: list[tuple[str, str]]) -> None:
     now = utcnow()
+    refresh_before = fmt_ts(parse_ts(now) - timedelta(minutes=5))
     for kind, key in set(items):
         if (kind == "youtube-video" and re.fullmatch(_VIDEO_ID, key) or
                 kind == "youtube-channel" and re.fullmatch(_CHANNEL_ID, key) or
@@ -217,8 +218,9 @@ def register_live_checks(conn: Any, items: list[tuple[str, str]]) -> None:
                 kind == "owncast" and is_host(key) or
                 kind == "twitch" and _TWITCH_NAME.fullmatch(key)):
             conn.execute("INSERT INTO live_checks(kind, key, requested_at) VALUES (?, ?, ?) "
-                         "ON CONFLICT(kind, key) DO UPDATE SET requested_at=excluded.requested_at",
-                         (kind, key, now))
+                         "ON CONFLICT(kind, key) DO UPDATE SET requested_at=excluded.requested_at "
+                         "WHERE live_checks.requested_at IS NULL OR live_checks.requested_at<=?",
+                         (kind, key, now, refresh_before))
 
 
 def due_live_check(conn: Any, now: str) -> tuple[str, str] | None:
@@ -246,10 +248,10 @@ def save_live_check(conn: Any, kind: str, key: str, result: Any, now: str,
 
 
 def current_statuses(conn: Any, now: str) -> dict[tuple[str, str], dict[str, Any]]:
-    """Fresh live checks, plus offline answers until a later check changes them."""
+    """Only recently verified live results needed by the Live page."""
     cutoff = fmt_ts(parse_ts(now) - LIVE_RECHECK)
     return {(r["kind"], r["key"]): dict(r) for r in conn.execute(
-        "SELECT * FROM live_checks WHERE (checked_at>=? AND status='live') OR status='offline'", (cutoff,))}
+        "SELECT * FROM live_checks WHERE status='live' AND checked_at>=?", (cutoff,))}
 
 
 def followed_live(conn: Any, now: str, query: str = "") -> list[dict[str, Any]]:

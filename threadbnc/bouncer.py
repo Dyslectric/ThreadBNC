@@ -198,7 +198,9 @@ class Bouncer:
         self._clock: Callable[[], float] = time.monotonic
         self.wake = threading.Event()
         self.urgent_wake = threading.Event()  # an urgent job (URGENT_JOBS) was queued: see run_urgent_forever
+        self.live_wake = threading.Event()
         self._urgent_thread: threading.Thread | None = None
+        self._live_thread: threading.Thread | None = None
         self._stop = threading.Event()
 
     # -- adapters ----------------------------------------------------------
@@ -1325,7 +1327,9 @@ class Bouncer:
         with self.db.transaction() as conn:
             conn.execute("INSERT INTO app_settings(key, value) VALUES ('last_live_at', ?) "
                          "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (utcnow(),))
-        self.wake.set()
+            livestream.register_live_checks(conn, [(f["kind"], f["key"])
+                                                  for f in livestream.followed_youtube(conn)])
+        self.live_wake.set()
 
     def check_live_once(self) -> bool:
         seen = parse_ts(self.db.get_setting("last_live_at"))
@@ -1635,8 +1639,6 @@ class Bouncer:
                     log.info("community %s: auto-captured %d posts", cid, n)
             except RemoteError as exc:
                 log.warning("poll of community %s failed: %s", cid, exc)
-        if not self._stop.is_set():
-            self.check_live_once()
         # Comments are never checked in the background: they're read when a
         # post is opened (open_threads, a job), or a Lemmy or PieFed post is
         # scrolled to in a feed (fetch_previews), like a browser would. Votes are
@@ -1689,11 +1691,25 @@ class Bouncer:
             self.urgent_wake.wait(idle_seconds)
             self.urgent_wake.clear()
 
+    def run_live_forever(self, idle_seconds: float = 10.0) -> None:
+        """Check requested broadcasts without waiting for feed polls or media jobs."""
+        while not self._stop.is_set():
+            try:
+                while not self._stop.is_set() and self.check_live_once():
+                    pass
+            except Exception:
+                log.error("live checks crashed: %s", traceback.format_exc())
+            self.live_wake.wait(idle_seconds)
+            self.live_wake.clear()
+
     def run_forever(self, idle_seconds: float = 10.0) -> None:
         log.info("bouncer started")
         if self._urgent_thread is None:
             self._urgent_thread = threading.Thread(target=self.run_urgent_forever, name="bouncer-urgent", daemon=True)
             self._urgent_thread.start()
+        if self._live_thread is None:
+            self._live_thread = threading.Thread(target=self.run_live_forever, name="bouncer-live", daemon=True)
+            self._live_thread.start()
         while not self._stop.is_set():
             try:
                 self.tick()
@@ -1706,6 +1722,7 @@ class Bouncer:
         self._stop.set()
         self.wake.set()
         self.urgent_wake.set()
+        self.live_wake.set()
 
     def start_thread(self) -> threading.Thread:
         t = threading.Thread(target=self.run_forever, name="bouncer", daemon=True)

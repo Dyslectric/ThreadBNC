@@ -1423,14 +1423,15 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                                                 query=q, newest=sort == "newest", twitch_enabled=bouncer.twitch.configured,
                                                 services=services)
             followed = livestream.followed_live(conn, utcnow(), q) if "youtube" in services else []
+            pending = bool(services) and livestream.due_live_check(conn, utcnow()) is not None
         followed.sort(key=lambda i: (i["viewer_count"] is not None, i["viewer_count"] or 0,
                                      i["checked_at"] or ""), reverse=True)
-        bouncer.wake.set()
+        bouncer.live_wake.set()
         with db.connect() as conn:
             hidden_keys = hidden_mod.keys(conn)
         items = [i for i in items if (i["view"].get("author_uri") or i["view"].get("author_url")) not in hidden_keys]
         return render(request, "live_streams.html", streams=items, followed=followed, q=q, sort=sort,
-                      page=page, more=more,
+                      page=page, more=more, pending=pending,
                       twitch_configured=bouncer.twitch.configured, services=services,
                       yt="1" if "youtube" in services else "0",
                       tw="1" if "twitch" in services else "0",

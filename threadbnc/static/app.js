@@ -9,6 +9,18 @@ document.documentElement.classList.add("js");
   const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
   const shown = (el) => !!el && el.offsetParent !== null;
 
+  // Checks run after the first Live response, and new streams can arrive while
+  // this page stays open. Refresh only an empty page, without interrupting a search.
+  const liveRefresh = Number($('[data-live-refresh]')?.dataset.liveRefresh || 0);
+  if (liveRefresh) {
+    const retryLive = setInterval(() => {
+      if (document.visibilityState !== "visible" ||
+          document.activeElement?.matches("input, select, textarea")) return;
+      clearInterval(retryLive);
+      location.reload();
+    }, liveRefresh * 1000);
+  }
+
   // The header has seven destinations plus search and the account menu. Let
   // their rendered widths, rather than a viewport breakpoint, decide when the
   // navigation needs icon buttons.
