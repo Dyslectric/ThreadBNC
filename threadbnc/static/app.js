@@ -1639,7 +1639,7 @@ document.documentElement.classList.add("js");
 
   document.addEventListener("submit", (ev) => {
     const form = ev.target.closest("form[data-video-save]");
-    if (!form) return;
+    if (!form || ev.defaultPrevented) return;  // (Delete's asked first: data-confirm)
     ev.preventDefault();
     const box = form.closest("article.video-box");
     const button = $("button", form);
@@ -1648,7 +1648,8 @@ document.documentElement.classList.add("js");
       .then(() => reloadVideoBox(box))
       .catch((e) => {
         if (button) button.disabled = false;
-        toast({ kind: "error", text: "Couldn't start saving the video (" + e.message + "). Try again." });
+        const what = form.dataset.videoSave === "delete" ? "delete" : "start saving";
+        toast({ kind: "error", text: "Couldn't " + what + " the video (" + e.message + "). Try again." });
       });
   });
 

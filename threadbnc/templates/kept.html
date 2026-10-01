@@ -73,6 +73,9 @@
           <div class="pc-actions actions small">
             <a class="act" href="{{ lv.href }}">{{ icon('play') }}<span>{{ 'Watch' if m.status == 'ok' else 'Open' }}</span></a>
             <a class="act" href="{{ lv.page }}" target="_blank" rel="noreferrer noopener nofollow">{{ icon('external') }}<span>{{ lv.site }}</span></a>
+            <form method="post" action="/video/delete" class="inline" data-confirm="Delete “{{ lv.title }}”? Its saved copy goes too.">
+              <input type="hidden" name="mid" value="{{ m.id }}">
+              <button class="act" title="Delete it: not kept any more">{{ icon('trash') }}<span>Delete</span></button></form>
             <span class="muted" title="{{ m.wanted_at | absolute }}">saved {{ when(m.fetched_at or m.wanted_at) }}</span>
           </div>
         </div>

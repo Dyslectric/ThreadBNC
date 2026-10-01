@@ -234,3 +234,38 @@ def test_a_post_that_is_a_videos_link_shows_its_player(settings, server, vbounce
     client.post("/video/save", data={"url": "https://files.test/clip.mp4"})
     page = client.get(f"/t/{clip}").text
     assert "unless you archive it" not in page and "Archive</button>" not in page
+
+
+def test_a_video_saved_from_a_link_can_be_deleted(settings, server, vbouncer):
+    client = logged_in(settings, vbouncer)
+    # One stuck saving (never downloaded): off the Kept page.
+    client.post("/video/save", data={"url": "https://vimeo.com/76979871"})
+    stuck = one(vbouncer, "SELECT id FROM media WHERE url='https://vimeo.com/76979871'")[0]
+    kept = client.get("/kept?tab=videos").text
+    assert "saving…" in kept and f'<input type="hidden" name="mid" value="{stuck}">' in kept
+    r = client.post("/video/delete", data={"mid": stuck}, follow_redirects=False)
+    assert r.headers["location"] == "/kept?tab=videos"
+    assert one(vbouncer, "SELECT 1 FROM media WHERE id=?", stuck) is None
+    assert "Saved from links" not in client.get("/kept?tab=videos").text
+    # One saved: its file goes too.
+    url = "https://files.test/clip.mp4"
+    client.post("/video/save", data={"url": url})
+    vbouncer.media.fetch_pending()
+    m = one(vbouncer, "SELECT * FROM media WHERE url=?", url)
+    assert (vbouncer.media_dir / m["storage_path"]).exists()
+    box = client.get("/video", params={"url": url, "pane": "1"}).text
+    assert 'action="/video/delete"' in box and 'data-video-save="delete"' in box
+    client.post("/video/delete", data={"mid": m["id"], "next": "https://evil.test/"})
+    assert one(vbouncer, "SELECT 1 FROM media WHERE id=?", m["id"]) is None
+    assert not (vbouncer.media_dir / m["storage_path"]).exists()
+    # One a post has too: not asked for any more, but it stays for the post.
+    server.add_post("1", "a clip", "")
+    server.edit_post("1", url=url)
+    tid = vbouncer.ingest_url(f"https://{DOMAIN}/post/1")
+    client.post("/video/save", data={"url": url})
+    m = one(vbouncer, "SELECT * FROM media WHERE url=?", url)
+    client.post("/video/delete", data={"mid": m["id"]})
+    m = one(vbouncer, "SELECT * FROM media WHERE id=?", m["id"])
+    assert m is not None and not m["wanted_at"]
+    page = client.get(f"/t/{tid}").text
+    assert "Download and archive</button>" in page and 'action="/video/delete"' not in page

@@ -102,6 +102,9 @@
         <input type="hidden" name="url" value="{{ v.url }}">
         <button{% if not v.is_file and not b.yt.downloader %} disabled{% endif %} title="Keep a copy here until you delete it">{{ icon('arrow-down') }}
           {{- ' Archive' if b.saved else ' Try again' if failed else ' Download and archive' }}</button></form>{% endif %}
+      {% if b.archived %}<form method="post" action="/video/delete" class="inline" data-video-save="delete" data-confirm="Delete the video saved from this link?{{ ' Its saved copy goes too.' if b.saved }}">
+        <input type="hidden" name="mid" value="{{ b.m.id }}"><input type="hidden" name="next" value="{{ v.href }}">
+        <button class="secondary" title="Not kept any more">{{ icon('trash') }} Delete</button></form>{% endif %}
       <a class="button secondary" href="{{ v.url }}" rel="noreferrer noopener nofollow" target="_blank">{{ icon('external') }}
         {{- ' Open the file' if v.is_file else ' Watch on ' ~ v.site }}</a>
     </div>
