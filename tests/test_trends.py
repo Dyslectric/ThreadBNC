@@ -1441,6 +1441,39 @@ def test_firehoses_keep_quiet_stream_links_for_live(settings, bouncer, listening
     assert "bcdefghijkl" not in {p["stream"].key for p in hidden}
 
 
+def test_live_page_reads_only_posts_with_stream_links(bouncer):  # noqa: F811
+    now = fmt_ts(datetime.now(timezone.utc))
+    with bouncer.db.transaction(exclusive=False) as conn:
+        trends.record_totals(conn, "bluesky", {
+            at("3kstream"): {"likes": 1, "replies": 0, "reposts": 0, "created_at": stamp(hours=-1),
+                             "view": {"text": "Live now", "link": "https://youtu.be/abcdefghijk"}},
+            at("3kplain"): {"likes": 1, "replies": 0, "reposts": 0, "created_at": stamp(hours=-1),
+                            "view": {"text": "Delivered alive", "link": "https://news.example/a"}}}, [], now)
+        # Saved before stream links were noted: looked at once, by the Live page.
+        conn.execute("UPDATE stream_posts SET live_ref=NULL WHERE ref=?", (at("3kstream"),))
+
+    def live_refs():
+        with bouncer.db.connect() as conn:
+            return {r["ref"]: r["live_ref"] for r in conn.execute("SELECT ref, live_ref FROM stream_posts")}
+
+    assert live_refs() == {at("3kstream"): None, at("3kplain"): ""}
+    with bouncer.db.transaction(exclusive=False) as conn:
+        assert trends.live_posts(conn)[0] == []
+    assert live_refs() == {at("3kstream"): "youtube/abcdefghijk", at("3kplain"): ""}
+
+    # Asked for once, and not written again on every page load, only once the request is aging.
+    def requested():
+        with bouncer.db.connect() as conn:
+            return conn.execute("SELECT requested_at FROM live_checks WHERE key='abcdefghijk'").fetchone()[0]
+
+    for minutes, renewed in ((5, False), (11, True)):
+        old = fmt_ts(datetime.now(timezone.utc) - timedelta(minutes=minutes))
+        with bouncer.db.transaction(exclusive=False) as conn:
+            conn.execute("UPDATE live_checks SET requested_at=?", (old,))
+            trends.live_posts(conn)
+        assert (requested() != old) is renewed
+
+
 def test_offline_shared_streams_are_queued_to_check_again(bouncer):  # noqa: F811
     now = fmt_ts(datetime.now(timezone.utc))
     with bouncer.db.transaction(exclusive=False) as conn:

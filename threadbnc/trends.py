@@ -1384,6 +1384,16 @@ def likely_live_stream(view: dict[str, Any], owncast_hosts: set[str],
     return None
 
 
+def live_ref(view_json: str | None) -> str:
+    """What stream_posts.live_ref keeps of a post: its likely stream link as
+    "<kind>/<key>" (livestream.from_key), or '' for none."""
+    try:
+        stream = likely_live_stream(json.loads(view_json or "{}"), set(), check_twitch=True, any_owncast=True)
+    except (TypeError, ValueError, AttributeError):  # not a view, or an invalid URL in it
+        return ""
+    return f"{stream.kind}/{stream.key}" if stream else ""
+
+
 def record_live_mention(db: Database, source: str, ref: str, created_at: str | None,
                         view: dict[str, Any], links: list[tuple[str, str | None, str | None]]) -> None:
     """Keep a likely stream link straight from a public stream, regardless of engagement."""
@@ -1430,29 +1440,29 @@ def live_posts(conn: Conn, sort: str = "likes", source: str | None = None, page:
     if source in SOURCES:
         where += " AND source=?"
         params.append(source)
-    # Most recent posts have no stream link. Filter their JSON in SQL before
-    # decoding it in Python; Owncast can use any host, but needs live wording.
+    # Most posts have no stream link: record_totals notes each post's (live_ref),
+    # so only those with one are read. Posts saved before that are looked at once.
     rows = [*conn.execute("SELECT * FROM stream_posts WHERE view_json IS NOT NULL AND gone=0 "
-                          "AND (view_json LIKE '%youtu%' OR view_json LIKE '%twitch.tv%' "
-                          "OR view_json LIKE '%live%' OR view_json LIKE '%stream%' "
-                          "OR view_json LIKE '%on air%') "
+                          "AND (live_ref IS NULL OR live_ref<>'') "
                           f"AND created_at >= ?{where}", params).fetchall(),
             *conn.execute("SELECT * FROM live_mentions WHERE created_at >= ?" + where,
                           params).fetchall()]
-    hosts = {r["host"] for r in conn.execute("SELECT host FROM owncast_hosts WHERE is_owncast=1")}
     checked = livestream.current_statuses(conn, fmt_ts(moment))
     needle = query.strip().casefold()[:100]
     selected = services if services is not None else {"youtube", "twitch", "owncast"}
     matches = []
     candidates = []
+    noted = []
     for r in rows:
-        try:
-            view = json.loads(r["view_json"])
-        except (TypeError, ValueError):
-            continue
         item = dict(r)
-        stream = (livestream.from_key(item["kind"], item["key"]) if "kind" in item else
-                  likely_live_stream(view, hosts, check_twitch=twitch_enabled, any_owncast=True))
+        if "kind" in item:
+            stream = livestream.from_key(item["kind"], item["key"])
+        else:
+            if item["live_ref"] is None:
+                item["live_ref"] = live_ref(item["view_json"])
+                noted.append((item["live_ref"], item["source"], item["ref"]))
+            kind, _, key = item["live_ref"].partition("/")
+            stream = livestream.from_key(kind, key) if key else None
         if not stream or stream.kind not in selected:
             continue
         if stream.kind == "twitch":
@@ -1464,6 +1474,10 @@ def live_posts(conn: Conn, sort: str = "likes", source: str | None = None, page:
             candidates.append((kind, stream.key))
         status = checked.get((kind, stream.key)) if kind else None
         if not status or status["status"] != "live":
+            continue
+        try:  # only the posts shown: decoding a day's would take seconds
+            view = json.loads(item["view_json"])
+        except (TypeError, ValueError):
             continue
         if needle:
             haystack = f"{view.get('text') or ''} {view.get('link_title') or ''} {stream.key} " \
@@ -1485,6 +1499,8 @@ def live_posts(conn: Conn, sort: str = "likes", source: str | None = None, page:
         item["reposts"] = item.get("reposts") if item.get("reposts") is not None else item.get("reposts_seen", 0)
         item["key"] = post_key(r["source"], r["ref"])
         matches.append(item)
+    if noted:
+        conn.executemany("UPDATE stream_posts SET live_ref=? WHERE source=? AND ref=?", noted)
     if candidates:
         # Sites already found not to be Owncast servers aren't checked again.
         known = livestream.owncast_known(conn, list({key for kind, key in candidates if kind == "owncast"}))
@@ -1616,12 +1632,12 @@ def record_totals(conn: Conn, source: str, found: dict[str, dict[str, Any]], ask
     for ref, t in found.items():
         conn.execute(
             "INSERT INTO stream_posts(source, ref, created_at, first_seen_at, likes, replies, reposts, checked_at, "
-            "view_json, lang) VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(source, ref) DO UPDATE SET "
+            "view_json, lang, live_ref) VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(source, ref) DO UPDATE SET "
             "likes=excluded.likes, replies=excluded.replies, reposts=excluded.reposts, "
             "checked_at=excluded.checked_at, view_json=excluded.view_json, lang=excluded.lang, gone=0, "
-            "created_at=COALESCE(stream_posts.created_at, excluded.created_at)",
+            "live_ref=excluded.live_ref, created_at=COALESCE(stream_posts.created_at, excluded.created_at)",
             (source, ref, t.get("created_at"), now, t.get("likes"), t.get("replies"), t.get("reposts"), now,
-             json.dumps(t["view"]), languages.normalize(t["view"].get("lang"))))
+             view_json := json.dumps(t["view"]), languages.normalize(t["view"].get("lang")), live_ref(view_json)))
     if source == "mastodon":
         remember_refs(conn, source, {t["view"].get("uri"): ref for ref, t in found.items() if t["view"].get("uri")})
     missing = [ref for ref in asked if ref not in found]

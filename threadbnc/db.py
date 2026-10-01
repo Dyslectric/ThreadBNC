@@ -747,6 +747,7 @@ CREATE TABLE IF NOT EXISTS stream_posts (
     gone INTEGER NOT NULL DEFAULT 0,   -- deleted, or not shown any more
     view_json TEXT,                    -- how to show it: author, text, picture, link
     lang TEXT,                         -- its language, as languages.normalize has it, when it says
+    live_ref TEXT,                     -- its likely livestream link for Live, "<kind>/<key>"; '' none; NULL not looked
     PRIMARY KEY (source, ref)
 );
 CREATE INDEX IF NOT EXISTS stream_posts_created ON stream_posts(created_at);
@@ -892,6 +893,7 @@ COLUMN_MIGRATIONS = [
     ("articles", "trending_at", "TEXT"),
     ("stream_posts", "lang", "TEXT"),
     ("stream_posts", "reposts_seen", "BIGINT NOT NULL DEFAULT 0"),
+    ("stream_posts", "live_ref", "TEXT"),
     ("actors", "avatar_url", "TEXT"),
     ("actors", "avatar_checked_at", "TEXT"),
     ("actors", "avatar_media_id", "INTEGER"),

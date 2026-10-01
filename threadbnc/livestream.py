@@ -29,6 +29,7 @@ LIVE_RECHECK = timedelta(minutes=5)
 LIVE_SHOWN = timedelta(minutes=10)  # a live answer is shown this long, so a late recheck doesn't hide it
 UNKNOWN_RECHECK = timedelta(minutes=15)
 LIVE_REQUEST_WINDOW = timedelta(minutes=30)
+REQUEST_REFRESH = timedelta(minutes=10)  # a request is renewed this often, well inside its window
 
 _CHANNEL_ID = r"UC[A-Za-z0-9_-]{22}"
 _TWITCH_NAME = re.compile(r"^[A-Za-z0-9_]{2,25}$")
@@ -209,19 +210,29 @@ def followed_youtube(conn: Any) -> list[dict[str, str]]:
     return out
 
 
-def register_live_checks(conn: Any, items: list[tuple[str, str]]) -> None:
-    now = utcnow()
-    refresh_before = fmt_ts(parse_ts(now) - timedelta(minutes=5))
-    for kind, key in set(items):
-        if (kind == "youtube-video" and re.fullmatch(_VIDEO_ID, key) or
+def _checkable(kind: str, key: str) -> bool:
+    return bool(kind == "youtube-video" and re.fullmatch(_VIDEO_ID, key) or
                 kind == "youtube-channel" and re.fullmatch(_CHANNEL_ID, key) or
                 kind == "youtube-user" and re.fullmatch(r"[\w.-]+", key) or
                 kind == "owncast" and is_host(key) or
-                kind == "twitch" and _TWITCH_NAME.fullmatch(key)):
-            conn.execute("INSERT INTO live_checks(kind, key, requested_at) VALUES (?, ?, ?) "
-                         "ON CONFLICT(kind, key) DO UPDATE SET requested_at=excluded.requested_at "
-                         "WHERE live_checks.requested_at IS NULL OR live_checks.requested_at<=?",
-                         (kind, key, now, refresh_before))
+                kind == "twitch" and _TWITCH_NAME.fullmatch(key))
+
+
+def register_live_checks(conn: Any, items: list[tuple[str, str]]) -> None:
+    """Ask for these to be checked while the Live page is in use. A page names
+    thousands, most asked for a moment ago: only those not asked for in the
+    last REQUEST_REFRESH are written, in one go."""
+    now = utcnow()
+    refresh_before = fmt_ts(parse_ts(now) - REQUEST_REFRESH)
+    wanted = {(kind, key) for kind, key in items if _checkable(kind, key)}
+    if not wanted:
+        return
+    recent = {(r["kind"], r["key"]) for r in conn.execute(
+        "SELECT kind, key FROM live_checks WHERE requested_at>?", (refresh_before,))}
+    conn.executemany("INSERT INTO live_checks(kind, key, requested_at) VALUES (?, ?, ?) "
+                     "ON CONFLICT(kind, key) DO UPDATE SET requested_at=excluded.requested_at "
+                     "WHERE live_checks.requested_at IS NULL OR live_checks.requested_at<=?",
+                     [(kind, key, now, refresh_before) for kind, key in sorted(wanted - recent)])
 
 
 _DUE = ("requested_at>=? AND (checked_at IS NULL OR (status='unknown' AND checked_at<=?) OR "
