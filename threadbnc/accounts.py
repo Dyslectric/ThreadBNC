@@ -63,6 +63,8 @@ MASTODON_APPS = "mastodon_apps"  # ThreadBNC's app on each server: {domain: {red
 MASTODON_WAIT = timedelta(minutes=15)
 REDDIT_READ_ONLY_LOGIN = ("Connect Reddit again on the Reddit page to allow voting, commenting and posting; "
                           "this sign-in was made before ThreadBNC asked for that and can only read.")
+NO_REDDIT_MESSAGES = ("To send Reddit messages, connect Reddit again on the Reddit page; this sign-in was made "
+                      "before ThreadBNC asked for it, or can only read.")
 T = TypeVar("T")
 REPOSTED = "#repost"  # my_votes keeps your Bluesky reposts too, as <post's id>#repost
 
@@ -84,6 +86,9 @@ _FRIENDLY = {
     "ratelimit": "Reddit is rate-limiting your account; try again in a few minutes.",
     "subreddit_notallowed": "You aren't allowed to post in that subreddit.",
     "subreddit_noexist": "That subreddit doesn't exist.",
+    "user_doesnt_exist": "There's no Reddit user by that name.",
+    "nochataccess": ("Your Bluesky app password can't reach direct messages. Make a new one with \"Allow access "
+                     "to your direct messages\" ticked, and sign in with it on the Accounts page."),
 }
 
 
@@ -806,6 +811,33 @@ class Poster:
             token, self._local_id(adapter, token, account.domain, object_id, kind), text)))
         return self.bouncer._ingest_post(post, account.domain, post.local_id, adapter, source_url=post.ap_id,
                                          retention="manual", capture=True)
+
+    # -- private messages ------------------------------------------------------------------
+    def message(self, account: Account, to: str, body: str, subject: str | None = None) -> str:
+        """Send a private message as `account` to `to`: a profile's address, or a
+        handle as the account's site writes them (user@server, @name.bsky.social,
+        u/name). Returns who it went to. Replies to it arrive in the Inbox."""
+        body, to = body.strip(), to.strip()
+        if not body:
+            raise AccountError("Write something first.")
+        if not to:
+            raise AccountError("Say who the message is for.")
+        if account.is_reddit:
+            status = self.bouncer.reddit.status()
+            if not status or not status.get("can_write") or not status.get("can_inbox"):
+                raise AccountError(NO_REDDIT_MESSAGES)
+        return self._run(account, lambda adapter, token: adapter.message_person(token, to, body, subject or None))
+
+    def message_author(self, account: Account, object_id: int, body: str, subject: str | None = None) -> str:
+        """A private message to whoever wrote this post or comment, as the
+        account that acts on it (account_for). Returns who it went to."""
+        obj = self._object(object_id)
+        account = self.account_for(account, obj["canonical_ap_id"])
+        if not obj["author_ap_id"] or obj["author_ap_id"].rstrip("/").endswith("/[deleted]"):
+            raise AccountError("Can't tell who wrote that, so there's no one to message.")
+        if obj["author_ap_id"] == account.actor_ap_id:
+            raise AccountError("That's yours.")
+        return self.message(account, obj["author_ap_id"], body, subject)
 
     # -- posts shown on Trending, not saved here ----------------------------------------
     def stream_act(self, source: str, ref: str, uri: str, action: str, on: bool) -> None:

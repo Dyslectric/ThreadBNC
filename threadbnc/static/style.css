@@ -861,6 +861,15 @@ mark { background: var(--warn-bg); color: inherit; border-radius: 3px; padding: 
 .inbox-reply { margin-top: 4px; }
 .inbox-reply > summary { display: inline-flex; align-items: center; gap: 5px; color: var(--accent); }
 .inbox-reply form { margin-top: 8px; }
+.new-message { margin-top: 14px; }
+.new-message > summary { display: inline-flex; align-items: center; gap: 6px; color: var(--accent); cursor: pointer; font-weight: 600; }
+.new-message form { margin-top: 12px; }
+.new-message .row { align-items: flex-end; }
+.new-message label { display: flex; flex-direction: column; align-items: stretch; gap: 4px; text-align: left;
+  font-size: 0.85em; color: var(--muted); }
+.new-message label > * { font-size: 1rem; color: var(--text); }
+.new-message label.grow { min-width: min(100%, 260px); }
+.new-message label.grow input { width: 100%; }
 
 /* ---- toasts ---- */
 .toasts { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); z-index: 40; display: flex;

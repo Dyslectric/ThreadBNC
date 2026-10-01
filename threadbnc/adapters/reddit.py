@@ -388,3 +388,15 @@ class RedditAdapter(ThreadiverseAdapter):
         if not in_reply_to:
             raise RemoteRejected("Only replies to Reddit messages are supported.", "no_thread")
         self.reader.post("/api/comment", {"thing_id": in_reply_to, "text": body})
+
+    def message_person(self, token: str, to: str, body: str, subject: str | None = None) -> str:
+        """A new private message to u/name (or their profile's address). Reddit
+        messages need a subject: without one, the start of the message is used."""
+        name = to.strip()
+        m = re.match(r"^https?://[^/]*reddit\.com/(?:user|u)/([^/?#]+)", name, re.I)
+        name = m.group(1) if m else re.sub(r"^/?u/|^@", "", name)
+        if not re.fullmatch(r"[A-Za-z0-9_-]{2,30}", name):
+            raise RemoteRejected(f"{to.strip()} isn't a Reddit username.", "bad_username")
+        subject = (subject or "").strip() or body.strip().splitlines()[0][:80]
+        self.reader.post("/api/compose", {"to": name, "subject": subject[:100], "text": body})
+        return f"u/{name}"

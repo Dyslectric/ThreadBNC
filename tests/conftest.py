@@ -487,6 +487,11 @@ class FakeAdapter(ThreadiverseAdapter):
     def send_message(self, token, recipient_local_id, body, in_reply_to=None):
         self.s.messages_sent.append((self._auth(token), recipient_local_id, body, in_reply_to))
 
+    def message_person(self, token, to, body, subject=None):
+        person_id, person = self.resolve_person(token, to)
+        self.send_message(token, person_id, body)
+        return f"{person.username}@{person.domain}"
+
     def create_post(self, token, community_id, title, body=None, url=None):
         user = self._auth(token)
         self.s.next_id += 1

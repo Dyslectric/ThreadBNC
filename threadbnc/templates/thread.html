@@ -114,6 +114,17 @@
         </form>
       </details>
     {% endif %}
+    {% if o.a_ap and not owned and o.username != '[deleted]' %}
+      <details class="reply-box">
+        <summary title="Send {{ o.username }} a private message as {{ who.handle }}">Message</summary>
+        <form method="post" action="/o/{{ o.id }}/message" class="stack">
+          {% if who.is_reddit %}<input name="subject" maxlength="100" placeholder="Subject (else the start of the message)" aria-label="Subject">{% endif %}
+          <textarea name="body" rows="4" required aria-label="Private message"
+            placeholder="Private message to {{ o.username }}{{ ('@' ~ o.a_instance) if o.a_instance and not (bsky or who.is_reddit) }}, only they can see it {{ '(plain text, up to 1000 characters)' if bsky else '(plain text)' if masto else '(Markdown)' }}"{% if bsky %} maxlength="1000"{% endif %}></textarea>
+          <button class="small">Send as {{ who.handle }}</button>
+        </form>
+      </details>
+    {% endif %}
     {% if owned %}
       {% if not (bsky or masto) %}<a href="/o/{{ o.id }}/edit">Edit</a>{% endif %}
       <details class="reply-box">

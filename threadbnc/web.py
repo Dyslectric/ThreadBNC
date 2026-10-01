@@ -3431,6 +3431,13 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
             return RedirectResponse(f"/t/{poster.bluesky_quote(oid, body)}", status_code=303)
         return account_action(request, object_page(oid), act, "Posted your quote on Bluesky.")
 
+    @app.post("/o/{oid}/message")
+    def message_author(request: Request, oid: int, body: str = Form(""), subject: str = Form("")):
+        """A private message to whoever wrote a post or comment."""
+        def act(account: Account) -> None:
+            flash(request, f"Message sent to {poster.message_author(account, oid, body, subject)}.")
+        return account_action(request, object_page(oid), act, anchor=f"o{oid}")
+
     @app.post("/bluesky/timeline")
     def bluesky_timeline(request: Request):
         """Follow your own Following timeline, like a feed."""
@@ -4479,7 +4486,15 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
 
     # ---- inbox ----------------------------------------------------------------
     @app.get("/inbox", response_class=HTMLResponse)
-    def inbox_page(request: Request, show: str = "unread", kind: str = "", account: str = "", page: int = 1):
+    def inbox_page(request: Request, show: str = "unread", kind: str = "", account: str = "", page: int = 1,
+                   to: str = "", sender: str = ""):
+        """`to` and `sender` (an account id) fill in the New message form."""
+        return show_inbox(request, show, kind, account, page, {"to": to.strip(), "sender": sender})
+
+    def show_inbox(request: Request, show: str = "unread", kind: str = "", account: str = "", page: int = 1,
+                   draft: dict[str, str] | None = None) -> HTMLResponse:
+        """`draft`: what the New message form starts with (to, sender, subject, body)."""
+        draft = draft or {}
         aid = int(account) if account.strip().isdigit() else None
         kind = kind if kind in INBOX_KINDS else ""
         show = "all" if show == "all" else "unread"
@@ -4491,7 +4506,22 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         return render(request, "inbox.html", items=items, more=more, show=show, kind=kind, account_id=aid,
                       page=page, page_url=page_url, status=inbox.status(), kinds=INBOX_KINDS,
                       md=lambda text, titles=video_titles(): render_markdown(text, None, titles),
-                      can_reply_reddit=poster.reddit_account() is not None)
+                      can_reply_reddit=poster.reddit_account() is not None, draft=draft,
+                      message_from=int(draft["sender"]) if (draft.get("sender") or "").isdigit() else None)
+
+    @app.post("/inbox/message")
+    def inbox_message(request: Request, account_id: str = Form(""), to: str = Form(""), subject: str = Form(""),
+                      body: str = Form("")):
+        """A new private message, to anyone, as any of your accounts."""
+        account = poster.get(int(account_id)) if account_id.strip().isdigit() else None
+        try:
+            if account is None:
+                raise AccountError("Pick the account to send it as.")
+            flash(request, f"Message sent to {poster.message(account, to, body, subject)} as {account.handle}.")
+        except AccountError as exc:  # shown with the message as written, to try again
+            flash(request, str(exc), "error")
+            return show_inbox(request, draft={"to": to, "sender": account_id.strip(), "subject": subject, "body": body})
+        return RedirectResponse("/inbox", status_code=303)
 
     @app.post("/inbox/check")
     def inbox_check(request: Request):

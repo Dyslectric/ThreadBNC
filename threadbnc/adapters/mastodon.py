@@ -4,7 +4,8 @@ Posts from hashtags (adapters/activitypub.py) are read with ThreadBNC's own
 actor, which can't like or reply as you. Signed in to a Mastodon account (or
 GoToSocial, Akkoma, Pleroma: anything with Mastodon's client API), you can
 like, unlike and reply to them and to their replies, delete your own
-replies, and post on your account, all through your account's own server.
+replies, post on your account and send private messages, all through your
+account's own server.
 
 Signing in is OAuth, as any Mastodon app does it: ThreadBNC registers itself
 as an app on your server (once per server and return address), you approve it
@@ -197,6 +198,27 @@ class MastodonAdapter(ThreadiverseAdapter):
         s = self._call("POST", "/api/v1/statuses", token, status=text, in_reply_to_id=to, visibility=visibility,
                        spoiler_text=parent.get("spoiler_text") or None, sensitive=bool(parent.get("sensitive")) or None)
         return self._comment(s, parent_local_id)
+
+    def message_person(self, token: str, to: str, body: str, subject: str | None = None) -> str:
+        """A private message, as Mastodon has them: a post only the people it
+        mentions can see ("direct"), mentioning who it's for. `to` is their
+        profile's address or @name@server, found over federation if your
+        server hasn't seen them. There's no subject."""
+        q = to.strip()
+        if not q.startswith(("http://", "https://")):
+            q = "@" + q.lstrip("@")
+        try:
+            got = self._call("GET", "/api/v2/search", token, q=q, type="accounts", resolve="true", limit=1)
+        except RemoteNotFound:
+            got = {}
+        found = next(iter(got.get("accounts") or []), None) if isinstance(got, dict) else None
+        if not found or not found.get("acct"):
+            raise RemoteNotFound(f"{self.domain} couldn't find {to.strip()}")
+        acct = str(found["acct"])
+        mentioned = re.search(rf"(?<![\w@])@{re.escape(acct.lower())}(?![\w@.-])", body.lower())
+        self._call("POST", "/api/v1/statuses", token, status=body if mentioned else f"@{acct} {body}",
+                   visibility="direct")
+        return f"@{acct}" if "@" in acct else f"@{acct}@{self.domain}"
 
     def create_post(self, token: str, community_local_id: str, title: str, body: str | None,
                     url: str | None) -> NPost:

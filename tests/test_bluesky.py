@@ -75,6 +75,11 @@ class FakeBluesky:
         self.notifications: list[dict] = []
         self.uploads: list[tuple[str, bytes]] = []
         self.seen_at = None
+        self.convos: list[dict] = []  # listConvos' answer
+        self.chat: dict[str, list[dict]] = {}  # a conversation's messages, newest first
+        self.chat_allowed = True  # False: an app password made without access to direct messages
+        self.chats_sent: list[dict] = []
+        self.chat_read: list[dict] = []
 
     def get_json(self, domain, path, params=None):
         assert domain == "public.api.bsky.app"
@@ -177,6 +182,25 @@ class FakeBluesky:
         if name == "app.bsky.notification.listNotifications":
             assert headers["atproto-proxy"] == "did:web:api.bsky.app#bsky_appview"
             return answer(200, {"notifications": self.notifications})
+        if name.startswith("chat.bsky.convo."):
+            assert headers["atproto-proxy"] == "did:web:api.bsky.chat#bsky_chat"
+            if not self.chat_allowed:
+                return answer(400, {"error": "InvalidToken", "message": "Bad token scope"})
+            if name == "chat.bsky.convo.listConvos":
+                return answer(200, {"convos": self.convos})
+            if name == "chat.bsky.convo.getMessages":
+                return answer(200, {"messages": self.chat[u.params["convoId"]][:int(u.params["limit"])]})
+            if name == "chat.bsky.convo.getConvoForMembers":
+                did = u.params["members"]
+                handle = {ALICE: "alice.bsky.social", "did:plc:bob": "bob.bsky.social"}[did]
+                return answer(200, {"convo": {"id": f"convo-{did}", "members": [
+                    {"did": DAVE, "handle": "dave.bsky.social"}, {"did": did, "handle": handle}]}})
+            if name == "chat.bsky.convo.sendMessage":
+                self.chats_sent.append(body)
+                return answer(200, {"id": f"m{len(self.chats_sent)}", "text": body["message"]["text"]})
+            if name == "chat.bsky.convo.updateRead":
+                self.chat_read.append(body)
+                return answer(200, {"convo": {}})
         if name == "app.bsky.notification.updateSeen":
             self.seen_at = body["seenAt"]
             for n in self.notifications:
@@ -597,3 +621,62 @@ def test_following_your_timeline(settings, bouncer, bsky):
     assert bouncer.poll_follow(c["id"]) == 1
     with pytest.raises(RemoteNotFound, match="own"):
         bouncer.follow_community("https://bsky.app/profile/did:plc:alice/timeline")
+
+
+def chat_message(mid, text, sender="did:plc:bob"):
+    return {"$type": "chat.bsky.convo.defs#messageView", "id": mid, "rev": mid, "text": text,
+            "sender": {"did": sender}, "sentAt": "2026-09-30T09:00:00.000Z"}
+
+
+def test_direct_messages(settings, bouncer, bsky):
+    alice_followed(bouncer)
+    client = signed_in(settings, bouncer, bsky)
+    oid = post_oid(bouncer, "p2")
+    tid = one(bouncer, "SELECT thread_id FROM objects WHERE id=?", oid)[0]
+    page = client.get(f"/t/{tid}").text
+    assert f'action="/o/{oid}/message"' in page and "Send as @dave.bsky.social" in page
+    assert 'maxlength="1000"' in page
+
+    # To whoever wrote a post, in your conversation with them; links stay links.
+    r = client.post(f"/o/{oid}/message", data={"body": "Hi Alice, see https://example.com"})
+    assert "Message sent to @alice.bsky.social." in r.text
+    sent = bsky.chats_sent[-1]
+    assert sent["convoId"] == f"convo-{ALICE}" and sent["message"]["text"] == "Hi Alice, see https://example.com"
+    assert sent["message"]["facets"][0]["features"][0]["uri"] == "https://example.com"
+    r = client.post(f"/o/{oid}/message", data={"body": "x" * 1001})
+    assert "at most 1000 characters" in r.text
+
+    # To anyone, from the Inbox.
+    me = one(bouncer, "SELECT id FROM accounts")[0]
+    r = client.post("/inbox/message", data={"account_id": str(me), "to": "@bob.bsky.social", "body": "Hello"})
+    assert "Message sent to @bob.bsky.social as @dave.bsky.social." in r.text
+    assert bsky.chats_sent[-1] == {"convoId": "convo-did:plc:bob", "message": {"text": "Hello"}}
+
+    # Answers arrive in the Inbox as messages, and are answered in their conversation.
+    bob = {"did": "did:plc:bob", "handle": "bob.bsky.social"}
+    bsky.convos = [{"id": "c1", "members": [{"did": DAVE, "handle": "dave.bsky.social"}, bob], "unreadCount": 1,
+                    "lastMessage": chat_message("m3", "Hi back")},
+                   {"id": "c2", "members": [{"did": DAVE, "handle": "dave.bsky.social"}, bob], "unreadCount": 0,
+                    "lastMessage": chat_message("m9", "my own", sender=DAVE)}]
+    bsky.chat["c1"] = [chat_message("m3", "Hi back"), chat_message("m2", "Hello", sender=DAVE)]
+    client.post("/inbox/check")
+    (row,) = _rows(bouncer, "SELECT * FROM inbox_items WHERE kind='message'")
+    assert (row["remote_id"], row["unread"], row["author_name"], row["body"]) == ("c1/m3", 1, "@bob.bsky.social",
+                                                                                  "Hi back")
+    page = client.get("/inbox").text
+    assert "Hi back" in page and "Reply to message" in page and 'id="new-message"' in page
+    client.post(f"/inbox/{row['id']}/reply", data={"body": "Great"})
+    assert bsky.chats_sent[-1] == {"convoId": "c1", "message": {"text": "Great"}}
+    assert bsky.chat_read == [{"convoId": "c1", "messageId": "m3"}]  # answered, so read
+
+    # An app password made without access to messages: the Inbox still works, and sending says what to do.
+    bsky.chat_allowed = False
+    assert "Checked." in client.post("/inbox/check").text
+    r = client.post(f"/o/{oid}/message", data={"body": "again"})
+    assert "Allow access to your direct messages" in html_text(r.text)
+    assert one(bouncer, "SELECT status FROM accounts")[0] == "ok"
+
+
+def html_text(page):
+    import html
+    return html.unescape(page)

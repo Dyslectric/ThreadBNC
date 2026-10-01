@@ -22,6 +22,26 @@
   </div>
 </header>
 
+{% if status %}
+<details class="card new-message" id="new-message"{% if draft.to or draft.body %} open{% endif %}>
+  <summary>{{ icon('comment') }} New message</summary>
+  <form method="post" action="/inbox/message" class="stack">
+    <div class="row">
+      <label>From <select name="account_id" required>
+        {% for s in status %}<option value="{{ s.account.id }}" {{ 'selected' if message_from == s.account.id }}>{{ s.account.handle }}</option>{% endfor %}
+      </select></label>
+      <label class="grow">To <input name="to" required value="{{ draft.to or '' }}" autocomplete="off"
+        placeholder="user@lemmy.world, @name@mastodon.social, @name.bsky.social, u/name, or their profile's address"></label>
+    </div>
+    <input name="subject" maxlength="100" value="{{ draft.subject or '' }}" aria-label="Subject"
+      placeholder="Subject (Reddit only; else the start of the message)">
+    <textarea name="body" rows="4" required aria-label="Message">{{ draft.body or '' }}</textarea>
+    <div><button class="small">Send</button>
+      <span class="small muted">Only they can see it. Their answers arrive here, under Messages.</span></div>
+  </form>
+</details>
+{% endif %}
+
 {% for s in status if s.error %}
 <div class="flash error" role="alert">{{ icon('alert') }}
   <span><strong>Can't check {{ s.account.handle }}'s inbox.</strong> {{ s.error }}
@@ -90,6 +110,10 @@
       {% if i.object_type != 'message' and not i.thread_id and i.post_ap_id | safe_url %}
         <form method="post" action="/archive" class="inline"><input type="hidden" name="url" value="{{ i.post_ap_id }}">
           <button class="act" data-key="keep" title="Save the whole thread to the archive and keep it (s)">{{ icon('star') }}<span>Keep thread</span></button></form>
+      {% endif %}
+      {% if i.kind != 'message' and i.author_ap_id and not (i.author_name or '').startswith('r/') %}
+        <a class="act" href="/inbox?{{ {'to': i.author_ap_id, 'sender': i.account_id} | urlencode }}#new-message"
+           title="Send {{ i.author_name }} a private message">{{ icon('comment') }}<span>Message</span></a>
       {% endif %}
       <form method="post" action="/inbox/{{ i.id }}/read" class="inline" data-inplace="i{{ i.id }}"{% if i.unread and show == 'unread' %} data-gone="Marked read"{% endif %}>
         <input type="hidden" name="read" value="{{ '1' if i.unread else '0' }}">

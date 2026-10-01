@@ -332,3 +332,64 @@ def test_reddit_sign_in_without_the_inbox_scope(bouncer, poster, inbox):
     cfg["scope"] += " privatemessages"
     bouncer.reddit._save("reddit_connection", cfg)
     assert inbox.can_check(account) is None
+
+
+def test_messaging_anyone_on_lemmy_and_piefed():
+    for adapter in (LemmyAdapter, PieFedAdapter):
+        http = ReplayHttp({("GET", "/resolve_object"): {"person": {"person": BOB_V3}},
+                           ("POST", "/private_message"): {}})
+        server = adapter(HOME, http)
+        assert server.message_person("tok", "@bob@other.test", "hi") == "bob@other.test"
+        assert http.calls[0][2]["q"] == "@bob@other.test"
+        assert http.calls[-1][3] == {"content": "hi", "recipient_id": 901}
+        server.message_person("tok", "carol", "hi")  # just a name: someone on the account's own server
+        assert http.calls[-2][2]["q"] == f"@carol@{HOME}"
+        server.message_person("tok", "https://other.test/u/bob", "hi")
+        assert http.calls[-2][2]["q"] == "https://other.test/u/bob"
+
+
+def test_messaging_anyone_on_reddit():
+    reader = RedditReader({})
+    reddit = RedditAdapter(reader)
+    assert reddit.message_person("", "https://www.reddit.com/user/bob/", "Hello there\nmore") == "u/bob"
+    assert reader.posts[-1] == ("/api/compose", {"to": "bob", "subject": "Hello there", "text": "Hello there\nmore"})
+    reddit.message_person("", "u/carol", "x", subject="About your post")
+    assert reader.posts[-1][1]["to"] == "carol" and reader.posts[-1][1]["subject"] == "About your post"
+    with pytest.raises(Exception, match="isn't a Reddit username"):
+        reddit.message_person("", "bob@lemmy.world", "x")
+
+
+def test_messaging_from_a_thread_and_the_inbox(settings, server, bouncer):
+    server.add_post("1", "Question", "body")
+    server.add_comment("1", "10", "bob's comment")
+    server.add_comment("1", "11", "mine", author=NActor(f"https://{HOME}/u/dave", "dave", HOME))
+    tid = bouncer.ingest_url(f"https://{DOMAIN}/post/1")
+    client = TestClient(create_app(settings, bouncer))
+    client.post("/login", data={"password": "pw"})
+    client.post("/accounts", data={"server": HOME, "username": "dave", "password": "hunter2"})
+    bob = one(bouncer, "SELECT id FROM objects WHERE canonical_ap_id=?", f"https://{DOMAIN}/comment/10")[0]
+    mine = one(bouncer, "SELECT id FROM objects WHERE canonical_ap_id=?", f"https://{DOMAIN}/comment/11")[0]
+    page = client.get(f"/t/{tid}").text
+    assert f'action="/o/{bob}/message"' in page and f'action="/o/{mine}/message"' not in page  # not to yourself
+    r = client.post(f"/o/{bob}/message", data={"body": "psst"})
+    assert "Message sent to bob@other.test." in r.text and server.messages_sent[-1] == ("dave", "901", "psst", None)
+    assert "That&#39;s yours." in client.post(f"/o/{mine}/message", data={"body": "me"}).text
+
+    # From the Inbox: to anyone, by handle; a failed one is shown again as written.
+    page = client.get("/inbox").text
+    assert 'action="/inbox/message"' in page and f">dave@{HOME}</option>" in page
+    me = one(bouncer, "SELECT id FROM accounts")[0]
+    r = client.post("/inbox/message", data={"account_id": str(me), "to": "bob@other.test", "body": "hello"})
+    assert f"Message sent to bob@other.test as dave@{HOME}." in r.text
+    assert server.messages_sent[-1] == ("dave", "901", "hello", None)
+    r = client.post("/inbox/message", data={"account_id": str(me), "to": "nobody@other.test", "body": "lost?"})
+    assert "couldn" in r.text.lower() or "nobody" in r.text
+    assert ">lost?</textarea>" in r.text and 'value="nobody@other.test"' in r.text
+
+    # A reply in the Inbox links to messaging its author.
+    server.inboxes["dave"] = [reply_item()]
+    client.post("/inbox/check")
+    page = client.get("/inbox").text
+    assert "/inbox?to=https%3A%2F%2Fother.test%2Fu%2Fbob&amp;sender=" in page
+    assert 'value="https://other.test/u/bob"' in client.get(
+        f"/inbox?to=https://other.test/u/bob&sender={me}").text

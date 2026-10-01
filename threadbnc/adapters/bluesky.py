@@ -6,8 +6,9 @@ what a custom feed lists; a post's replies when it's opened, as its comments;
 and its likes, as its votes, from each check of the account or feed.
 
 Signed in with your own account (an app password; see accounts.py), you can
-like, repost, quote, reply, post and delete your own posts; replies, mentions
-and quotes of you arrive in the Inbox; your Following timeline can be followed
+like, repost, quote, reply, post and delete your own posts, and send direct
+messages (through Bluesky's chat service, if your app password allows it);
+replies, mentions, quotes of you and messages arrive in the Inbox; your Following timeline can be followed
 like a feed; and feeds that are only shown to someone signed in are read as you. Writes go to your account's own server
 (its PDS, found from its DID document when you log in), and signed-in reads
 go through it to Bluesky's AppView, as the app does. The session (both of its
@@ -31,6 +32,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import re
 import time
 from typing import Any, Callable
@@ -59,8 +61,11 @@ from .base import (
     normalize_tag,
 )
 
+log = logging.getLogger("threadbnc.bluesky")
+
 API = "public.api.bsky.app"
 APPVIEW = "did:web:api.bsky.app#bsky_appview"  # where a PDS sends signed-in reads on (atproto-proxy)
+CHAT = "did:web:api.bsky.chat#bsky_chat"  # where it sends direct messages on
 ENTRYWAY = "https://bsky.social"  # signs in accounts hosted by Bluesky when only an email is given
 PLC = "https://plc.directory"
 LIKE = "app.bsky.feed.like"
@@ -79,6 +84,10 @@ POST = "app.bsky.feed.post"
 GENERATOR = "app.bsky.feed.generator"
 THREAD_VIEW = "app.bsky.feed.defs#threadViewPost"
 REPLY_DEPTH = 10  # how deep a post's replies are read when it's opened
+CHAT_CHARS = 1000  # a direct message's limit, in graphemes; counted here in characters
+CHAT_CONVOS = 20  # how many of your latest conversations each Inbox check reads
+CHAT_UNREAD = 30  # the most unread messages read from one conversation
+DELETED_MESSAGE = "chat.bsky.convo.defs#deletedMessageView"
 # Labels that mean a post's pictures are blurred until tapped, as tiles do for NSFW posts.
 NSFW_LABELS = {"porn", "sexual", "nudity", "graphic-media", "gore"}
 
@@ -285,7 +294,7 @@ class BlueskyAdapter(ThreadiverseAdapter):
 
     # -- as your account ---------------------------------------------------------
     def _xrpc(self, base: str, method: str, *, bearer: str | None = None, params: dict[str, Any] | None = None,
-              body: dict[str, Any] | None = None, appview: bool = False,
+              body: dict[str, Any] | None = None, appview: bool = False, proxy: str | None = None,
               raw: tuple[bytes, str] | None = None) -> Any:
         """One call to a PDS (or the entryway): a query with `params`, or a
         procedure (POST) with `body`, or with `raw` (bytes, their type) for an
@@ -296,8 +305,8 @@ class BlueskyAdapter(ThreadiverseAdapter):
         headers = {"Accept": "application/json"}
         if bearer:
             headers["Authorization"] = f"Bearer {bearer}"
-        if appview:
-            headers["atproto-proxy"] = APPVIEW
+        if appview or proxy:
+            headers["atproto-proxy"] = proxy or APPVIEW
         content = None
         if raw is not None:
             content, headers["Content-Type"] = raw
@@ -321,6 +330,8 @@ class BlueskyAdapter(ThreadiverseAdapter):
         error = str(data.get("error") or "") if isinstance(data, dict) else ""
         message = str(data.get("message") or error or f"HTTP {resp.status_code}") if isinstance(data, dict) else ""
         host = urlparse(url).hostname
+        if "bad token scope" in message.lower():  # an app password made without access to direct messages
+            raise RemoteRejected("Your Bluesky app password can't reach direct messages.", "NoChatAccess")
         if resp.status_code == 401 or error in _AUTH_ERRORS:
             raise RemoteAuthError(f"{host}: {message}", error or "AuthenticationRequired")
         if resp.status_code == 404 or error in ("NotFound", "RecordNotFound", "PostNotFound"):
@@ -410,6 +421,12 @@ class BlueskyAdapter(ThreadiverseAdapter):
     def _write(self, token: str, method: str, body: dict[str, Any]) -> Any:
         s = self._session(token)
         return self._xrpc(s["pds"], method, bearer=s["access"], body={"repo": s["did"], **body})
+
+    def _chat(self, token: str, method: str, *, params: dict[str, Any] | None = None,
+              body: dict[str, Any] | None = None) -> Any:
+        """A call to Bluesky's direct messages service, through your PDS."""
+        s = self._session(token)
+        return self._xrpc(s["pds"], method, bearer=s["access"], params=params, body=body, proxy=CHAT)
 
     def _signed_in_feed(self, uri: str, limit: int, cursor: str | None) -> Any:
         """A feed only shown to someone signed in, read as you, if you are."""
@@ -824,13 +841,89 @@ class BlueskyAdapter(ThreadiverseAdapter):
                 post_ap_id=web_url(root["uri"]) if root.get("uri") else web_url(uri),
                 post_local_id=f"{root['uri']} {root.get('cid')}" if root.get("uri") else f"{uri} {cid}",
                 post_title=None if root.get("uri") else title_from(content.text or "")))
+        try:
+            out += self._chat_inbox(token)
+        except (RemoteRejected, RemoteNotFound, RemoteUnavailable) as exc:
+            # An app password made without access to direct messages, or the chat service is down.
+            log.info("Bluesky direct messages couldn't be read: %s", exc)
         return out
 
     def mark_inbox_read(self, token: str, kind: str, remote_id: str, read: bool) -> None:
         """Bluesky only knows when you last looked at all of them (mark_all_inbox_read):
-        one item is marked read here only."""
+        one item is marked read here only. A message marks its conversation read
+        up to it; there's no marking one unread again."""
+        if kind == "message" and read and "/" in remote_id:
+            convo, _, message = remote_id.partition("/")
+            self._chat(token, "chat.bsky.convo.updateRead", body={"convoId": convo, "messageId": message})
 
     def mark_all_inbox_read(self, token: str, pairs: list[tuple[str, str]]) -> None:
         s = self._session(token)
         self._xrpc(s["pds"], "app.bsky.notification.updateSeen", bearer=s["access"], appview=True,
                    body={"seenAt": utcnow()})
+        for convo in dict.fromkeys(r.partition("/")[0] for kind, r in pairs if kind == "message" and "/" in r):
+            self._chat(token, "chat.bsky.convo.updateRead", body={"convoId": convo})
+
+    # -- direct messages ----------------------------------------------------------------
+    def _chat_inbox(self, token: str) -> list[NInboxItem]:
+        """Messages to you: the latest one in each of your recent
+        conversations, and all the unread ones. Each one's remote id is
+        "<conversation>/<message>", which marking it read takes."""
+        me = self._session(token)["did"]
+        out = []
+        for convo in self._chat(token, "chat.bsky.convo.listConvos", params={"limit": CHAT_CONVOS}).get("convos") or []:
+            cid = convo.get("id") if isinstance(convo, dict) else None
+            if not cid:
+                continue
+            members = {m.get("did"): m for m in convo.get("members") or [] if isinstance(m, dict)}
+            unread = convo["unreadCount"] if isinstance(convo.get("unreadCount"), int) else 0
+            if unread:
+                messages = self._chat(token, "chat.bsky.convo.getMessages",
+                                      params={"convoId": cid, "limit": min(unread, CHAT_UNREAD)}).get("messages")
+            else:
+                messages = [convo.get("lastMessage")]
+            for m in messages or []:
+                if not isinstance(m, dict) or not m.get("id") or m.get("$type") == DELETED_MESSAGE:
+                    continue
+                sender = str((m.get("sender") or {}).get("did") or "")
+                if not sender or sender == me:
+                    continue  # messages you sent aren't Inbox things
+                out.append(NInboxItem(
+                    kind="message", remote_id=f"{cid}/{m['id']}", unread=bool(unread),
+                    author=author_of(members.get(sender) or {"did": sender}), author_local_id=sender,
+                    body=rich_markdown(m.get("text"), m.get("facets")) or "", created_at=_when(m.get("sentAt")),
+                    object_type="message", object_local_id=str(m["id"])))
+        return out
+
+    def _send_chat(self, token: str, convo: str, text: str) -> None:
+        text = text.strip()
+        if len(text) > CHAT_CHARS:
+            raise RemoteRejected(f"Bluesky messages are at most {CHAT_CHARS} characters; this is {len(text)}.",
+                                 "TooLong")
+        message: dict[str, Any] = {"text": text}
+        facets = facets_for(text, self._mention_did)
+        if facets:
+            message["facets"] = facets
+        self._chat(token, "chat.bsky.convo.sendMessage", body={"convoId": convo, "message": message})
+
+    def message_person(self, token: str, to: str, body: str, subject: str | None = None) -> str:
+        """A direct message to someone, by handle, DID or bsky.app profile
+        address, in your conversation with them (started if there isn't one).
+        Bluesky messages have no subject."""
+        who = to.strip()
+        m = re.match(r"^https://bsky\.app/profile/([^/?#]+)", who)
+        who = m.group(1) if m else who.lstrip("@")
+        did = self._did(who if who.startswith("did:") else who.lower())
+        convo = self._chat(token, "chat.bsky.convo.getConvoForMembers", params={"members": [did]}).get("convo") or {}
+        if not convo.get("id"):
+            raise RemoteNotFound(f"Bluesky didn't open a conversation with {to.strip()}")
+        self._send_chat(token, str(convo["id"]), body)
+        member = next((p for p in convo.get("members") or [] if isinstance(p, dict) and p.get("did") == did), {})
+        return f"@{member.get('handle') or who}"
+
+    def send_message(self, token: str, recipient_local_id: str, body: str, in_reply_to: str | None = None) -> None:
+        """An answer to a message: in its conversation, or, without one, to its sender (a DID)."""
+        convo, _, _ = (in_reply_to or "").partition("/")
+        if convo and "/" in (in_reply_to or ""):
+            self._send_chat(token, convo, body)
+        else:
+            self.message_person(token, recipient_local_id, body)

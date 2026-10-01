@@ -552,6 +552,17 @@ class LemmyAdapter(ThreadiverseAdapter):
     def send_message(self, token: str, recipient_local_id: str, body: str, in_reply_to: str | None = None) -> None:
         self._call("POST", "/private_message", token, {"content": body, "recipient_id": int(recipient_local_id)})
 
+    def message_person(self, token: str, to: str, body: str, subject: str | None = None) -> str:
+        """A private message to anyone this server can find: a profile URL, or
+        user@server (just a name is someone on this server). Lemmy and PieFed
+        messages have no subject."""
+        to = to.strip()
+        if not to.startswith(("http://", "https://")) and "@" not in to.lstrip("@"):
+            to = f"{to.lstrip('@')}@{self.domain}"
+        person_id, person = self.resolve_person(token, to)
+        self.send_message(token, person_id, body)
+        return f"{person.username}@{person.domain}"
+
     # -- moderation ------------------------------------------------------
     def _site_admins(self) -> set[str]:
         if self._admins is None:

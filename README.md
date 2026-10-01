@@ -332,6 +332,7 @@ their own **Bluesky** group in the sidebar and in the feed editor. Everything is
     top bar's **New post**, a repost or an article's Post, alongside your communities). A link becomes a card with the page's title, description and picture, read from the page once, when you post;
   - follow your **Following timeline** like a feed (Accounts → Follow your Following timeline): the posts of the accounts you follow, checked like any other feed, without reposts;
   - see replies to you, mentions of you and quotes of your posts in the **Inbox**, checked with the other inboxes, and answer them there. Bluesky only keeps "seen up to" rather than a read mark per item, so marking one read is kept here, and Mark all read marks them all seen on Bluesky too.
+  - send and answer direct messages (Message under a post or reply, New message in the **Inbox**; plain text, 1000 characters). Messages to you arrive in the Inbox. This needs an app password made with **Allow access to your direct messages** ticked; with one made without it, everything else works and sending says so.
 - Signed out, likes show as votes but nothing can be liked, replied to or posted. Reposting a Bluesky post to one of your Lemmy communities works either way.
 - **Keeping one post:** a `bsky.app/profile/…/post/…` link can be kept like any post link.
 
@@ -655,7 +656,12 @@ Accounts page, including your Reddit account. The header shows how many are unre
   - A reply goes under the comment or post, or a private message goes back to its sender. It's sent as the account the item came to, and the item is marked read.
   - This works whether or not the thread is in the archive. When it is, your reply appears there straight away. Otherwise **☆ Keep thread** saves the thread.
   - A Reddit reply needs a Reddit connection that can write.
-- **Where it's from:** Lemmy 0.19 and PieFed use their replies, mentions and messages lists. Lemmy 1.0 and Mastodon use notifications; Mastodon's direct mentions appear as messages. Reddit uses its message inbox. Messages you sent aren't shown.
+- **Sending a private message:**
+  - **New message** at the top of the Inbox sends one to anyone, as any of your accounts: pick the account, and give who it's for as their site writes it (`user@lemmy.world`, `@name@mastodon.social`, `@name.bsky.social`, `u/name`) or their profile's address. Just a name is someone on that account's own server. **Message** on a reply or mention fills it in for its author.
+  - **Message** under a post or comment on a thread page sends one to whoever wrote it, as the account that would reply there (your Bluesky, Mastodon or Reddit account for theirs, otherwise the acting account).
+  - Lemmy and PieFed send a private message, found over federation if your server hasn't seen them. Mastodon sends a post only the people it mentions can see ("direct"), mentioning them. Bluesky sends a chat message, in your conversation with them. Reddit sends a message; Reddit messages need a subject, and without one the start of the message is used.
+  - Their answers arrive here, under Messages.
+- **Where it's from:** Lemmy 0.19 and PieFed use their replies, mentions and messages lists. Lemmy 1.0 and Mastodon use notifications; Mastodon's direct mentions appear as messages. Bluesky uses notifications, and its chats for messages: the newest message of your latest 20 conversations, and every unread one. Reddit uses its message inbox. Messages you sent aren't shown.
 - Removing an account removes its inbox here too. Nothing is deleted on the server.
 
 ### Moderating and administering

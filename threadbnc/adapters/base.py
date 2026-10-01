@@ -510,6 +510,13 @@ class ThreadiverseAdapter(ABC):
     # the account's inbox: inbox(token, me_ap_id), mark_inbox_read(token, kind, remote_id, read),
     # mark_all_inbox_read(token, [(kind, remote_id)]), send_message(token, recipient_local_id, body, in_reply_to)
     inbox = mark_inbox_read = mark_all_inbox_read = send_message = _unsupported
+
+    def message_person(self, token: str, to: str, body: str, subject: str | None = None) -> str:
+        """Start a private conversation: send `body` to `to` (their profile's
+        address, or a handle as their server writes it). Returns who it went to."""
+        raise RemoteRejected(f"{self.software} accounts can't send private messages from ThreadBNC.",
+                             "no_messages")
+
     # pushes through your own server (federation.py): fetch_comment(local_id) -> (NComment,
     # post local id); follow_community(token, community_id, follow) -> subscribed | pending | not_subscribed;
     # community_follow_state(token, community_id) -> the same, read without following again

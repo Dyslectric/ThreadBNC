@@ -90,6 +90,11 @@ class FakeHome:
         if path == "/api/v2/search":
             q = request.url.params["q"]
             assert request.url.params["resolve"] == "true"
+            if request.url.params.get("type") == "accounts":  # people, by profile address or @name@server
+                m = re.fullmatch(r"https://([^/]+)/users/(\w+)|@(\w+)@([\w.]+)", q)
+                acct = (f"{m.group(2)}@{m.group(1)}" if m.group(1) else f"{m.group(3)}@{m.group(4)}") if m else None
+                found = [{"id": "77", "acct": acct}] if acct and not acct.startswith("nobody") else []
+                return httpx.Response(200, json={"accounts": found, "hashtags": [], "statuses": []})
             found = [s for s in self.statuses.values() if s["uri"] == q]
             return httpx.Response(200, json={"accounts": [], "hashtags": [], "statuses": found})
         m = re.fullmatch(r"/api/v1/statuses/(\w+)(?:/(favourite|unfavourite))?", path)
@@ -338,3 +343,24 @@ def test_the_composer_posts_on_your_mastodon_account(web, tagged, fedi):
     cpage = web.get(f"/c/{one(b, 'SELECT community_id FROM archived_threads WHERE id=?', t['id'])['community_id']}").text
     assert "Racks" in cpage and f'name="community" value="{ME["uri"]}"' not in cpage and "Live on server" not in cpage
 
+
+
+def test_private_messages_are_direct_posts_mentioning_them(web, tagged, fedi):
+    b, _ = tagged
+    tid = captured(b, web, fedi)
+    web.get("/accounts/mastodon/callback", params={"state": sign_in(web, fedi), "code": "good"})
+    bob = one(b, "SELECT id FROM objects WHERE canonical_ap_id=?", BOB_REPLY)["id"]
+    page = web.get(f"/t/{tid}").text
+    assert f'action="/o/{bob}/message"' in page and "Send as @dave@home.test" in page
+    r = web.post(f"/o/{bob}/message", data={"body": "Where did you get that rack?"})
+    assert "Message sent to @bob@other.test." in r.text
+    assert fedi.home.posted[-1] == {"status": "@bob@other.test Where did you get that rack?", "visibility": "direct"}
+
+    # From the Inbox, by handle; mentioning them already isn't doubled.
+    me = one(b, "SELECT id FROM accounts")["id"]
+    r = web.post("/inbox/message", data={"account_id": str(me), "to": "carol@else.test",
+                                         "body": "Hi @carol@else.test!"})
+    assert "Message sent to @carol@else.test as @dave@home.test." in r.text
+    assert fedi.home.posted[-1] == {"status": "Hi @carol@else.test!", "visibility": "direct"}
+    r = web.post("/inbox/message", data={"account_id": str(me), "to": "@nobody@else.test", "body": "hello?"})
+    assert "couldn" in r.text and "find @nobody@else.test" in r.text

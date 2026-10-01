@@ -10,6 +10,9 @@ Replying happens on the account's own server, where the ids stored with each
 item are valid, so a reply works whether or not the thread is in the archive.
 When it is, the reply is recorded there straight away, like any other comment
 made through ThreadBNC.
+
+New private messages, to anyone, are sent from the Inbox page or from a post or
+comment through Poster.message (accounts.py); their answers arrive here.
 """
 
 from __future__ import annotations
