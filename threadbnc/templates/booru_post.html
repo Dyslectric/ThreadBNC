@@ -17,7 +17,7 @@
       {% if post.created_at %}<dt>Date</dt><dd>{{ post.created_at[:10] }}</dd>{% endif %}
       {% if post.width and post.height %}<dt>Size</dt><dd>{{ post.width }}×{{ post.height }}{% if post.format %} · {{ post.format }}{% endif %}{% if file_size %} · {{ file_size }}{% endif %}</dd>{% endif %}
       <dt>Rating</dt><dd>{{ post.rating }}</dd>
-      {% if post.score is not none %}<dt>Score</dt><dd>{{ post.score }}{% if post.favs is not none %} · {{ post.favs }} favourite{{ '' if post.favs == 1 else 's' }}{% endif %}</dd>{% endif %}
+      {% if post.score is not none %}<dt>Score</dt><dd><span data-booru-score>{{ post.score }}</span>{% if post.favs is not none %} · <span data-booru-favs="{{ post.favs }}">{{ post.favs }} favourite{{ '' if post.favs == 1 else 's' }}</span>{% endif %}</dd>{% endif %}
       {% if post.source %}<dt>Source</dt><dd><a href="{{ post.source }}" rel="nofollow noopener noreferrer">{{ post.source }}</a></dd>{% endif %}
       {% if data and data.submitter %}<dt>Submitter</dt><dd>{{ data.submitter }}</dd>{% endif %}
       {% if data and data.home and data.home[1] | safe_url %}<dt>From</dt><dd><a href="{{ data.home[1] | safe_url }}" rel="noopener noreferrer">{{ data.home[0] }}</a></dd>{% endif %}
@@ -33,15 +33,17 @@
     <h2>You</h2>
     <div class="booru-controls">
       {% if data.published %}
-      <div class="row">
+      {# A vote or a favourite is sent without leaving the page (app.js), and shown as it then stands. #}
+      <div class="row" data-booru-marks data-vote="{{ data.my_vote }}" data-fav="{{ 1 if data.my_fav else 0 }}">
         {% for value, label, title in [(1, '▲', 'Vote up'), (-1, '▼', 'Vote down')] %}
-        <form method="post" action="{{ do }}posts/{{ post.id }}/vote">
+        <form method="post" action="{{ do }}posts/{{ post.id }}/vote" data-booru-mark="{{ value }}">
           <input type="hidden" name="value" value="{{ 0 if data.my_vote == value else value }}">
-          <button class="small secondary {{ 'booru-mine' if data.my_vote == value }}" title="{{ 'Take your vote back' if data.my_vote == value else title }}" aria-label="{{ title }}" aria-pressed="{{ 'true' if data.my_vote == value else 'false' }}">{{ label }}</button>
+          <button class="small secondary" title="{{ title }}; again to take it back" aria-label="{{ title }}" aria-pressed="{{ 'true' if data.my_vote == value else 'false' }}">{{ label }}</button>
         </form>
         {% endfor %}
-        <form method="post" action="{{ do }}posts/{{ post.id }}/{{ 'unfavourite' if data.my_fav else 'favourite' }}">
-          <button class="small secondary {{ 'booru-mine' if data.my_fav }}" aria-pressed="{{ 'true' if data.my_fav else 'false' }}">{{ icon('star-fill' if data.my_fav else 'star') }} {{ 'Favourited' if data.my_fav else 'Favourite' }}</button>
+        <form method="post" action="{{ do }}posts/{{ post.id }}/{{ 'unfavourite' if data.my_fav else 'favourite' }}" data-booru-mark="fav"
+              data-on="{{ do }}posts/{{ post.id }}/favourite" data-off="{{ do }}posts/{{ post.id }}/unfavourite">
+          <button class="small secondary" aria-pressed="{{ 'true' if data.my_fav else 'false' }}"><span class="when-off">{{ icon('star') }} Favourite</span><span class="when-on">{{ icon('star-fill') }} Favourited</span></button>
         </form>
       </div>
       {% endif %}
