@@ -12,10 +12,44 @@
     {% for key, name in [('posts', 'Posts'), ('tags', 'Tags'), ('pools', 'Pools')] %}
     <a href="{{ booru_href(key) }}" class="{{ 'on' if section == key }}"{% if section == key %} aria-current="page"{% endif %}>{{ name }}</a>
     {% endfor %}
+    {# Signed in to the booru this page is of: its pages for you (and for its staff, if you're one). #}
+    {% if mine %}{% for key, name, who in signed_sections %}{% if who == 'member' or mine.me[who] %}
+    <a href="/booru/{{ one.id }}/{{ key }}" class="{{ 'on' if section == key }}"{% if section == key %} aria-current="page"{% endif %}>{{ name }}</a>
+    {% endif %}{% endfor %}{% endif %}
   </nav>
   <form class="booru-search" action="/booru" method="get" role="search">
     <input type="search" name="tags" placeholder="Search tags" aria-label="Search tags on {{ label }}" value="{{ query | default('') }}">
   </form>
+  {# Your account on each booru. A booru has no accounts of its own: you sign in as one of yours, by a
+     private message its bot gets from it, which is sent for you. #}
+  <details class="menu booru-account">
+    <summary title="Your account on {{ 'this booru' if boorus | length == 1 else 'each booru' }}">{{ icon('user') }}<span class="label">{{ mine.me.name or mine.handle if mine else 'Sign in' }}</span>{{ icon('chevron-down', 'chev') }}</summary>
+    <div class="menu-panel">
+      {% for b in boorus %}
+      <div class="menu-section">
+        <div class="menu-label">{{ b.name }}</div>
+        {% if b.session and b.session.token_enc %}
+        <div class="booru-signed small"><span class="grow">Signed in as <strong>{{ b.session.handle or b.session.me.name }}</strong>{% if b.session.me.admin %} · admin{% elif b.session.me.staff %} · moderator{% endif %}</span></div>
+        {% if b.session.pending_enc %}<a class="menu-item" href="/booru/{{ b.id }}/signin">{{ icon('refresh') }}<span class="grow">Signing in again…</span></a>{% endif %}
+        <a class="menu-item" href="/booru/{{ b.id }}/settings">{{ icon('settings') }}<span class="grow">Your name there</span></a>
+        <form method="post" action="/booru/{{ b.id }}/signout"><button class="menu-item">{{ icon('logout') }}<span class="grow">Sign out</span></button></form>
+        {% elif b.session and b.session.pending_enc %}
+        <a class="menu-item" href="/booru/{{ b.id }}/signin">{{ icon('refresh') }}<span class="grow">Signing in…</span></a>
+        {% elif sign_in_with %}
+        <form method="post" action="/booru/{{ b.id }}/signin" class="menu-field">
+          <input type="hidden" name="next" value="{{ request.url.path ~ ('?' ~ request.url.query if request.url.query) }}">
+          <select name="account" aria-label="Sign in to {{ b.name }} as">
+            {% for a in sign_in_with %}<option value="{{ a.id }}">{{ a.handle }}</option>{% endfor %}
+          </select>
+          <button class="small">Sign in</button>
+        </form>
+        {% else %}
+        <p class="small muted booru-signed">To sign in, add a Lemmy, PieFed, Mastodon or Bluesky account on <a href="/accounts">Accounts</a>.</p>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </details>
   <details class="menu booru-servers">
     <summary title="Which of your boorus to browse">{{ icon('picture') }}<span class="label">{{ label }}</span>{{ icon('chevron-down', 'chev') }}</summary>
     <div class="menu-panel">

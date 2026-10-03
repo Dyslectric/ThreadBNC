@@ -1,0 +1,16 @@
+{% extends "booru_layout.html" %}
+{% block title %}Your name · {{ only.name }}{% endblock %}
+{# What you're called beside your comments on a booru: the name you choose there, and whether your handle shows. #}
+{% block booru %}
+{% if data %}
+<h1>Your name on {{ only.name }}</h1>
+<p class="muted">You're signed in there as <strong>{{ data.handle }}</strong>. This is what's shown beside your comments, old and new;
+  its moderators always see the account. Tag history, uploads and the moderation log stay under your handle.</p>
+<form method="post" action="/booru/{{ only.id }}/do/settings" class="stack booru-form">
+  <label for="booru-name">Display name <span class="muted">(up to {{ data.max_name }} characters, no @; empty: your handle)</span></label>
+  <input id="booru-name" type="text" name="name" value="{{ data.name }}" maxlength="{{ data.max_name }}">
+  <label><input type="checkbox" name="show_handle" value="on"{{ ' checked' if data.show_handle }}> Show my handle, with a link to my profile <span class="muted">(hiding it needs a display name)</span></label>
+  <div><button>Save</button></div>
+</form>
+{% endif %}
+{% endblock %}

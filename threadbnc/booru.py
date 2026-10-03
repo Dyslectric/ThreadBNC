@@ -22,6 +22,10 @@ stylesheet, with its tag counts (tag_index).
 The peers a booru names (NodeInfo's metadata.peers) are kept with it and
 offered in the menu as boorus to add. They're never added by themselves.
 
+Signed in to a booru (the second half of this file), its own pages and forms are
+used as you: comments, votes, tag edits, posting, the queue, reports, bans and
+the admin's controls.
+
 Pictures aren't downloaded: your browser loads them from where the booru
 says they are (its own server, or the origin of a picture it only links),
 so those pages allow pictures from elsewhere (web.py's Content-Security-Policy).
@@ -39,6 +43,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from typing import Any, Callable
 from urllib.parse import urlencode, urlparse
+
+import httpx
 
 from .adapters import RemoteError
 from .db import Conn, parse_ts
@@ -380,3 +386,258 @@ def tag_groups(shown: list[dict[str, Any]], index: dict[str, tuple[int, str]], l
         groups.setdefault(seen[name][0], []).append({"name": name, "category": seen[name][0],
                                                      "count": index[name][0] if name in index else None})
     return [(category, found) for category, found in groups.items() if found]
+
+
+# ---- signed in ------------------------------------------------------------------------------
+#
+# A fedbooru has no accounts of its own: you sign in to its site by sending `!login <code>`
+# to its bot as a private message, from an account you already have. ThreadBNC holds your
+# accounts, so it does that for you: it starts a sign-in at the booru (begin), sends the
+# message as the account you picked, asks the booru who answered (sign_in_state) and, if
+# that's the account it sent from, is given the session's token (confirm). The token is
+# kept encrypted (the `booru_sessions` table) and sent as a bearer token from then on.
+#
+# Signed in, the booru's own pages are read as their data (page) and its own forms are
+# sent as they are (write): comments, votes, tag edits, uploads, the queue, reports, bans
+# and the admin's controls are all what the booru's site does, as you.
+
+SIGN_IN_WAIT = timedelta(minutes=15)  # how long a booru keeps a sign-in open
+RENEW_BELOW = 300  # seconds an admin's sign-in still counts as recent, under which it's renewed
+MAX_IMAGES = 10  # in one upload, as fedbooru takes them
+
+# The booru's forms that can be sent from here, by their address there.
+WRITES = re.compile(
+    r"posts/\d+/(?:edit|vote|favourite|unfavourite|report|comment|pool|remove|restore|lock|unlock)"
+    r"|posts/\d+/comments/\d+/(?:delete|approve)"
+    r"|queue/\d+/(?:approve|reject)"
+    r"|submissions/\d+/(?:withdraw|feature|unfeature|lock-comments|unlock-comments)"
+    r"|reports/\d+/(?:resolve|dismiss)"
+    r"|moderate/(?:tags|ban|unban|trust)"
+    r"|admin/(?:role|grant|comments|instance|peer)"
+    r"|settings")
+_DID = re.compile(r"did:[a-z0-9]+:[A-Za-z0-9._:%-]+")
+_POST_LINK = re.compile(r"/posts/(\d+)(#[\w-]+)?")
+
+
+class Refused(BooruError):
+    """The booru said no, and why."""
+
+    def __init__(self, message: str, status: int = 422):
+        super().__init__(message)
+        self.status = status
+
+
+class SignedOut(BooruError):
+    """The session has ended there (it lasts 30 days, or you sent `!logout`)."""
+
+
+class Stale(BooruError):
+    """An admin's action from a sign-in that isn't recent enough: sign in again and resend it."""
+
+
+def _ask(http: Any, host: str, method: str, path: str, token: str | None = None,
+         fields: dict[str, str] | None = None, files: list[tuple[str, tuple[str, bytes, str]]] | None = None,
+         params: dict[str, Any] | None = None) -> Any:
+    """One request to a booru for JSON, as you if `token` is given. Raises what it refused with."""
+    clean = {k: v for k, v in (params or {}).items() if v not in (None, "")}
+    url = f"https://{host}{path}" + ("?" + urlencode(clean) if clean else "")
+    headers = {"Accept": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    content = None
+    if method == "POST" and files:
+        built = httpx.Request("POST", url, data=fields or {}, files=files)
+        content, headers["Content-Type"] = built.read(), built.headers["content-type"]
+    elif method == "POST":
+        content, headers["Content-Type"] = urlencode(fields or {}).encode(), "application/x-www-form-urlencoded"
+    try:
+        resp = http.send(method, url, headers=headers, content=content, throttle=False)
+    except RemoteError as exc:
+        raise BooruError(f"Couldn't reach {host}: {exc}") from exc
+    try:
+        data = resp.json()
+    except ValueError:
+        data = None
+    said = str(data.get("message") or "") if isinstance(data, dict) else ""
+    if resp.status_code == 401 and token:
+        raise SignedOut(said or f"Your session on {host} has ended.")
+    if isinstance(data, dict) and data.get("stale"):
+        raise Stale(said)
+    if resp.status_code >= 400:
+        raise Refused(said or f"{host} answered HTTP {resp.status_code}.", resp.status_code)
+    if data is None:  # a page of its site: a fedbooru from before it answered apps
+        raise BooruError(f"{host} didn't answer as a booru that apps can use does.")
+    return data
+
+
+def begin(http: Any, host: str) -> dict[str, Any]:
+    """Start a sign-in: {"secret", "code", "bot", "bluesky_bot"}. The bots are who takes
+    `!login <code>`, on the fediverse and on Bluesky (None where the booru has none)."""
+    try:
+        got = _ask(http, host, "POST", "/api/login")
+    except Refused as exc:
+        if exc.status in (403, 404, 405):  # no such address: a fedbooru from before apps could sign in
+            raise BooruError(f"{host} can't be signed in to from here yet: it runs an older fedbooru.") from exc
+        raise
+    if not isinstance(got, dict) or not got.get("secret") or not got.get("code"):
+        raise BooruError(f"{host} didn't start a sign-in.")
+    return got
+
+
+def sign_in_state(http: Any, host: str, secret: str) -> dict[str, Any]:
+    """{"state": "waiting" | "claimed" | "gone"}; claimed says who by ("handle", "key")."""
+    got = _ask(http, host, "POST", "/api/login/state", fields={"secret": secret})
+    return got if isinstance(got, dict) else {"state": "gone"}
+
+
+def confirm(http: Any, host: str, secret: str) -> str:
+    """Take the session of a sign-in that the right account claimed: its token."""
+    got = _ask(http, host, "POST", "/api/login/confirm", fields={"secret": secret})
+    token = got.get("session") if isinstance(got, dict) else None
+    if not isinstance(token, str) or not token:
+        raise BooruError(f"{host} didn't give a session.")
+    return token
+
+
+def is_account(claimed: dict[str, Any], actor: str, username: str) -> bool:
+    """Whether the account that answered a sign-in is this one of yours (its address, or
+    on Bluesky its DID): someone else sending the code mustn't sign you in as them."""
+    kind, _, who = str(claimed.get("key") or "").partition(":")
+    if kind == "ap":
+        return bool(actor) and who.rstrip("/").lower() == actor.rstrip("/").lower()
+    if kind == "at":
+        did = _DID.search(actor or "")
+        if did:
+            return did.group(0) == who
+        theirs = str(claimed.get("handle") or "").lstrip("@").lower()
+        return bool(theirs) and theirs == username.lstrip("@").lower()
+    return False
+
+
+def me(http: Any, host: str, token: str) -> dict[str, Any]:
+    """Who you are there and what you may do (the booru's /api/me)."""
+    got = _ask(http, host, "GET", "/api/me", token)
+    return got if isinstance(got, dict) else {}
+
+
+def page(http: Any, host: str, path: str, token: str | None = None,
+         params: dict[str, Any] | None = None) -> dict[str, Any]:
+    """A page of the booru's site as its data: what you'd see there, signed in or not."""
+    got = _ask(http, host, "GET", path, token, params=params)
+    if not isinstance(got, dict):
+        raise BooruError(f"{host} didn't answer as a booru does.")
+    return got
+
+
+def write(http: Any, host: str, token: str, path: str, fields: dict[str, str],
+          files: list[tuple[str, tuple[str, bytes, str]]] | None = None) -> str:
+    """Send one of the booru's forms as you. Returns what it says it did; raises Refused
+    with why not, Stale if it wants a fresh sign-in first, SignedOut if the session's over."""
+    got = _ask(http, host, "POST", path, token, fields, files)
+    return str(got.get("message") or "Done.") if isinstance(got, dict) else "Done."
+
+
+def sign_out(http: Any, host: str, token: str) -> None:
+    try:
+        _ask(http, host, "POST", "/logout", token)
+    except BooruError:  # it answers with a redirect, not JSON; and a session already over is over
+        pass
+
+
+def absolute(host: str, url: Any) -> str | None:
+    """A picture's address as the booru's page data gives it: on the booru, or elsewhere."""
+    if isinstance(url, str) and url.startswith("/") and not url.startswith("//"):
+        return f"https://{host}{url}"
+    return _picture(url)
+
+
+def here(bid: int, link: Any) -> str | None:
+    """A link to a post on the booru's site, as the page of it here."""
+    m = _POST_LINK.fullmatch(link) if isinstance(link, str) else None
+    return f"/booru/{bid}/posts/{m.group(1)}{m.group(2) or ''}" if m else None
+
+
+def page_post(data: dict[str, Any], host: str) -> tuple[dict[str, Any], list[tuple[str, list[dict[str, Any]]]]]:
+    """A post's page data as the post and the tags beside it, as posts() and tag_groups() give them."""
+    groups = [(str(category), [{"name": t["name"], "category": t["category"], "count": t.get("count")} for t in tags])
+              for category, tags in data.get("groups") or []]
+    by = {category: [t["name"] for t in tags] for category, tags in groups}
+    pid = int(data["id"])
+    source = str(data.get("source") or "")
+    return {"id": pid, "md5": None, "thumb": None, "file": absolute(host, data.get("file_url")),
+            "alt": " ".join(n for names in by.values() for n in names)[:300], "tags": by,
+            "rating": data.get("rating") or "unknown", "sensitive": bool(data.get("sensitive")),
+            "score": data.get("score"), "favs": data.get("favs"), "created_at": data.get("created"),
+            "width": data.get("width") or None, "height": data.get("height") or None,
+            "format": data.get("format") or None, "size": None,
+            "source": source if source.startswith(("http://", "https://")) else None,
+            "parent": data.get("parent"), "has_children": bool(data.get("children")),
+            "url": f"https://{host}/posts/{pid}"}, groups
+
+
+def upload_fields(title: str, tags: str, rating: str, source: str, links: str) -> dict[str, str]:
+    """What an upload's form says of all its images, with its links (one a line) if it's by link."""
+    fields = {"title": title.strip(), "tags": tags.strip(), "rating": rating.strip(), "source": source.strip()}
+    given = [line.strip() for line in links.splitlines() if line.strip()]
+    if len(given) > MAX_IMAGES:
+        raise BooruError(f"At most {MAX_IMAGES} images at a time.")
+    if given:
+        fields["mode"] = "link"
+        fields.update({f"link{n}": link for n, link in enumerate(given, 1)})
+    return {k: v for k, v in fields.items() if v}
+
+
+# -- your sessions, as kept ---------------------------------------------------------------
+
+def sessions(conn: Conn) -> dict[int, dict[str, Any]]:
+    """Your session on each booru you've signed in to (or are signing in to), by booru."""
+    out = {}
+    for row in conn.execute("SELECT * FROM booru_sessions").fetchall():
+        one = dict(row)
+        one["me"] = json.loads(one.pop("me_json") or "{}")
+        one["retry"] = json.loads(one.pop("retry_json") or "null")
+        out[one["booru_id"]] = one
+    return out
+
+
+def keep_pending(conn: Conn, booru_id: int, secret_enc: str, account_id: int, now: str,
+                 retry: dict[str, Any] | None = None) -> None:
+    """A sign-in under way. A session there already stays as it is until this one's done."""
+    conn.execute("INSERT INTO booru_sessions(booru_id, pending_enc, pending_account_id, pending_at, retry_json) "
+                 "VALUES (?,?,?,?,?) ON CONFLICT(booru_id) DO UPDATE SET pending_enc=excluded.pending_enc, "
+                 "pending_account_id=excluded.pending_account_id, pending_at=excluded.pending_at, "
+                 "retry_json=excluded.retry_json",
+                 (booru_id, secret_enc, account_id, now, json.dumps(retry) if retry else None))
+
+
+def _who(said: dict[str, Any]) -> dict[str, Any]:
+    return {"name": said.get("name"), "staff": bool(said.get("staff")), "admin": bool(said.get("admin"))}
+
+
+def keep_session(conn: Conn, booru_id: int, token_enc: str, account_id: int, who: dict[str, Any], now: str) -> None:
+    """The session a sign-in gave: it replaces the one before, and the sign-in is over.
+    A form held for it (`retry`) is the caller's to send."""
+    conn.execute("UPDATE booru_sessions SET token_enc=?, account_id=?, handle=?, me_json=?, signed_in_at=?, "
+                 "pending_enc=NULL, pending_account_id=NULL, pending_at=NULL, retry_json=NULL WHERE booru_id=?",
+                 (token_enc, account_id, who.get("handle") or who.get("name"), json.dumps(_who(who)), now, booru_id))
+
+
+def keep_me(conn: Conn, booru_id: int, said: Any) -> None:
+    """What a page just said of you (its `me`): your name there, and whether you're staff."""
+    if isinstance(said, dict) and said.get("name"):
+        conn.execute("UPDATE booru_sessions SET me_json=? WHERE booru_id=?", (json.dumps(_who(said)), booru_id))
+
+
+def drop_pending(conn: Conn, booru_id: int) -> None:
+    conn.execute("UPDATE booru_sessions SET pending_enc=NULL, pending_account_id=NULL, pending_at=NULL, "
+                 "retry_json=NULL WHERE booru_id=?", (booru_id,))
+    conn.execute("DELETE FROM booru_sessions WHERE booru_id=? AND token_enc IS NULL", (booru_id,))
+
+
+def forget(conn: Conn, booru_id: int) -> None:
+    conn.execute("DELETE FROM booru_sessions WHERE booru_id=?", (booru_id,))
+
+
+def waited_too_long(session: dict[str, Any], now: str) -> bool:
+    started = parse_ts(session.get("pending_at"))
+    return started is None or parse_ts(now) - started > SIGN_IN_WAIT

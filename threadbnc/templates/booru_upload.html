@@ -1,0 +1,33 @@
+{% extends "booru_layout.html" %}
+{% block title %}Post · {{ only.name }}{% endblock %}
+{# Posting to a booru: its own upload form, sent as you. What you post goes into its queue unless it trusts you. #}
+{% block booru %}
+{% if data %}
+<h1>Post to {{ only.name }}</h1>
+<form method="post" action="/booru/{{ only.id }}/upload" enctype="multipart/form-data" class="stack booru-form">
+  <label for="booru-title">Title <span class="muted">(optional)</span></label>
+  <input id="booru-title" type="text" name="title" maxlength="200">
+  {% if data.uploads %}
+  <label for="booru-files">Pictures <span class="muted">(up to {{ data.max_images }}, {{ data.max_mb }} MB each; several make a pool)</span></label>
+  <input id="booru-files" type="file" name="files" multiple accept="{{ data.accept }}">
+  <label for="booru-links">Or their addresses, one a line</label>
+  {% else %}
+  <label for="booru-links">The pictures' addresses, one a line <span class="muted">(up to {{ data.max_images }}; {{ only.name }} takes no uploaded files)</span></label>
+  {% endif %}
+  <textarea id="booru-links" name="links" rows="3" placeholder="https://example.org/picture.png"></textarea>
+  <p class="small muted">{{ only.name }} {{ 'keeps a copy of' if data.links_stored else 'only links to' }} pictures given by address.{% if data.uploads %} If you give addresses, files chosen above aren't sent.{% endif %}</p>
+  <label for="booru-tags">Tags <span class="muted">(for every picture: <code>cat outdoors artist:someone</code>)</span></label>
+  <input id="booru-tags" type="text" name="tags">
+  <label for="booru-rating">Rating</label>
+  <select id="booru-rating" name="rating">
+    <option value="">{{ data.default_rating }} (its default)</option>
+    {% for r in data.allowed_ratings %}<option value="{{ r[0] }}">{{ r }}</option>{% endfor %}
+  </select>
+  <label for="booru-source">Source <span class="muted">(optional: where they're from)</span></label>
+  <input id="booru-source" type="url" name="source" placeholder="https://">
+  <div><button>Post</button></div>
+  <p class="small muted">Each picture's own tags, rating and source can be changed on its page once it's in.
+    You can withdraw what you post at any time, from <a href="/booru/{{ only.id }}/submissions">Yours</a>.</p>
+</form>
+{% endif %}
+{% endblock %}

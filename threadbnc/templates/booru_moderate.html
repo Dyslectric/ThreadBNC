@@ -1,0 +1,81 @@
+{% extends "booru_layout.html" %}
+{% block title %}Moderate · {{ only.name }}{% endblock %}
+{# A booru's moderation page: tag aliases, implications and categories, bans, and trust. Each is the
+   command of the same name, and is recorded in the booru's public moderation log. #}
+{% block booru %}
+{% set do = '/booru/' ~ only.id ~ '/do/' %}
+{% if data %}
+<h1>Moderation</h1>
+<p class="muted"><a href="/booru/{{ only.id }}/reports">Reports</a>{% if data.open_reports %} <span class="count">{{ data.open_reports }}</span>{% else %} (none open){% endif %}
+  · <a href="/booru/{{ only.id }}/queue">Approval queue</a>{% if data.held_comments %} <span class="count">{{ data.held_comments }}</span> comment{{ '' if data.held_comments == 1 else 's' }} held{% endif %}
+  · <a href="https://{{ only.host }}/modlog" rel="noopener noreferrer" target="_blank">Moderation log</a></p>
+<div class="booru-panels">
+<section class="card">
+  <h2>Tags</h2>
+  <form method="post" action="{{ do }}moderate/tags" class="stack">
+    <input type="hidden" name="op" value="alias">
+    <label>Alias</label>
+    <div class="row"><input type="text" name="from" placeholder="kitty" required aria-label="Alias from"> → <input type="text" name="to" placeholder="cat" required aria-label="Alias to"></div>
+    <div><button class="small">Add alias</button></div>
+  </form>
+  <form method="post" action="{{ do }}moderate/tags" class="stack">
+    <input type="hidden" name="op" value="implicate">
+    <label>Implication</label>
+    <div class="row"><input type="text" name="from" placeholder="cat" required aria-label="Tag"> → <input type="text" name="to" placeholder="animal" required aria-label="Implied tag"></div>
+    <div><button class="small">Add implication</button></div>
+  </form>
+  <form method="post" action="{{ do }}moderate/tags" class="stack">
+    <input type="hidden" name="op" value="category">
+    <label>Category</label>
+    <div class="row"><input type="text" name="from" placeholder="wlop" required aria-label="Tag">
+      <select name="category" aria-label="Category">{% for c in data.categories %}<option>{{ c }}</option>{% endfor %}</select></div>
+    <div><button class="small">Set category</button></div>
+  </form>
+  <p class="small"><a href="https://{{ only.host }}/tags/categories" rel="noopener noreferrer" target="_blank">{{ 'Add and colour categories' if data.can_manage_categories else 'All categories' }} on {{ only.host }}</a></p>
+</section>
+<section class="card">
+  <h2>Bans</h2>
+  <form method="post" action="{{ do }}moderate/ban" class="stack">
+    <div class="row">
+      <select name="kind" aria-label="Ban what"><option value="account">Account</option><option value="instance">Instance</option></select>
+      <input type="text" name="target" placeholder="@user@host or spam.example" required aria-label="Account or instance">
+    </div>
+    <input type="text" name="duration" placeholder="For how long, e.g. 7d (empty: for good)" aria-label="Duration">
+    <input type="text" name="reason" placeholder="Reason (public)" required aria-label="Reason">
+    <div><button class="small">Ban</button></div>
+  </form>
+  {% if data.bans %}
+  <table class="list">
+    <thead><tr><th>Banned</th><th>Reason</th><th>Until</th><th></th></tr></thead>
+    <tbody>
+    {% for b in data.bans %}
+    <tr><td>{{ b.target }}</td><td>{{ b.reason }}</td><td>{{ b.until }}</td>
+      <td><form method="post" action="{{ do }}moderate/unban">
+        <input type="hidden" name="kind" value="{{ b.kind }}"><input type="hidden" name="target" value="{{ b.target }}">
+        <button class="link">Lift</button></form></td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+<section class="card">
+  <h2>Trust</h2>
+  {% if data.can_trust_posts or data.can_trust_comments %}
+  <p class="small muted">Someone trusted with submissions has theirs skip the queue; someone trusted with comments has theirs shown at once where the booru holds comments for approval.</p>
+  <form method="post" action="{{ do }}moderate/trust" class="stack">
+    <input type="text" name="handle" placeholder="@user@host" required aria-label="Account">
+    <select name="with" aria-label="Trusted with">
+      {% if data.can_trust_posts %}<option value="posts">with submissions</option>{% endif %}
+      {% if data.can_trust_comments %}<option value="comments">with comments</option>{% endif %}
+    </select>
+    <input type="text" name="reason" placeholder="Reason (optional, public)" aria-label="Reason">
+    <div class="row"><button class="small" name="action" value="trust">Trust</button>
+      <button class="small secondary" name="action" value="untrust">Untrust</button></div>
+  </form>
+  {% else %}
+  <p class="small muted">Trusting people needs the <code>post.trust</code> or <code>comment.trust</code> grant from an admin.</p>
+  {% endif %}
+</section>
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,71 @@
+{% extends "booru_layout.html" %}
+{% block title %}Queue · {{ only.name }}{% endblock %}
+{# A booru's approval queue, for its moderators: submissions waiting, and comments held for approval. #}
+{% block booru %}
+{% set do = '/booru/' ~ only.id ~ '/do/' %}
+{% if data %}
+<h1>Approval queue</h1>
+{% if not data['items'] and not data.comments %}<p class="muted">Nothing is waiting.</p>{% endif %}
+<div class="booru-queue">
+{% for item in data['items'] %}
+<section class="card">
+  <strong>{{ item.title or 'Untitled' }}</strong>
+  <span class="small muted">sub#{{ item.submission }} · by {{ item.submitter }}{% if item.origin | safe_url %} · <a href="{{ item.origin | safe_url }}" rel="nofollow noopener noreferrer">where it was posted</a>{% endif %}</span>
+  <div class="booru-queue-images">
+    {% for image in item.images %}
+    <figure>
+      <a href="/booru/{{ only.id }}/posts/{{ image.card.id }}" title="{{ image.card.alt }}"{% if image.card.sensitive %} data-veil="{{ image.rating | capitalize }}"{% endif %}>
+        <img src="{{ booru_abs(only.host, image.card.thumb_url) or '' }}" alt="{{ image.card.alt }}" loading="lazy" referrerpolicy="no-referrer"></a>
+      <figcaption class="small muted">#{{ image.card.id }} · {{ image.rating }}{% if image.card.alt %} · {{ image.card.alt }}{% endif %}</figcaption>
+      {% if item.images | length > 1 and image.index %}
+      <form method="post" action="{{ do }}queue/{{ item.submission }}/approve">
+        <input type="hidden" name="index" value="{{ image.index }}"><button class="small">Approve this one</button>
+      </form>
+      <form method="post" action="{{ do }}queue/{{ item.submission }}/reject" class="stack">
+        <input type="hidden" name="index" value="{{ image.index }}">
+        <input type="text" name="text" placeholder="Reason" required aria-label="Reason to reject #{{ image.card.id }}">
+        <div><button class="small secondary">Reject this one</button></div>
+      </form>
+      {% endif %}
+    </figure>
+    {% endfor %}
+  </div>
+  <div class="row">
+    <form method="post" action="{{ do }}queue/{{ item.submission }}/approve" class="row">
+      <input type="text" name="text" placeholder="Note (optional)" aria-label="Note for the submitter">
+      <button class="small">Approve{{ ' all' if item.images | length > 1 }}</button>
+    </form>
+    <form method="post" action="{{ do }}queue/{{ item.submission }}/reject" class="row">
+      <input type="text" name="text" placeholder="Reason (sent to the submitter)" required aria-label="Reason to reject">
+      <button class="small secondary">Reject{{ ' all' if item.images | length > 1 }}</button>
+    </form>
+  </div>
+</section>
+{% endfor %}
+</div>
+{% if data.comments %}
+<h2>Comments held for approval</h2>
+<div class="booru-queue">
+{% for c in data.comments %}
+<section class="card">
+  <span class="small muted"><strong>{{ c.author }}</strong>{% if c.account %} ({{ c.account }}){% endif %}{% if c.from %} · from {{ c.from }}{% endif %}
+    · {{ c.date }} · on <a href="/booru/{{ only.id }}/posts/{{ c.post }}#comment-{{ c.id }}">#{{ c.post }}</a></span>
+  <div class="md booru-comment">{{ c.body }}</div>
+  <div class="row">
+    <form method="post" action="{{ do }}posts/{{ c.post }}/comments/{{ c.id }}/approve"><button class="small">Approve</button></form>
+    <form method="post" action="{{ do }}posts/{{ c.post }}/comments/{{ c.id }}/delete" class="row">
+      <input type="text" name="reason" placeholder="Reason, shown in the modlog" aria-label="Reason to remove">
+      <button class="small secondary">Remove</button>
+    </form>
+  </div>
+</section>
+{% endfor %}
+</div>
+{% endif %}
+<nav class="booru-pager" aria-label="Pages">
+  {% if data.pager.prev %}<a href="/booru/{{ only.id }}/queue?page={{ page - 1 }}" rel="prev">← Previous</a>{% endif %}
+  <span>Page {{ page }}</span>
+  {% if data.pager.next %}<a href="/booru/{{ only.id }}/queue?page={{ page + 1 }}" rel="next">Next →</a>{% endif %}
+</nav>
+{% endif %}
+{% endblock %}
