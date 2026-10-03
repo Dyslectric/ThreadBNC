@@ -1653,10 +1653,17 @@ html:not(.js) .forum-row { padding-left: 16px; }
 .booru-servers > summary .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .booru-servers > summary .i { color: var(--muted); flex: none; }
 .booru-servers .menu-panel { width: min(340px, calc(100vw - 24px)); max-width: none; }
-.booru-server { align-items: flex-start; cursor: pointer; }
-.booru-server input { margin: 3px 0 0; accent-color: var(--accent); flex: none; width: 16px; height: 16px; padding: 0; }
-.booru-server .grow { display: grid; white-space: normal; line-height: 1.35; overflow-wrap: anywhere; }
+.booru-server { display: flex; align-items: center; gap: 2px; }
+.booru-server > .menu-item { flex: 1; min-width: 0; align-items: flex-start; cursor: pointer; }
+.booru-server input[type=checkbox] { margin: 3px 0 0; flex: none; }
+.booru-server .grow { flex: 1; min-width: 0; display: grid; white-space: normal; line-height: 1.35; overflow-wrap: anywhere; }
 .booru-server strong { font-weight: 600; }
+.booru-server button.icon-button { background: none; border: none; }
+.booru-server button.icon-button:hover { background: var(--hover); color: var(--bad); }
+/* Boorus that yours federate with: offered, never added by themselves. */
+.booru-suggestion { gap: 9px; padding: 5px 8px; font-size: 0.92em; }
+.booru-suggestion button { flex: none; }
+.booru-only { margin: -6px 0 12px; }
 .booru-add { display: grid; gap: 6px; padding: 4px 8px 6px; }
 .booru-add label { font-size: 0.85em; font-weight: 650; }
 .booru-add .row { flex-wrap: nowrap; gap: 6px; }

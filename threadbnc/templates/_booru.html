@@ -1,17 +1,18 @@
-{# What the Boorus pages share (booru_layout.html): a booru's tags, its grid of posts, the pager, the add form. #}
+{# What the Boorus pages share (booru_layout.html): tags, the grid of posts, the pager, the add form. #}
 {% macro taglist(groups) -%}
 {% for category, tags in groups %}
 <h2>{{ category | capitalize }}</h2>
 <ul class="booru-taglist">
-  {% for t in tags %}<li class="tag-{{ t.category }}"><a href="{{ booru_href(booru.id, tags=t.name) }}">{{ t.name }}</a>{% if t.count is not none %} <span class="booru-count">{{ t.count }}</span>{% endif %}</li>
+  {% for t in tags %}<li class="tag-{{ t.category }}"><a href="{{ booru_href(tags=t.name) }}">{{ t.name }}</a>{% if t.count is not none %} <span class="booru-count">{{ t.count }}</span>{% endif %}</li>
   {% endfor %}
 </ul>
 {% endfor %}
 {%- endmacro %}
-{% macro grid(posts) -%}
+{# `several`: the posts are of more than one booru, so each says whose it is. #}
+{% macro grid(posts, several=False) -%}
 <ul class="booru-grid">
   {% for p in posts %}
-  <li><a href="/booru/{{ booru.id }}/posts/{{ p.id }}" title="{{ p.alt }}"{% if p.sensitive %} data-veil="{{ p.rating | capitalize }}"{% endif %}>
+  <li><a href="/booru/{{ p.booru.id }}/posts/{{ p.id }}" title="{{ (p.booru.name ~ ': ' if several) ~ p.alt }}"{% if p.sensitive %} data-veil="{{ p.rating | capitalize }}"{% endif %}>
     {% if p.thumb %}<img src="{{ p.thumb }}" alt="{{ p.alt }}" loading="lazy" referrerpolicy="no-referrer">
     {% else %}<span class="muted small">#{{ p.id }}</span>{% endif %}</a></li>
   {% endfor %}

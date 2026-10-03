@@ -577,6 +577,7 @@ CREATE TABLE IF NOT EXISTS boorus (
     name TEXT,                         -- what the server calls itself
     posts INTEGER,                     -- how many posts it said it had when last asked
     nsfw INTEGER NOT NULL DEFAULT 0,   -- it allows explicit pictures
+    peers_json TEXT,                   -- the boorus it says it shows the posts of: [{host, name}]
     added_at TEXT NOT NULL,
     checked_at TEXT NOT NULL
 );
@@ -853,6 +854,7 @@ Conn = Any
 # older databases catch up (the full SCHEMA above already includes them).
 COLUMN_MIGRATIONS = [
     ("archived_threads", "trashed_at", "TEXT"),
+    ("boorus", "peers_json", "TEXT"),
     ("archived_threads", "trash_expires_at", "TEXT"),
     ("archived_threads", "last_full_fetch_at", "TEXT"),
     ("archived_threads", "remote_comment_count", "INTEGER"),

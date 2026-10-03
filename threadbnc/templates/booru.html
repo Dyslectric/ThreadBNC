@@ -1,13 +1,13 @@
 {% extends "booru_layout.html" %}
 {% from "_booru.html" import taglist, grid, pager with context %}
-{% block title %}{{ (query or 'Posts') ~ ' · ' ~ booru.name if booru else 'Boorus' }}{% endblock %}
+{% block title %}{{ (query or 'Posts') ~ ' · ' ~ (only.name if only else label) if boorus else 'Boorus' }}{% endblock %}
 {% block booru %}
 <div class="booru-with-sidebar">
   <aside aria-label="Tags">{{ taglist(groups) }}</aside>
   <section>
     {% if total is not none %}<p class="muted">{{ '{:,}'.format(total) }} post{{ '' if total == 1 else 's' }}</p>{% endif %}
     {% if not posts and not errors %}<p>Nothing here{{ '' if query or page > 1 else ' yet' }}.</p>{% endif %}
-    {{ grid(posts) }}
+    {{ grid(posts, shown | length > 1) }}
     {{ pager(previous, page, next) }}
   </section>
 </div>

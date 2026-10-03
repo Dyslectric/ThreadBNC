@@ -450,7 +450,7 @@ document.documentElement.classList.add("js");
       return;
     }
     const form = ev.target.closest("form[data-autosubmit]");
-    if (form && ev.target.matches("select, input[type=checkbox], input[type=radio]")) form.requestSubmit();
+    if (form && ev.target.matches("select, input[type=checkbox]")) form.requestSubmit();
   });
 
   // Post forms that can go to several communities, and on your Mastodon and

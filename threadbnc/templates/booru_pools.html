@@ -1,13 +1,13 @@
 {% extends "booru_layout.html" %}
 {% from "_booru.html" import pager with context %}
-{% block title %}Pools · {{ booru.name }}{% endblock %}
+{% block title %}Pools · {{ label }}{% endblock %}
 {% block booru %}
 <h1>Pools</h1>
 <table class="list booru-table">
-<thead><tr><th>Name</th><th class="num">Posts</th></tr></thead>
+<thead><tr><th>Name</th>{% if shown | length > 1 %}<th>Booru</th>{% endif %}<th class="num">Posts</th></tr></thead>
 <tbody>
 {% for p in pools %}
-<tr><td><a href="{{ booru_href(booru.id, tags='pool:' ~ p.id) }}">{{ p.name }}</a></td><td class="num">{{ p.post_count }}</td></tr>
+<tr><td><a href="{{ booru_href(tags='pool:' ~ p.id, on=p.booru.id) }}">{{ p.name }}</a></td>{% if shown | length > 1 %}<td>{{ p.booru.name }}</td>{% endif %}<td class="num">{{ p.post_count }}</td></tr>
 {% endfor %}
 </tbody>
 </table>
