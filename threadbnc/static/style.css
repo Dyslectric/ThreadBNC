@@ -49,24 +49,30 @@ header.top { position: sticky; top: 0; z-index: 20; border-bottom: 1px solid var
 .brand:hover { text-decoration: none; }
 .brand-mark { color: var(--accent); width: 0.95em; height: 0.95em; }
 nav.primary { display: flex; gap: 2px; align-items: center; }
-nav.primary > a { color: var(--muted); padding: 6px 10px; border-radius: 8px; font-size: 0.93em; display: inline-flex;
+nav.primary .nav-item { color: var(--muted); padding: 6px 10px; border-radius: 8px; font-size: 0.93em; display: inline-flex;
   align-items: center; gap: 6px; position: relative; transition: color .12s, background .12s; white-space: nowrap; }
-nav.primary > a:hover { color: var(--text); background: var(--hover); text-decoration: none; }
-nav.primary > a.on { color: var(--text); font-weight: 600; background: var(--hover); }
-nav.primary > a .i { opacity: .85; }
+nav.primary .nav-item:hover { color: var(--text); background: var(--hover); text-decoration: none; }
+nav.primary .nav-item.on { color: var(--text); font-weight: 600; background: var(--hover); }
+nav.primary .nav-item .i { opacity: .85; }
+/* Feeds, Forums, Live and Boorus are behind the first one: a menu named after the one you're in. */
+nav.primary summary.nav-item { cursor: pointer; }
+nav.primary summary.nav-item .chev { width: .85em; height: .85em; margin-left: -2px; }
+nav.primary .nav-menu[open] > summary { color: var(--text); background: var(--hover); }
+nav.primary .nav-menu[open] > summary::after { display: none !important; }
+.top-inner.primary-compact nav.primary summary.nav-item .chev { display: none; }
 .top-inner.primary-compact nav.primary { --nav-square: clamp(24px, 7vw, 36px); flex: 1 1 auto; min-width: 0;
   justify-content: flex-start; gap: clamp(0px, calc(12.5vw - 40px), 8px); }
-.top-inner.primary-compact nav.primary > a { flex: 0 0 var(--nav-square); width: var(--nav-square); height: var(--nav-square);
+.top-inner.primary-compact nav.primary .nav-item { flex: 0 0 var(--nav-square); width: var(--nav-square); height: var(--nav-square);
   padding: 4px; justify-content: center; }
-.top-inner.primary-compact nav.primary > a .label { display: none; }
-.top-inner.primary-compact nav.primary > a .count { position: absolute; top: -5px; right: -5px; }
-nav.primary > a::after { content: attr(data-nav-label); display: none; position: absolute; top: calc(100% + 9px); left: 50%;
+.top-inner.primary-compact nav.primary .nav-item .label { display: none; }
+.top-inner.primary-compact nav.primary .nav-item .count { position: absolute; top: -5px; right: -5px; }
+nav.primary .nav-item::after { content: attr(data-nav-label); display: none; position: absolute; top: calc(100% + 9px); left: 50%;
   transform: translateX(-50%); z-index: 25; padding: 4px 8px; border-radius: 6px; background: var(--text); color: var(--card);
   font-size: 0.85rem; font-weight: 500; white-space: nowrap; box-shadow: var(--shadow-pop); pointer-events: none; }
-nav.primary > a:first-child::after { left: 0; transform: none; }
-nav.primary > a:last-child::after { left: auto; right: 0; transform: none; }
-.top-inner.primary-compact nav.primary > a:hover::after,
-.top-inner.primary-compact nav.primary > a:focus-visible::after { display: block; }
+nav.primary .nav-item:first-child::after { left: 0; transform: none; }
+nav.primary .nav-item:last-child::after { left: auto; right: 0; transform: none; }
+.top-inner.primary-compact nav.primary .nav-item:hover::after,
+.top-inner.primary-compact nav.primary .nav-item:focus-visible::after { display: block; }
 .count { display: inline-block; min-width: 1.6em; text-align: center; font-size: 0.72em; line-height: 1.6; font-weight: 700;
   padding: 0 6px; border-radius: 999px; background: var(--accent); color: var(--on-accent);
   font-variant-numeric: tabular-nums; }
@@ -925,13 +931,14 @@ dialog.shortcuts::backdrop { background: rgba(0, 0, 0, .35); }
   .feed-controls .act .label { display: none; }
 }
 @media (max-width: 720px) {
-  html:not(.js) nav.primary > a .label { display: none; }
+  html:not(.js) nav.primary .nav-item .label { display: none; }
   html:not(.js) nav.primary { --nav-square: clamp(24px, 7vw, 36px); flex: 1 1 auto; min-width: 0;
     justify-content: flex-start; gap: clamp(0px, calc(12.5vw - 40px), 8px); }
-  html:not(.js) nav.primary > a { flex: 0 0 var(--nav-square); width: var(--nav-square); height: var(--nav-square);
+  html:not(.js) nav.primary .nav-item { flex: 0 0 var(--nav-square); width: var(--nav-square); height: var(--nav-square);
     padding: 4px; justify-content: center; }
-  html:not(.js) nav.primary > a .count { position: absolute; top: -5px; right: -5px; }
-  html:not(.js) nav.primary > a:hover::after, html:not(.js) nav.primary > a:focus-visible::after { display: block; }
+  html:not(.js) nav.primary summary.nav-item .chev { display: none; }
+  html:not(.js) nav.primary .nav-item .count { position: absolute; top: -5px; right: -5px; }
+  html:not(.js) nav.primary .nav-item:hover::after, html:not(.js) nav.primary .nav-item:focus-visible::after { display: block; }
   .top-search { display: none; }
   .search-link { display: inline-flex; }
   .brand { margin-right: 4px; }
@@ -1630,3 +1637,64 @@ html:not(.js) .forum-row { padding-left: 16px; }
 .trend-quote { margin: 6px 0; padding: 4px 10px; border-left: 3px solid var(--line); overflow-wrap: anywhere; }
 .trend-quote p { margin: 2px 0; }
 .trend-quote .trend-quote-text { white-space: pre-line; }
+
+/* ---- Boorus (booru_layout.html): a fedbooru server's pages, laid out as on its own site ---- */
+.booru-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; margin: -8px 0 16px; padding: 9px 14px;
+  background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
+.booru-brand { font-weight: 700; font-size: 1.1rem; color: var(--text); }
+.booru-bar nav { display: flex; flex-wrap: wrap; gap: 14px; }
+.booru-bar nav a.on { color: var(--text); font-weight: 600; }
+.booru-search { margin-left: auto; flex: 1 1 14rem; max-width: 28rem; }
+.booru-search input, .booru-find input { width: 100%; }
+.booru-find { max-width: 24rem; margin-bottom: 14px; }
+.booru-servers > summary { display: inline-flex; align-items: center; gap: 6px; padding: 5px 8px 5px 10px; border-radius: 8px;
+  border: 1px solid var(--line); color: var(--text); font-size: 0.88em; max-width: 18em; }
+.booru-servers > summary:hover, .booru-servers[open] > summary { background: var(--hover); }
+.booru-servers > summary .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.booru-servers > summary .i { color: var(--muted); flex: none; }
+.booru-servers .menu-panel { width: min(340px, calc(100vw - 24px)); max-width: none; }
+.booru-server { align-items: flex-start; cursor: pointer; }
+.booru-server input { margin: 3px 0 0; accent-color: var(--accent); flex: none; width: 16px; height: 16px; padding: 0; }
+.booru-server .grow { display: grid; white-space: normal; line-height: 1.35; overflow-wrap: anywhere; }
+.booru-server strong { font-weight: 600; }
+.booru-add { display: grid; gap: 6px; padding: 4px 8px 6px; }
+.booru-add label { font-size: 0.85em; font-weight: 650; }
+.booru-add .row { flex-wrap: nowrap; gap: 6px; }
+.booru-add input { flex: 1; min-width: 0; }
+.booru-hero .booru-add { padding: 0; max-width: 30rem; }
+.booru-with-sidebar { display: grid; grid-template-columns: 15rem minmax(0, 1fr); gap: 1.5rem; }
+.booru-with-sidebar > aside h2 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted);
+  margin: 1.1rem 0 .35rem; }
+.booru-with-sidebar > aside h2:first-child { margin-top: 0; }
+.booru-with-sidebar > section > p:first-child { margin-top: 0; }
+.booru-taglist { list-style: none; margin: 0; padding: 0; }
+.booru-taglist li { overflow-wrap: anywhere; }
+.booru-count { color: var(--muted); font-size: 0.85em; }
+:is(.booru-taglist, .booru-table) .tag-artist, .tag-artist > a { color: var(--bad); }
+:is(.booru-taglist, .booru-table) .tag-character, .tag-character > a { color: var(--good); }
+:is(.booru-taglist, .booru-table) .tag-copyright, .tag-copyright > a { color: light-dark(#7a52c7, #b595ff); }
+:is(.booru-taglist, .booru-table) .tag-meta, .tag-meta > a { color: var(--warn); }
+.booru-grid { list-style: none; margin: 0; padding: 0; display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: .75rem; }
+.booru-grid a { display: flex; align-items: center; justify-content: center; aspect-ratio: 1; overflow: hidden;
+  background: var(--card); border: 1px solid var(--line); border-radius: 6px; }
+.booru-grid a:hover { border-color: var(--accent); }
+.booru-grid img { max-width: 100%; max-height: 100%; display: block; }
+.booru-grid a[data-veil]:not(.revealed) img { transform: scale(1.1); clip-path: none; }
+.booru-grid a[data-veil]:not(.revealed)::after { font-size: .8em; }
+.booru-pager { display: flex; gap: 1rem; align-items: center; justify-content: center; margin: 1.5rem 0; }
+.booru-full { margin: 0; width: fit-content; max-width: 100%; }
+.booru-full img { max-width: 100%; height: auto; display: block; }
+.booru-info { display: grid; grid-template-columns: auto 1fr; gap: .15rem .75rem; margin: 0 0 1rem; }
+.booru-info dt { color: var(--muted); }
+.booru-info dd { margin: 0; overflow-wrap: anywhere; }
+.booru-table .num { text-align: right; width: 5rem; font-variant-numeric: tabular-nums; }
+@media (max-width: 720px) {
+  .booru-with-sidebar { grid-template-columns: minmax(0, 1fr); }
+  .booru-with-sidebar > aside { order: 2; }
+}
+/* The menu of your boorus stays at the bar's right end: the search goes under it when they don't both fit. */
+@media (max-width: 900px) {
+  .booru-search { order: 3; flex-basis: 100%; max-width: none; }
+  .booru-servers { margin-left: auto; }
+}

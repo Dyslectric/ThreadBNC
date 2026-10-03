@@ -1,0 +1,19 @@
+{% extends "booru_layout.html" %}
+{% from "_booru.html" import pager with context %}
+{% block title %}Tags · {{ booru.name }}{% endblock %}
+{% block booru %}
+<h1>Tags</h1>
+<form class="booru-find" action="{{ booru_href(booru.id, 'tags') }}" method="get">
+  <input type="search" name="search" value="{{ search }}" placeholder="Name starts with… (or use *)" aria-label="Find tags">
+</form>
+<table class="list booru-table">
+<thead><tr><th class="num">Posts</th><th>Name</th><th>Category</th></tr></thead>
+<tbody>
+{% for t in tags %}
+<tr><td class="num">{{ t.post_count }}</td><td class="tag-{{ t.category }}"><a href="{{ booru_href(booru.id, tags=t.name) }}">{{ t.name }}</a></td><td><span class="tag-{{ t.category }}">{{ t.category }}</span></td></tr>
+{% endfor %}
+</tbody>
+</table>
+{% if not tags and not errors %}<p class="muted">No tags{{ ' match that' if search }}.</p>{% endif %}
+{{ pager(previous, page, next) }}
+{% endblock %}

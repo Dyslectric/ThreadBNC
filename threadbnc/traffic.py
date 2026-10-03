@@ -55,6 +55,7 @@ PURPOSES = {
     "avatars": "Looking up who posted what's on screen, for their picture",
     "discussions": "Looking for discussions of articles",
     "forums": "Forums: reading their trees, and the communities on pages you open",
+    "boorus": "Boorus: the pages you open there",
     "saving": "Saving posts you added",
     "hashtags": "Reading posts that hashtags bring",
     "trends": "Trending: likes and replies of posts talked about, most posted articles",

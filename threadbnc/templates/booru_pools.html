@@ -1,0 +1,16 @@
+{% extends "booru_layout.html" %}
+{% from "_booru.html" import pager with context %}
+{% block title %}Pools · {{ booru.name }}{% endblock %}
+{% block booru %}
+<h1>Pools</h1>
+<table class="list booru-table">
+<thead><tr><th>Name</th><th class="num">Posts</th></tr></thead>
+<tbody>
+{% for p in pools %}
+<tr><td><a href="{{ booru_href(booru.id, tags='pool:' ~ p.id) }}">{{ p.name }}</a></td><td class="num">{{ p.post_count }}</td></tr>
+{% endfor %}
+</tbody>
+</table>
+{% if not pools and not errors %}<p class="muted">No pools yet.</p>{% endif %}
+{{ pager(previous, page, next) }}
+{% endblock %}

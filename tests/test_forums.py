@@ -142,7 +142,8 @@ def test_add_browse_and_follow(settings, bouncer):
     with bouncer.db.connect() as conn:
         cid = conn.execute("SELECT id FROM communities WHERE canonical_ap_id=?", (MATH,)).fetchone()["id"]
     nav = client.get(f"/c/{cid}").text.split('id="site-nav"', 1)[1].split("</nav>", 1)[0]
-    assert 'href="/" class="on" aria-current="page"' in nav and 'href="/forums" class=""' in nav
+    assert 'href="/" class="menu-item on" aria-current="page"' in nav and 'href="/forums" class="menu-item "' in nav
+    assert '<span class="label" aria-hidden="true">Feeds</span>' in nav  # the menu they're in is named after it
     index = client.get("/forums").text
     assert "Big Tree" in index and "Math cats" not in index and "Big Tree › Animals › Cats" in index
     assert client.get(f"/forums/{fid}/nowhere").status_code == 404

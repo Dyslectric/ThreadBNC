@@ -21,7 +21,7 @@ document.documentElement.classList.add("js");
     }, liveRefresh * 1000);
   }
 
-  // The header has seven destinations plus search and the account menu. Let
+  // The header has a menu of places and four more destinations, plus search and the account menu. Let
   // their rendered widths, rather than a viewport breakpoint, decide when the
   // navigation needs icon buttons.
   const primaryNav = $("#site-nav");
@@ -450,7 +450,7 @@ document.documentElement.classList.add("js");
       return;
     }
     const form = ev.target.closest("form[data-autosubmit]");
-    if (form && ev.target.matches("select, input[type=checkbox]")) form.requestSubmit();
+    if (form && ev.target.matches("select, input[type=checkbox], input[type=radio]")) form.requestSubmit();
   });
 
   // Post forms that can go to several communities, and on your Mastodon and
