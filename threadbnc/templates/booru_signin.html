@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{# Signing in to a booru: `!login <code>` has been sent to its bot as your account, over federation. This
+   page looks again every couple of seconds, and goes on by itself once the booru has the message. #}
+{% block head %}<meta http-equiv="refresh" content="2">{% endblock %}
+{% block title %}Signing in to {{ booru.name }}{% endblock %}
+{% block content %}
+<section class="card narrow-wide">
+  <h1>Signing in to {{ booru.name }}…</h1>
+  <p class="muted">{% if account %}A private message was sent from <strong>{{ account.handle }}</strong> to {{ booru.name }}'s bot: that's
+    how it knows the account is yours.{% else %}A private message was sent to {{ booru.name }}'s bot.{% endif %}
+    It travels between the two servers, which usually takes a few seconds and sometimes a minute or so.
+    This page goes on by itself once it's there.</p>
+  {% if retry %}<p class="muted">What you just sent is kept, and goes to {{ booru.name }} as soon as you're signed in again:
+    it only takes an admin's changes from a sign-in of the last 15 minutes.</p>{% endif %}
+  <form method="post" action="/booru/{{ booru.id }}/signin/cancel" class="row">
+    <input type="hidden" name="next" value="{{ next }}">
+    <a class="button secondary" href="{{ next }}">Carry on browsing</a>
+    <button class="secondary">Cancel</button>
+  </form>
+</section>
+{% endblock %}

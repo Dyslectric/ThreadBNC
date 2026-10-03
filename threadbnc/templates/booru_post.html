@@ -2,7 +2,10 @@
 {% from "_macros.html" import icon %}
 {% from "_booru.html" import taglist with context %}
 {% block title %}#{{ pid }} · {{ only.name }}{% endblock %}
+{# `data` is the booru's own page of the post, where it gives it: its comments and, signed in there, what
+   you may do to it. Every form is one of the booru's own, sent there as you (/booru/N/do/<its address>). #}
 {% block booru %}
+{% set do = '/booru/' ~ only.id ~ '/do/' %}
 {% if post %}
 <div class="booru-with-sidebar">
   <aside>
@@ -16,20 +19,210 @@
       <dt>Rating</dt><dd>{{ post.rating }}</dd>
       {% if post.score is not none %}<dt>Score</dt><dd>{{ post.score }}{% if post.favs is not none %} · {{ post.favs }} favourite{{ '' if post.favs == 1 else 's' }}{% endif %}</dd>{% endif %}
       {% if post.source %}<dt>Source</dt><dd><a href="{{ post.source }}" rel="nofollow noopener noreferrer">{{ post.source }}</a></dd>{% endif %}
+      {% if data and data.submitter %}<dt>Submitter</dt><dd>{{ data.submitter }}</dd>{% endif %}
+      {% if data and data.home and data.home[1] | safe_url %}<dt>From</dt><dd><a href="{{ data.home[1] | safe_url }}" rel="noopener noreferrer">{{ data.home[0] }}</a></dd>{% endif %}
       {% if post.parent %}<dt>Parent</dt><dd><a href="/booru/{{ only.id }}/posts/{{ post.parent }}">#{{ post.parent }}</a></dd>{% endif %}
       {% if post.has_children %}<dt>Children</dt><dd><a href="{{ booru_href(tags='parent:' ~ post.id, on=only.id) }}">show</a></dd>{% endif %}
+      {% if data and data.locked %}<dt>Tags</dt><dd>locked</dd>{% endif %}
     </dl>
     <p><a href="{{ post.url }}" rel="noopener noreferrer" target="_blank">{{ icon('external') }} Open on {{ only.host }}</a>
-      <span class="small muted">for its comments, tag history, voting and editing</span></p>
+      {% if not data %}<span class="small muted">for its comments, tag history, voting and editing</span>
+      {% elif not mine %}<span class="small muted">or sign in from the menu above to comment, vote and edit</span>{% endif %}</p>
+
+    {% if data and mine %}
+    <h2>You</h2>
+    <div class="booru-controls">
+      {% if data.published %}
+      <div class="row">
+        {% for value, label, title in [(1, '▲', 'Vote up'), (-1, '▼', 'Vote down')] %}
+        <form method="post" action="{{ do }}posts/{{ post.id }}/vote">
+          <input type="hidden" name="value" value="{{ 0 if data.my_vote == value else value }}">
+          <button class="small secondary {{ 'booru-mine' if data.my_vote == value }}" title="{{ 'Take your vote back' if data.my_vote == value else title }}" aria-label="{{ title }}" aria-pressed="{{ 'true' if data.my_vote == value else 'false' }}">{{ label }}</button>
+        </form>
+        {% endfor %}
+        <form method="post" action="{{ do }}posts/{{ post.id }}/{{ 'unfavourite' if data.my_fav else 'favourite' }}">
+          <button class="small secondary {{ 'booru-mine' if data.my_fav }}" aria-pressed="{{ 'true' if data.my_fav else 'false' }}">{{ icon('star-fill' if data.my_fav else 'star') }} {{ 'Favourited' if data.my_fav else 'Favourite' }}</button>
+        </form>
+      </div>
+      {% endif %}
+      {% if data.editable %}
+      <details>
+        <summary>Edit</summary>
+        <form method="post" action="{{ do }}posts/{{ post.id }}/edit" class="stack">
+          <input type="text" name="tags" placeholder="+cat -dog artist:someone" aria-label="Tags to add (+) and remove (-)">
+          <select name="rating" aria-label="Rating">
+            <option value="">Rating: leave as {{ post.rating }}</option>
+            <option value="s">safe</option><option value="q">questionable</option><option value="e">explicit</option>
+          </select>
+          <input type="text" name="source" placeholder="Source: an address, or none" aria-label="Source">
+          <input type="text" name="parent" placeholder="Parent: #1234, or none" aria-label="Parent post">
+          <div><button class="small">Save</button></div>
+        </form>
+      </details>
+      {% if data.published %}
+      <details>
+        <summary>Add to a pool</summary>
+        <form method="post" action="{{ do }}posts/{{ post.id }}/pool" class="row">
+          <input type="text" name="pool" placeholder="pool#12" required aria-label="Pool"><button class="small secondary">Add</button>
+        </form>
+      </details>
+      {% endif %}
+      {% endif %}
+      {% if data.published %}
+      <details>
+        <summary>Report</summary>
+        <form method="post" action="{{ do }}posts/{{ post.id }}/report" class="stack">
+          <input type="text" name="reason" placeholder="What's wrong?" required aria-label="Reason for reporting">
+          <div><button class="small secondary">Report to its moderators</button></div>
+        </form>
+      </details>
+      {% endif %}
+      {% if data.withdraw %}
+      <form method="post" action="{{ do }}submissions/{{ data.withdraw }}/withdraw" data-confirm="Withdraw this upload? Every image of it is removed from {{ only.name }}, for good.">
+        <button class="small secondary">Withdraw your upload</button>
+      </form>
+      {% endif %}
+    </div>
+    {% endif %}
+
+    {% if data and data.moderation %}
+    {% set m = data.moderation %}
+    <h2>Moderate</h2>
+    <div class="booru-controls">
+      {% if m.decide %}
+      <form method="post" action="{{ do }}queue/{{ m.decide[0] }}/approve">
+        <input type="hidden" name="index" value="{{ m.decide[1] }}"><button class="small">Approve</button>
+      </form>
+      <form method="post" action="{{ do }}queue/{{ m.decide[0] }}/reject" class="stack">
+        <input type="hidden" name="index" value="{{ m.decide[1] }}">
+        <input type="text" name="text" placeholder="Reason (sent to the submitter)" required aria-label="Reason to reject">
+        <div><button class="small secondary">Reject</button></div>
+      </form>
+      {% endif %}
+      {% if m.remove %}
+      <form method="post" action="{{ do }}posts/{{ post.id }}/remove" class="stack">
+        <input type="text" name="reason" placeholder="Reason (public)" required aria-label="Reason to remove">
+        <div><button class="small secondary">Remove</button></div>
+      </form>
+      {% endif %}
+      {% if m.restore %}
+      <form method="post" action="{{ do }}posts/{{ post.id }}/restore" class="stack">
+        <input type="text" name="reason" placeholder="Reason (optional, public)" aria-label="Reason to restore">
+        <div><button class="small">Restore</button></div>
+      </form>
+      {% endif %}
+      {% if m.lock %}
+      <form method="post" action="{{ do }}posts/{{ post.id }}/{{ 'unlock' if data.locked else 'lock' }}">
+        <button class="link">{{ 'Unlock tags' if data.locked else 'Lock tags' }}</button>
+      </form>
+      {% endif %}
+      {% if m.thread %}
+      <form method="post" action="{{ do }}submissions/{{ m.thread }}/{{ 'unfeature' if data.featured else 'feature' }}">
+        <button class="link">{{ 'Stop featuring' if data.featured else 'Feature in the community' }}</button>
+      </form>
+      <form method="post" action="{{ do }}submissions/{{ m.thread }}/{{ 'unlock-comments' if data.comments_locked else 'lock-comments' }}" class="stack">
+        {% if not data.comments_locked %}<input type="text" name="reason" placeholder="Reason (optional, public)" aria-label="Reason to lock comments">{% endif %}
+        <div><button class="link">{{ 'Unlock comments' if data.comments_locked else 'Lock comments' }}</button></div>
+      </form>
+      {% endif %}
+    </div>
+    {% endif %}
   </aside>
   <section>
+    {% if data and data.status_note %}<p class="booru-note">{{ data.status_note }}</p>{% endif %}
+    {% if data %}{% for p in data.pools %}
+    <nav class="booru-poolnav" aria-label="{{ p.name }}">
+      {% if p.prev %}<a href="/booru/{{ only.id }}/posts/{{ p.prev }}" rel="prev">←</a>{% endif %}
+      <a href="{{ booru_href(tags='pool:' ~ p.id, on=only.id) }}">{{ p.name }}</a> <span class="muted">{{ p.position }}/{{ p.len }}</span>
+      {% if p.next %}<a href="/booru/{{ only.id }}/posts/{{ p.next }}" rel="next">→</a>{% endif %}
+    </nav>
+    {% endfor %}{% endif %}
     {% if post.file %}
     <figure class="booru-full"{% if post.sensitive %} data-veil="{{ post.rating | capitalize }}"{% endif %}>
       <a href="{{ post.file }}" rel="noopener noreferrer"><img src="{{ post.file }}" referrerpolicy="no-referrer"
-        {% if post.width and post.height %}width="{{ post.width }}" height="{{ post.height }}"{% endif %} alt="{{ post.alt or 'Post ' ~ post.id }}"></a>
+        {% if post.width and post.height %}width="{{ post.width }}" height="{{ post.height }}"{% endif %} alt="{{ (data.description if data and data.description) or post.alt or 'Post ' ~ post.id }}"></a>
     </figure>
-    {% else %}<p class="muted">This post's picture is gone.</p>{% endif %}
+    {% if data and data.description %}<p>{{ data.description }}</p>{% endif %}
+    {% elif not (data and data.status_note) %}<p class="muted">This post's picture is gone.</p>{% endif %}
   </section>
+
+  {% if data and data.comments is not none %}
+  {# The booru's comment section: each comment is a box holding its replies (`c.closes` boxes end after it). #}
+  <section class="comments" id="comments">
+    <div class="comments-head"><h2>{{ data.comments | length }} comment{{ '' if data.comments | length == 1 else 's' }}</h2></div>
+    {% if data.comments_locked %}<p class="small muted">Comments are locked{{ '; as a moderator you can still comment' if data.can_comment }}.</p>{% endif %}
+    {% if data.comments_held and data.can_comment %}<p class="small muted">Comments are shown once a moderator has approved them.</p>{% endif %}
+    {% if data.can_comment %}
+    <form method="post" action="{{ do }}posts/{{ post.id }}/comment" class="stack compose">
+      <input type="hidden" name="anchor" value="comments">
+      <textarea name="body" rows="3" maxlength="{{ data.max_comment }}" required placeholder="Add a comment as {{ data.me.name }}" aria-label="Your comment"></textarea>
+      <div class="row"><button class="small">Comment as {{ data.me.name }}</button>
+        <span class="small muted"><a href="/booru/{{ only.id }}/settings">Change your name there, or hide your handle</a>.{% if data.shared_with %} Comments here are shared with {{ data.shared_with }}, this post's home booru.{% endif %}</span></div>
+    </form>
+    {% elif not mine %}
+    <p class="small muted">Sign in to {{ only.name }} from the menu above to comment.</p>
+    {% endif %}
+    {% for c in data.comments %}
+    <details open class="comment d{{ c.colour }}" id="comment-{{ c.id }}">
+      <summary class="meta">
+        <span class="fold" aria-hidden="true">{{ icon('chevron-down') }}</span>
+        {% if c.author_url | safe_url %}<a class="author" href="{{ c.author_url | safe_url }}" rel="nofollow noopener noreferrer" title="Their profile on their own server">{{ c.author }}</a>{% else %}<span class="author">{{ c.author }}</span>{% endif %}
+        {% if c.handle %}<span class="muted">{{ c.handle }}</span>{% endif %}
+        {% if c.account %}<span class="muted" title="Shown to moderators only: this person hides their handle">({{ c.account }})</span>{% endif %}
+        {% if c.from %}<span class="muted" title="Where this was written">from {{ c.from }}</span>{% endif %}
+        · <a href="#comment-{{ c.id }}"><time datetime="{{ c.when }}">{{ c.date }}</time></a>
+        {% if c.pending %}<span class="booru-held" title="Only {{ 'you' if c.mine else 'its author' }} and the moderators see it until a moderator approves it">waiting for approval</span>{% endif %}
+        <span class="collapsed-note">{% if c.descendants %}{{ c.descendants }} repl{{ 'y' if c.descendants == 1 else 'ies' }} hidden{% else %}collapsed{% endif %}</span>
+      </summary>
+      <div class="content">
+        {% if c.gone %}
+        <div class="md faded">Comment {{ c.gone }}.</div>
+        {% else %}
+        <div class="md booru-comment">{{ c.body }}</div>
+        {% if data.can_comment or c.can_delete %}
+        <div class="obj-actions small">
+          {% if c.can_approve %}
+          <form method="post" action="{{ do }}posts/{{ post.id }}/comments/{{ c.id }}/approve">
+            <input type="hidden" name="anchor" value="comment-{{ c.id }}"><button class="small">Approve</button>
+          </form>
+          {% endif %}
+          {% if data.can_comment and not c.pending %}
+          <details class="reply-box">
+            <summary>Reply</summary>
+            <form method="post" action="{{ do }}posts/{{ post.id }}/comment" class="stack">
+              <input type="hidden" name="parent" value="{{ c.id }}"><input type="hidden" name="anchor" value="comment-{{ c.id }}">
+              <textarea name="body" rows="4" maxlength="{{ data.max_comment }}" required placeholder="Reply to {{ c.author }}" aria-label="Reply to {{ c.author }}"></textarea>
+              <div><button class="small">Reply</button></div>
+            </form>
+          </details>
+          {% endif %}
+          {% if c.can_delete and c.mine %}
+          <form method="post" action="{{ do }}posts/{{ post.id }}/comments/{{ c.id }}/delete" data-confirm="Delete your comment? It's deleted on {{ only.name }}, and on peer boorus that show it.">
+            <input type="hidden" name="anchor" value="comments"><button class="link">Delete</button>
+          </form>
+          {% elif c.can_delete %}
+          <details class="reply-box mod-box">
+            <summary title="Moderator tools">Mod</summary>
+            <form method="post" action="{{ do }}posts/{{ post.id }}/comments/{{ c.id }}/delete" class="row">
+              <input type="hidden" name="anchor" value="comments">
+              <input type="text" name="reason" placeholder="Reason, shown in the modlog" aria-label="Reason to remove">
+              <button class="small secondary">Remove comment</button>
+            </form>
+          </details>
+          {% endif %}
+        </div>
+        {% endif %}
+        {% endif %}
+        <div class="replies">
+    {% for _ in range(c.closes) %}</div></div></details>{% endfor %}
+    {% endfor %}
+    {% if not data.comments %}<p class="small muted">No comments yet.</p>{% endif %}
+    {% if data.discussion %}
+    <p class="small muted">Also discussed on Lemmy and PieFed{% if data.discussion.community %}, in <code>{{ data.discussion.community }}</code>{% endif %}:
+      {% if data.discussion.open | safe_url %}<a href="{{ data.discussion.open | safe_url }}" rel="nofollow noopener noreferrer">the post there</a>{% else %}search your server for <code>{{ data.discussion.address }}</code>{% endif %}. Replies there stay there.</p>
+    {% endif %}
+  </section>
+  {% endif %}
 </div>
 {% endif %}
 {% endblock %}

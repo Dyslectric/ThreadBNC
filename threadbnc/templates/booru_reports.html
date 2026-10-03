@@ -1,0 +1,24 @@
+{% extends "booru_layout.html" %}
+{% block title %}Reports · {{ only.name }}{% endblock %}
+{# A booru's open reports, for its moderators. Closing one closes every open report about the same thing. #}
+{% block booru %}
+{% set do = '/booru/' ~ only.id ~ '/do/' %}
+{% if data %}
+<h1>Reports</h1>
+{% if not data.reports %}<p class="muted">No open reports.</p>{% endif %}
+<div class="booru-queue">
+{% for r in data.reports %}
+<section class="card">
+  <div><strong>{% if booru_here(only.id, r.link) %}<a href="{{ booru_here(only.id, r.link) }}">{{ r.what | capitalize }}</a>{% else %}{{ r.what | capitalize }}{% endif %}</strong>
+    <span class="small muted">reported by {{ r.reporter }} · {{ r.when }}{% if r.others > 0 %} · and {{ r.others }} other{{ '' if r.others == 1 else 's' }}{% endif %}{% if r.origin | safe_url %} · <a href="{{ r.origin | safe_url }}" rel="nofollow noopener noreferrer">where</a>{% endif %}</span></div>
+  <p>{{ r.reason }}</p>
+  <form method="post" class="row">
+    <input type="text" name="note" placeholder="Note (optional, public)" aria-label="Note">
+    <button class="small" formaction="{{ do }}reports/{{ r.id }}/resolve">Resolved</button>
+    <button class="small secondary" formaction="{{ do }}reports/{{ r.id }}/dismiss">Dismiss</button>
+  </form>
+</section>
+{% endfor %}
+</div>
+{% endif %}
+{% endblock %}

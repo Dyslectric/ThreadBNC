@@ -1,0 +1,78 @@
+{% extends "booru_layout.html" %}
+{% block title %}Admin · {{ only.name }}{% endblock %}
+{# A booru's admin controls: roles, grants, whether comments are held, instance policy, and peer boorus.
+   The booru takes them only from a sign-in of the last 15 minutes: yours is renewed when this page is
+   opened, and a form sent too late is held and goes once you're signed in again. #}
+{% block booru %}
+{% set do = '/booru/' ~ only.id ~ '/do/' %}
+{% if data %}
+<h1>Administration</h1>
+<p class="muted">Each is the private command of the same name, and is recorded in {{ only.name }}'s public
+  <a href="https://{{ only.host }}/modlog" rel="noopener noreferrer" target="_blank">moderation log</a>.
+  {% if not data.recent %}Your sign-in there is older than {{ data.minutes }} minutes, so it's being renewed:
+  what you send is held for the moment that takes.{% endif %}</p>
+<div class="booru-panels">
+<section class="card">
+  <h2>Roles</h2>
+  <form method="post" action="{{ do }}admin/role" class="stack">
+    <input type="text" name="handle" placeholder="@user@host" required aria-label="Account">
+    <div class="row">
+      <select name="role" aria-label="Role"><option value="moderator">moderator</option><option value="admin">admin</option></select>
+      <select name="state" aria-label="Grant or revoke"><option value="on">grant</option><option value="off">revoke</option></select>
+    </div>
+    <div><button class="small">Change role</button></div>
+  </form>
+</section>
+<section class="card">
+  <h2>Grants</h2>
+  <p class="small muted"><code>post.trust</code> and <code>comment.trust</code> let a moderator trust people with submissions or with comments; <code>categories</code> lets one add and colour tag categories.</p>
+  <form method="post" action="{{ do }}admin/grant" class="stack">
+    <input type="text" name="handle" placeholder="@moderator@host" required aria-label="Moderator">
+    <div class="row">
+      <select name="grant" aria-label="Grant"><option>post.trust</option><option>comment.trust</option><option>categories</option></select>
+      <select name="state" aria-label="Bestow or revoke"><option value="on">bestow</option><option value="off">revoke</option></select>
+    </div>
+    <div><button class="small">Change grant</button></div>
+  </form>
+</section>
+<section class="card">
+  <h2>Comments</h2>
+  <p class="small muted">New comments are <strong>{{ 'held for a moderator\'s approval' if data.comment_approval else 'shown at once' }}</strong>{% if data.comment_approval != data.comment_approval_in_file %} (its config file says otherwise; what's chosen here stands){% endif %}.</p>
+  <form method="post" action="{{ do }}admin/comments" class="stack">
+    <select name="approval" aria-label="New comments">
+      <option value="off"{{ ' selected' if not data.comment_approval }}>show them at once</option>
+      <option value="on"{{ ' selected' if data.comment_approval }}>hold them for approval</option>
+    </select>
+    <div><button class="small">Save</button></div>
+  </form>
+</section>
+<section class="card">
+  <h2>Instances</h2>
+  <form method="post" action="{{ do }}admin/instance" class="stack">
+    <input type="text" name="domain" placeholder="spam.example" required aria-label="Instance">
+    <select name="policy" aria-label="Policy">
+      <option value="normal">normal</option>
+      <option value="limited">limited: queue always, tighter rate limits</option>
+      <option value="blocked">blocked: drop everything</option>
+      <option value="trusted">trusted</option>
+    </select>
+    <div><button class="small">Set policy</button></div>
+  </form>
+</section>
+<section class="card">
+  <h2>Peer boorus</h2>
+  <p class="small muted">Shows another fedbooru's published posts on {{ only.name }} too, from its own server. For both to show each other's, each adds the other.</p>
+  <form method="post" action="{{ do }}admin/peer" class="stack">
+    <input type="text" name="domain" placeholder="other.booru.example" required aria-label="The other booru's domain">
+    <select name="state" aria-label="Add or remove"><option value="on">add as a peer</option><option value="off">remove: stop showing its posts</option></select>
+    <div><button class="small">Change peer</button></div>
+  </form>
+  {% if data.peers %}
+  <ul class="small">
+    {% for p in data.peers %}<li>{{ p.name }}{% if p.name != p.domain %} <span class="muted">({{ p.domain }})</span>{% endif %}: {{ p.posts }} post{{ '' if p.posts == 1 else 's' }}; <span class="muted">{{ p.state }}</span></li>{% endfor %}
+  </ul>
+  {% endif %}
+</section>
+</div>
+{% endif %}
+{% endblock %}

@@ -582,6 +582,22 @@ CREATE TABLE IF NOT EXISTS boorus (
     checked_at TEXT NOT NULL
 );
 
+-- Your session on a booru (booru.py): which of your accounts signed in there, and the
+-- session's token (encrypted, vault.py). While a sign-in is under way its secret is kept
+-- too, with a form held to send once it's done (an admin action needs a recent sign-in).
+CREATE TABLE IF NOT EXISTS booru_sessions (
+    booru_id INTEGER PRIMARY KEY REFERENCES boorus(id) ON DELETE CASCADE,
+    account_id INTEGER,                -- the account signed in with (accounts.id)
+    token_enc TEXT,
+    handle TEXT,                       -- who the booru says you are
+    me_json TEXT,                      -- what it last said you may do: {name, staff, admin}
+    signed_in_at TEXT,
+    pending_enc TEXT,                  -- a sign-in under way: its secret
+    pending_account_id INTEGER,
+    pending_at TEXT,
+    retry_json TEXT                    -- {"path", "fields", "back"}: sent when the sign-in is done
+);
+
 -- People, feeds and YouTube channels you've hidden (hidden.py): their posts are
 -- left out of feeds and not captured any more.
 CREATE TABLE IF NOT EXISTS hidden_sources (

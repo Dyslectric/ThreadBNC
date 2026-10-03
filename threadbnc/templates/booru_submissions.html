@@ -1,0 +1,38 @@
+{% extends "booru_layout.html" %}
+{% block title %}Yours · {{ only.name }}{% endblock %}
+{# What you've submitted to a booru, and what became of it. #}
+{% block booru %}
+{% if data %}
+<h1>Your submissions to {{ only.name }}</h1>
+{% if data.uploads %}
+<h2>Uploads</h2>
+<table class="list booru-table">
+<thead><tr><th>Upload</th><th>When</th><th>Status</th></tr></thead>
+<tbody>
+{% for u in data.uploads %}
+<tr><td>{{ u.title }}</td><td>{{ u.when }}</td><td>{{ u.status }}{% if u.message %}<div class="small muted">{{ u.message }}</div>{% endif %}</td></tr>
+{% endfor %}
+</tbody>
+</table>
+{% if data.uploads | selectattr('status', 'equalto', 'processing') | list %}<p class="small muted">Uploads are processed in a moment: <a href="/booru/{{ only.id }}/submissions">look again</a>.</p>{% endif %}
+{% endif %}
+{% if data.submissions %}
+<table class="list booru-table">
+<thead><tr><th>Submission</th><th>Posts</th><th></th></tr></thead>
+<tbody>
+{% for s in data.submissions %}
+<tr>
+  <td>{{ s.title }} <span class="small muted">sub#{{ s.id }}{% if s.from %} · {{ s.from }}{% endif %}</span></td>
+  <td>{% for id, status, shown in s.posts %}{% if shown %}<a href="/booru/{{ only.id }}/posts/{{ id }}">#{{ id }}</a>{% else %}#{{ id }}{% endif %} <span class="small muted">{{ status }}</span>{{ ', ' if not loop.last }}{% else %}<span class="muted">{{ 'withdrawn' if s.withdrawn else 'none' }}</span>{% endfor %}</td>
+  <td>{% if s.web and not s.withdrawn %}
+    <form method="post" action="/booru/{{ only.id }}/do/submissions/{{ s.id }}/withdraw" data-confirm="Withdraw this upload? Every image of it is removed from {{ only.name }}, for good.">
+      <button class="link">Withdraw</button></form>{% endif %}</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+{% elif not data.uploads %}
+<p class="muted">Nothing yet. <a href="/booru/{{ only.id }}/upload">Post something</a>.</p>
+{% endif %}
+{% endif %}
+{% endblock %}
