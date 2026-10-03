@@ -1,7 +1,7 @@
 {% extends "booru_layout.html" %}
 {% from "_macros.html" import icon %}
 {% from "_booru.html" import taglist with context %}
-{% block title %}#{{ pid }} · {{ booru.name }}{% endblock %}
+{% block title %}#{{ pid }} · {{ only.name }}{% endblock %}
 {% block booru %}
 {% if post %}
 <div class="booru-with-sidebar">
@@ -10,15 +10,16 @@
     <h2>Information</h2>
     <dl class="booru-info">
       <dt>ID</dt><dd>{{ post.id }}</dd>
+      <dt>Booru</dt><dd><a href="{{ booru_href(on=only.id) }}">{{ only.name }}</a></dd>
       {% if post.created_at %}<dt>Date</dt><dd>{{ post.created_at[:10] }}</dd>{% endif %}
       {% if post.width and post.height %}<dt>Size</dt><dd>{{ post.width }}×{{ post.height }}{% if post.format %} · {{ post.format }}{% endif %}{% if file_size %} · {{ file_size }}{% endif %}</dd>{% endif %}
       <dt>Rating</dt><dd>{{ post.rating }}</dd>
       {% if post.score is not none %}<dt>Score</dt><dd>{{ post.score }}{% if post.favs is not none %} · {{ post.favs }} favourite{{ '' if post.favs == 1 else 's' }}{% endif %}</dd>{% endif %}
       {% if post.source %}<dt>Source</dt><dd><a href="{{ post.source }}" rel="nofollow noopener noreferrer">{{ post.source }}</a></dd>{% endif %}
-      {% if post.parent %}<dt>Parent</dt><dd><a href="/booru/{{ booru.id }}/posts/{{ post.parent }}">#{{ post.parent }}</a></dd>{% endif %}
-      {% if post.has_children %}<dt>Children</dt><dd><a href="{{ booru_href(booru.id, tags='parent:' ~ post.id) }}">show</a></dd>{% endif %}
+      {% if post.parent %}<dt>Parent</dt><dd><a href="/booru/{{ only.id }}/posts/{{ post.parent }}">#{{ post.parent }}</a></dd>{% endif %}
+      {% if post.has_children %}<dt>Children</dt><dd><a href="{{ booru_href(tags='parent:' ~ post.id, on=only.id) }}">show</a></dd>{% endif %}
     </dl>
-    <p><a href="{{ post.url }}" rel="noopener noreferrer" target="_blank">{{ icon('external') }} Open on {{ booru.host }}</a>
+    <p><a href="{{ post.url }}" rel="noopener noreferrer" target="_blank">{{ icon('external') }} Open on {{ only.host }}</a>
       <span class="small muted">for its comments, tag history, voting and editing</span></p>
   </aside>
   <section>
