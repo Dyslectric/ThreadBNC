@@ -38,6 +38,7 @@ from . import search as search_mod
 from . import discussions as discussions_mod
 from . import feed as feed_mod
 from . import forums as forums_mod
+from . import booru as booru_mod
 from . import media as media_mod
 from . import storage as storage_mod
 from . import thumbs as thumbs_mod
@@ -629,7 +630,9 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         resp.headers["X-Content-Type-Options"] = "nosniff"
         resp.headers["Content-Security-Policy"] = (
             # media-src https: a video file a link's box plays from where it is, until it's saved (videos.py).
-            "default-src 'self'; img-src 'self'; media-src 'self' https:; style-src 'self'; script-src 'self'; "
+            # A booru's pictures are loaded from where it says they are, not saved here (booru.py).
+            f"default-src 'self'; img-src 'self'{' https:' if path.startswith('/booru/') else ''}; "
+            "media-src 'self' https:; style-src 'self'; script-src 'self'; "
             "form-action 'self'; "
             # Video and livestream players, in a link's box (videos.py, livestream.py) or a post
             # that is a video's link: YouTube's, Vimeo's, Twitch's, any Owncast or PeerTube server's.
@@ -2043,6 +2046,129 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         """How many of a forum node's communities (and those below) you follow, and their unread posts."""
         mine = [follows[a] for a in {c["ap_id"] for c in forums_mod.communities_in(node)} if a in follows]
         return len(mine), sum(f["unread"] or 0 for f in mine)
+
+    # ---- boorus (booru.py) -----------------------------------------------
+    BOORU_SECTIONS = ("posts", "tags", "pools")
+
+    def booru_href(bid: int, section: str = "posts", **params: Any) -> str:
+        query = urlencode({k: v for k, v in params.items() if v not in (None, "", 1)})
+        return f"/booru/{bid}" + ("" if section == "posts" else f"/{section}") + ("?" + query if query else "")
+
+    def booru_page(request: Request, bid: int, section: str, read: Callable[[dict[str, Any]], dict[str, Any]],
+                   template: str = "booru.html", **ctx: Any) -> HTMLResponse:
+        """A page of the booru `bid`: `read` asks its server for what the page shows. If
+        that fails the page still comes, saying why, so another booru can be picked."""
+        with db.connect() as conn:
+            boorus = booru_mod.all_boorus(conn)
+        booru = next((b for b in boorus if b["id"] == bid), None)
+        if booru is None:
+            raise HTTPException(404)
+        if db.get_setting("booru_server") != str(bid):  # the one the Boorus tab opens next time
+            with db.transaction() as conn:
+                conn.execute("INSERT INTO app_settings(key, value) VALUES ('booru_server', ?) "
+                             "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(bid),))
+        errors: list[str] = []
+        found: dict[str, Any] = {}
+        try:
+            with traffic_mod.tagged("boorus"):
+                found = read(booru)
+        except (booru_mod.BooruError, RemoteError) as exc:
+            errors.append(str(exc))
+        return render(request, template, boorus=boorus, booru=booru, section=section, errors=errors,
+                      booru_href=booru_href, **{**ctx, **found})
+
+    @app.get("/booru", response_class=HTMLResponse)
+    def booru_index(request: Request):
+        with db.connect() as conn:
+            boorus = booru_mod.all_boorus(conn)
+        if not boorus:
+            return render(request, "booru.html", boorus=[], booru=None, section="posts", errors=[],
+                          booru_href=booru_href)
+        last = db.get_setting("booru_server")
+        chosen = next((b for b in boorus if str(b["id"]) == last), boorus[0])
+        return RedirectResponse(booru_href(chosen["id"]), status_code=303)
+
+    @app.get("/booru/go")
+    def booru_go(server: int, section: str = "posts"):
+        """The server picked in the Boorus menu: the same section of it."""
+        return RedirectResponse(booru_href(server, section if section in BOORU_SECTIONS else "posts"), status_code=303)
+
+    @app.post("/booru/servers")
+    def add_booru(request: Request, address: str = Form(...)):
+        """Plain def, like /forums: the server is asked what it is while you wait."""
+        try:
+            host = booru_mod.parse_host(address)
+            with traffic_mod.tagged("boorus"):
+                info = booru_mod.look_up(bouncer.http, host)
+        except (booru_mod.BooruError, RemoteError) as exc:
+            flash(request, f"Couldn't add {address.strip()}: {exc}", "error")
+            return RedirectResponse(back(request, "/booru"), status_code=303)
+        with db.transaction() as conn:
+            bid = booru_mod.save(conn, host, info, utcnow())
+        flash(request, f"Added {info['name']}.")
+        return RedirectResponse(booru_href(bid), status_code=303)
+
+    @app.post("/booru/{bid}/remove")
+    def remove_booru(request: Request, bid: int):
+        with db.transaction() as conn:
+            booru = next((b for b in booru_mod.all_boorus(conn) if b["id"] == bid), None)
+            if booru is None:
+                raise HTTPException(404)
+            booru_mod.remove(conn, bid)
+            conn.execute("DELETE FROM app_settings WHERE key='booru_server' AND value=?", (str(bid),))
+        flash(request, f"Removed {booru['name']} from your boorus.")
+        return RedirectResponse("/booru", status_code=303)
+
+    @app.get("/booru/{bid}", response_class=HTMLResponse)
+    def booru_posts(request: Request, bid: int, tags: str = "", page: int = 1):
+        tags, page = tags.strip()[:300], max(1, page)
+
+        def read(booru: dict[str, Any]) -> dict[str, Any]:
+            shown = booru_mod.posts(bouncer.http, booru["host"], tags, page)
+            index = booru_mod.tag_index(bouncer.http, booru["host"])
+            # How many there are: the API doesn't say, so only where it's known another way.
+            total = booru["posts"] if not tags else index[tags.lower()][0] if tags.lower() in index else None
+            return {"posts": shown, "groups": booru_mod.tag_groups(shown, index), "total": total,
+                    "next": booru_href(bid, tags=tags, page=page + 1) if len(shown) >= booru_mod.PER_PAGE else None}
+
+        return booru_page(request, bid, "posts", read, query=tags, page=page, posts=[], groups=[], total=None,
+                          next=None, previous=booru_href(bid, tags=tags, page=page - 1) if page > 1 else None)
+
+    @app.get("/booru/{bid}/posts/{pid}", response_class=HTMLResponse)
+    def booru_post(request: Request, bid: int, pid: int):
+        def read(booru: dict[str, Any]) -> dict[str, Any]:
+            post = booru_mod.post(bouncer.http, booru["host"], pid)
+            if post is None:
+                raise booru_mod.BooruError(f"{booru['name']} has no post #{pid}.")
+            index = booru_mod.tag_index(bouncer.http, booru["host"])
+            return {"post": post, "groups": booru_mod.tag_groups([post], index, limit=None),
+                    "file_size": human_size(post["size"]) if post["size"] else None}
+
+        return booru_page(request, bid, "posts", read, "booru_post.html", post=None, groups=[], pid=pid)
+
+    @app.get("/booru/{bid}/tags", response_class=HTMLResponse)
+    def booru_tags(request: Request, bid: int, search: str = "", page: int = 1):
+        search, page = search.strip()[:100], max(1, page)
+
+        def read(booru: dict[str, Any]) -> dict[str, Any]:
+            found = booru_mod.tags(bouncer.http, booru["host"], search, page)
+            return {"tags": found, "next": booru_href(bid, "tags", search=search, page=page + 1)
+                    if len(found) >= booru_mod.TAGS_PER_PAGE else None}
+
+        return booru_page(request, bid, "tags", read, "booru_tags.html", search=search, page=page, tags=[], next=None,
+                          previous=booru_href(bid, "tags", search=search, page=page - 1) if page > 1 else None)
+
+    @app.get("/booru/{bid}/pools", response_class=HTMLResponse)
+    def booru_pools(request: Request, bid: int, page: int = 1):
+        page = max(1, page)
+
+        def read(booru: dict[str, Any]) -> dict[str, Any]:
+            found = booru_mod.pools(bouncer.http, booru["host"], page)
+            return {"pools": found, "next": booru_href(bid, "pools", page=page + 1)
+                    if len(found) >= booru_mod.POOLS_PER_PAGE else None}
+
+        return booru_page(request, bid, "pools", read, "booru_pools.html", page=page, pools=[], next=None,
+                          previous=booru_href(bid, "pools", page=page - 1) if page > 1 else None)
 
     @app.get("/forums", response_class=HTMLResponse)
     def forums_index(request: Request):

@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon %}
+{# The Boorus tab, laid out as a fedbooru server's own pages: its name, Posts / Tags / Pools and the
+   tag search in a bar, with the menu of your boorus at its right end. #}
+{% from "_booru.html" import add_form with context %}
+{% block content %}
+{% if booru %}
+<div class="booru-bar">
+  <a class="booru-brand" href="{{ booru_href(booru.id) }}">{{ booru.name }}</a>
+  <nav aria-label="{{ booru.name }}">
+    {% for key, label in [('posts', 'Posts'), ('tags', 'Tags'), ('pools', 'Pools')] %}
+    <a href="{{ booru_href(booru.id, key) }}" class="{{ 'on' if section == key }}"{% if section == key %} aria-current="page"{% endif %}>{{ label }}</a>
+    {% endfor %}
+  </nav>
+  <form class="booru-search" action="{{ booru_href(booru.id) }}" method="get" role="search">
+    <input type="search" name="tags" placeholder="Search tags" aria-label="Search tags on {{ booru.name }}" value="{{ query | default('') }}">
+  </form>
+  <details class="menu booru-servers">
+    <summary title="Which of your boorus to browse">{{ icon('picture') }}<span class="label">{{ booru.host }}</span>{{ icon('chevron-down', 'chev') }}</summary>
+    <div class="menu-panel">
+      <form method="get" action="/booru/go" class="menu-section" data-autosubmit>
+        <div class="menu-label">Your boorus</div>
+        <input type="hidden" name="section" value="{{ section }}">
+        {% for b in boorus %}
+        <label class="menu-item booru-server {{ 'on' if b.id == booru.id }}">
+          <input type="radio" name="server" value="{{ b.id }}" {{ 'checked' if b.id == booru.id }}>
+          <span class="grow"><strong>{{ b.name }}</strong>
+            <span class="small muted">{{ [b.host if b.host != b.name, '{:,}'.format(b.posts) ~ ' posts' if b.posts is not none, 'NSFW' if b.nsfw] | select | join(' · ') }}</span></span>
+        </label>
+        {% endfor %}
+        <div class="menu-field no-js"><button class="small secondary">Browse</button></div>
+      </form>
+      <div class="menu-section">{{ add_form() }}</div>
+      <div class="menu-section">
+        <a class="menu-item" href="https://{{ booru.host }}/" rel="noopener noreferrer" target="_blank">{{ icon('external') }}<span class="grow">Open {{ booru.host }}</span></a>
+        <form method="post" action="/booru/{{ booru.id }}/remove" data-confirm="Remove {{ booru.name }} from your boorus?">
+          <button class="menu-item">{{ icon('x') }}<span class="grow">Remove {{ booru.name }}</span></button></form>
+      </div>
+    </div>
+  </details>
+</div>
+{% for e in errors %}<p class="flash error" role="alert">{{ e }}</p>{% endfor %}
+{% block booru %}{% endblock %}
+{% else %}
+<div class="feed-head"><h1>Boorus</h1></div>
+<section class="card hero booru-hero">
+  <h2>Add a booru</h2>
+  <p class="muted">A fedbooru server, by its address. It's browsed here as on its own site: its posts, tags and
+    pools are read from it when you open a page, and its pictures come straight from it.</p>
+  {{ add_form() }}
+</section>
+{% endif %}
+{% endblock %}

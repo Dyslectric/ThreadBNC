@@ -569,6 +569,18 @@ CREATE TABLE IF NOT EXISTS forum_media (
     PRIMARY KEY (forum_id, media_id)
 );
 
+-- Boorus (booru.py): fedbooru servers added to the Boorus tab. They're read through
+-- their public API when a page there is opened; nothing of theirs is kept but this.
+CREATE TABLE IF NOT EXISTS boorus (
+    id INTEGER PRIMARY KEY,
+    host TEXT NOT NULL UNIQUE,
+    name TEXT,                         -- what the server calls itself
+    posts INTEGER,                     -- how many posts it said it had when last asked
+    nsfw INTEGER NOT NULL DEFAULT 0,   -- it allows explicit pictures
+    added_at TEXT NOT NULL,
+    checked_at TEXT NOT NULL
+);
+
 -- People, feeds and YouTube channels you've hidden (hidden.py): their posts are
 -- left out of feeds and not captured any more.
 CREATE TABLE IF NOT EXISTS hidden_sources (

@@ -22,15 +22,26 @@
     {% set path = request.url.path %}
     {% set ic = inbox_count() %}
     <nav class="primary" aria-label="Main" id="site-nav" data-live>
-      {# A community's page is a feed narrowed to it (the Following list leads there), so it's under Feeds. #}
-      {% for href, name, ico, on in [('/', 'Feeds', 'feed', path == '/' or path.startswith(('/c/', '/f/', '/feed'))),
-                                     ('/trending', 'Trending', 'trending', path.startswith('/trending') or path.startswith('/articles')),
-                                     ('/live', 'Live', 'video', path == '/live' or path.startswith('/live/')),
-                                     ('/forums', 'Forums', 'communities', path.startswith('/forums')),
+      {# The places you browse are behind one menu, named after the one you're in. A community's page
+         is a feed narrowed to it (the Following list leads there), so it's under Feeds. #}
+      {% set places = [('/', 'Feeds', 'feed', path == '/' or path.startswith(('/c/', '/f/', '/feed'))),
+                       ('/forums', 'Forums', 'communities', path.startswith('/forums')),
+                       ('/live', 'Live', 'video', path == '/live' or path.startswith('/live/')),
+                       ('/booru', 'Boorus', 'picture', path.startswith('/booru'))] %}
+      {% set here = places | selectattr(3) | first %}
+      <details class="menu dropdown nav-menu">
+        <summary class="nav-item {{ 'on' if here }}" data-nav-label="{{ here[1] if here else 'Feeds, Forums, Live, Boorus' }}" aria-label="{{ (here[1] ~ ': ') if here }}Feeds, Forums, Live and Boorus">{{ icon(here[2] if here else 'feed') }}<span class="label" aria-hidden="true">{{ here[1] if here else 'Feeds' }}</span>{{ icon('chevron-down', 'chev') }}</summary>
+        <div class="menu-panel">
+          {% for href, name, ico, on in places %}
+          <a href="{{ href }}" class="menu-item {{ 'on' if on }}"{% if on %} aria-current="page"{% endif %}><span class="tick">{% if on %}{{ icon('check') }}{% endif %}</span>{{ icon(ico) }}<span class="grow">{{ name }}</span></a>
+          {% endfor %}
+        </div>
+      </details>
+      {% for href, name, ico, on in [('/trending', 'Trending', 'trending', path.startswith('/trending') or path.startswith('/articles')),
                                      ('/inbox', 'Inbox', 'inbox', path.startswith('/inbox')),
                                      ('/kept', 'Kept', 'star', path.startswith('/kept')),
                                      ('/post', 'New post', 'pencil', path == '/post')] %}
-        <a href="{{ href }}" class="{{ 'on' if on }}"{% if on %} aria-current="page"{% endif %} data-nav-label="{{ name }}" aria-label="{{ name }}{{ ', ' ~ ic ~ ' unread' if href == '/inbox' and ic }}">{{ icon(ico) }}<span class="label" aria-hidden="true">{{ name }}</span>
+        <a href="{{ href }}" class="nav-item {{ 'on' if on }}"{% if on %} aria-current="page"{% endif %} data-nav-label="{{ name }}" aria-label="{{ name }}{{ ', ' ~ ic ~ ' unread' if href == '/inbox' and ic }}">{{ icon(ico) }}<span class="label" aria-hidden="true">{{ name }}</span>
           {%- if href == '/inbox' and ic %} <span class="count" aria-hidden="true">{{ ic }}</span>{% endif %}</a>
       {% endfor %}
     </nav>
