@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% from "_feed.html" import controls, posts, pager, sidebar with context %}
+{% set titles = {'subscribed': 'Subscribed', 'local': 'Local', 'popular': 'Popular', 'all': 'All'} %}
+{% block title %}{{ titles[feed] }}{% endblock %}
+{% block content %}
+<div class="layout">
+  <div class="main-col">
+    <div class="feed-head">
+      <h1>{{ 'Your feed' if feed == 'subscribed' else titles[feed] }}</h1>
+      {{ controls(base, sort, window, view) }}
+    </div>
+    {{ posts(items, view) }}
+    {% if not items %}
+      <section class="card empty"><p class="muted">
+        {% if page > 1 %}Nothing further.
+        {% elif feed == 'subscribed' and not me.follows %}You don't subscribe to any communities yet. <a href="/forums">Find some in the forums</a>, or read <a href="/?feed=popular">what's popular</a>.
+        {% elif sort == 'top' %}Nothing in this time range.
+        {% else %}Nothing here yet.{% endif %}
+      </p></section>
+    {% endif %}
+    {{ pager(more, base, sort, window, page) }}
+  </div>
+  {{ sidebar(feed) }}
+</div>
+{% endblock %}

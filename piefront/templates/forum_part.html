@@ -1,0 +1,5 @@
+{# What's in a forum, to show inside the page it's listed on (app.js: a forum opened in place). #}
+{% from "_forum.html" import forum_body with context %}
+<div class="forum-body" data-forum-src="{{ v.src }}">
+{{ forum_body(v, depth) }}
+</div>

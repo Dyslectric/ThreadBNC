@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon %}
+{% from "_feed.html" import controls, posts, pager, sidebar with context %}
+{% from "_forum.html" import badge, num, subscribe with context %}
+{% block title %}{{ community.title }}{% endblock %}
+{% block content %}
+<div class="layout">
+  <div class="main-col">
+    <header class="card forum-head{{ ' has-banner' if community.banner }}">
+      {% if community.banner %}<div class="forum-banner"><img src="{{ community.banner }}" alt="" referrerpolicy="no-referrer"></div>{% endif %}
+      <div class="forum-head-main">
+        {{ badge(community.icon, community.letter, community.hue, 'big') }}
+        <div class="grow">
+          <h1>{{ community.title }}{% if community.nsfw %} <span class="pill bad">NSFW</span>{% endif %}</h1>
+          <p class="forum-facts">
+            <span class="forum-fact">{{ chandle(community.name, community.ap_id) }}</span>
+            {% if community.subscribers is not none %}<span class="forum-fact"><strong>{{ num(community.subscribers) }}</strong> subscriber{{ '' if community.subscribers == 1 else 's' }}</span>{% endif %}
+            {% if community.posts is not none %}<span class="forum-fact"><strong>{{ num(community.posts) }}</strong> post{{ '' if community.posts == 1 else 's' }}</span>{% endif %}
+            {% if community.active is not none %}<span class="forum-fact"><strong>{{ num(community.active) }}</strong> active this month</span>{% endif %}
+            {% if community.ap_id | safe_url %}<a class="forum-fact" href="{{ community.ap_id }}" target="_blank" rel="noopener noreferrer">on {{ community.host }} {{ icon('external', 'ext') }}</a>{% endif %}
+          </p>
+        </div>
+        <div class="row forum-actions">{{ subscribe(community.id, community.subscribed != 'NotSubscribed', community.subscribed == 'Pending') }}</div>
+      </div>
+      {% if community.description %}
+      <details class="community-about">
+        <summary class="small">About {{ community.title }}{% if community.moderators %} · {{ community.moderators | length }} moderator{{ 's' if community.moderators | length != 1 }}{% endif %}</summary>
+        <div class="md forum-desc">{{ md(community.description) }}</div>
+        {% if community.moderators %}<p class="small muted">Moderated by {% for m in community.moderators %}{{ m.name }}@{{ m.host }}{{ ', ' if not loop.last }}{% endfor %}.</p>{% endif %}
+      </details>
+      {% endif %}
+    </header>
+    <div class="feed-head">
+      {{ controls(base, sort, window, view) }}
+    </div>
+    {{ posts(items, view, show_community=False) }}
+    {% if not items %}
+      <section class="card empty"><p class="muted">{% if page > 1 %}Nothing further.{% elif sort == 'top' %}Nothing in this time range.{% else %}No posts here that {{ server }} knows of.{% endif %}</p></section>
+    {% endif %}
+    {{ pager(more, base, sort, window, page) }}
+  </div>
+  {{ sidebar(current=community.ap_id) }}
+</div>
+{% endblock %}

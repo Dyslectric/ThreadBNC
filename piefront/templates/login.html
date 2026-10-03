@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Sign in{% endblock %}
+{% block content %}
+<section class="card narrow">
+  <h1>Sign in</h1>
+  <p class="muted">With your account on {{ server }}. Your password is passed on to {{ server }} to sign you in, and isn't kept here.</p>
+  {% if error %}<div class="flash error" role="alert">{{ error }}</div>{% endif %}
+  <form method="post" action="/login" class="stack">
+    <input type="hidden" name="next" value="{{ next or '/' }}">
+    <label>User name <input name="username" value="{{ username }}" {{ 'autofocus' if not username }} required autocomplete="username" autocapitalize="none" spellcheck="false"></label>
+    <label>Password <input type="password" name="password" {{ 'autofocus' if username }} required autocomplete="current-password"></label>
+    <button>Sign in</button>
+  </form>
+  <p class="small muted">No account? <a href="https://{{ server }}/auth/register" target="_blank" rel="noopener noreferrer">Make one on {{ server }}</a>, then come back.</p>
+</section>
+{% endblock %}

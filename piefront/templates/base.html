@@ -1,0 +1,91 @@
+{%- from "_macros.html" import icon -%}
+{%- set theme = request.cookies.get('theme') if request.cookies.get('theme') in themes else '' -%}
+<!doctype html>
+<html lang="en"{% if theme %} data-theme="{{ theme }}"{% endif %}{% if me %} data-unread="dot"{% endif %}>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow, noarchive">
+  {% block head %}{% endblock %}
+  <title>{% block title %}{{ site.name }}{% endblock %} · {{ site.name }}</title>
+  <link rel="stylesheet" href="{{ static_url('style.css') }}">
+  <script src="{{ static_url('js-flag.js') }}"></script>
+  <script src="{{ static_url('app.js') }}" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="top">
+   <div class="top-inner">
+    <a class="brand" href="/" aria-label="{{ site.name }} home">{{ icon('logo', 'brand-mark') }}<span>{{ site.name }}</span></a>
+    {% set path = request.url.path %}
+    <nav class="primary" aria-label="Main" id="site-nav" data-live>
+      {% for href, name, ico, on, shown in [('/', 'Feeds', 'feed', path == '/' or path.startswith(('/c/', '/t/')), true),
+                                            ('/forums', 'Forums', 'communities', path.startswith('/forums'), true),
+                                            ('/inbox', 'Inbox', 'inbox', path.startswith('/inbox'), me is not none)] if shown %}
+        <a href="{{ href }}" class="nav-item {{ 'on' if on }}"{% if on %} aria-current="page"{% endif %} data-nav-label="{{ name }}" aria-label="{{ name }}{{ ', ' ~ me.unread ~ ' unread' if href == '/inbox' and me.unread }}">{{ icon(ico) }}<span class="label" aria-hidden="true">{{ name }}</span>
+          {%- if href == '/inbox' and me.unread %} <span class="count" aria-hidden="true">{{ me.unread }}</span>{% endif %}</a>
+      {% endfor %}
+    </nav>
+    <span class="grow"></span>
+    <details class="menu account-menu" id="account-menu" data-live>
+      <summary title="{{ 'Your account and theme' if me else 'Sign in, and theme' }}">{{ icon('user') }}<span class="label">{{ me.person.handle if me else 'Menu' }}</span>{{ icon('chevron-down', 'chev') }}</summary>
+      <div class="menu-panel">
+        {% if me %}
+        <div class="menu-section">
+          <div class="menu-label">Signed in on {{ server }}</div>
+          <a class="menu-item" href="{{ me.person.ap_id | safe_url }}" target="_blank" rel="noopener noreferrer">{{ icon('user') }}<span class="grow">{{ me.person.display }}</span>{{ icon('external') }}</a>
+        </div>
+        {% else %}
+        <div class="menu-section">
+          <a class="menu-item" href="/login{{ ('?next=' ~ (path | urlencode)) if path not in ('/', '/login') }}">{{ icon('user') }}<span class="grow">Sign in</span></a>
+        </div>
+        {% endif %}
+        <form method="post" action="/theme" class="menu-section" data-theme-form>
+          <div class="menu-label">Theme</div>
+          <div class="seg theme-seg" role="group" aria-label="Theme">
+            {% for key, label, ico in [('light', 'Light', 'sun'), ('dark', 'Dark', 'moon'), ('', 'Device', 'monitor')] %}
+              <button name="theme" value="{{ key or 'system' }}" class="{{ 'on' if theme == key }}" aria-pressed="{{ 'true' if theme == key else 'false' }}">{{ icon(ico) }} {{ label }}</button>
+            {% endfor %}
+          </div>
+        </form>
+        <div class="menu-section">
+          <button type="button" class="menu-item js-only" data-action="shortcuts">{{ icon('keyboard') }}<span class="grow">Keyboard shortcuts</span><kbd>?</kbd></button>
+          <a class="menu-item" href="https://{{ server }}/" target="_blank" rel="noopener noreferrer">{{ icon('external') }}<span class="grow">{{ server }}'s own site</span></a>
+          {% if me %}<form method="post" action="/logout"><button class="menu-item">{{ icon('logout') }}<span class="grow">Sign out</span></button></form>{% endif %}
+        </div>
+      </div>
+    </details>
+   </div>
+  </header>
+  <main id="main">
+    {% for f in request.session.pop('flash', []) %}
+      <div class="flash {{ f[0] }}" role="{{ 'alert' if f[0] == 'error' else 'status' }}"><span>{{ f[1] }}</span></div>
+    {% endfor %}
+    {% block content %}{% endblock %}
+  </main>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <dialog id="shortcuts" class="card shortcuts" aria-labelledby="shortcuts-title">
+    <div class="dialog-head"><h2 id="shortcuts-title">Keyboard shortcuts</h2>
+      <form method="dialog"><button class="icon-button" aria-label="Close">{{ icon('x') }}</button></form></div>
+    <div class="shortcut-cols">
+      <section><h3>Anywhere</h3><dl>
+        <div><dt><kbd>g</kbd> <kbd>f</kbd></dt><dd>Go to the feed</dd></div>
+        <div><dt><kbd>g</kbd> <kbd>c</kbd></dt><dd>Forums</dd></div>
+        <div><dt><kbd>g</kbd> <kbd>i</kbd></dt><dd>Inbox</dd></div>
+        <div><dt><kbd>?</kbd></dt><dd>This list</dd></div>
+      </dl>
+      <h3>Feed and inbox</h3><dl>
+        <div><dt><kbd>j</kbd> <kbd>k</kbd></dt><dd>Next / previous</dd></div>
+        <div><dt><kbd>o</kbd> or <kbd>Enter</kbd></dt><dd>Open</dd></div>
+        <div><dt><kbd>m</kbd></dt><dd>Mark read / unread (inbox)</dd></div>
+        <div><dt><kbd>r</kbd></dt><dd>Reply (inbox)</dd></div>
+      </dl></section>
+      <section><h3>In a thread</h3><dl>
+        <div><dt><kbd>j</kbd> <kbd>k</kbd></dt><dd>Next / previous comment</dd></div>
+        <div><dt><kbd>Space</kbd></dt><dd>Collapse / expand comment (after <kbd>j</kbd>)</dd></div>
+        <div><dt><kbd>c</kbd></dt><dd>Write a comment</dd></div>
+      </dl></section>
+    </div>
+  </dialog>
+</body>
+</html>
