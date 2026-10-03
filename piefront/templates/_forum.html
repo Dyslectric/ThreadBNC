@@ -1,0 +1,164 @@
+{% from "_macros.html" import icon %}
+
+{# ThreadBNC's forum directory, over the server's own topics and feeds. Pictures
+   are shown from where they are; subscribing is your account's, on the server. #}
+
+{# A picture for a forum or a community: its icon, else its first letter on a colour of its own. #}
+{% macro badge(src, letter, hue, size='') -%}
+<span class="f-icon av-{{ hue }}{{ ' ' ~ size if size }}{{ ' has-picture' if src }}" aria-hidden="true">
+  {%- if src %}<img src="{{ src }}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">{% else %}{{ letter }}{% endif %}</span>
+{%- endmacro %}
+
+{% macro num(n) -%}{{ "{:,}".format(n) }}{%- endmacro %}
+
+{# Subscribe to a community, or stop: as whoever is signed in. `anchor`: where on the page to come back to. #}
+{% macro subscribe(community_id, subscribed, pending=false, anchor='', in_forum=false) -%}
+{% if not me %}<a class="button small secondary" href="/login?next={{ request.url.path | urlencode }}">{{ icon('plus') }} Subscribe</a>
+{% elif community_id is not none %}
+<form method="post" action="/follow" class="inline"{% if in_forum %} data-forum-follow{% endif %}>
+  <input type="hidden" name="community_id" value="{{ community_id }}">
+  <input type="hidden" name="follow" value="{{ '0' if subscribed else '1' }}">
+  {% if anchor %}<input type="hidden" name="anchor" value="{{ anchor }}">{% endif %}
+  {% if subscribed %}<button class="small secondary" title="{{ 'Waiting for the community\'s server to answer. ' if pending }}Stop subscribing">{{ icon('check') }} {{ 'Asked' if pending else 'Subscribed' }}</button>
+  {% else %}<button class="small secondary">{{ icon('plus') }} Subscribe</button>{% endif %}
+</form>
+{% endif %}
+{%- endmacro %}
+
+{# How many communities are in a forum, and how many of those you subscribe to. #}
+{% macro stats(r) -%}
+<span class="forum-stat"><strong>{{ num(r.total) }}</strong> communit{{ 'y' if r.total == 1 else 'ies' }}</span>
+{%- if r.followed %}<span class="forum-stat followed" title="You subscribe to {{ r.followed }} of them">{{ icon('check') }}{{ r.followed }}</span>{% endif %}
+{%- endmacro %}
+
+{# The bar down the left of what's opened, which closes it again (app.js). #}
+{% macro rail(title) -%}
+<button type="button" class="forum-rail js-only" aria-label="Close {{ title }}" title="Close {{ title }}"></button>
+{%- endmacro %}
+
+{# A forum in a list of them. The arrow opens what's in it right here, under a bar
+   that closes it (app.js reads it: `href`?part=1); the name goes to its page. #}
+{% macro forum_item(r, depth) -%}
+<div class="forum-item">
+  <div class="forum-row">
+    {% if r.total or r.children %}<button type="button" class="forum-expand js-only" aria-expanded="false"
+      data-part="{{ r.href }}?part=1&amp;depth={{ depth }}" title="Open {{ r.title }} here">{{ icon('chevron-right') }}<span class="sr-only">Open {{ r.title }} here</span></button>
+    {%- else %}<span class="forum-expand js-only" aria-hidden="true"></span>{% endif %}
+    {{ badge(r.icon, r.letter, r.hue) }}
+    <div class="forum-row-main">
+      <a class="forum-row-title" href="{{ r.href }}">{{ r.title }}</a>
+      {%- if r.nsfw %} <span class="pill bad">NSFW</span>{% endif %}
+      {% if r.description %}<p class="forum-row-desc">{{ r.description }}</p>{% endif %}
+      {% if r.children %}<p class="forum-subs">{% for title, href in r.children %}<a class="forum-sub" href="{{ href }}">{{ title }}</a>{% endfor %}</p>{% endif %}
+    </div>
+    <div class="forum-row-stats">{{ stats(r) }}</div>
+  </div>
+  <div class="forum-fold d{{ depth % 6 }}" hidden>
+    {{ rail(r.title) }}
+    <div class="forum-fold-body"><p class="muted small forum-loading">Opening {{ r.title }}…</p></div>
+  </div>
+</div>
+{%- endmacro %}
+
+{# The communities in a forum itself (not in the forums in it), a few named, opened
+   right there like a forum is (?part=2: just those). #}
+{% macro own_item(h, depth) -%}
+<div class="forum-item own-communities">
+  <div class="forum-row">
+    <button type="button" class="forum-expand js-only" aria-expanded="false"
+      data-part="{{ h.href }}?part=2&amp;depth={{ depth }}" title="Open the communities in {{ h.title }} here">{{ icon('chevron-right') }}<span class="sr-only">Open the communities in {{ h.title }} here</span></button>
+    <span class="f-icon small" aria-hidden="true">{{ icon('communities') }}</span>
+    <div class="forum-row-main">
+      <a class="forum-row-title" href="{{ h.href }}#communities">{{ num(h.own) }} communit{{ 'y' if h.own == 1 else 'ies' }} in {{ h.title }} itself</a>
+      <p class="forum-subs">{% for name in h.own_names %}<span class="forum-sub">{{ name }}</span>{% endfor %}
+        {%- if h.own > h.own_names | length %}<span class="forum-sub muted">and {{ num(h.own - h.own_names | length) }} more</span>{% endif %}</p>
+    </div>
+  </div>
+  <div class="forum-fold d{{ depth % 6 }}" hidden>
+    {{ rail('the communities in ' ~ h.title) }}
+    <div class="forum-fold-body"><p class="muted small forum-loading">Opening the communities…</p></div>
+  </div>
+</div>
+{%- endmacro %}
+
+{# A section's heading: it opens and closes the section (a <details>), as does the
+   bar down the section's left. `r`: a forum's view, for its counts. #}
+{% macro topic_head(title, href=none, icon_src=none, letter='', hue=0, description='', nsfw=false, r=none, count=none) -%}
+<summary class="forum-topic-head">
+  <span class="forum-chev" aria-hidden="true">{{ icon('chevron-down') }}</span>
+  {% if letter %}{{ badge(icon_src, letter, hue, 'small') }}{% endif %}
+  <span class="forum-topic-title">
+    <span class="forum-topic-name">{% if href %}<a href="{{ href }}">{{ title }}</a>{% else %}{{ title }}{% endif %}
+      {%- if nsfw %} <span class="pill bad">NSFW</span>{% endif %}
+      {%- if count is not none %} <span class="count muted">{{ num(count) }}</span>{% endif %}</span>
+    {% if description %}<span class="forum-topic-desc">{{ description }}</span>{% endif %}
+  </span>
+  {% if r %}<span class="forum-row-stats">{{ stats(r) }}</span>{% endif %}
+</summary>
+{%- endmacro %}
+
+{# A section, open until you close it; app.js remembers which you closed, by `key`. #}
+{% macro topic(key, depth, anchor=none) -%}
+<details class="forum-topic d{{ depth % 6 }}" data-fold="{{ key }}" open{% if anchor %} id="{{ anchor }}"{% endif %}>
+{{ caller() }}
+</details>
+{%- endmacro %}
+
+{# What's in a forum, `depth` forums down from the page: its sections, the forums
+   in it, then its communities. `v`: forums.view. #}
+{% macro forum_body(v, depth) -%}
+{% set nested = depth > 0 %}
+{% for cat in v.categories %}{% set h = cat.head %}
+{% call topic(h.href, depth) %}
+  {{ topic_head(h.title, h.href, h.icon, h.letter, h.hue, h.description, h.nsfw, h) }}
+  <div class="forum-fold">
+    {{ rail(h.title) }}
+    <div class="forum-fold-body">
+      {% for r in cat.rows %}{{ forum_item(r, depth + 1) }}{% endfor %}
+      {% if h.own %}{{ own_item(h, depth + 1) }}{% endif %}
+    </div>
+  </div>
+{% endcall %}
+{% endfor %}
+
+{% if v.loose %}
+{% call topic(v.href ~ '#forums', depth) %}
+  {{ topic_head('More forums' if v.categories else 'Forums', count=v.loose | length) }}
+  <div class="forum-fold">
+    {{ rail('the forums') }}
+    <div class="forum-fold-body forum-grid">{% for r in v.loose %}{{ forum_item(r, depth + 1) }}{% endfor %}</div>
+  </div>
+{% endcall %}
+{% endif %}
+
+{% if v.communities %}
+  {% if nested and not v.categories and not v.loose %}
+  <div class="forum-list">{% for c in v.communities %}{{ community_row(c) }}{% endfor %}</div>
+  {% else %}
+  {% call topic(v.href ~ '#communities', depth, none if nested else 'communities') %}
+    {{ topic_head('Communities', count=v.communities | length) }}
+    <div class="forum-fold">
+      {{ rail('the communities') }}
+      <div class="forum-fold-body">{% for c in v.communities %}{{ community_row(c) }}{% endfor %}</div>
+    </div>
+  {% endcall %}
+  {% endif %}
+{% elif not v.categories and not v.loose %}
+  <p class="muted forum-empty">There are no communities here.</p>
+{% endif %}
+{%- endmacro %}
+
+{# A community in a forum: its page here, and a button to subscribe to it (sent in
+   the background by app.js: data-forum-follow). #}
+{% macro community_row(c) -%}
+<div class="forum-row community-row" id="{{ c.anchor }}">
+  <span class="forum-expand js-only" aria-hidden="true"></span>
+  {{ badge(c.icon, c.letter, c.hue) }}
+  <div class="forum-row-main">
+    <a class="forum-row-title" href="/c/{{ c.handle }}">{{ c.title }}</a>
+    {%- if c.nsfw %} <span class="pill bad">NSFW</span>{% endif %}
+    <span class="forum-row-handle">{{ chandle(c.name, c.ap_id) }}</span>
+  </div>
+  <div class="forum-row-act">{{ subscribe(c.ref, c.subscribed, anchor=c.anchor, in_forum=true) }}</div>
+</div>
+{%- endmacro %}

@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% from "_macros.html" import when, icon %}
+{% block title %}Inbox{% endblock %}
+{% block content %}
+{% set label = {'reply': 'Reply', 'mention': 'Mention', 'message': 'Message'} %}
+<header class="community-head">
+  <div>
+    <h1>Inbox</h1>
+    <p class="muted">Replies to your posts and comments, mentions, and private messages, as {{ server }} has them: the newest of each.</p>
+  </div>
+  <div class="row">
+    {% if unread_total %}
+    <form method="post" action="/inbox/read-all" data-confirm="Mark {{ unread_total }} item{{ 's' if unread_total != 1 }} read?">
+      <button class="small">{{ icon('check-all') }} Mark all read</button></form>
+    {% endif %}
+  </div>
+</header>
+
+<details class="card new-message" id="new-message"{% if to %} open{% endif %}>
+  <summary>{{ icon('comment') }} New message</summary>
+  <form method="post" action="/inbox/message" class="stack">
+    <label>To <input name="to" required value="{{ to }}" autocomplete="off"
+      placeholder="name (someone on {{ server }}), name@another.server, or their profile's address"></label>
+    <textarea name="body" rows="4" required aria-label="Message"></textarea>
+    <div><button class="small">Send</button>
+      <span class="small muted">Only they can see it. Their answers arrive here, under Messages.</span></div>
+  </form>
+</details>
+
+<nav class="tabs" aria-label="Show">
+  <a href="/inbox{{ ('?kind=' ~ kind) if kind }}" class="{{ 'on' if show == 'unread' }}">Unread{% if unread_total %} <span class="count">{{ unread_total }}</span>{% endif %}</a>
+  <a href="/inbox?show=all{{ ('&kind=' ~ kind) if kind }}" class="{{ 'on' if show == 'all' }}">All</a>
+</nav>
+<div class="row inbox-filters small">
+  {% set sq = 'show=all&' if show == 'all' else '' %}
+  <nav class="seg" aria-label="Kind">
+    <a class="{{ 'on' if not kind }}" href="/inbox{{ '?show=all' if show == 'all' }}">Everything</a>
+    {% for k, name in kinds.items() %}
+      <a class="{{ 'on' if kind == k }}" href="/inbox?{{ sq }}kind={{ k }}">{{ name }}</a>
+    {% endfor %}
+  </nav>
+</div>
+
+{% if not items %}
+<section class="card empty"><p class="muted">{{ 'Nothing unread.' if show == 'unread' else 'Nothing here yet.' }}
+  {% if show == 'unread' %}<a href="/inbox?show=all{{ ('&kind=' ~ kind) if kind }}">See everything</a>.{% endif %}</p></section>
+{% endif %}
+
+<ol class="plain inbox-items" id="items" data-items>
+{% for i in items %}
+  {% set next_item = loop.nextitem %}
+  {% set open_url = ('/t/' ~ i.post_id ~ (('#o' ~ i.comment_id) if i.comment_id else '')) if i.post_id else '' %}
+  <li class="card inbox-item {{ 'unread' if i.unread }}" id="i{{ i.id }}" data-entry{% if open_url %} data-open="{{ open_url }}"{% endif %}>
+    <div class="hit-head">
+      <span class="pill {{ 'new' if i.unread }}">{{ label[i.kind] }}</span>
+      <span class="author">{{ i.author or 'someone' }}</span>
+      {% if i.kind == 'message' %}
+        <span class="muted">sent you a message</span>
+      {% else %}
+        <span class="muted">{{ 'replied on' if i.kind == 'reply' else 'mentioned you on' }}</span>
+        {% if open_url %}<a href="{{ open_url }}">{{ i.post_title or 'a post' }}</a>{% else %}<span>{{ i.post_title or 'a post' }}</span>{% endif %}
+        {% if i.community %}<span class="muted">in <a href="/c/{{ i.community }}">!{{ i.community }}</a></span>{% endif %}
+      {% endif %}
+      {% if i.deleted %}<span class="pill warn">deleted</span>{% endif %}
+    </div>
+    <div class="md">{{ md(i.body) }}</div>
+    <div class="actions small inbox-actions">
+      <span class="muted">{{ when(i.created_at) }}</span>
+      {% if i.kind != 'message' and i.author_ap_id %}
+        <a class="act" href="/inbox?{{ {'to': i.author_ap_id} | urlencode }}#new-message" title="Send {{ i.author }} a private message">{{ icon('comment') }}<span>Message</span></a>
+      {% endif %}
+      <form method="post" action="/inbox/{{ i.kind }}/{{ i.remote_id }}/read" class="inline" data-inplace="i{{ i.id }}"{% if i.unread and show == 'unread' %} data-gone="Marked read"{% endif %}>
+        <input type="hidden" name="read" value="{{ '1' if i.unread else '0' }}">
+        {% if i.unread and show == 'unread' and next_item %}<input type="hidden" name="anchor" value="i{{ next_item.id }}">{% endif %}
+        <button class="act" data-key="read">{{ icon('check' if i.unread else 'inbox') }}<span>{{ 'Mark read' if i.unread else 'Mark unread' }}</span></button></form>
+    </div>
+    {% if not i.deleted and (i.author_id if i.kind == 'message' else (i.post_id and i.comment_id)) %}
+    <details class="inbox-reply" data-reply>
+      <summary class="small">{{ icon('comment') }} {{ 'Reply to message' if i.kind == 'message' else 'Reply' }}</summary>
+      <form method="post" action="/inbox/{{ i.kind }}/{{ i.remote_id }}/reply" class="stack" data-inplace="i{{ i.id }}" data-gone="Reply sent">
+        {% if i.kind == 'message' %}<input type="hidden" name="author_id" value="{{ i.author_id }}">
+        {% else %}<input type="hidden" name="post_id" value="{{ i.post_id }}"><input type="hidden" name="comment_id" value="{{ i.comment_id }}">{% endif %}
+        <textarea name="body" rows="4" required aria-label="Your reply"></textarea>
+        <div><button class="small">Send</button></div>
+      </form>
+    </details>
+    {% endif %}
+  </li>
+{% endfor %}
+</ol>
+{% endblock %}

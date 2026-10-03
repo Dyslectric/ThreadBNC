@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon %}
+{% from "_forum.html" import badge, num, forum_body with context %}
+{% block title %}{{ node.title if parts else 'Forums' }}{% endblock %}
+{% block content %}
+{% if parts %}
+<nav class="crumbs" aria-label="Where this is">
+  <a href="/forums">Forums</a>
+  {% for title, href in v.trail %}<span class="sep" aria-hidden="true">›</span><a href="{{ href }}">{{ title }}</a>{% endfor %}
+</nav>
+<header class="card forum-head{{ ' has-banner' if node.banner and not node.nsfw }}">
+  {% if node.banner and not node.nsfw %}<div class="forum-banner"><img src="{{ node.banner }}" alt="" referrerpolicy="no-referrer"></div>{% endif %}
+  <div class="forum-head-main">
+    {{ badge(head.icon, head.letter, head.hue, 'big') }}
+    <div class="grow">
+      <h1>{{ node.title }}{% if node.nsfw %} <span class="pill bad">NSFW</span>{% endif %}</h1>
+      <p class="forum-facts">
+        {% if node.children %}<span class="forum-fact"><strong>{{ num(node.children | length) }}</strong> forum{{ '' if node.children | length == 1 else 's' }}</span>{% endif %}
+        <span class="forum-fact"><strong>{{ num(head.total) }}</strong> communit{{ 'y' if head.total == 1 else 'ies' }}</span>
+        {% if head.followed %}<span class="forum-fact followed">{{ icon('check') }} you subscribe to <strong>{{ head.followed }}</strong></span>{% endif %}
+        <a class="forum-fact" href="{{ node.url }}" target="_blank" rel="noopener noreferrer">on {{ server }} {{ icon('external', 'ext') }}</a>
+      </p>
+    </div>
+  </div>
+  {% if description %}<div class="md forum-desc">{{ description }}</div>{% endif %}
+</header>
+{% else %}
+<header class="community-head">
+  <div>
+    <h1>Forums</h1>
+    <p class="muted">{% if kind == 'topic' %}The communities {{ server }} knows of, arranged into topics by its admins.
+      {%- else %}Communities gathered into feeds by people on {{ server }}; a feed can hold other feeds.{% endif %}
+      {% if me %}Subscribe to a community and it joins your feed and the list beside it.{% endif %}</p>
+  </div>
+</header>
+<nav class="tabs" aria-label="Arranged by">
+  {% for k, label in kinds.items() %}<a href="/forums{{ '/feeds' if k == 'feed' }}" class="{{ 'on' if kind == k }}"{% if kind == k %} aria-current="page"{% endif %}>{{ label }}</a>{% endfor %}
+</nav>
+{% endif %}
+
+{% if v.categories or v.loose %}
+<div class="forum-tools js-only" role="group" aria-label="Sections">
+  <button type="button" class="small secondary" data-forum-fold="open">{{ icon('chevron-down') }} Open all</button>
+  <button type="button" class="small secondary" data-forum-fold="close">{{ icon('chevron-right') }} Close all</button>
+</div>
+{% endif %}
+<div id="forum-body" class="forum-body forum-page" data-forum-src="{{ v.src }}">
+{{ forum_body(v, 0) }}
+</div>
+{% endblock %}

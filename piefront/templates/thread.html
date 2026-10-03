@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+{% from "_macros.html" import when, icon, veil %}
+{% from "_feed.html" import community_link, byline, badges, vote_box, vote_forms, post_link, sidebar with context %}
+{% block title %}{{ post.title }}{% endblock %}
+{% block head %}<script src="{{ static_url('thread.js') }}" defer></script>{% endblock %}
+
+{# Send someone a private message, from under something they wrote. #}
+{% macro message_box(a) -%}
+{% if me and a.ap_id and a.ap_id != me.person.ap_id and not a.deleted %}
+<details class="reply-box">
+  <summary title="Send {{ a.name }} a private message">Message</summary>
+  <form method="post" action="/inbox/message" class="stack">
+    <input type="hidden" name="to" value="{{ a.ap_id }}">
+    <textarea name="body" rows="4" required aria-label="Private message"
+      placeholder="Private message to {{ a.name }}@{{ a.host }}, only they can see it (Markdown)"></textarea>
+    <button class="small">Send</button>
+  </form>
+</details>
+{% endif %}
+{%- endmacro %}
+
+{% macro comment(c, depth) -%}
+  <details open class="comment d{{ depth % 8 }}" id="o{{ c.id }}">
+    <summary class="meta small">
+      <span class="fold" aria-hidden="true">{{ icon('chevron-down') }}</span>
+      {{ byline(c.author) }}
+      {% if c.author.ap_id == post.author.ap_id %}<span class="pill new" title="They posted this">OP</span>{% endif %}
+      {% if c.admin %}<span class="pill good">admin</span>{% elif c.mod %}<span class="pill good">mod</span>{% endif %}
+      {% if c.author.bot %}<span class="pill">bot</span>{% endif %}
+      <span class="muted">· {{ when(c.created_at) }}</span>
+      {% if c.edited_at %}<span class="pill warn" title="{{ c.edited_at | absolute }}">edited</span>{% endif %}
+      {% if c.deleted %}<span class="pill warn">deleted by author</span>{% endif %}
+      {% if c.removed %}<span class="pill bad">removed</span>{% endif %}
+      <span class="collapsed-note">{% if c.descendants %}{{ c.descendants }} repl{{ 'ies' if c.descendants != 1 else 'y' }} hidden{% else %}collapsed{% endif %}</span>
+    </summary>
+    <button type="button" class="bar" title="Collapse this thread" aria-label="Collapse this thread"></button>
+    <div class="content">
+      <div class="md {{ 'faded' if c.deleted or c.removed }}">{{ md(c.body) }}</div>
+      <div class="obj-actions small" id="ak{{ c.id }}">
+        {{ vote_forms('k', c) }}
+        {% if me and not post.locked and not c.deleted and not c.removed %}
+        <details class="reply-box">
+          <summary>Reply</summary>
+          <form method="post" action="/t/{{ post.id }}/reply" class="stack">
+            <input type="hidden" name="parent_id" value="{{ c.id }}">
+            <textarea name="body" rows="4" required placeholder="Reply as {{ me.person.handle }} (Markdown)" aria-label="Your reply"></textarea>
+            <button class="small">Reply</button>
+          </form>
+        </details>
+        {% endif %}
+        {{ message_box(c.author) }}
+        {% if c.ap_id | safe_url %}<a href="{{ c.ap_id }}" target="_blank" rel="noreferrer noopener nofollow" title="This comment where it was written">{{ icon('external') }}<span class="sr-only">Original</span></a>{% endif %}
+      </div>
+      {% if c.children %}<button type="button" class="replies-toggle" data-action="show-replies">{{ icon('chevron-down') }} Show {{ c.descendants }} repl{{ 'ies' if c.descendants != 1 else 'y' }}</button>
+      <div class="replies">{% for child in c.children %}{{ comment(child, depth + 1) }}{% endfor %}</div>{% endif %}
+    </div>
+  </details>
+{%- endmacro %}
+
+{% block content %}
+<div class="layout">
+  <div class="main-col">
+    <nav class="crumbs" aria-label="Where this is">
+      <a href="/">Feeds</a><span class="sep" aria-hidden="true">›</span><a href="/c/{{ post.community.handle }}">{{ post.community.title }}</a>
+    </nav>
+    <article class="card post" id="o-post">
+      <div class="meta small">
+        {{ community_link(post.community) }} · {{ byline(post.author) }} · {{ when(post.created_at) }}
+        {{ badges(post) }}
+      </div>
+      <h1>{{ post.title }}</h1>
+      {{ post_link(post) }}
+      {% if post.full %}
+        <div class="post-media post-gallery"{{ veil(post.veil) }}><a href="{{ post.full }}" target="_blank" rel="noreferrer noopener"><img class="media" src="{{ post.picture }}" alt="" referrerpolicy="no-referrer"></a></div>
+      {% elif post.picture and post.url %}
+        <a class="link-preview" href="{{ post.url }}" rel="noreferrer noopener nofollow" target="_blank"{{ veil(post.veil) }}>
+          <img src="{{ post.picture }}" alt="" loading="lazy" referrerpolicy="no-referrer"><span class="small muted">{{ post.url | host }}{{ icon('external') }}</span></a>
+      {% endif %}
+      {% if post.body %}<div class="md {{ 'faded' if post.deleted or post.removed }}" id="post-text"{{ veil(post.veil) }}>{{ md(post.body) }}</div>{% endif %}
+      <div class="actions thread-actions small" id="thread-actions">
+        {{ vote_box('p', post) }}
+        <a class="act" href="#comments">{{ icon('comment') }}<span>{{ post.n_comments }} comment{{ 's' if post.n_comments != 1 }}</span></a>
+        {{ message_box(post.author) }}
+        {% if post.ap_id | safe_url %}<a class="act" href="{{ post.ap_id }}" rel="noreferrer noopener nofollow" target="_blank" title="This post where it was posted">{{ icon('external') }}<span>Original</span></a>{% endif %}
+      </div>
+    </article>
+
+    <section class="comments" id="comments" data-inline-source data-thread="{{ post.id }}">
+      <div class="comments-head">
+        <h2>{{ post.n_comments }} comment{{ 's' if post.n_comments != 1 }}</h2>
+        {% if shown > 1 %}
+        <nav class="seg" aria-label="Sort comments">
+          {% for key, label in comment_sorts.items() %}
+            <a href="/t/{{ post.id }}?sort={{ key }}#comments" class="{{ 'on' if comment_sort == key }}">{{ label }}</a>
+          {% endfor %}
+        </nav>
+        {% endif %}
+      </div>
+      {% if post.locked %}<p class="small muted comment-hint">This post is locked: nobody can comment on it now.</p>
+      {% elif me %}
+      <div class="compose">
+        <form method="post" action="/t/{{ post.id }}/reply" class="stack">
+          <textarea name="body" rows="3" required placeholder="Add a comment as {{ me.person.handle }} (Markdown)" aria-label="Your comment"></textarea>
+          <div class="row"><button>Comment</button></div>
+        </form>
+      </div>
+      {% else %}<p class="small muted comment-hint"><a href="/login?next={{ ('/t/' ~ post.id) | urlencode }}">Sign in</a> to comment and vote.</p>
+      {% endif %}
+      {% if comments %}
+      <div class="toolbar js-only">
+        <button type="button" class="small secondary" data-action="expand-all">Expand all</button>
+        <button type="button" class="small secondary" data-action="collapse-all">Collapse all</button>
+        <button type="button" class="small secondary" data-action="collapse-replies">Top-level only</button>
+      </div>
+      {% endif %}
+      {% for c in comments %}{{ comment(c, 0) }}{% endfor %}
+      {% if not comments %}<p class="small muted section-empty">No comments yet.</p>{% endif %}
+      {% if more %}<p class="small muted">Showing the first {{ shown }} comments.
+        <a href="https://{{ server }}/post/{{ post.id }}" target="_blank" rel="noopener noreferrer">Read them all on {{ server }}{{ icon('external') }}</a></p>{% endif %}
+    </section>
+  </div>
+  {{ sidebar(current=post.community.ap_id) }}
+</div>
+{% endblock %}

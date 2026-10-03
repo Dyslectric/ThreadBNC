@@ -1066,3 +1066,42 @@ Under a post with a linked article (and in the reader) is where else the article
 - Replies to hashtag posts from the fediverse are only read from servers with the Mastodon API, Pixelfed and Loops.
 - Pixelfed and Loops accounts are checked on a schedule. ThreadBNC's own actor could follow them instead, so their posts are pushed, but that would show it among their followers.
 - Post pin/feature state, actor profile history, search, tags and notes are not implemented.
+
+## piefront: a public frontend for a PieFed server
+
+`piefront/` is a second, separate app in this repository: a public frontend for one PieFed server that looks like
+ThreadBNC. It isn't an archive and has no database. Every page is read from the server's API (`/api/alpha`) when
+it's asked for, as whoever is looking, and nothing is kept.
+
+- **Feeds.** Subscribed, Local, Popular and All, sorted by Hot, New, Active or Top, shown as posts, pictures, a grid
+  or a timeline (ThreadBNC's feed views, without Loops). A post's text and comments open under it.
+- **Communities.** `/c/name` (or `/c/name@server`): the community's posts, what it says about itself, and Subscribe.
+- **Forums.** The server's topics and its public feeds as ThreadBNC's forum directory: sections that fold, forums
+  that open in place, and a Subscribe button on each community.
+- **Sidebar.** The communities your account subscribes to, as the server has them.
+- **Inbox.** Replies, mentions and private messages: mark read, reply, and send a new message.
+
+Anyone can read. Signing in is with an account on that server: the password is passed on to the server, which
+answers with a session; that session is kept in the visitor's signed cookie and nowhere else. Voting, commenting,
+subscribing and the inbox are that account's, on the server.
+
+Pages read without signing in are reused for everyone not signed in for `PIEFRONT_CACHE_SECONDS` (30), and the
+list of topics and feeds for half an hour, so readers without accounts cost the server little. Pictures are loaded
+by the visitor's browser from where the server says they are. Pages ask search engines not to index them.
+
+```bash
+PIEFRONT_SERVER=piefed.example PIEFRONT_SECRET_KEY=$(openssl rand -hex 32) python -m piefront serve --port 8090
+```
+
+| Setting | |
+| --- | --- |
+| `PIEFRONT_SERVER` | The PieFed server's host name. Required. |
+| `PIEFRONT_SECRET_KEY` | Signs session cookies. Without it one is made up each run, which signs everyone out on restart. |
+| `PIEFRONT_NAME` | What the site is called in the header. The server's own name when not set. |
+| `PIEFRONT_HTTPS_ONLY` | `0` only for plain-http testing; cookies are HTTPS-only otherwise. |
+| `PIEFRONT_CACHE_SECONDS` | How long a page read as nobody is reused. |
+
+It uses ThreadBNC's styles, icons, page scripts and PieFed adapter directly, so it runs from this checkout (or the
+same image: `python -m piefront serve --host 0.0.0.0 --port 8090`) and the two stay alike. Not there yet: writing
+a post, search, people's profiles, moderation, and choosing how many comments a long thread shows (it reads the
+first 500).

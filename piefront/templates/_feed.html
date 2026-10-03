@@ -1,0 +1,266 @@
+{% from "_macros.html" import when, icon, veil %}
+{% from "_macros.html" import pager as load_more %}
+
+{# ThreadBNC's feed, read live from the server: the same cards, grid, pictures and
+   timeline (its classes, so its styles and app.js apply), without what belongs to
+   an archive (keep, trash, expiry, copies). `base`: the page's address ending in
+   "?" or "&", with whatever must stay in it (which feed). #}
+{% macro feed_url(base, sort, window, page=1) -%}
+{{ base }}sort={{ sort }}{% if sort == 'top' %}&t={{ window }}{% endif %}{% if page > 1 %}&page={{ page }}{% endif %}
+{%- endmacro %}
+
+{% macro controls(base, sort, window, view) %}
+{% set here = feed_url(base, sort, window) %}
+{% set views = [('list', 'Posts: thumbnail, title and the start of the text', 'list'),
+                ('pictures', 'Pictures, one column', 'picture'), ('tiles', 'Pictures in a grid', 'tiles'),
+                ('timeline', 'Timeline: whole posts by who posted them', 'timeline')] %}
+{% set ranges = {'day': 'Past day', 'week': 'Past week', 'month': 'Past month', 'year': 'Past year', 'all': 'All time'} %}
+<div class="feed-controls">
+  <nav class="seg" aria-label="Sort by">
+    {% for key, label in [('hot', 'Hot'), ('new', 'New'), ('active', 'Active'), ('top', 'Top')] %}
+      <a href="{{ feed_url(base, key, window) }}" class="{{ 'on' if sort == key }}"{% if sort == key %} aria-current="true"{% endif %}{% if key == 'active' %} title="Newest comments first"{% endif %}>{{ label }}</a>
+    {% endfor %}
+  </nav>
+  {% if sort == 'top' %}
+  <details class="menu dropdown">
+    <summary class="seg-button" aria-label="Time range">{{ ranges.get(window, 'Past day') }}{{ icon('chevron-down', 'chev') }}</summary>
+    <div class="menu-panel">
+      {% for key, label in ranges.items() %}
+        <a class="menu-item {{ 'on' if window == key }}" href="{{ feed_url(base, sort, key) }}"><span class="tick">{% if window == key %}{{ icon('check') }}{% endif %}</span>{{ label }}</a>
+      {% endfor %}
+    </div>
+  </details>
+  {% endif %}
+  <span class="grow"></span>
+  <nav class="seg view-seg" aria-label="Show posts as">
+    {% for key, label, glyph in views %}
+      <a href="{{ here }}&view={{ key }}" class="{{ 'on' if view == key }}" title="{{ label }}" aria-label="{{ label }}"{% if view == key %} aria-current="true"{% endif %}>{{ icon(glyph) }}</a>
+    {% endfor %}
+  </nav>
+</div>
+{% endmacro %}
+
+{% macro entry_attrs(i) -%}
+id="p{{ i.id }}" data-entry data-open="/t/{{ i.id }}" data-ids="{{ i.id }}"
+{%- endmacro %}
+
+{% macro community_link(c) -%}
+<a class="pc-community" href="/c/{{ c.handle }}">{{ chandle(c.name, c.ap_id) }}</a>
+{%- endmacro %}
+
+{# Who posted it: their name, linked to their profile where they are. #}
+{% macro byline(a) -%}
+{% set profile = a.ap_id | safe_url %}
+{% if profile %}<a class="author" href="{{ profile }}" target="_blank" rel="noreferrer noopener nofollow">{{ a.name }}@{{ a.host }}</a>{% else %}<span class="author">{{ a.name }}</span>{% endif %}
+{%- endmacro %}
+
+{% macro badges(o) -%}
+  {% if o.pinned %}<span class="pill new">pinned</span>{% endif %}
+  {% if o.nsfw %}<span class="pill bad">NSFW</span>{% endif %}
+  {% if o.edited_at %}<span class="pill warn" title="{{ o.edited_at | absolute }}">edited</span>{% endif %}
+  {% if o.deleted %}<span class="pill warn">deleted by author</span>{% endif %}
+  {% if o.removed %}<span class="pill bad">removed</span>{% endif %}
+  {% if o.locked %}<span class="pill warn">locked</span>{% endif %}
+{%- endmacro %}
+
+{# Where a post links to, by its host. #}
+{% macro post_link(i) -%}
+{% if i.url and not i.is_image %}<div class="pc-link small"><a href="{{ i.url }}" target="_blank" rel="noreferrer noopener nofollow">{{ i.url | host }}{{ icon('external') }}</a></div>{% endif %}
+{%- endmacro %}
+
+{# Up and down votes, as whoever is signed in; just the counts' buttons, switched
+   off, for everyone else. `kind`: p for a post, k for a comment. app.js shows a
+   vote at once and sends it in the background (data-vote). #}
+{% macro vote_box(kind, o) -%}
+<div class="tile-votes obj-actions activitypub-votes" id="a{{ kind }}{{ o.id }}">{{ vote_forms(kind, o) }}</div>
+{%- endmacro %}
+
+{# The buttons themselves, for a box of actions that has more in it (a comment's). #}
+{% macro vote_forms(kind, o) -%}
+  {% for direction, word, glyph in ([(1, 'upvote', '▲'), (-1, 'downvote', '▼')] if site.downvotes else [(1, 'upvote', '▲')]) %}
+    {% set on = o.my_vote == direction %}
+    {% set count = o.upvotes if direction == 1 else o.downvotes %}
+    {% if me %}
+    {% set label = ('Remove ' ~ word) if on else (word | capitalize) %}
+    <form method="post" action="/{{ kind }}/{{ o.id }}/vote" class="inline" data-inplace="a{{ kind }}{{ o.id }}" data-vote>
+      <input type="hidden" name="score" value="{{ 0 if on else direction }}">
+      <button class="vote {{ 'up' if direction == 1 else 'down' }} {{ 'on' if on }}" title="{{ label }}" aria-pressed="{{ 'true' if on else 'false' }}"
+        data-on="Remove {{ word }}" data-off="{{ word | capitalize }}"
+        aria-label="{{ label }}, {{ count }} so far"><span aria-hidden="true">{{ glyph }} {{ count }}</span></button>
+    </form>
+    {% else %}
+    <button class="vote {{ 'up' if direction == 1 else 'down' }}" type="button" disabled title="Sign in to vote" aria-label="{{ count }} {{ word }}{{ 's' if count != 1 }}; sign in to vote"><span aria-hidden="true">{{ glyph }} {{ count }}</span></button>
+    {% endif %}
+  {% endfor %}
+{%- endmacro %}
+
+{# What a post's card offers: its text and its comments, each opened under it by app.js. #}
+{% macro post_actions(i, short=False) -%}
+{% if i.body %}<a class="act read-post" href="/t/{{ i.id }}#post-text" title="Show the post's text here" aria-expanded="false">{{ icon('article') }}<span{% if short %} class="sr-only"{% endif %}>Post text</span></a>
+{% elif i.full and not short %}<a class="act read-post" href="/t/{{ i.id }}#post-text" title="Show the picture here" aria-expanded="false">{{ icon('picture') }}<span>Picture</span></a>{% endif %}
+<a class="act inline-comments" href="/t/{{ i.id }}#comments" title="Show {{ i.n_comments }} comment{{ 's' if i.n_comments != 1 }} here" aria-expanded="false">{{ icon('comment') }}{% if short %}<span class="sr-only">Comments: </span>{{ i.n_comments }}{% else %}<span>{{ i.n_comments }} comment{{ 's' if i.n_comments != 1 }}</span>{% endif %}</a>
+{%- endmacro %}
+
+{% macro picture(i, size) -%}
+<div class="gallery"{{ veil(i.veil) }}>
+  <div class="gallery-track">
+    <a class="gallery-slide" href="/t/{{ i.id }}" tabindex="-1" aria-hidden="true"><img src="{{ i.picture }}" alt="" loading="lazy" referrerpolicy="no-referrer"></a>
+  </div>
+</div>
+{%- endmacro %}
+
+{% macro post_card(i, show_community=True) %}
+<article class="post-card {{ 'unread' if me and not i.read }}" {{ entry_attrs(i) }}>
+  {% if i.thumb %}
+    <a class="thumb" href="/t/{{ i.id }}" tabindex="-1" aria-hidden="true"{{ veil(i.veil) }}><img src="{{ i.thumb }}" alt="" loading="lazy" referrerpolicy="no-referrer"></a>
+  {% endif %}
+  <div class="pc-main">
+    <div class="pc-meta small">
+      {% if show_community %}{{ community_link(i.community) }} ·{% endif %}
+      <span>{{ byline(i.author) }}</span> · {{ when(i.created_at) }}
+      {{ badges(i) }}
+    </div>
+    <h3 class="pc-title"><a href="/t/{{ i.id }}">{{ i.title }}</a></h3>
+    {{ post_link(i) }}
+    {% if i.excerpt %}<p class="pc-excerpt">{{ i.excerpt }}</p>{% endif %}
+    <div class="pc-actions actions small">
+      {{ post_actions(i) }}
+      {{ vote_box('p', i) }}
+    </div>
+  </div>
+</article>
+{% endmacro %}
+
+{# A post as a grid tile: its picture, else a text card. #}
+{% macro post_tile(i, show_community=True) %}
+<article class="tile {{ 'unread' if me and not i.read }}" {{ entry_attrs(i) }}>
+  {% if i.picture %}<div class="tile-media">{{ picture(i, 'tile') }}</div>
+  {% else %}
+  <a class="tile-media" href="/t/{{ i.id }}" tabindex="-1" aria-hidden="true"><span class="tile-text">{{ i.excerpt or i.title }}</span></a>
+  {% endif %}
+  <div class="tile-body">
+    <h3 class="tile-title"><a href="/t/{{ i.id }}">{{ i.title }}</a></h3>
+    <div class="tile-meta small">
+      {% if show_community %}{{ community_link(i.community) }} · {% endif %}{{ when(i.created_at) }}
+      {% if i.nsfw %}<span class="pill bad">NSFW</span>{% endif %}
+    </div>
+    <div class="tile-actions small">
+      <div class="tile-action-row tile-action-primary">
+        {{ post_actions(i, short=True) }}
+        <span class="grow"></span>
+        {{ vote_box('p', i) }}
+      </div>
+    </div>
+  </div>
+</article>
+{% endmacro %}
+
+{# A post in the one-column pictures view: its picture at full width, else the start of its text. #}
+{% macro post_picture(i, show_community=True) %}
+<article class="picture-card {{ 'unread' if me and not i.read }}" {{ entry_attrs(i) }}>
+  <div class="pc-meta small">
+    {% if show_community %}{{ community_link(i.community) }} ·{% endif %}
+    <span>{{ byline(i.author) }}</span> · {{ when(i.created_at) }}
+    {{ badges(i) }}
+  </div>
+  <h3 class="pc-title"><a href="/t/{{ i.id }}">{{ i.title }}</a></h3>
+  {{ post_link(i) }}
+  {% if i.picture %}<div class="picture-media">{{ picture(i, 'picture') }}</div>
+  {% elif i.excerpt %}<p class="pc-excerpt">{{ i.excerpt }}</p>{% endif %}
+  <div class="pc-actions actions small">
+    {{ post_actions(i) }}
+    {{ vote_box('p', i) }}
+  </div>
+</article>
+{% endmacro %}
+
+{# Who posted something, as a picture: theirs, else their initial on a colour of their own. #}
+{% macro avatar(a) -%}
+{% set profile = a.ap_id | safe_url %}
+<{{ 'a' if profile else 'span' }} class="st-avatar av-{{ a.hue }}{{ ' has-picture' if a.avatar }}"{% if profile %} href="{{ profile }}" target="_blank" rel="noreferrer noopener nofollow" tabindex="-1"{% endif %} aria-hidden="true">
+  {%- if a.avatar %}<img src="{{ a.avatar }}" alt="" loading="lazy" referrerpolicy="no-referrer">{% else %}{{ (a.display | trim)[:1] | upper }}{% endif -%}
+</{{ 'a' if profile else 'span' }}>
+{%- endmacro %}
+
+{# A post as on a microblog: who posted it, then its title, all of its text and its picture. #}
+{% macro post_status(i, show_community=True) %}
+<article class="status {{ 'unread' if me and not i.read }}" {{ entry_attrs(i) }}>
+  <div class="st-row">
+    {{ avatar(i.author) }}
+    <div class="pc-main st-main">
+      <div class="st-head">
+        <span class="st-who"><span class="st-name">{{ i.author.display }}</span>
+          <span class="st-handle muted small">{{ byline(i.author) }}</span></span>
+        <span class="st-when small muted">{% if show_community %}{{ community_link(i.community) }} · {% endif %}<a href="/t/{{ i.id }}" title="Open the post">{{ when(i.created_at) }}</a></span>
+      </div>
+      {% set marks = badges(i) | trim %}{% if marks %}<div class="small">{{ marks }}</div>{% endif %}
+      <h3 class="st-title"><a href="/t/{{ i.id }}">{{ i.title }}</a></h3>
+      {% if i.body %}<div class="md st-text"{{ veil(i.veil) }}>{{ md(i.body) }}</div>{% endif %}
+      {% if i.picture %}<div class="st-media">{{ picture(i, 'picture') }}</div>{% endif %}
+      {{ post_link(i) }}
+      <div class="pc-actions st-actions actions small">
+        <a class="act inline-comments" href="/t/{{ i.id }}#comments" title="Show the replies here" aria-expanded="false">{{ icon('comment') }}<span>{{ i.n_comments }}<span class="sr-only"> repl{{ 'ies' if i.n_comments != 1 else 'y' }}</span></span></a>
+        {{ vote_box('p', i) }}
+      </div>
+    </div>
+  </div>
+</article>
+{% endmacro %}
+
+{# The feed's posts: as posts, pictures in one column, a grid of pictures, or a timeline. #}
+{% macro posts(items, view, show_community=True) %}
+{% set layout = {'tiles': 'tiles', 'pictures': 'pictures', 'timeline': 'timeline'}.get(view, 'cards') if items else 'cards' %}
+<div id="items" class="{{ layout }}" data-items>
+{% for i in items %}
+  {% if view == 'tiles' %}{{ post_tile(i, show_community) }}
+  {% elif view == 'pictures' %}{{ post_picture(i, show_community) }}
+  {% elif view == 'timeline' %}{{ post_status(i, show_community) }}
+  {% else %}{{ post_card(i, show_community) }}{% endif %}
+{% endfor %}
+</div>
+{% endmacro %}
+
+{% macro pager(more, base, sort, window, page) %}
+{{ load_more(feed_url(base, sort, window, page + 1) if more else none, feed_url(base, sort, window) if page > 1 else none, page) }}
+{% endmacro %}
+
+{% macro follow_link(c, current) -%}
+<li><a href="/c/{{ c.handle }}" class="{{ 'on' if current == c.ap_id }}"{% if current == c.ap_id %} aria-current="page"{% endif %} title="{{ c.title }}">
+  <span class="fl-name">{{ chandle(c.name, c.ap_id) }}</span></a></li>
+{%- endmacro %}
+
+{# Beside every feed: which feed you're in, and the communities you subscribe to
+   (as the server has them). `feed`: the listing shown; `current`: the community shown. #}
+{% macro sidebar(feed='', current=none) %}
+<aside class="sidebar" id="feed-sidebar" data-live aria-label="Feeds and the communities you subscribe to">
+  <section class="card fl-feeds">
+    <h2>Feeds</h2>
+    <ul class="follow-list">
+      {% for key, label, title in [('subscribed', 'Subscribed', 'The communities you subscribe to'),
+                                   ('local', 'Local', 'Communities on ' ~ server),
+                                   ('popular', 'Popular', 'What ' ~ server ~ ' counts as popular'),
+                                   ('all', 'All', 'Everything ' ~ server ~ ' knows of')] if key != 'subscribed' or me %}
+      <li><a href="/?feed={{ key }}" class="{{ 'on' if feed == key }}"{% if feed == key %} aria-current="page"{% endif %} title="{{ title }}"><span class="fl-name">{{ label }}</span></a></li>
+      {% endfor %}
+    </ul>
+  </section>
+  <section class="card">
+    {% if me %}
+    <details class="fl-panel" open>
+    <summary class="fl-summary" title="Show or hide the communities you subscribe to">
+      <h2>Subscribed</h2><span class="count muted">{{ me.follows | length }}</span><span class="grow"></span>{{ icon('chevron-down', 'chev') }}</summary>
+    <ul class="follow-list">
+      {% for c in me.follows %}{{ follow_link(c, current) }}{% endfor %}
+      {% if not me.follows %}<li class="muted small">Not subscribed to anything yet.</li>{% endif %}
+      <li class="fl-add"><a href="/forums">{{ icon('plus') }}<span class="fl-name">Find communities</span></a></li>
+    </ul>
+    </details>
+    {% else %}
+    <h2>{{ site.name }}</h2>
+    {% if site.description %}<p class="small muted">{{ site.description }}</p>{% endif %}
+    <p class="small">Sign in with your {{ server }} account to see the communities you subscribe to here, and to vote and comment.</p>
+    <p><a class="button" href="/login">Sign in</a></p>
+    {% endif %}
+  </section>
+</aside>
+{% endmacro %}

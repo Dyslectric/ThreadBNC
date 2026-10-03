@@ -18,6 +18,7 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt
 
 COPY threadbnc ./threadbnc
+COPY piefront ./piefront
 
 # Run unprivileged; /data holds archived media and the generated session secret.
 RUN useradd --system --uid 10001 --no-create-home --home-dir /app threadbnc \
