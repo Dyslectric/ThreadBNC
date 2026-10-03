@@ -1722,7 +1722,8 @@ html:not(.js) .forum-row { padding-left: 16px; }
 .booru-controls details > summary { cursor: pointer; color: var(--accent); }
 .booru-controls details[open] > summary { margin-bottom: 6px; }
 .booru-controls form.stack { gap: 6px; }
-.booru-mine { font-weight: 700; }
+.booru-controls button[aria-pressed=true] { font-weight: 700; color: var(--accent); }
+.booru-controls button[aria-pressed=true] .when-off, .booru-controls button[aria-pressed=false] .when-on { display: none; }
 .booru-comment { white-space: pre-line; }
 .booru-note { background: var(--warn-bg); border-radius: 8px; padding: 8px 12px; margin: 0 0 12px; }
 .booru-poolnav { display: flex; gap: 10px; align-items: center; margin: 0 0 10px; }

@@ -1,13 +1,14 @@
 {% extends "base.html" %}
-{# Signing in to a booru: `!login <code>` has been sent to its bot as your account, over federation. This
-   page looks again every couple of seconds, and goes on by itself once the booru has the message. #}
-{% block head %}<meta http-equiv="refresh" content="2">{% endblock %}
+{# Signing in to a booru: `!login <code>` is sent to its bot as your account, over federation. The page
+   asks every second whether the booru has it (app.js: a small answer, nothing rendered) and goes on by
+   itself once it has; without scripts it loads again every few seconds instead. #}
+{% block head %}<noscript><meta http-equiv="refresh" content="3"></noscript>{% endblock %}
 {% block title %}Signing in to {{ booru.name }}{% endblock %}
 {% block content %}
-<section class="card narrow-wide">
+<section class="card narrow-wide" data-booru-wait="/booru/{{ booru.id }}/signin/state">
   <h1>Signing in to {{ booru.name }}…</h1>
-  <p class="muted">{% if account %}A private message was sent from <strong>{{ account.handle }}</strong> to {{ booru.name }}'s bot: that's
-    how it knows the account is yours.{% else %}A private message was sent to {{ booru.name }}'s bot.{% endif %}
+  <p class="muted">{% if account %}A private message {{ 'is being' if sending else 'was' }} sent from <strong>{{ account.handle }}</strong> to {{ booru.name }}'s bot: that's
+    how it knows the account is yours.{% else %}A private message {{ 'is being' if sending else 'was' }} sent to {{ booru.name }}'s bot.{% endif %}
     It travels between the two servers, which usually takes a few seconds and sometimes a minute or so.
     This page goes on by itself once it's there.</p>
   {% if retry %}<p class="muted">What you just sent is kept, and goes to {{ booru.name }} as soon as you're signed in again:

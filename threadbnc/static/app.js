@@ -2921,4 +2921,58 @@ document.documentElement.classList.add("js");
       if (link) link.click();
     }
   });
+
+  // Boorus: the page that waits for a sign-in asks every second whether the booru has the
+  // message yet (a small answer), and loads again once it has: that's what goes on.
+  const booruWait = $("[data-booru-wait]");
+  if (booruWait) {
+    const ask = () => fetch(booruWait.dataset.booruWait, { headers: { Accept: "application/json" } })
+      .then((r) => r.json())
+      .then((d) => { if (d.waiting) setTimeout(ask, 1000); else location.reload(); })
+      .catch(() => setTimeout(ask, 3000));
+    setTimeout(ask, 1000);
+  }
+
+  // Boorus: a vote or a favourite on a post's page is sent without leaving it, and the
+  // buttons and counts are put as they then stand. Anything else the booru says is shown.
+  document.addEventListener("submit", (ev) => {
+    const form = ev.target.closest("form[data-booru-mark]");
+    const box = form && form.closest("[data-booru-marks]");
+    if (!box || ev.defaultPrevented) return;
+    ev.preventDefault();
+    const button = $("button", form);
+    button.disabled = true;
+    fetch(form.action, { method: "POST", body: new URLSearchParams(new FormData(form)), headers: { Accept: "application/json" } })
+      .then((r) => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then((d) => {
+        if (d.go) { location.href = d.go; return; }
+        if (!d.ok) throw new Error(d.message || "the booru refused it");
+        if (form.dataset.booruMark === "fav") {
+          const on = box.dataset.fav !== "1";
+          box.dataset.fav = on ? "1" : "0";
+          form.action = on ? form.dataset.off : form.dataset.on;
+          button.setAttribute("aria-pressed", on ? "true" : "false");
+          const favs = $("[data-booru-favs]");
+          if (favs) {
+            const n = Math.max(0, Number(favs.dataset.booruFavs) + (on ? 1 : -1));
+            favs.dataset.booruFavs = n;
+            favs.textContent = n + " favourite" + (n === 1 ? "" : "s");
+          }
+        } else {
+          const was = Number(box.dataset.vote), mine = Number(form.dataset.booruMark);
+          const now = was === mine ? 0 : mine;
+          box.dataset.vote = now;
+          for (const f of $$("form[data-booru-mark]", box)) {
+            const v = Number(f.dataset.booruMark);
+            if (!v) continue;  // (the favourite)
+            f.elements.value.value = now === v ? 0 : v;
+            $("button", f).setAttribute("aria-pressed", now === v ? "true" : "false");
+          }
+          const score = $("[data-booru-score]");
+          if (score) score.textContent = Number(score.textContent) + now - was;
+        }
+      })
+      .catch((e) => toast({ kind: "error", text: "Couldn't do that: " + e.message }))
+      .finally(() => { button.disabled = false; });
+  });
 })();

@@ -2279,17 +2279,75 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         if not bot:
             raise booru_mod.BooruError(f"{booru['name']} doesn't take sign-ins from "
                                        f"{'Bluesky' if account.is_bluesky else 'the fediverse'}. Use another account.")
+        with db.transaction() as conn:  # kept before the message goes: the booru may have it at once
+            booru_mod.keep_pending(conn, booru["id"], poster.vault.encrypt(started["secret"]), account.id, utcnow(), retry)
         try:
             poster.message(account, str(bot).lstrip("@"), f"!login {started['code']}")
         except (AccountError, RemoteError) as exc:
+            with db.transaction() as conn:
+                booru_mod.drop_pending(conn, booru["id"])
             raise booru_mod.BooruError(f"Couldn't send the sign-in message as {account.handle}: {exc}") from exc
-        with db.transaction() as conn:
-            booru_mod.keep_pending(conn, booru["id"], poster.vault.encrypt(started["secret"]), account.id, utcnow(), retry)
+
+    # Sign-ins being started: {booru: {"account": id, "error": why it couldn't be, if it couldn't}}.
+    # Starting one asks the booru for a code and your server to send it (several requests, a
+    # second or two), so it's done in the background and the page that waits says how it went.
+    booru_starting: dict[int, dict[str, Any]] = {}
+    booru_starting_lock = threading.Lock()
+
+    def begin_booru_sign_in(booru: dict[str, Any], account: Account, retry: dict[str, Any] | None = None) -> None:
+        """start_booru_sign_in, without waiting for it."""
+        bid = booru["id"]
+        with booru_starting_lock:
+            if bid in booru_starting and booru_starting[bid]["error"] is None:
+                return  # one is being started already
+            booru_starting[bid] = {"account": account.id, "error": None}
+
+        def work() -> None:
+            try:
+                start_booru_sign_in(booru, account, retry)
+            except Exception as exc:  # whatever went wrong, the waiting page must hear of it
+                if not isinstance(exc, booru_mod.BooruError):
+                    log.exception("starting a sign-in to %s", booru["host"])
+                with booru_starting_lock:
+                    booru_starting[bid]["error"] = str(exc) or type(exc).__name__
+                return
+            with booru_starting_lock:
+                booru_starting.pop(bid, None)
+
+        getattr(app.state, "booru_spawn", lambda fn: threading.Thread(target=fn, daemon=True).start())(work)
+
+    def booru_sign_in_waiting(booru: dict[str, Any]) -> bool:
+        """Whether a sign-in is still on its way: asked every second by the page that waits
+        (cheaply: nothing is rendered, and nothing is changed)."""
+        with booru_starting_lock:
+            starting = booru_starting.get(booru["id"])
+        if starting:
+            return starting["error"] is None
+        session, _ = booru_session(booru["id"])
+        if not session or not session["pending_enc"] or booru_mod.waited_too_long(session, utcnow()):
+            return False
+        try:
+            with traffic_mod.tagged("boorus"):
+                said = booru_mod.sign_in_state(bouncer.http, booru["host"], poster.vault.decrypt(session["pending_enc"]))
+        except booru_mod.Refused:
+            return False
+        except (booru_mod.BooruError, VaultError):
+            return True  # it couldn't be asked just now
+        return said.get("state") == "waiting"
 
     def advance_booru_sign_in(request: Request, booru: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
         """See whether a sign-in under way is done: "none" (there isn't one), "waiting",
         "failed" (it's dropped, and the next page says why) or "done", with the form that
         was held for it, if any."""
+        with booru_starting_lock:
+            starting = booru_starting.get(booru["id"])
+            if starting and starting["error"] is not None:
+                del booru_starting[booru["id"]]
+        if starting and starting["error"] is not None:
+            flash(request, f"Couldn't sign in to {booru['name']}: {starting['error'].rstrip('.')}.", "error")
+            return "failed", None
+        if starting:
+            return "waiting", None
         session, _ = booru_session(booru["id"])
         if not session or not session["pending_enc"]:
             return "none", None
@@ -2321,53 +2379,56 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         flash(request, f"Couldn't sign in to {booru['name']}: {why}.", "error")
         return "failed", None
 
-    def send_booru_form(request: Request, booru: dict[str, Any], path: str, fields: dict[str, str], to: str,
-                        files: list[tuple[str, tuple[str, bytes, str]]] | None = None) -> str | None:
-        """Send one of a booru's forms as you, and say on the next page what it answered.
-        Returns where to go instead of `to`, if anywhere: the page that waits for a fresh
-        sign-in, when the booru wants one first (an admin's action)."""
+    def booru_send(request: Request, booru: dict[str, Any], path: str, fields: dict[str, str], to: str,
+                   files: list[tuple[str, tuple[str, bytes, str]]] | None = None) -> tuple[bool, str, str | None]:
+        """Send one of a booru's forms as you. Returns whether it was done, what the booru
+        (or this) says of it, and where to go instead of `to`, if anywhere: the page that
+        waits for a fresh sign-in, when the booru wants one first (an admin's action), with
+        the form held to be sent after it."""
         bid = booru["id"]
         advance_booru_sign_in(request, booru)  # a sign-in renewed in the background may be done by now
         session, token = booru_session(bid)
         if not token:
-            flash(request, f"Sign in to {booru['name']} first, from the menu at the end of its bar.", "error")
-            return None
+            return False, f"Sign in to {booru['name']} first, from the menu at the end of its bar.", None
         try:
             with traffic_mod.tagged("boorus"):
-                flash(request, booru_mod.write(bouncer.http, booru["host"], token, "/" + path, fields, files))
+                return True, booru_mod.write(bouncer.http, booru["host"], token, "/" + path, fields, files), None
         except booru_mod.Stale as exc:
             account = poster.get(session["account_id"]) if session else None
             if account is None or files:
-                flash(request, str(exc) or f"{booru['name']} wants a fresh sign-in for that. Sign in again from the menu.", "error")
-                return None
-            try:
-                start_booru_sign_in(booru, account, {"path": path, "fields": fields, "back": to})
-            except booru_mod.BooruError as again:
-                flash(request, f"{booru['name']} wants a fresh sign-in for that, and it couldn't be started: {again}", "error")
-                return None
-            return f"/booru/{bid}/signin?" + urlencode({"next": to})
+                return False, str(exc) or f"{booru['name']} wants a fresh sign-in for that. Sign in again from the menu.", None
+            begin_booru_sign_in(booru, account, {"path": path, "fields": fields, "back": to})
+            return False, "", f"/booru/{bid}/signin?" + urlencode({"next": to})
         except booru_mod.SignedOut:
             with db.transaction() as conn:
                 booru_mod.forget(conn, bid)
-            flash(request, f"Your session on {booru['name']} has ended. Sign in again from the menu.", "error")
+            return False, f"Your session on {booru['name']} has ended. Sign in again from the menu.", None
         except booru_mod.BooruError as exc:
-            flash(request, str(exc), "error")
-        return None
+            return False, str(exc), None
+
+    def send_booru_form(request: Request, booru: dict[str, Any], path: str, fields: dict[str, str], to: str,
+                        files: list[tuple[str, tuple[str, bytes, str]]] | None = None) -> str | None:
+        """booru_send, saying on the next page what was answered. Returns where to go instead of `to`."""
+        done, message, where = booru_send(request, booru, path, fields, to, files)
+        if message:
+            flash(request, message, "info" if done else "error")
+        return where
 
     @app.post("/booru/{bid}/signin")
     def booru_sign_in(request: Request, bid: int, account: int = Form(...), next: str = Form("")):
-        """Plain def: the booru is asked for a code and your server sends it while you wait."""
+        """Starts the sign-in and goes straight to the page that waits for it."""
         booru = booru_row(bid)
         to = local_path(next, booru_href(on=bid))
         who = [a for a in booru_accounts() if a.id == account]
         if not who:
             raise HTTPException(400, "That account can't sign in to a booru.")
-        try:
-            start_booru_sign_in(booru, who[0])
-        except booru_mod.BooruError as exc:
-            flash(request, str(exc), "error")
-            return RedirectResponse(to, status_code=303)
+        begin_booru_sign_in(booru, who[0])
         return RedirectResponse(f"/booru/{bid}/signin?" + urlencode({"next": to}), status_code=303)
+
+    @app.get("/booru/{bid}/signin/state")
+    def booru_sign_in_state(bid: int):
+        """Whether the page that waits for a sign-in should go on waiting."""
+        return JSONResponse({"waiting": booru_sign_in_waiting(booru_row(bid))}, headers={"Cache-Control": "no-store"})
 
     @app.get("/booru/{bid}/signin", response_class=HTMLResponse)
     def booru_signing_in(request: Request, bid: int, next: str = ""):
@@ -2378,8 +2439,11 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         state, retry = advance_booru_sign_in(request, booru)
         if state == "waiting":
             session, _ = booru_session(bid)
+            with booru_starting_lock:
+                starting = booru_starting.get(bid)
+            who = starting["account"] if starting else session["pending_account_id"] if session else None
             return render(request, "booru_signin.html", booru=booru, next=to, retry=bool(session and session["retry"]),
-                          account=poster.get(session["pending_account_id"]) if session else None)
+                          account=poster.get(who), sending=bool(starting))
         if state == "done" and retry:
             to = send_booru_form(request, booru, retry["path"], retry["fields"], retry["back"]) or retry["back"]
         elif state == "done":
@@ -2389,6 +2453,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
 
     @app.post("/booru/{bid}/signin/cancel")
     def booru_sign_in_cancel(request: Request, bid: int, next: str = Form("")):
+        with booru_starting_lock:
+            booru_starting.pop(bid, None)
         with db.transaction() as conn:
             booru_mod.drop_pending(conn, bid)
         return RedirectResponse(local_path(next, booru_href(on=bid)), status_code=303)
@@ -2415,16 +2481,21 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         form = await request.form()
         fields = {k: v for k, v in form.items() if isinstance(v, str) and k != "anchor"}
         to = back(request, booru_href(on=bid), str(form.get("anchor") or "") or None)
+        scripted = "application/json" in request.headers.get("accept", "")
 
-        def work() -> RedirectResponse:
+        def work() -> Response:
+            if scripted:  # sent by the page itself (app.js): it's told what happened, and shows it
+                done, message, where = booru_send(request, booru_row(bid), path, fields, to)
+                return JSONResponse({"ok": done, "message": message, "go": where})
             return RedirectResponse(send_booru_form(request, booru_row(bid), path, fields, to) or to, status_code=303)
 
         return await run_in_threadpool(work)
 
     def booru_signed(request: Request, bid: int, section: str, path: str, template: str,
-                     params: dict[str, Any] | None = None, **ctx: Any) -> Response:
+                     params: dict[str, Any] | None = None, then: Callable[[dict[str, Any]], None] | None = None,
+                     **ctx: Any) -> Response:
         """A page of one booru that's only for the signed in (its queue, your uploads there...),
-        from that page's data on the booru (`data` in the template)."""
+        from that page's data on the booru (`data` in the template; `then` is given it too)."""
         booru = booru_row(bid)
         advance_booru_sign_in(request, booru)
         _, token = booru_session(bid)
@@ -2443,6 +2514,8 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
                 return {}, [str(exc)[:1].upper() + str(exc)[1:] + ("" if str(exc).endswith(".") else ".")]
             with db.transaction() as conn:
                 booru_mod.keep_me(conn, bid, data.get("me"))
+            if then:
+                then(data)
             return {"data": data}, []
 
         return booru_page(request, section, read, template, on=bid, data=None, **ctx)
@@ -2471,10 +2544,9 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
         sent = None if "mode" in fields else [
             (f"file{n}", (f.filename or f"image{n}", f.file.read(), f.content_type or "application/octet-stream"))
             for n, f in enumerate(chosen, 1)]
-        before = len(request.session.get("flash", []))
-        send_booru_form(request, booru, "upload", fields, here, sent)
-        failed = any(f[0] == "error" for f in request.session.get("flash", [])[before:])
-        return RedirectResponse(here if failed else f"/booru/{bid}/submissions", status_code=303)
+        done, message, _ = booru_send(request, booru, "upload", fields, here, sent)
+        flash(request, message, "info" if done else "error")
+        return RedirectResponse(f"/booru/{bid}/submissions" if done else here, status_code=303)
 
     @app.get("/booru/{bid}/submissions", response_class=HTMLResponse)
     def booru_submissions(request: Request, bid: int):
@@ -2499,21 +2571,20 @@ def create_app(settings: Settings | None = None, bouncer: Bouncer | None = None)
     @app.get("/booru/{bid}/admin", response_class=HTMLResponse)
     def booru_admin(request: Request, bid: int):
         """The admin's controls. The booru only takes them from a sign-in of the last 15
-        minutes, so opening this renews yours when it's nearly that old: by the time you
-        send something it's fresh. If it isn't, the form is held and sent once it is."""
+        minutes, so opening this renews yours when it's nearly that old (in the background:
+        the page doesn't wait for it): by the time you send something it's fresh. If it
+        isn't, the form is held and sent once it is."""
         booru = booru_row(bid)
-        advance_booru_sign_in(request, booru)
-        session, token = booru_session(bid)
-        if token and session and not session["pending_enc"]:
-            account = poster.get(session["account_id"])
-            try:
-                with traffic_mod.tagged("boorus"):
-                    who = booru_mod.me(bouncer.http, booru["host"], token)
-                if account and who.get("admin") and int(who.get("recent_for") or 0) < booru_mod.RENEW_BELOW:
-                    start_booru_sign_in(booru, account)
-            except booru_mod.BooruError:
-                pass  # the page says what's wrong, if anything is
-        return booru_signed(request, bid, "admin", "/admin", "booru_admin.html")
+
+        def renew(data: dict[str, Any]) -> None:
+            left = data.get("recent_for")  # (a booru from before it said so only says whether it's recent)
+            nearly_old = left < booru_mod.RENEW_BELOW if isinstance(left, int) else not data.get("recent")
+            session, _ = booru_session(bid)
+            account = poster.get(session["account_id"]) if session else None
+            if nearly_old and account and not session["pending_enc"]:
+                begin_booru_sign_in(booru, account)
+
+        return booru_signed(request, bid, "admin", "/admin", "booru_admin.html", then=renew)
 
     @app.get("/forums", response_class=HTMLResponse)
     def forums_index(request: Request):

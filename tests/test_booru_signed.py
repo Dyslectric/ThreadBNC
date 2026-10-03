@@ -34,10 +34,12 @@ class FakeBooru(FakeHttp):
         self.begun = 0
         self.sessions = {}  # token -> {"handle", "recent"}
         self.forms = []  # (path, fields) sent as someone
+        self.seen = []  # every request made of booru.test: (method, path)
         self.files = []
         self.role = "admin"
         self.claim_as = None  # another account answering the sign-in
         self.comments = []
+        self.says_how_long = True  # (a booru from before its admin page said for how long a sign-in is recent doesn't)
 
     def _claimed(self, secret):
         code = self.started.get(secret)
@@ -49,6 +51,8 @@ class FakeBooru(FakeHttp):
     def send(self, method, url, *, headers=None, content=None, throttle=True):
         where = urlparse(url)
         headers = headers or {}
+        if where.netloc == HOST:
+            self.seen.append((method, where.path))
         token = headers.get("Authorization", "").removeprefix("Bearer ") or None
         wants_json = headers.get("Accept") == "application/json"
         if where.netloc != HOST:
@@ -159,6 +163,7 @@ class FakeBooru(FakeHttp):
             if not admin:
                 return said(403, False, "administration is for admins")
             return httpx.Response(200, json={"me": me, "recent": mine["recent"], "minutes": 15, "unrestricted": False,
+                                             **({"recent_for": 800 if mine["recent"] else 0} if self.says_how_long else {}),
                                              "peers": [{"domain": OTHER, "name": "Shrine", "posts": 2, "state": "read 2026-10-03"}],
                                              "comment_approval": True, "comment_approval_in_file": False})
         if path == "/upload":
@@ -181,6 +186,7 @@ def signed(settings, bouncer, server):
     booru._index.clear()
     server.people[f"https://{HOST}/u/booru_bot"] = "777"
     client = TestClient(create_app(settings, bouncer))
+    client.app.state.booru_spawn = lambda start: start()  # a sign-in is started at once, not in the background
     client.post("/login", data={"password": "pw"})
     client.post("/accounts", data={"server": HOME, "username": "dave", "password": "hunter2"})
     client.post("/booru/servers", data={"address": HOST})
@@ -234,7 +240,7 @@ def test_waiting_for_the_message_and_someone_elses(signed, server):
     fake._claimed = lambda secret: None
     r = sign_in(client)
     assert r.status_code == 200 and "Signing in to Pictures of booru.test" in r.text
-    assert '<meta http-equiv="refresh" content="2">' in r.text and "dave@home.test" in r.text
+    assert 'data-booru-wait="/booru/1/signin/state"' in r.text and "dave@home.test" in r.text
     assert "Signing in…" in client.get("/booru").text
     # the code answered by another account signs nobody in
     fake._claimed, fake.claim_as = real, "mallory"
@@ -376,9 +382,20 @@ def test_administrating_needs_a_recent_sign_in(signed, server):
     before = len(server.messages_sent)
     page = client.get("/booru/1/admin").text
     assert len(server.messages_sent) == before + 1
-    assert len(fake.sessions) == 3 and "being renewed" not in page  # (here the booru has the message at once)
-    client.post("/booru/1/do/admin/peer", data={"domain": OTHER, "state": "off"})
-    assert fake.forms[-1] == ("/admin/peer", {"domain": OTHER, "state": "off"})
+    assert len(fake.sessions) == 2, "the page didn't wait for it"
+    assert fake.seen[-1] == ("POST", "/api/login") or fake.seen[-2:] == [("GET", "/admin"), ("POST", "/api/login")]
+    assert fake.seen.count(("GET", "/api/me")) == 2, "asked at each sign-in, not by the page: it says how old the sign-in is"
+    client.post("/booru/1/do/admin/peer", data={"domain": OTHER, "state": "off"})  # by now the booru has the message
+    assert fake.forms[-1] == ("/admin/peer", {"domain": OTHER, "state": "off"}) and len(fake.sessions) == 3
+    # a booru whose page only says whether the sign-in is recent: renewed once it isn't
+    fake.says_how_long = False
+    client.get("/booru/1/admin")
+    assert len(server.messages_sent) == before + 1
+    for session in fake.sessions.values():
+        session["recent"] = False
+    client.get("/booru/1/admin")
+    assert len(server.messages_sent) == before + 2
+    client.get("/booru/1/admin")
 
     # a session that has ended there is forgotten here
     fake.sessions.clear()
@@ -407,3 +424,57 @@ def test_settings_and_links(signed):
     assert booru.here(1, "/posts/5#comment-3") == "/booru/1/posts/5#comment-3" and booru.here(1, "/pools/2") is None
     assert booru.absolute(HOST, "//evil.test/x.png") is None and booru.absolute(HOST, "https://cdn.test/x.png")
     assert json.dumps(booru.upload_fields("", "cat", "", "", "")) == '{"tags": "cat"}'
+
+
+def test_the_click_doesnt_wait(signed, server):
+    client, fake = signed
+    held = []
+    client.app.state.booru_spawn = held.append  # the background work, kept to run when the test says
+    account = client.get("/booru").text.split('name="account"', 1)[1].split('value="', 1)[1].split('"', 1)[0]
+    asked = len(fake.seen)
+    r = client.post("/booru/1/signin", data={"account": account, "next": "/booru/1/posts/1"}, follow_redirects=False)
+    assert r.status_code == 303 and len(fake.seen) == asked and not server.messages_sent, "nothing was waited for"
+    page = client.get(r.headers["location"]).text
+    assert "is being sent from <strong>dave@home.test</strong>" in page and 'data-booru-wait="/booru/1/signin/state"' in page
+    assert '<noscript><meta http-equiv="refresh" content="3"></noscript>' in page
+    assert client.get("/booru/1/signin/state").json() == {"waiting": True}
+    client.post("/booru/1/signin", data={"account": account})  # pressed again: it's still the one sign-in
+    assert len(held) == 1
+
+    # sent, and not there yet; then there: the page's script is told to stop waiting, and loading it again goes on
+    real, fake._claimed = fake._claimed, lambda secret: None
+    held.pop()()
+    assert server.messages_sent[-1][2] == "!login K7QD-0001"
+    assert client.get("/booru/1/signin/state").json() == {"waiting": True}
+    assert "was sent from" in client.get("/booru/1/signin").text
+    fake._claimed = real
+    assert client.get("/booru/1/signin/state").json() == {"waiting": False} and not fake.sessions
+    r = client.get("/booru/1/signin?next=/booru/1/posts/1", follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/booru/1/posts/1" and len(fake.sessions) == 1
+    assert client.get("/booru/1/signin/state").json() == {"waiting": False}
+
+    # one that can't be started says so on the page that was waiting
+    client.post("/booru/1/signout")
+    server.people.pop(f"https://{HOST}/u/booru_bot")
+    client.post("/booru/1/signin", data={"account": account}, follow_redirects=False)
+    held.pop()()
+    assert client.get("/booru/1/signin/state").json() == {"waiting": False}
+    assert "Couldn&#39;t send the sign-in message as dave@home.test" in client.get("/booru/1/signin", follow_redirects=True).text
+
+
+def test_votes_and_favourites_without_leaving_the_page(signed):
+    client, fake = signed
+    sign_in(client)
+    page = client.get("/booru/1/posts/1").text
+    assert 'data-booru-marks data-vote="1" data-fav="0"' in page and '<span data-booru-score>3</span>' in page
+    assert 'data-booru-mark="fav"' in page and 'data-off="/booru/1/do/posts/1/unfavourite"' in page
+    asked = len(fake.seen)
+    r = client.post("/booru/1/do/posts/1/vote", data={"value": "0"}, headers={"accept": "application/json"})
+    assert r.json() == {"ok": True, "message": "Done: /posts/1/vote.", "go": None}
+    assert fake.seen[asked:] == [("POST", "/posts/1/vote")], "one request to the booru, and no page read again"
+    assert "Done: /posts/1/vote." not in client.get("/booru").text, "the script shows it: nothing is left for the next page"
+    r = client.post("/booru/1/do/posts/1/remove", data={"reason": ""}, headers={"accept": "application/json"})
+    assert r.json() == {"ok": False, "message": "Give a reason; it's shown in the public modlog", "go": None}
+    fake.sessions.clear()
+    r = client.post("/booru/1/do/posts/1/favourite", data={}, headers={"accept": "application/json"})
+    assert r.json()["ok"] is False and "has ended" in r.json()["message"]
